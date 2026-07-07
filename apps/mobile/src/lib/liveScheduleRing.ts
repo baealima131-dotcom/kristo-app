@@ -764,11 +764,15 @@ export function logMeTabRingDecision(args: {
   if (!personal || personal.match !== "claimed") {
     console.log("KRISTO_ME_TAB_RING_DECISION", {
       currentUserId: args.currentUserId,
-      claimedSlotUserId: personal ? scheduleSlotClaimUserId(personal.slot) || null : null,
+      claimedByUserId: personal ? scheduleSlotClaimUserId(personal.slot) || null : null,
       slotId: String(personal?.slot?.id || personal?.slot?.slotId || ""),
       slotNumber: personal?.slotNumber ?? null,
+      ministryId: personal?.feedId || "",
       startMs: personal?.startMs ?? 0,
       endMs: personal?.endMs ?? 0,
+      isLiveWindow: personal
+        ? isPersonalRingWindow(personal.startMs, personal.endMs, nowMs)
+        : false,
       isLiveNow: personal?.isLiveNow ?? false,
       startsInMin: personal?.startsInMin ?? null,
       source: args.source,
@@ -779,6 +783,7 @@ export function logMeTabRingDecision(args: {
   }
 
   const ringVisible = isPersonalRingWindow(personal.startMs, personal.endMs, nowMs);
+  const claimedByUserId = scheduleSlotClaimUserId(personal.slot) || args.currentUserId;
   const ringMode = personal.isLiveNow
     ? "live"
     : personal.startsInMin <= 30
@@ -787,14 +792,17 @@ export function logMeTabRingDecision(args: {
 
   console.log("KRISTO_ME_TAB_RING_DECISION", {
     currentUserId: args.currentUserId,
-    claimedSlotUserId: scheduleSlotClaimUserId(personal.slot) || args.currentUserId,
+    claimedByUserId,
     slotId: String(personal.slot?.id || personal.slot?.slotId || ""),
     slotNumber: personal.slotNumber ?? null,
+    ministryId: personal.feedId || "",
     startMs: personal.startMs,
     endMs: personal.endMs,
+    isLiveWindow: ringVisible,
     isLiveNow: personal.isLiveNow,
     startsInMin: personal.startsInMin,
     source: args.source,
+    claimedByMe: claimedByUserId === args.currentUserId,
     ringVisible: ringVisible && personal.match === "claimed",
     ringMode: ringVisible ? ringMode : "hidden",
   });

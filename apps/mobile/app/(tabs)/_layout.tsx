@@ -19,7 +19,7 @@ import {
 } from "@/src/lib/refreshCoordinator";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
-import { feedList, subscribe as subscribeHomeFeed, ensurePersonalTabRingClaimFromEvent, purgeClaimedSlotLocalState } from "@/src/lib/homeFeedStore";
+import { feedList, subscribe as subscribeHomeFeed, ensurePersonalTabRingClaimFromEvent, purgeClaimedSlotLocalState, ensureRingClaimStoresHydrated, logMinistryRingPersistedState } from "@/src/lib/homeFeedStore";
 import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
 import {
   beginClaimHydrationStartup,
@@ -859,7 +859,31 @@ export default function TabLayout() {
 
   useEffect(() => {
     beginClaimHydrationStartup();
-    applyScheduleRings("mount");
+    let cancelled = false;
+
+    void (async () => {
+      await ensureRingClaimStoresHydrated();
+      if (cancelled) return;
+
+      const uid = String(session?.userId || "").trim();
+      if (uid) {
+        logMinistryRingPersistedState(uid, "startup-after-hydrate");
+        rehydrateClaimStoresFromFeedRows(
+          [...feedList(), ...getCachedHomeFeedBackendRows()],
+          uid
+        );
+        applyScheduleRings("claim-store-hydrated");
+        console.log("KRISTO_MINISTRY_RING_RECOMPUTE_AFTER_SESSION", {
+          currentUserId: uid,
+          source: "claim-store-hydrated",
+          loading,
+          hasChurchId: !!String(session?.churchId || "").trim(),
+        });
+      } else {
+        applyScheduleRings("mount-before-session");
+      }
+    })();
+
     const rehydrateClaimStores = () => {
       const uid = String(session?.userId || "").trim();
       if (!uid) return;
@@ -890,6 +914,7 @@ export default function TabLayout() {
     });
 
     return () => {
+      cancelled = true;
       unsubFeed();
       unsubClaim();
       unsubRingRefresh();
@@ -903,7 +928,43 @@ export default function TabLayout() {
       claimRingTimersRef.current.forEach((timer) => clearTimeout(timer));
       claimRingTimersRef.current = [];
     };
-  }, [applyScheduleRings, scheduleClaimRingSync, refreshChurchLiveAndRings, startLiveRingPolling]);
+  }, [
+    applyScheduleRings,
+    scheduleClaimRingSync,
+    refreshChurchLiveAndRings,
+    startLiveRingPolling,
+    loading,
+    session?.userId,
+    session?.churchId,
+  ]);
+
+  useEffect(() => {
+    if (loading) return;
+    const uid = String(session?.userId || "").trim();
+    if (!uid) return;
+
+    let cancelled = false;
+    void (async () => {
+      await ensureRingClaimStoresHydrated();
+      if (cancelled) return;
+      logMinistryRingPersistedState(uid, "session-ready");
+      rehydrateClaimStoresFromFeedRows(
+        [...feedList(), ...getCachedHomeFeedBackendRows()],
+        uid
+      );
+      applyScheduleRings("session-ready");
+      console.log("KRISTO_MINISTRY_RING_RECOMPUTE_AFTER_SESSION", {
+        currentUserId: uid,
+        source: "session-ready",
+        loading,
+        hasChurchId: !!String(session?.churchId || "").trim(),
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, session?.userId, session?.churchId, applyScheduleRings]);
 
   useFocusEffect(
     useCallback(() => {

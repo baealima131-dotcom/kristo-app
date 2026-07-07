@@ -125,6 +125,8 @@ type Listener = () => void;
 
 const FEED_STORAGE_KEY = "KRISTO_HOME_FEED_V3_RESET";
 const HOME_FEED_FOR_YOU_SIGNALS_KEY = "kristo_for_you_signals_v1";
+const RING_CLAIM_HINTS_STORAGE_KEY = "KRISTO_RING_CLAIM_HINTS_V1";
+const USER_CLAIMED_SLOTS_STORAGE_KEY = "KRISTO_USER_CLAIMED_SLOTS_V1";
 
 /** Primary AsyncStorage key for persisted local Home Feed posts. */
 export const HOME_FEED_POSTS_STORAGE_KEY = FEED_STORAGE_KEY;
@@ -323,6 +325,7 @@ export function syncUserClaimedSlotStore(
 
   if (!claim) {
     delete store[key];
+    schedulePersistRingClaimStores("sync-user-claimed-slot-clear");
     return;
   }
 
@@ -343,6 +346,7 @@ export function syncUserClaimedSlotStore(
     endMs: Number(claim.endMs || 0) || undefined,
     claimedAt: new Date().toISOString(),
   };
+  schedulePersistRingClaimStores("sync-user-claimed-slot");
 }
 
 export function ensurePersonalTabRingClaimFromEvent(payload: {
@@ -472,6 +476,7 @@ export function persistPersonalTabRingClaimState(args: {
   };
 
   writeRingClaimHint(hint);
+  flushRingClaimStoresNow(args.source || "persistPersonalTabRingClaimState");
 
   console.log("KRISTO_ME_TAB_RING_CLAIM_PERSIST", {
     source: args.source || "persistPersonalTabRingClaimState",
@@ -532,11 +537,287 @@ export type RingClaimHint = {
   updatedAt: number;
 };
 
+type PersistedUserClaimedSlotEntry = {
+  postId: string;
+  slotId: string;
+  userId: string;
+  name?: string;
+  role?: string;
+  avatarUri?: string;
+  churchId?: string;
+  targetChurchId?: string;
+  slotNumber?: number;
+  startMs?: number;
+  endMs?: number;
+  claimedAt?: string;
+};
+
+let ringClaimStoresHydratePromise: Promise<boolean> | null = null;
+let ringClaimStoresPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function isMinistryRingFeedKey(feedId: string): boolean {
+  const id = String(feedId || "").trim().toLowerCase();
+  return id.startsWith("ministry_") || id.startsWith("min_");
+}
+
+function slimRingClaimHintForPersist(hint: RingClaimHint): RingClaimHint {
+  const slotId = String(hint.slotId || "").trim();
+  const item =
+    hint.item && typeof hint.item === "object"
+      ? {
+          id: String(hint.item.id || hint.feedId || ""),
+          sourceScheduleId: String(hint.item.sourceScheduleId || hint.baseFeedId || hint.feedId || ""),
+          churchId: String(hint.item.churchId || hint.churchId || ""),
+          source: String(hint.item.source || "ministry-live"),
+          roomKind: String(hint.item.roomKind || ""),
+          scheduleType: String(hint.item.scheduleType || ""),
+        }
+      : {
+          id: String(hint.feedId || ""),
+          sourceScheduleId: String(hint.baseFeedId || hint.feedId || ""),
+          churchId: String(hint.churchId || ""),
+          source: isMinistryRingFeedKey(hint.feedId) ? "ministry-live" : "",
+        };
+
+  const slot =
+    hint.slot && typeof hint.slot === "object"
+      ? {
+          id: String(hint.slot.id || slotId),
+          slotId,
+          slot: Number(hint.slot.slot || hint.slotNumber || 0) || hint.slotNumber || 0,
+          slotNumber: Number(hint.slot.slotNumber || hint.slotNumber || 0) || hint.slotNumber || 0,
+          startMs: Number(hint.startMs || hint.slot.startMs || 0),
+          endMs: Number(hint.endMs || hint.slot.endMs || 0),
+          claimedByUserId: String(hint.slot.claimedByUserId || hint.userId || ""),
+          claimedByRole: String(hint.slot.claimedByRole || hint.role || ""),
+        }
+      : {
+          id: slotId,
+          slotId,
+          slotNumber: Number(hint.slotNumber || 0),
+          startMs: Number(hint.startMs || 0),
+          endMs: Number(hint.endMs || 0),
+          claimedByUserId: String(hint.userId || ""),
+          claimedByRole: String(hint.role || ""),
+        };
+
+  return {
+    feedId: String(hint.feedId || ""),
+    baseFeedId: String(hint.baseFeedId || hint.feedId || ""),
+    slotId,
+    slotNumber: Number(hint.slotNumber || 0),
+    userId: String(hint.userId || ""),
+    startMs: Number(hint.startMs || 0),
+    endMs: Number(hint.endMs || 0),
+    name: hint.name,
+    role: hint.role,
+    avatarUri: hint.avatarUri,
+    claimedAt: String(hint.claimedAt || new Date().toISOString()),
+    churchId: hint.churchId,
+    item,
+    slot,
+    updatedAt: Number(hint.updatedAt || Date.now()),
+  };
+}
+
+function schedulePersistRingClaimStores(source: string) {
+  if (ringClaimStoresPersistTimer) clearTimeout(ringClaimStoresPersistTimer);
+  ringClaimStoresPersistTimer = setTimeout(() => {
+    ringClaimStoresPersistTimer = null;
+    void persistRingClaimStoresToDisk(source);
+  }, 120);
+}
+
+function flushRingClaimStoresNow(source: string) {
+  if (ringClaimStoresPersistTimer) {
+    clearTimeout(ringClaimStoresPersistTimer);
+    ringClaimStoresPersistTimer = null;
+  }
+  void persistRingClaimStoresToDisk(source);
+}
+
+export function logMinistryRingPersistedState(viewerUserId?: string, source = "inspect") {
+  const uid = String(viewerUserId || "").trim();
+  const hints = getRingClaimHints(uid);
+  const entries = getUserClaimedSlotEntries(uid);
+  const ministryHints = hints.filter((hint) =>
+    isMinistryRingFeedKey(String(hint.baseFeedId || hint.feedId || ""))
+  );
+  const ministryEntries = entries.filter((entry) =>
+    isMinistryRingFeedKey(String(entry?.postId || ""))
+  );
+
+  console.log("KRISTO_MINISTRY_RING_PERSISTED_STATE", {
+    source,
+    currentUserId: uid || null,
+    hintCount: hints.length,
+    entryCount: entries.length,
+    ministryHintCount: ministryHints.length,
+    ministryEntryCount: ministryEntries.length,
+    ministryHints: ministryHints.map((hint) => ({
+      claimedByUserId: String(hint.userId || ""),
+      slotId: String(hint.slotId || ""),
+      ministryId: String(hint.baseFeedId || hint.feedId || ""),
+      startMs: Number(hint.startMs || 0),
+      endMs: Number(hint.endMs || 0),
+    })),
+  });
+}
+
+async function persistRingClaimStoresToDisk(source: string) {
+  const g = globalThis as any;
+  const hintStore = g.__KRISTO_RING_CLAIM_HINTS__ || {};
+  const slotStore = g.__KRISTO_USER_CLAIMED_SLOTS__ || {};
+  const hints = Object.values(hintStore).map((hint) =>
+    slimRingClaimHintForPersist(hint as RingClaimHint)
+  );
+  const entries = Object.values(slotStore) as PersistedUserClaimedSlotEntry[];
+
+  try {
+    await AsyncStorage.multiSet([
+      [RING_CLAIM_HINTS_STORAGE_KEY, JSON.stringify(hints)],
+      [USER_CLAIMED_SLOTS_STORAGE_KEY, JSON.stringify(entries)],
+    ]);
+    console.log("KRISTO_MINISTRY_RING_PERSISTED_STATE", {
+      source: `${source}-saved`,
+      hintCount: hints.length,
+      entryCount: entries.length,
+      ministryHintCount: hints.filter((hint) =>
+        isMinistryRingFeedKey(String(hint.baseFeedId || hint.feedId || ""))
+      ).length,
+    });
+  } catch (e) {
+    console.log("KRISTO_MINISTRY_RING_PERSIST_ERROR", {
+      source,
+      error: String((e as any)?.message || e || "unknown"),
+    });
+  }
+}
+
+function pruneExpiredRingClaimStores(nowMs = Date.now()) {
+  const g = globalThis as any;
+  const hintStore = g.__KRISTO_RING_CLAIM_HINTS__ || {};
+  const slotStore = g.__KRISTO_USER_CLAIMED_SLOTS__ || {};
+  let removedHints = 0;
+  let removedEntries = 0;
+
+  for (const [key, hint] of Object.entries(hintStore) as any) {
+    const endMs = Number(hint?.endMs || 0);
+    if (endMs > 0 && endMs <= nowMs) {
+      delete hintStore[key];
+      removedHints += 1;
+    }
+  }
+
+  for (const [key, entry] of Object.entries(slotStore) as any) {
+    const endMs = Number(entry?.endMs || 0);
+    if (endMs > 0 && endMs <= nowMs) {
+      delete slotStore[key];
+      removedEntries += 1;
+    }
+  }
+
+  g.__KRISTO_RING_CLAIM_HINTS__ = hintStore;
+  g.__KRISTO_USER_CLAIMED_SLOTS__ = slotStore;
+
+  return { removedHints, removedEntries };
+}
+
+export function ensureRingClaimStoresHydrated(): Promise<boolean> {
+  if (!ringClaimStoresHydratePromise) {
+    ringClaimStoresHydratePromise = hydrateRingClaimStoresFromDisk();
+  }
+  return ringClaimStoresHydratePromise;
+}
+
+async function hydrateRingClaimStoresFromDisk(): Promise<boolean> {
+  const startedAt = Date.now();
+  console.log("KRISTO_MINISTRY_RING_HYDRATE_START", {
+    at: startedAt,
+  });
+
+  try {
+    const pairs = await AsyncStorage.multiGet([
+      RING_CLAIM_HINTS_STORAGE_KEY,
+      USER_CLAIMED_SLOTS_STORAGE_KEY,
+    ]);
+    const rawHints = pairs[0]?.[1] || "[]";
+    const rawEntries = pairs[1]?.[1] || "[]";
+    const parsedHints = JSON.parse(rawHints);
+    const parsedEntries = JSON.parse(rawEntries);
+    const hints = Array.isArray(parsedHints) ? parsedHints : [];
+    const entries = Array.isArray(parsedEntries) ? parsedEntries : [];
+
+    const g = globalThis as any;
+    const hintStore: Record<string, RingClaimHint> = {};
+    for (const hint of hints) {
+      const slim = slimRingClaimHintForPersist(hint as RingClaimHint);
+      if (!slim.userId || !slim.slotId || !slim.baseFeedId) continue;
+      if (!slim.startMs || slim.endMs <= 0) continue;
+      hintStore[`${slim.userId}|${slim.baseFeedId}|${slim.slotId}`] = slim;
+    }
+
+    const slotStore: Record<string, PersistedUserClaimedSlotEntry> = {};
+    for (const entry of entries) {
+      const postId = String(entry?.postId || "").trim();
+      const slotId = String(entry?.slotId || "").trim();
+      const userId = String(entry?.userId || "").trim();
+      if (!postId || !slotId || !userId) continue;
+      slotStore[`${postId}|${slotId}`] = {
+        postId,
+        slotId,
+        userId,
+        name: entry?.name,
+        role: entry?.role,
+        avatarUri: entry?.avatarUri,
+        churchId: entry?.churchId,
+        targetChurchId: entry?.targetChurchId,
+        slotNumber: entry?.slotNumber,
+        startMs: entry?.startMs,
+        endMs: entry?.endMs,
+        claimedAt: entry?.claimedAt,
+      };
+    }
+
+    g.__KRISTO_RING_CLAIM_HINTS__ = hintStore;
+    g.__KRISTO_USER_CLAIMED_SLOTS__ = slotStore;
+    const pruned = pruneExpiredRingClaimStores(Date.now());
+
+    console.log("KRISTO_MINISTRY_RING_HYDRATE_RESULT", {
+      durationMs: Date.now() - startedAt,
+      hintCount: Object.keys(hintStore).length,
+      entryCount: Object.keys(slotStore).length,
+      removedHints: pruned.removedHints,
+      removedEntries: pruned.removedEntries,
+      ministryHintCount: Object.values(hintStore).filter((hint) =>
+        isMinistryRingFeedKey(String(hint.baseFeedId || hint.feedId || ""))
+      ).length,
+    });
+
+    if (pruned.removedHints || pruned.removedEntries) {
+      schedulePersistRingClaimStores("hydrate-prune-expired");
+    }
+
+    return Object.keys(hintStore).length > 0 || Object.keys(slotStore).length > 0;
+  } catch (e) {
+    console.log("KRISTO_MINISTRY_RING_HYDRATE_RESULT", {
+      durationMs: Date.now() - startedAt,
+      ok: false,
+      error: String((e as any)?.message || e || "unknown"),
+    });
+    return false;
+  }
+}
+
+// Kick off disk hydration as early as possible so ring recompute can restore claims.
+void ensureRingClaimStoresHydrated();
+
 export function writeRingClaimHint(hint: RingClaimHint) {
   const g = globalThis as any;
   const store = g.__KRISTO_RING_CLAIM_HINTS__ || {};
   g.__KRISTO_RING_CLAIM_HINTS__ = store;
-  store[`${hint.userId}|${hint.baseFeedId}|${hint.slotId}`] = hint;
+  store[`${hint.userId}|${hint.baseFeedId}|${hint.slotId}`] = slimRingClaimHintForPersist(hint);
+  schedulePersistRingClaimStores("write-ring-claim-hint");
 }
 
 export function getRingClaimHints(userId?: string): RingClaimHint[] {
@@ -667,6 +948,7 @@ export function purgeClaimedSlotLocalState(input: {
     userId: uid || null,
     reason: String(input.reason || "unknown"),
   });
+  schedulePersistRingClaimStores("purge-claimed-slot");
 }
 
 /** Drop ring hints, claimed-slot memory, and stale local mirrors for one schedule. */
@@ -681,6 +963,7 @@ export function clearScheduleClaimRuntimeState(scheduleId: string, rows?: any[])
   clearRingClaimHintsForAliases(aliases, "");
   clearUserClaimedSlotsForAliases(aliases, "");
   purgeStaleLocalScheduleMirrors(canonicalId, aliases);
+  schedulePersistRingClaimStores("clear-schedule-claim-runtime");
 }
 
 function migrateClaimStoresToCanonical(localId: string, canonicalId: string) {
@@ -717,6 +1000,7 @@ function migrateClaimStoresToCanonical(localId: string, canonicalId: string) {
     localId: local,
     canonicalId: canonical,
   });
+  schedulePersistRingClaimStores("claim-store-migrate");
 }
 
 export function slotIdsMatch(slot: any, slotId: string): boolean {
