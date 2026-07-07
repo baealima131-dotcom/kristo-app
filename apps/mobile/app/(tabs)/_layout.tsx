@@ -718,7 +718,7 @@ export default function TabLayout() {
       setPersonalScheduleTabAlert(stablePersonal);
       logMeTabRingDecision({
         currentUserId: String(session.userId || ""),
-        personal: null,
+        personal: stablePersonal,
         source,
       });
     },

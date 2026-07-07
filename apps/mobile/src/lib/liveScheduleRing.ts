@@ -69,6 +69,82 @@ function isMediaScheduleRow(item: any): boolean {
   return isMediaScheduleFeedItem(item);
 }
 
+function isMinistryRingFeedId(feedId: string, item?: any, slot?: any): boolean {
+  const id = String(feedId || "").trim().toLowerCase();
+  if (id.startsWith("ministry_") || id.startsWith("min_")) return true;
+  const source = String(item?.source || slot?.source || "").toLowerCase();
+  const scheduleType = String(item?.scheduleType || slot?.scheduleType || "").toLowerCase();
+  const roomKind = String(item?.roomKind || slot?.roomKind || "").toLowerCase();
+  return (
+    source.includes("ministry-live") ||
+    scheduleType.includes("ministry") ||
+    roomKind.includes("ministry")
+  );
+}
+
+function logMinistryClaimedRingDecision(args: {
+  currentUserId: string;
+  claimedByUserId: string;
+  slotId: string;
+  ministryId: string;
+  startMs: number;
+  endMs: number;
+  isLiveWindow: boolean;
+  claimedByMe: boolean;
+  ringVisible: boolean;
+  role: string;
+  source: string;
+}) {
+  console.log("KRISTO_MINISTRY_CLAIMED_RING_DECISION", args);
+}
+
+function maybeLogMinistryClaimedRingDecision(
+  alert: ScheduleRingAlert | null,
+  viewerUserId: string,
+  source: string
+) {
+  if (!alert || alert.match !== "claimed") return;
+  const feedId = String(alert.feedId || alert.item?.sourceScheduleId || alert.item?.id || "");
+  if (!isMinistryRingFeedId(feedId, alert.item, alert.slot)) return;
+
+  const claimedByUserId = scheduleSlotClaimUserId(alert.slot) || viewerUserId;
+  const nowMs = Date.now();
+  const isLiveWindow = isPersonalRingWindow(alert.startMs, alert.endMs, nowMs);
+  const claimedByMe = claimedByUserId === viewerUserId;
+  const ringVisible = claimedByMe && isLiveWindow;
+
+  logMinistryClaimedRingDecision({
+    currentUserId: viewerUserId,
+    claimedByUserId,
+    slotId: String(alert.slot?.id || alert.slot?.slotId || ""),
+    ministryId: feedId.replace(/^ministry_/, ""),
+    startMs: alert.startMs,
+    endMs: alert.endMs,
+    isLiveWindow,
+    claimedByMe,
+    ringVisible,
+    role: String(alert.slot?.claimedByRole || alert.slot?.claimedBy?.role || ""),
+    source,
+  });
+}
+
+function pickBestPersonalScheduleAlert(
+  candidates: Array<ScheduleRingAlert | null>
+): ScheduleRingAlert | null {
+  const alerts = candidates.filter(Boolean) as ScheduleRingAlert[];
+  if (!alerts.length) return null;
+
+  alerts.sort((a, b) => {
+    const pri: Record<string, number> = { claimed: 0, saved: 1, liked: 2 };
+    return (
+      (pri[a.match || ""] ?? 9) - (pri[b.match || ""] ?? 9) ||
+      a.startMs - b.startMs
+    );
+  });
+
+  return alerts[0];
+}
+
 function isSlotClaimedByViewer(slot: any, viewerUserId: string, feedId?: string): boolean {
   const uid = String(viewerUserId || "").trim();
   if (!uid) return false;
@@ -617,17 +693,24 @@ export function recomputeScheduleRingsFromRows(options: {
   backendFeedLoaded?: boolean;
 }) {
   const nowMs = options.nowMs ?? Date.now();
+  const viewerUserId = String(options.viewerUserId || "").trim();
   const rows = mergeFeedRowsForScheduleScan(options.rows, {
     backendFeedLoaded: options.backendFeedLoaded,
     churchId: options.viewerChurchId,
-    viewerUserId: options.viewerUserId,
+    viewerUserId,
   });
 
-  const personal = computePersonalScheduleTabAlert({
-    rows,
-    viewerUserId: options.viewerUserId,
-    nowMs,
-  });
+  const personal = pickBestPersonalScheduleAlert([
+    computePersonalScheduleTabAlert({
+      rows,
+      viewerUserId,
+      nowMs,
+    }),
+    computePersonalAlertFromClaimHints(viewerUserId, nowMs),
+    computePersonalAlertFromClaimStore(viewerUserId, nowMs, rows),
+  ]);
+
+  maybeLogMinistryClaimedRingDecision(personal, viewerUserId, options.source || "local");
 
   const church = computeChurchScheduleTabLive({
     rows,
