@@ -358,14 +358,28 @@ export function tryBeginCameraPublishOnce(input: {
   const roomName = String(input.roomName || "").trim();
   const attempt = store().attempt;
   if (attempt && attempt.roomName === roomName) {
-    if (!attempt.cameraPublishStarted) {
-      attempt.cameraPublishStarted = true;
-      transitionLivePreflightStartupState("video", input.source);
+    if (attempt.cameraPublished) {
       console.log("KRISTO_LIVE_PREFLIGHT_CAMERA_PUBLISH_ONCE", diagBase({
         source: input.source,
-        allowed: true,
+        allowed: false,
+        reason: "camera-already-published",
       }));
+      return false;
     }
+    if (attempt.cameraPublishStarted) {
+      console.log("KRISTO_LIVE_PREFLIGHT_CAMERA_PUBLISH_ONCE", diagBase({
+        source: input.source,
+        allowed: false,
+        reason: "publish-already-started",
+      }));
+      return false;
+    }
+    attempt.cameraPublishStarted = true;
+    transitionLivePreflightStartupState("video", input.source);
+    console.log("KRISTO_LIVE_PREFLIGHT_CAMERA_PUBLISH_ONCE", diagBase({
+      source: input.source,
+      allowed: true,
+    }));
     return true;
   }
   console.log("KRISTO_LIVE_PREFLIGHT_CAMERA_PUBLISH_ONCE", diagBase({
@@ -385,5 +399,14 @@ export function markLivePreflightCameraPublished(input: {
     attempt.cameraPublished = true;
     transitionLivePreflightStartupState("enter", input.source);
   }
+  notifyListeners();
+}
+
+export function resetLivePreflightCameraPublishForRetry(reason: string) {
+  const attempt = store().attempt;
+  if (!attempt) return;
+  attempt.cameraPublishStarted = false;
+  attempt.cameraPublished = false;
+  console.log("KRISTO_LIVE_PREFLIGHT_CAMERA_PUBLISH_RETRY_RESET", diagBase({ reason }));
   notifyListeners();
 }

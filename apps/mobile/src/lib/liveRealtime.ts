@@ -343,6 +343,8 @@ export function invalidateCachedParticipant(key: string) {
   participantCache.delete(key);
 }
 
+const churchLiveRouteResponseLogSigByKey = new Map<string, string>();
+
 export async function fetchLightLiveState(
   headers: Record<string, string>,
   screen = "LiveRoom",
@@ -364,18 +366,31 @@ export async function fetchLightLiveState(
   const patch = extractLightLivePayload(res);
   const churchId = String(headers["x-kristo-church-id"] || headers["X-Kristo-Church-Id"] || "").trim();
 
-  console.log("KRISTO_CHURCH_LIVE_ROUTE_RESPONSE", {
-    endpoint: path,
+  const routeLogSig = [
+    path,
     churchId,
-    appUserId: userId,
-    endpointStatus: patch.endpointStatus ?? null,
-    routeFailed: patch.routeFailed === true,
-    isLive: patch.isLive ?? null,
-    explicitlyEnded: patch.explicitlyEnded === true,
-    noBridgeSession: patch.noBridgeSession === true,
-    liveId: patch.liveId || patch.raw?.liveId || null,
-    responseBody: res,
-  });
+    userId,
+    patch.endpointStatus ?? "",
+    patch.routeFailed === true,
+    patch.isLive ?? "",
+    patch.explicitlyEnded === true,
+    patch.noBridgeSession === true,
+    patch.liveId || patch.raw?.liveId || "",
+  ].join("|");
+  if (churchLiveRouteResponseLogSigByKey.get(key) !== routeLogSig) {
+    churchLiveRouteResponseLogSigByKey.set(key, routeLogSig);
+    console.log("KRISTO_CHURCH_LIVE_ROUTE_RESPONSE", {
+      endpoint: path,
+      churchId,
+      appUserId: userId,
+      endpointStatus: patch.endpointStatus ?? null,
+      routeFailed: patch.routeFailed === true,
+      isLive: patch.isLive ?? null,
+      explicitlyEnded: patch.explicitlyEnded === true,
+      noBridgeSession: patch.noBridgeSession === true,
+      liveId: patch.liveId || patch.raw?.liveId || null,
+    });
+  }
 
   if (patch.isLive === true && patch.raw) {
     rememberPreservedChurchLive(churchId, patch.raw);

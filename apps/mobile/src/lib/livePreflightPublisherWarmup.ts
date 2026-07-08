@@ -26,11 +26,17 @@ export function publisherWarmupKey(liveBridgeId: string, userId: string) {
 
 export function clearPublisherVideoTrackWarmup() {
   const cur = readWarmupStore();
-  if (cur?.track) {
+
+  // Only stop an unconsumed warmup track still owned by the warmup store.
+  // Once takePublisherVideoTrackWarmup() consumes the track, ownership moves to
+  // LiveKit publish/local preview. Stopping it here can end the published camera
+  // track and cause publisher black preview + viewer flicker.
+  if (cur?.track && !cur.consumed) {
     try {
       cur.track.stop?.();
     } catch {}
   }
+
   writeWarmupStore(null);
 }
 
@@ -135,4 +141,28 @@ export function hasPublisherVideoTrackWarmupReady(
 ): boolean {
   const cur = readWarmupStore();
   return cur?.key === publisherWarmupKey(liveBridgeId, userId) && !!cur.track;
+}
+
+export function isPublisherVideoTrackWarmupInFlight(
+  liveBridgeId: string,
+  userId: string
+): boolean {
+  const cur = readWarmupStore();
+  const key = publisherWarmupKey(liveBridgeId, userId);
+  return cur?.key === key && cur.inFlight === true && !cur.track;
+}
+
+export function readPublisherVideoTrackWarmup(
+  liveBridgeId: string,
+  userId: string
+): any | null {
+  const cur = readWarmupStore();
+  if (cur?.key !== publisherWarmupKey(liveBridgeId, userId) || !cur.track || cur.consumed) {
+    return null;
+  }
+  const mediaTrack = cur.track?.mediaStreamTrack;
+  if (!mediaTrack || String(mediaTrack.readyState || "") !== "live") {
+    return null;
+  }
+  return cur.track;
 }
