@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LiveKitRoom, useRoomContext } from "@livekit/react-native";
 import { RoomEvent } from "livekit-client";
 
+import LiveMainStageSaturnOrbit from "@/src/components/live/LiveMainStageSaturnOrbit";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { PrivateCallAudioRenderer } from "@/src/lib/privateCallAudioRenderer";
 import { buildLiveKitRoomOptions } from "@/src/lib/liveKitVideoQuality";
@@ -29,6 +30,54 @@ const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
 const LIVEKIT_CONNECT_OPTIONS = { autoSubscribe: true, maxRetries: 2, websocketTimeout: 15000 };
 const LIVEKIT_ROOM_OPTIONS = buildLiveKitRoomOptions();
+const AVATAR_SIZE = 112;
+
+function formatCallDuration(totalSeconds: number): string {
+  const safe = Math.max(0, totalSeconds);
+  const minutes = Math.floor(safe / 60);
+  const seconds = safe % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function PrivateCallAvatar({
+  avatarUri,
+  animate = true,
+}: {
+  avatarUri?: string;
+  animate?: boolean;
+}) {
+  const avatar = avatarUri ? (
+    <Image
+      source={{ uri: avatarUri }}
+      style={{
+        width: AVATAR_SIZE,
+        height: AVATAR_SIZE,
+        borderRadius: AVATAR_SIZE / 2,
+      }}
+    />
+  ) : (
+    <View
+      style={[
+        styles.avatarFallback,
+        {
+          width: AVATAR_SIZE,
+          height: AVATAR_SIZE,
+          borderRadius: AVATAR_SIZE / 2,
+        },
+      ]}
+    >
+      <Ionicons name="person" size={42} color="rgba(255,255,255,0.82)" />
+    </View>
+  );
+
+  if (!animate) return avatar;
+
+  return (
+    <LiveMainStageSaturnOrbit size={AVATAR_SIZE} ringColor={GOLD}>
+      {avatar}
+    </LiveMainStageSaturnOrbit>
+  );
+}
 
 function PrivateCallConnectedRoom({
   session,
@@ -44,38 +93,108 @@ function PrivateCallConnectedRoom({
   const peerName = isCaller ? session.pastorName : session.callerName;
   const peerAvatar = isCaller ? session.pastorAvatarUrl : session.callerAvatarUrl;
 
+  const [micEnabled, setMicEnabled] = useState(true);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const durationStartedRef = useRef(false);
+  const elapsedSecRef = useRef(0);
+
+  const applyMicState = useCallback(
+    (enabled: boolean) => {
+      if (!room) return;
+      void room.localParticipant.setMicrophoneEnabled(enabled).catch(() => {});
+    },
+    [room]
+  );
+
   useEffect(() => {
     if (!room) return;
 
-    const enableMic = () => {
-      void room.localParticipant.setMicrophoneEnabled(true).catch(() => {});
-    };
+    const syncMic = () => applyMicState(micEnabled);
 
-    enableMic();
-    room.on(RoomEvent.Connected, enableMic);
-    room.on(RoomEvent.Reconnected, enableMic);
+    syncMic();
+    room.on(RoomEvent.Connected, syncMic);
+    room.on(RoomEvent.Reconnected, syncMic);
 
     return () => {
-      room.off(RoomEvent.Connected, enableMic);
-      room.off(RoomEvent.Reconnected, enableMic);
+      room.off(RoomEvent.Connected, syncMic);
+      room.off(RoomEvent.Reconnected, syncMic);
     };
-  }, [room]);
+  }, [room, micEnabled, applyMicState]);
+
+  useEffect(() => {
+    if (durationStartedRef.current) return;
+    durationStartedRef.current = true;
+
+    console.log("KRISTO_PRIVATE_CALL_DURATION_START", {
+      callId: session.id,
+      currentUserId,
+    });
+
+    const timer = setInterval(() => {
+      setElapsedSec((current) => {
+        const next = current + 1;
+        elapsedSecRef.current = next;
+        return next;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(timer);
+      console.log("KRISTO_PRIVATE_CALL_DURATION_STOP", {
+        callId: session.id,
+        currentUserId,
+        elapsedSec: elapsedSecRef.current,
+      });
+    };
+  }, [session.id, currentUserId]);
+
+  const handleToggleMute = async () => {
+    if (!room) return;
+    const nextMicEnabled = !micEnabled;
+    setMicEnabled(nextMicEnabled);
+    try {
+      await room.localParticipant.setMicrophoneEnabled(nextMicEnabled);
+    } catch {
+      setMicEnabled(micEnabled);
+      return;
+    }
+
+    console.log("KRISTO_PRIVATE_CALL_MUTE_TOGGLE", {
+      callId: session.id,
+      currentUserId,
+      muted: !nextMicEnabled,
+      micEnabled: nextMicEnabled,
+    });
+  };
 
   return (
     <View style={styles.centerStage}>
-      {peerAvatar ? (
-        <Image source={{ uri: peerAvatar }} style={styles.avatar} />
-      ) : (
-        <View style={[styles.avatar, styles.avatarFallback]}>
-          <Ionicons name="person" size={42} color="rgba(255,255,255,0.82)" />
-        </View>
-      )}
+      <PrivateCallAvatar avatarUri={peerAvatar} animate />
+
       <Text style={styles.title}>Connected</Text>
+      {elapsedSec > 0 ? (
+        <Text style={styles.durationText}>{formatCallDuration(elapsedSec)}</Text>
+      ) : null}
       <Text style={styles.subtitle}>{peerName}</Text>
-      <Pressable onPress={onEnd} style={styles.endBtn}>
-        <Ionicons name="call" size={20} color="#fff" />
-        <Text style={styles.endBtnText}>End Call</Text>
-      </Pressable>
+
+      <View style={styles.connectedControls}>
+        <Pressable
+          onPress={() => void handleToggleMute()}
+          style={[styles.muteCircleBtn, !micEnabled && styles.muteCircleBtnActive]}
+        >
+          <Ionicons
+            name={micEnabled ? "mic" : "mic-off"}
+            size={24}
+            color="#fff"
+          />
+          <Text style={styles.muteLabel}>{micEnabled ? "Mic On" : "Muted"}</Text>
+        </Pressable>
+
+        <Pressable onPress={onEnd} style={styles.endBtn}>
+          <Ionicons name="call" size={20} color="#fff" />
+          <Text style={styles.endBtnText}>End Call</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -321,13 +440,7 @@ export default function PrivateCallScreen() {
       </Pressable>
 
       <View style={styles.centerStage}>
-        {displayAvatar ? (
-          <Image source={{ uri: displayAvatar }} style={styles.avatar} />
-        ) : (
-          <View style={[styles.avatar, styles.avatarFallback]}>
-            <Ionicons name="person" size={42} color="rgba(255,255,255,0.82)" />
-          </View>
-        )}
+        <PrivateCallAvatar avatarUri={displayAvatar} animate />
 
         <Text style={styles.title}>{statusMessage || "Private Call"}</Text>
         <Text style={styles.subtitle}>{displayName}</Text>
@@ -386,18 +499,44 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 20,
   },
-  avatar: {
-    width: 112,
-    height: 112,
-    borderRadius: 56,
-    marginBottom: 8,
-  },
   avatarFallback: {
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.08)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
+  },
+  durationText: {
+    color: GOLD,
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+    textAlign: "center",
+  },
+  connectedControls: {
+    marginTop: 28,
+    alignItems: "center",
+    gap: 18,
+  },
+  muteCircleBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  muteCircleBtnActive: {
+    backgroundColor: "rgba(214,78,78,0.28)",
+    borderColor: "rgba(214,78,78,0.55)",
+  },
+  muteLabel: {
+    color: "rgba(255,255,255,0.9)",
+    fontSize: 11,
+    fontWeight: "800",
   },
   title: {
     color: "#fff",
@@ -441,7 +580,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(214,78,78,0.92)",
   },
   endBtn: {
-    marginTop: 28,
     minWidth: 160,
     height: 48,
     borderRadius: 24,

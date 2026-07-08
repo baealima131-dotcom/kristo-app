@@ -252,7 +252,6 @@ export function PrivateCallAudioRenderer({
 
     const onConnected = () => {
       primeAllRemoteAudio();
-      void room.localParticipant.setMicrophoneEnabled(true).catch(() => {});
     };
 
     room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
