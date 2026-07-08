@@ -8934,12 +8934,30 @@ export default function LiveRoomScreen() {
   } = liveStageAuthority;
 
   if (claimEnterLockHeld && claimEnterLock) {
-    userOwnsCurrentActiveSlot = true;
     userHasClaimedScheduleSlot = true;
-    if (claimEnterLock.canPublishCamera) {
+
+    // Claim lock may allow the user into the live room early, but it must not
+    // let a future claimed slot compete for camera before its active window.
+    // Early claimed users get mic only; camera waits until the active slot owner turn.
+    const claimLockOwnsCurrentActiveSlot =
+      !!currentUserId &&
+      !!currentSlotOwnerId &&
+      String(currentSlotOwnerId) === String(currentUserId) &&
+      Number(currentSlotStartMs || 0) <= liveNowMs &&
+      Number(currentSlotEndMs || 0) > liveNowMs;
+
+    if (claimLockOwnsCurrentActiveSlot) {
+      userOwnsCurrentActiveSlot = true;
+    }
+
+    if (claimEnterLock.canPublishCamera && claimLockOwnsCurrentActiveSlot) {
       canPublishClaimedCameraNow = true;
       canPublishLiveVideoNow = true;
+    } else {
+      canPublishClaimedCameraNow = false;
+      canPublishLiveVideoNow = false;
     }
+
     if (claimEnterLock.canPublishMic) {
       canPublishClaimedMicNow = true;
     }
@@ -9217,9 +9235,7 @@ export default function LiveRoomScreen() {
     cameraPublishAllowedNow;
 
   // Route publisher intent unlocks mic/camera overrides during visible preflight before runtime authority resolves.
-  const liveKitCameraOverrideReady =
-    cameraPublishAllowedNow ||
-    (routePreflightModeEarly === "video-publisher" && routePreflightNeedsCameraEarly);
+  const liveKitCameraOverrideReady = cameraPublishAllowedNow;
   const liveKitMicOverrideReady =
     canPublishClaimedMicNow ||
     (routePreflightModeEarly !== "viewer" && routePreflightNeedsMicEarly);
@@ -9444,7 +9460,9 @@ export default function LiveRoomScreen() {
   const liveMicPublisherReady = canPublishClaimedMicNow;
 
   // Publisher LiveKit mount: mic-eligible OR current camera slot owner.
-  const mountLiveKitPublisherStage = canPublishClaimedMicNow || cameraPublishAllowedNow;
+  // Mic-only claimed users may enter early, but must not mount the camera publisher stage.
+  // Camera publisher stage is only for the active slot owner.
+  const mountLiveKitPublisherStage = cameraPublishAllowedNow;
 
   const routeFastPublisherMount =
     !!currentUserId &&
@@ -15154,7 +15172,7 @@ export default function LiveRoomScreen() {
   const liveKitPreflightStageKey = liveKitPublisherStageKey;
 
   useEffect(() => {
-    if (routePreflightModeEarly !== "video-publisher" || !routePreflightNeedsCameraEarly) return;
+    if (!cameraPublishAllowedNow) return;
     const bridge = String(liveBridgeId || "").trim();
     const userId = String(currentUserId || "").trim();
     if (!bridge || !userId) return;
@@ -15269,7 +15287,7 @@ export default function LiveRoomScreen() {
         liveBridgeId,
         mode: livePreflightMode,
         needsPublisherMic: livePreflightPublisherMic,
-        needsPublisherCamera: livePreflightPublisherCamera,
+        needsPublisherCamera: cameraPublishAllowedNow,
         micPermissionGranted: !!micPermission?.granted,
         cameraPermissionGranted: !!cameraPermission?.granted,
         mainStageVideoReady: runtimeVideoReady,
@@ -15415,7 +15433,7 @@ export default function LiveRoomScreen() {
             source,
             preflightElapsedMs,
             needsPublisherMic: livePreflightPublisherMic,
-            needsPublisherCamera: livePreflightPublisherCamera,
+            needsPublisherCamera: cameraPublishAllowedNow,
           });
           hasEnteredLiveRoomRef.current = true;
           lockLivePreflightCompleted({
@@ -15429,7 +15447,7 @@ export default function LiveRoomScreen() {
           liveBridgeId,
           durationMs: preflightElapsedMs,
           needsPublisherMic: livePreflightPublisherMic,
-          needsPublisherCamera: livePreflightPublisherCamera,
+          needsPublisherCamera: cameraPublishAllowedNow,
           source,
           enterReady: evaluation.enterReady,
           cameraPending: false,
@@ -15488,7 +15506,7 @@ export default function LiveRoomScreen() {
         isMediaInstantLive,
         preflightMode: livePreflightMode,
         needsPublisherMic: livePreflightPublisherMic,
-        needsPublisherCamera: livePreflightPublisherCamera,
+        needsPublisherCamera: cameraPublishAllowedNow,
         routeSlotCount: routeScheduleSlots.length,
       });
       if (livePreflightMode === "video-publisher" && !livePreflightPublisherSequenceLoggedRef.current) {
@@ -15508,7 +15526,7 @@ export default function LiveRoomScreen() {
         logLivePreflightPublisherSequenceStart({
           liveBridgeId,
           needsPublisherMic: livePreflightPublisherMic,
-          needsPublisherCamera: livePreflightPublisherCamera,
+          needsPublisherCamera: cameraPublishAllowedNow,
         });
       } else if (
         livePreflightMode === "audio-publisher" &&
@@ -15556,7 +15574,7 @@ export default function LiveRoomScreen() {
             liveBridgeId,
             elapsedMs,
             needsPublisherMic: livePreflightPublisherMic,
-            needsPublisherCamera: livePreflightPublisherCamera,
+            needsPublisherCamera: cameraPublishAllowedNow,
           });
         }
         if (
