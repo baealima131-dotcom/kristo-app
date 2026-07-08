@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Image,
   Pressable,
   StyleSheet,
@@ -10,6 +12,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { LiveKitRoom, useRoomContext } from "@livekit/react-native";
 import { RoomEvent } from "livekit-client";
 
@@ -35,6 +38,133 @@ const AVATAR_SIZE = 112;
 const RINGING_SESSION_POLL_MS = 2000;
 const CONNECTED_SESSION_POLL_MS = 1500;
 const REMOTE_DISCONNECT_GRACE_MS = 5000;
+const OUTGOING_RINGING_HAPTIC_MS = 1700;
+
+function PrivateCallOutgoingRinging({ callId }: { callId: string }) {
+  const ripple1 = useRef(new Animated.Value(0)).current;
+  const ripple2 = useRef(new Animated.Value(0)).current;
+  const ripple3 = useRef(new Animated.Value(0)).current;
+  const glow = useRef(new Animated.Value(0)).current;
+  const activeRef = useRef(true);
+
+  useEffect(() => {
+    activeRef.current = true;
+    console.log("KRISTO_PRIVATE_CALL_RINGING_ANIMATION_START", { callId });
+
+    const createRippleLoop = (value: Animated.Value, delayMs: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delayMs),
+          Animated.timing(value, {
+            toValue: 1,
+            duration: 2200,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.timing(value, {
+            toValue: 0,
+            duration: 0,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+
+    const rippleLoop1 = createRippleLoop(ripple1, 0);
+    const rippleLoop2 = createRippleLoop(ripple2, 450);
+    const rippleLoop3 = createRippleLoop(ripple3, 900);
+    const glowLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(glow, {
+          toValue: 1,
+          duration: 1000,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(glow, {
+          toValue: 0,
+          duration: 1000,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    rippleLoop1.start();
+    rippleLoop2.start();
+    rippleLoop3.start();
+    glowLoop.start();
+
+    const pulse = (initial = false) => {
+      if (!activeRef.current) return;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      console.log("KRISTO_PRIVATE_CALL_RINGING_HAPTIC_PULSE", {
+        callId,
+        initial,
+      });
+    };
+
+    const initialPulseTimer = setTimeout(() => pulse(true), 350);
+    const hapticTimer = setInterval(() => pulse(false), OUTGOING_RINGING_HAPTIC_MS);
+
+    return () => {
+      activeRef.current = false;
+      clearTimeout(initialPulseTimer);
+      clearInterval(hapticTimer);
+      rippleLoop1.stop();
+      rippleLoop2.stop();
+      rippleLoop3.stop();
+      glowLoop.stop();
+      console.log("KRISTO_PRIVATE_CALL_RINGING_ANIMATION_STOP", { callId });
+    };
+  }, [callId, glow, ripple1, ripple2, ripple3]);
+
+  const rippleStyle = (value: Animated.Value) => ({
+    transform: [
+      {
+        scale: value.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.5, 2],
+        }),
+      },
+    ],
+    opacity: value.interpolate({
+      inputRange: [0, 0.12, 0.75, 1],
+      outputRange: [0, 0.55, 0.2, 0],
+    }),
+  });
+
+  const glowScale = glow.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.12],
+  });
+  const glowOpacity = glow.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.28, 0.72],
+  });
+
+  return (
+    <View style={styles.outgoingRingBlock}>
+      <View style={styles.outgoingRingAnimHost}>
+        <Animated.View style={[styles.outgoingRipple, rippleStyle(ripple1)]} />
+        <Animated.View style={[styles.outgoingRipple, rippleStyle(ripple2)]} />
+        <Animated.View style={[styles.outgoingRipple, styles.outgoingRippleSoft, rippleStyle(ripple3)]} />
+        <Animated.View
+          style={[
+            styles.outgoingGlow,
+            {
+              transform: [{ scale: glowScale }],
+              opacity: glowOpacity,
+            },
+          ]}
+        />
+        <View style={styles.outgoingIconCore}>
+          <Ionicons name="call" size={22} color="#0B0F17" />
+        </View>
+      </View>
+      <Text style={styles.outgoingCallingLabel}>Calling…</Text>
+    </View>
+  );
+}
 
 function formatCallDuration(totalSeconds: number): string {
   const safe = Math.max(0, totalSeconds);
@@ -646,40 +776,39 @@ export default function PrivateCallScreen() {
       <View style={styles.centerStage}>
         <PrivateCallAvatar avatarUri={displayAvatar} animate />
 
-        <Text style={styles.title}>{statusMessage || "Private Call"}</Text>
-        <Text style={styles.subtitle}>{displayName}</Text>
-
         {session.status === "ringing" && role === "caller" ? (
-          <View style={styles.ringingRow}>
-            <ActivityIndicator color={GOLD} />
-            <Text style={styles.ringingText}>Waiting for your pastor to answer…</Text>
-          </View>
-        ) : null}
-
-        {session.status === "ringing" && role === "pastor" ? (
-          <View style={styles.actionRow}>
-            <Pressable
-              onPress={handleDecline}
-              disabled={actionBusy}
-              style={[styles.circleBtn, styles.declineBtn]}
-            >
-              <Ionicons name="close" size={28} color="#fff" />
+          <>
+            <Text style={styles.title}>{displayName}</Text>
+            <PrivateCallOutgoingRinging callId={session.id} />
+            <Pressable onPress={handleEnd} style={styles.secondaryBtn}>
+              <Text style={styles.secondaryBtnText}>Cancel Call</Text>
             </Pressable>
-            <Pressable
-              onPress={handleAccept}
-              disabled={actionBusy}
-              style={[styles.circleBtn, styles.acceptBtn]}
-            >
-              <Ionicons name="call" size={26} color="#fff" />
-            </Pressable>
-          </View>
-        ) : null}
+          </>
+        ) : (
+          <>
+            <Text style={styles.title}>{statusMessage || "Private Call"}</Text>
+            <Text style={styles.subtitle}>{displayName}</Text>
 
-        {session.status === "ringing" && role === "caller" ? (
-          <Pressable onPress={handleEnd} style={styles.secondaryBtn}>
-            <Text style={styles.secondaryBtnText}>Cancel Call</Text>
-          </Pressable>
-        ) : null}
+            {session.status === "ringing" && role === "pastor" ? (
+              <View style={styles.actionRow}>
+                <Pressable
+                  onPress={handleDecline}
+                  disabled={actionBusy}
+                  style={[styles.circleBtn, styles.declineBtn]}
+                >
+                  <Ionicons name="close" size={28} color="#fff" />
+                </Pressable>
+                <Pressable
+                  onPress={handleAccept}
+                  disabled={actionBusy}
+                  style={[styles.circleBtn, styles.acceptBtn]}
+                >
+                  <Ionicons name="call" size={26} color="#fff" />
+                </Pressable>
+              </View>
+            ) : null}
+          </>
+        )}
       </View>
     </View>
   );
@@ -754,15 +883,57 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textAlign: "center",
   },
-  ringingRow: {
-    marginTop: 18,
+  outgoingRingBlock: {
+    marginTop: 10,
     alignItems: "center",
     gap: 10,
   },
-  ringingText: {
-    color: "rgba(255,255,255,0.68)",
-    fontSize: 14,
-    fontWeight: "700",
+  outgoingRingAnimHost: {
+    width: 132,
+    height: 132,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  outgoingRipple: {
+    position: "absolute",
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.55)",
+    backgroundColor: "rgba(217,179,95,0.04)",
+  },
+  outgoingRippleSoft: {
+    borderColor: "rgba(217,179,95,0.32)",
+    borderWidth: 1,
+  },
+  outgoingGlow: {
+    position: "absolute",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(217,179,95,0.22)",
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.55,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
+  },
+  outgoingIconCore: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GOLD,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+  },
+  outgoingCallingLabel: {
+    color: "rgba(217,179,95,0.88)",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.6,
     textAlign: "center",
   },
   actionRow: {
