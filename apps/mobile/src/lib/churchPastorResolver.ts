@@ -5,37 +5,67 @@ export type ChurchPastorResolution = {
   sourceField: string;
 };
 
-function pickPastorFromMembers(items: any[]): ChurchPastorResolution {
+export type ChurchPastorProfile = ChurchPastorResolution & {
+  pastorName: string;
+  pastorAvatarUrl: string;
+};
+
+function pickPastorFromMembers(items: any[]): ChurchPastorProfile {
   const pastor = items.find(
-    (m) => String(m?.role || m?.churchRole || "").trim() === "Pastor"
+    (m) => String(m?.role || m?.churchRole || m?.roleLabel || "").trim() === "Pastor"
   );
   if (pastor?.userId) {
     return {
       actualChurchPastorUserId: String(pastor.userId).trim(),
       sourceField: "membership.churchRole.Pastor",
+      pastorName: String(pastor?.name || pastor?.displayName || "Pastor").trim(),
+      pastorAvatarUrl: String(pastor?.avatarUrl || pastor?.avatar || "").trim(),
     };
   }
 
   const admin = items.find(
-    (m) => String(m?.role || m?.churchRole || "").trim() === "Church_Admin"
+    (m) => String(m?.role || m?.churchRole || m?.roleLabel || "").trim() === "Church_Admin"
   );
   if (admin?.userId) {
     return {
       actualChurchPastorUserId: String(admin.userId).trim(),
       sourceField: "membership.churchRole.Church_Admin",
+      pastorName: String(admin?.name || admin?.displayName || "Church Admin").trim(),
+      pastorAvatarUrl: String(admin?.avatarUrl || admin?.avatar || "").trim(),
     };
   }
 
-  return { actualChurchPastorUserId: "", sourceField: "" };
+  return {
+    actualChurchPastorUserId: "",
+    sourceField: "",
+    pastorName: "",
+    pastorAvatarUrl: "",
+  };
 }
 
 export async function fetchChurchPastorUserId(
   churchId: string,
   headers?: Record<string, string>
 ): Promise<ChurchPastorResolution> {
+  const profile = await fetchChurchPastorProfile(churchId, headers);
+  return {
+    actualChurchPastorUserId: profile.actualChurchPastorUserId,
+    sourceField: profile.sourceField,
+  };
+}
+
+export async function fetchChurchPastorProfile(
+  churchId: string,
+  headers?: Record<string, string>
+): Promise<ChurchPastorProfile> {
   const cid = String(churchId || "").trim();
   if (!cid) {
-    return { actualChurchPastorUserId: "", sourceField: "" };
+    return {
+      actualChurchPastorUserId: "",
+      sourceField: "",
+      pastorName: "",
+      pastorAvatarUrl: "",
+    };
   }
 
   try {
@@ -54,7 +84,12 @@ export async function fetchChurchPastorUserId(
 
     return pickPastorFromMembers(items);
   } catch {
-    return { actualChurchPastorUserId: "", sourceField: "" };
+    return {
+      actualChurchPastorUserId: "",
+      sourceField: "",
+      pastorName: "",
+      pastorAvatarUrl: "",
+    };
   }
 }
 

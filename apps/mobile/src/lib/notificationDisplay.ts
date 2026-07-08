@@ -271,6 +271,14 @@ export function resolveNotificationRoute(notification: NotificationLike): string
     return "/more/media-reports";
   }
 
+  if (type === "PastorPrivateCallIncoming") {
+    const message = String(notification.message || notification.body || "");
+    const match = message.match(/private-call:([A-Za-z0-9_-]+)/);
+    if (match?.[1]) {
+      return `/more/private-call/${encodeURIComponent(match[1])}`;
+    }
+  }
+
   if (type === "TrustedMediaHostAdded" || type === "TrustedMediaHostRemoved") {
     return "/more/media";
   }

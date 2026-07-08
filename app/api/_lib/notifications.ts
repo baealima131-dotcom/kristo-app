@@ -48,6 +48,7 @@ export type NotificationType =
   | "LiveEventScheduled"
   | "LiveSlotAssigned"
   | "LiveSlotCancelled"
+  | "PastorPrivateCallIncoming"
   | "Generic";
 
 export type AppNotification = {

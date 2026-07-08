@@ -37,7 +37,11 @@ async function safeJson(res: Response) {
   try {
     return JSON.parse(text);
   } catch {
-    return { ok: false, error: text.slice(0, 280) };
+    const trimmed = text.trim();
+    if (/^<!doctype html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) {
+      return { ok: false, error: "non_json_response", reason: "html_response" };
+    }
+    return { ok: false, error: text.slice(0, 280), reason: "invalid_json" };
   }
 }
 
