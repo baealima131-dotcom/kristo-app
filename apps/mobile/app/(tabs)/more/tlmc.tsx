@@ -14,15 +14,18 @@ import { View, Vibration,
   ImageBackground,
   Animated,
   Easing,
-  Modal,
 } from "react-native";
-import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { TLMC_UNIVERSE_IMAGE, preloadTlmcAssets } from "@/src/lib/tlmcPreload";
+import {
+  MY_WAY_COMMAND_LENGTH,
+  normalizeMyWayCommandCode,
+  resolveMyWayCommand,
+} from "@/src/lib/myWayCommands";
 
 const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
@@ -286,7 +289,8 @@ export default function TLMCScreen() {
   const [unlockStep, setUnlockStep] = useState(0);
   const [keyVisibility, setKeyVisibility] = useState<KeyVisibility>(makeDefaultVisibility());
   const [officeTab, setOfficeTab] = useState<OfficeTab>("overview");
-  const [showComingSoonModal, setShowComingSoonModal] = useState(false);
+  const [runningCommand, setRunningCommand] = useState(false);
+  const myWayInputLogRef = useRef("");
 
   const currentUserId = useMemo(() => {
     return String(session?.userId || "guest-user").trim() || "guest-user";
@@ -334,7 +338,10 @@ export default function TLMCScreen() {
     return Math.max(1, current.length);
   }, [padMode, security.secretCode, activeUnlockCommands, unlockStep, agentCommand]);
 
-  const isRunReady = cmd.trim().length >= requiredCommandLength;
+  const isMyWayUnlockPad = padMode === "unlock";
+  const isRunReady = isMyWayUnlockPad
+    ? cmd.trim().length === MY_WAY_COMMAND_LENGTH
+    : cmd.trim().length >= requiredCommandLength;
 
   const crossGlow = useRef(new Animated.Value(0.82)).current;
   const crossScale = useRef(new Animated.Value(1)).current;
@@ -465,7 +472,8 @@ Vibration.vibrate(120);
   const appendKey = (ch: string) => {
     setErr(null);
 Vibration.vibrate(120);
-    setCmd((p) => (p + ch).slice(0, 16));
+    const maxLen = padMode === "unlock" ? MY_WAY_COMMAND_LENGTH : 16;
+    setCmd((p) => (p + ch).slice(0, maxLen));
   };
 
   const backspace = () => {
@@ -727,6 +735,10 @@ Vibration.vibrate(120);
   }
 
   function openUnlockPad() {
+    console.log("KRISTO_MY_WAY_OPEN", {
+      userId: currentUserId,
+      padMode: "unlock",
+    });
     setUnlocked(false);
     setGuestMode(false);
     setOpenedCommand(null);
@@ -741,9 +753,83 @@ Vibration.vibrate(120);
     resetPadState("changeOld");
   }
 
-  function handleRunComingSoon() {
-    if (!isRunReady) return;
-    setShowComingSoonModal(true);
+  useEffect(() => {
+    if (!showPad || padMode !== "unlock") return;
+    const sig = `${cmd.length}|${cmd}`;
+    if (myWayInputLogRef.current === sig) return;
+    myWayInputLogRef.current = sig;
+    console.log("KRISTO_MY_WAY_COMMAND_INPUT", {
+      length: cmd.length,
+      ready: cmd.length === MY_WAY_COMMAND_LENGTH,
+      userId: currentUserId,
+    });
+  }, [cmd, showPad, padMode, currentUserId]);
+
+  async function handleRunMyWayCommand() {
+    if (!isRunReady || runningCommand) return;
+
+    const code = normalizeMyWayCommandCode(cmd);
+    if (code.length !== MY_WAY_COMMAND_LENGTH) {
+      setErr("Enter a 6-character command code.");
+      Vibration.vibrate(120);
+      return;
+    }
+
+    console.log("KRISTO_MY_WAY_COMMAND_RUN", {
+      code,
+      length: code.length,
+      userId: currentUserId,
+    });
+
+    setRunningCommand(true);
+    setErr(null);
+
+    try {
+      const resolved = await resolveMyWayCommand(code);
+
+      if (!resolved || resolved.action !== "navigate" || !resolved.route) {
+        console.log("KRISTO_MY_WAY_COMMAND_NOT_FOUND", {
+          code,
+          userId: currentUserId,
+        });
+        setErr("Command not found. Check the code and try again.");
+        Vibration.vibrate(120);
+        return;
+      }
+
+      console.log("KRISTO_MY_WAY_COMMAND_RESOLVED", {
+        code,
+        title: resolved.title,
+        route: resolved.route,
+        source: resolved.source,
+        userId: currentUserId,
+      });
+
+      setShowPad(false);
+      setCmd("");
+      setErr(null);
+      setUnlockStep(0);
+      Vibration.vibrate(120);
+
+      console.log("KRISTO_MY_WAY_NAVIGATION", {
+        code,
+        route: resolved.route,
+        title: resolved.title,
+        userId: currentUserId,
+      });
+
+      router.push(resolved.route as any);
+    } catch (error) {
+      setErr("Command not found. Check the code and try again.");
+      Vibration.vibrate(120);
+      console.log("KRISTO_MY_WAY_COMMAND_NOT_FOUND", {
+        code,
+        userId: currentUserId,
+        error: String((error as Error)?.message || error || "unknown"),
+      });
+    } finally {
+      setRunningCommand(false);
+    }
   }
 
   if (!ready) {
@@ -915,8 +1001,8 @@ Vibration.vibrate(120);
 
               <View style={[s.padRunFooter, { marginBottom: Math.max(6, insets.bottom > 0 ? 4 : 8) }]}>
                 <Pressable
-                  onPress={handleRunComingSoon}
-                  disabled={!isRunReady}
+                  onPress={handleRunMyWayCommand}
+                  disabled={!isRunReady || runningCommand}
                   style={({ pressed }) => [
                     s.padRunCenterBtn,
                     !isRunReady ? s.padRunCenterBtnDisabled : null,
@@ -1255,48 +1341,6 @@ Vibration.vibrate(120);
           </View>
         ) : null}
       </ScrollView>
-
-      <Modal
-        visible={showComingSoonModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowComingSoonModal(false)}
-      >
-        <Pressable style={s.comingSoonBackdrop} onPress={() => setShowComingSoonModal(false)}>
-          <BlurView intensity={32} tint="dark" style={StyleSheet.absoluteFillObject} />
-          <View pointerEvents="none" style={s.comingSoonBackdropTint} />
-
-          <Pressable style={s.comingSoonCard} onPress={() => {}}>
-            <View pointerEvents="none" style={s.comingSoonCardGlow} />
-            <BlurView intensity={48} tint="dark" style={StyleSheet.absoluteFillObject} />
-            <View pointerEvents="none" style={s.comingSoonCardGlass} />
-
-            <View style={s.comingSoonContent}>
-              <View style={s.comingSoonIconWrap}>
-                <Ionicons name="sparkles" size={22} color="rgba(217,179,95,0.96)" />
-              </View>
-
-              <Text style={t.comingSoonTitle}>✨ Coming Soon</Text>
-              <Text style={t.comingSoonBrand}>Kristo</Text>
-              <Text style={t.comingSoonMessage}>
-                MY WAY is currently under development and will be available in a future Kristo App
-                update.
-              </Text>
-
-              <Pressable
-                onPress={() => setShowComingSoonModal(false)}
-                style={({ pressed }) => [
-                  s.comingSoonOkBtn,
-                  pressed ? { opacity: 0.9, transform: [{ scale: 0.985 }] } : null,
-                ]}
-              >
-                <View pointerEvents="none" style={s.comingSoonOkGlow} />
-                <Text style={t.comingSoonOkText}>OK</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
