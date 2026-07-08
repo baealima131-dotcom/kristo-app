@@ -129,6 +129,7 @@ function mapApiNotice(x: any, i: number): ChurchNotificationItem {
     id: noticeId,
     title: String(raw.title || "Notification"),
     body: safeBody(raw),
+    message: String(x?.message || x?.body || x?.text || ""),
     createdAt: String(x?.createdAt || x?.date || ""),
     read: !!(x?.readAt || x?.isRead || x?.read),
     type: String(x?.type || ""),

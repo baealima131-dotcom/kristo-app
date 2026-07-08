@@ -51,6 +51,25 @@ export async function GET(req: NextRequest) {
     ? await listRingingCallsForPastor(userId)
     : await listPrivateCallSessionsForUser(userId);
 
+  if (incomingOnly) {
+    console.log("KRISTO_PRIVATE_CALL_INCOMING_POLL", {
+      receiverUserId: userId,
+      count: sessions.length,
+    });
+    if (sessions.length > 0) {
+      console.log("KRISTO_PRIVATE_CALL_INCOMING_FOUND", {
+        receiverUserId: userId,
+        calls: sessions.map((s) => ({
+          callId: s.id,
+          callerUserId: s.callerUserId,
+          receiverUserId: s.pastorUserId,
+          churchId: s.churchId,
+          status: s.status,
+        })),
+      });
+    }
+  }
+
   return json({ ok: true, data: sessions });
 }
 
@@ -118,7 +137,26 @@ export async function POST(req: NextRequest) {
     pastorSourceField: pastor.sourceField,
   });
 
-  await notifyPastorPrivateCallIncoming(session);
+  console.log("KRISTO_PRIVATE_CALL_SESSION_CREATED", {
+    callId: session.id,
+    callerUserId,
+    receiverUserId: pastorUserId,
+    churchId,
+    status: session.status,
+    roomName: session.roomName,
+  });
+
+  try {
+    await notifyPastorPrivateCallIncoming(session);
+  } catch (error) {
+    console.log("KRISTO_PRIVATE_CALL_NOTIFICATION_FAILED", {
+      callId: session.id,
+      callerUserId,
+      receiverUserId: pastorUserId,
+      churchId,
+      error: String((error as Error)?.message || error),
+    });
+  }
 
   console.log("KRISTO_PRIVATE_CALL_CREATE", {
     callId: session.id,

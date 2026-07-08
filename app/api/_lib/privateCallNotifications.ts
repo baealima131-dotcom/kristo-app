@@ -7,8 +7,9 @@ export function privateCallNotificationId(callId: string, pastorUserId: string) 
 
 export async function notifyPastorPrivateCallIncoming(session: PrivateCallSession) {
   const callerName = String(session.callerName || "A church member").trim();
-  await createNotification({
-    id: privateCallNotificationId(session.id, session.pastorUserId),
+  const pastorUserId = String(session.pastorUserId || "").trim();
+  const created = await createNotification({
+    id: privateCallNotificationId(session.id, pastorUserId),
     churchId: session.churchId,
     type: "PastorPrivateCallIncoming",
     title: `${callerName} is calling`,
@@ -16,6 +17,19 @@ export async function notifyPastorPrivateCallIncoming(session: PrivateCallSessio
     actorName: callerName,
     actorUserId: session.callerUserId,
     actorAvatarUri: session.callerAvatarUrl,
-    targetUserId: session.pastorUserId,
+    targetUserId: pastorUserId,
   });
+
+  console.log("KRISTO_PRIVATE_CALL_NOTIFICATION_CREATED", {
+    callId: session.id,
+    callerUserId: session.callerUserId,
+    receiverUserId: pastorUserId,
+    pastorUserId,
+    targetUserId: pastorUserId,
+    churchId: session.churchId,
+    notificationId: created.id,
+    status: session.status,
+  });
+
+  return created;
 }

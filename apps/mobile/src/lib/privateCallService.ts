@@ -57,6 +57,18 @@ export async function fetchPrivateCallSession(callId: string): Promise<PrivateCa
   return res?.ok && res?.data ? (res.data as PrivateCallSession) : null;
 }
 
+export async function fetchIncomingPrivateCalls(): Promise<PrivateCallSession[]> {
+  const res: any = await apiGet(`${PRIVATE_CALL_API_PATH}?incoming=1`, {
+    headers: authHeaders(),
+    cache: "no-store" as RequestCache,
+  });
+  if (isPrivateCallApiUnavailable(res, Number(res?.status || 0) || undefined)) {
+    return [];
+  }
+  if (!res?.ok || !Array.isArray(res?.data)) return [];
+  return res.data as PrivateCallSession[];
+}
+
 export async function createPastorPrivateCall(): Promise<StartPastorPrivateCallResult> {
   const res: any = await apiPost(PRIVATE_CALL_API_PATH, {}, { headers: authHeaders() });
   if (res?.ok && res?.data?.id) {

@@ -42,6 +42,7 @@ import {
   resolveLiveRingNavigationTarget,
 } from "@/src/lib/enterLiveRoomNavigation";
 import { pauseHomeFeedBackgroundWorkForLiveNavigation } from "@/src/lib/liveRoomStartup";
+import { PrivateCallIncomingWatcher } from "@/src/components/PrivateCallIncomingWatcher";
 import {
   pinLiveKitPublisherHostBeforeToken,
   pinLiveRoomSession,
@@ -1080,6 +1081,7 @@ export default function TabLayout() {
 
   return (
     <>
+      <PrivateCallIncomingWatcher />
       <Tabs
       initialRouteName="index"
       screenOptions={{

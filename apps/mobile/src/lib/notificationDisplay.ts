@@ -277,6 +277,10 @@ export function resolveNotificationRoute(notification: NotificationLike): string
     if (match?.[1]) {
       return `/more/private-call/${encodeURIComponent(match[1])}`;
     }
+    const idMatch = String(notification.id || "").match(/^ntf_private_call_([A-Za-z0-9_-]+)_/);
+    if (idMatch?.[1]) {
+      return `/more/private-call/${encodeURIComponent(idMatch[1])}`;
+    }
   }
 
   if (type === "TrustedMediaHostAdded" || type === "TrustedMediaHostRemoved") {

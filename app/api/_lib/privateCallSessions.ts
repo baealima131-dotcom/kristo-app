@@ -1,6 +1,10 @@
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  PRIVATE_CALL_SESSIONS_STORE_KEY,
+  readCoreJsonFile,
+  updateCoreJsonFile,
+} from "@/app/api/_lib/store/coreDb";
 
-const STORE_FILE = "private_call_sessions.json";
+const STORE_FILE = PRIVATE_CALL_SESSIONS_STORE_KEY;
 
 export type PrivateCallStatus =
   | "ringing"
@@ -68,12 +72,12 @@ function pruneExpired(store: PrivateCallStore): PrivateCallStore {
 }
 
 async function readStore(): Promise<PrivateCallStore> {
-  const raw = await readJsonFile<PrivateCallStore>(STORE_FILE, defaultStore());
+  const raw = await readCoreJsonFile<PrivateCallStore>(STORE_FILE, defaultStore());
   return pruneExpired(raw);
 }
 
 async function writeStore(mutator: (current: PrivateCallStore) => PrivateCallStore) {
-  return updateJsonFile<PrivateCallStore>(STORE_FILE, mutator, defaultStore());
+  return updateCoreJsonFile<PrivateCallStore>(STORE_FILE, mutator, defaultStore());
 }
 
 export function buildPrivateCallRoomName(churchId: string, callId: string) {

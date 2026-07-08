@@ -44,6 +44,22 @@ export async function GET(req: NextRequest) {
     storeScope: scopeParams.storeScope,
   });
 
+  const privateCallIncoming = clientItems.filter((n) => n.type === "PastorPrivateCallIncoming");
+  if (privateCallIncoming.length > 0) {
+    console.log("KRISTO_PRIVATE_CALL_INBOX_DELIVERED", {
+      userId: ctxOrRes.viewer.userId,
+      churchId: ctxOrRes.churchId,
+      scope: scopeParams.scope,
+      count: privateCallIncoming.length,
+      items: privateCallIncoming.map((n) => ({
+        notificationId: n.id,
+        callId: String(n.message || "").replace(/^private-call:/, ""),
+        targetUserId: n.targetUserId,
+        type: n.type,
+      })),
+    });
+  }
+
   return json({
     ok: true,
     data: clientItems,

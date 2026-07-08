@@ -10,14 +10,12 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import {
-  AndroidAudioTypePresets,
-  AudioSession,
-  LiveKitRoom,
-  useRoomContext,
-} from "@livekit/react-native";
+import { LiveKitRoom, useRoomContext } from "@livekit/react-native";
+import { RoomEvent } from "livekit-client";
 
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { PrivateCallAudioRenderer } from "@/src/lib/privateCallAudioRenderer";
+import { buildLiveKitRoomOptions } from "@/src/lib/liveKitVideoQuality";
 import {
   acceptPrivateCall,
   declinePrivateCall,
@@ -29,6 +27,8 @@ import {
 
 const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
+const LIVEKIT_CONNECT_OPTIONS = { autoSubscribe: true, maxRetries: 2, websocketTimeout: 15000 };
+const LIVEKIT_ROOM_OPTIONS = buildLiveKitRoomOptions();
 
 function PrivateCallConnectedRoom({
   session,
@@ -46,7 +46,19 @@ function PrivateCallConnectedRoom({
 
   useEffect(() => {
     if (!room) return;
-    void room.localParticipant.setMicrophoneEnabled(true).catch(() => {});
+
+    const enableMic = () => {
+      void room.localParticipant.setMicrophoneEnabled(true).catch(() => {});
+    };
+
+    enableMic();
+    room.on(RoomEvent.Connected, enableMic);
+    room.on(RoomEvent.Reconnected, enableMic);
+
+    return () => {
+      room.off(RoomEvent.Connected, enableMic);
+      room.off(RoomEvent.Reconnected, enableMic);
+    };
   }, [room]);
 
   return (
@@ -98,16 +110,6 @@ export default function PrivateCallScreen() {
   }, [callId]);
 
   useEffect(() => {
-    AudioSession.configureAudio({
-      android: { audioTypeOptions: AndroidAudioTypePresets.communication },
-    }).catch(() => {});
-    AudioSession.startAudioSession().catch(() => {});
-    return () => {
-      AudioSession.stopAudioSession().catch(() => {});
-    };
-  }, []);
-
-  useEffect(() => {
     let alive = true;
 
     (async () => {
@@ -120,6 +122,16 @@ export default function PrivateCallScreen() {
           return;
         }
         setSession(initial);
+        if (initial.pastorUserId === currentUserId) {
+          console.log("KRISTO_PRIVATE_CALL_RECEIVER_SCREEN_OPENED", {
+            callId: initial.id,
+            callerUserId: initial.callerUserId,
+            receiverUserId: initial.pastorUserId,
+            churchId: initial.churchId,
+            status: initial.status,
+            source: "call-screen",
+          });
+        }
       } catch (e: any) {
         if (!alive) return;
         setError(String(e?.message || "Could not load private call."));
@@ -264,7 +276,14 @@ export default function PrivateCallScreen() {
           connect
           audio
           video={false}
+          connectOptions={LIVEKIT_CONNECT_OPTIONS as any}
+          options={LIVEKIT_ROOM_OPTIONS as any}
         >
+          <PrivateCallAudioRenderer
+            callId={session.id}
+            roomName={session.roomName}
+            currentUserId={currentUserId}
+          />
           <PrivateCallConnectedRoom
             session={session}
             currentUserId={currentUserId}

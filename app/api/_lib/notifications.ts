@@ -133,14 +133,18 @@ export async function toClientNotification(n: AppNotification): Promise<ClientNo
 
   const body = sanitizeActorInText(rawMessage, actorUserId, actorName);
   const deepLink = parseFeedEngagementNotificationDeepLink(n.id);
+  const isPrivateCallIncoming = n.type === "PastorPrivateCallIncoming";
+  const displayBody = isPrivateCallIncoming
+    ? `${actorName} is calling you`
+    : body;
 
   return {
     id: n.id,
     churchId: n.churchId,
     type: n.type,
     title: String(n.title || "Notification"),
-    body,
-    message: body,
+    body: displayBody,
+    message: isPrivateCallIncoming ? rawMessage : body,
     actorName,
     actorUserId: actorUserId || undefined,
     actorAvatarUri: actorAvatarUri || undefined,
