@@ -252,6 +252,12 @@ export async function PATCH(req: NextRequest) {
 
   if (action === "end") {
     if (existing.status !== "accepted" && existing.status !== "ringing") {
+      console.log("KRISTO_PRIVATE_CALL_SESSION_ENDED", {
+        callId,
+        endedBy: userId,
+        status: existing.status,
+        idempotent: true,
+      });
       return json({ ok: true, data: existing });
     }
 
@@ -267,6 +273,15 @@ export async function PATCH(req: NextRequest) {
       callId,
       endedBy: userId,
       reason: updated?.endedReason,
+    });
+
+    console.log("KRISTO_PRIVATE_CALL_SESSION_ENDED", {
+      callId,
+      callerUserId: existing.callerUserId,
+      receiverUserId: existing.pastorUserId,
+      endedBy: userId,
+      status: updated?.status,
+      churchId: existing.churchId,
     });
 
     return json({ ok: true, data: updated });

@@ -23,6 +23,7 @@ import {
   endPrivateCall,
   fetchPrivateCallLiveKitCredentials,
   fetchPrivateCallSession,
+  isPrivateCallTerminalStatus,
   type PrivateCallSession,
 } from "@/src/lib/privateCallService";
 
@@ -31,6 +32,9 @@ const GOLD = "rgba(217,179,95,0.92)";
 const LIVEKIT_CONNECT_OPTIONS = { autoSubscribe: true, maxRetries: 2, websocketTimeout: 15000 };
 const LIVEKIT_ROOM_OPTIONS = buildLiveKitRoomOptions();
 const AVATAR_SIZE = 112;
+const RINGING_SESSION_POLL_MS = 2000;
+const CONNECTED_SESSION_POLL_MS = 1500;
+const REMOTE_DISCONNECT_GRACE_MS = 5000;
 
 function formatCallDuration(totalSeconds: number): string {
   const safe = Math.max(0, totalSeconds);
@@ -77,6 +81,93 @@ function PrivateCallAvatar({
       {avatar}
     </LiveMainStageSaturnOrbit>
   );
+}
+
+function PrivateCallHangupSync({
+  callId,
+  peerUserId,
+  onRemoteTermination,
+  registerRoomDisconnect,
+}: {
+  callId: string;
+  peerUserId: string;
+  onRemoteTermination: (source: string, status: string) => void;
+  registerRoomDisconnect: (disconnect: (() => void) | null) => void;
+}) {
+  const room = useRoomContext();
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    registerRoomDisconnect(() => {
+      void room?.disconnect(true);
+    });
+    return () => registerRoomDisconnect(null);
+  }, [room, registerRoomDisconnect]);
+
+  useEffect(() => {
+    if (!room) return;
+
+    const clearGrace = () => {
+      if (!graceTimerRef.current) return;
+      clearTimeout(graceTimerRef.current);
+      graceTimerRef.current = null;
+    };
+
+    const verifySessionAfterDisconnect = async (source: string) => {
+      const next = await fetchPrivateCallSession(callId).catch(() => null);
+      if (next && isPrivateCallTerminalStatus(next.status)) {
+        onRemoteTermination(source, next.status);
+      }
+    };
+
+    const onParticipantDisconnected = (participant: any) => {
+      if (participant?.isLocal) return;
+      const identity = String(participant?.identity || "").trim();
+      if (peerUserId && identity !== peerUserId) return;
+
+      console.log("KRISTO_PRIVATE_CALL_REMOTE_PARTICIPANT_DISCONNECTED", {
+        callId,
+        peerUserId,
+        identity,
+      });
+
+      clearGrace();
+      graceTimerRef.current = setTimeout(() => {
+        void verifySessionAfterDisconnect("participant-disconnected-grace");
+      }, REMOTE_DISCONNECT_GRACE_MS);
+    };
+
+    const onParticipantConnected = (participant: any) => {
+      if (participant?.isLocal) return;
+      const identity = String(participant?.identity || "").trim();
+      if (peerUserId && identity === peerUserId) {
+        clearGrace();
+      }
+    };
+
+    const onReconnecting = () => {
+      clearGrace();
+    };
+
+    const onDisconnected = () => {
+      void verifySessionAfterDisconnect("room-disconnected");
+    };
+
+    room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    room.on(RoomEvent.Reconnecting, onReconnecting);
+    room.on(RoomEvent.Disconnected, onDisconnected);
+
+    return () => {
+      clearGrace();
+      room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+      room.off(RoomEvent.Reconnecting, onReconnecting);
+      room.off(RoomEvent.Disconnected, onDisconnected);
+    };
+  }, [room, callId, peerUserId, onRemoteTermination]);
+
+  return null;
 }
 
 function PrivateCallConnectedRoom({
@@ -213,7 +304,9 @@ export default function PrivateCallScreen() {
   const [error, setError] = useState<string | null>(null);
   const [liveKit, setLiveKit] = useState<{ url: string; token: string } | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const exitHandledRef = useRef(false);
+  const endRequestedRef = useRef(false);
+  const roomDisconnectRef = useRef<(() => void) | null>(null);
 
   const role = useMemo(() => {
     if (!session || !currentUserId) return "unknown";
@@ -222,11 +315,115 @@ export default function PrivateCallScreen() {
     return "unknown";
   }, [session, currentUserId]);
 
-  const refreshSession = useCallback(async () => {
-    const next = await fetchPrivateCallSession(callId);
-    if (next) setSession(next);
-    return next;
-  }, [callId]);
+  const registerRoomDisconnect = useCallback((disconnect: (() => void) | null) => {
+    roomDisconnectRef.current = disconnect;
+  }, []);
+
+  const exitCallScreen = useCallback(
+    (source: string, meta?: Record<string, unknown>) => {
+      if (exitHandledRef.current) {
+        console.log("KRISTO_PRIVATE_CALL_END_DUPLICATE_BLOCKED", {
+          callId,
+          currentUserId,
+          source,
+          ...(meta || {}),
+        });
+        return;
+      }
+      exitHandledRef.current = true;
+
+      try {
+        roomDisconnectRef.current?.();
+      } catch {
+        // Best-effort LiveKit disconnect before leaving the screen.
+      }
+
+      console.log("KRISTO_PRIVATE_CALL_BOTH_SIDES_EXIT", {
+        callId,
+        currentUserId,
+        source,
+        ...(meta || {}),
+      });
+      router.back();
+    },
+    [callId, currentUserId, router]
+  );
+
+  const handleRemoteTermination = useCallback(
+    (source: string, status: string) => {
+      if (exitHandledRef.current) {
+        console.log("KRISTO_PRIVATE_CALL_END_DUPLICATE_BLOCKED", {
+          callId,
+          currentUserId,
+          source,
+          status,
+          reason: "exit-already-handled",
+        });
+        return;
+      }
+
+      console.log("KRISTO_PRIVATE_CALL_REMOTE_END_DETECTED", {
+        callId,
+        currentUserId,
+        source,
+        status,
+      });
+      exitCallScreen("remote-end", { source, status });
+    },
+    [callId, currentUserId, exitCallScreen]
+  );
+
+  const handleEndCall = useCallback(async () => {
+    if (!session || actionBusy) return;
+    if (exitHandledRef.current) {
+      console.log("KRISTO_PRIVATE_CALL_END_DUPLICATE_BLOCKED", {
+        callId: session.id,
+        currentUserId,
+        reason: "exit-already-handled",
+      });
+      return;
+    }
+
+    setActionBusy(true);
+    console.log("KRISTO_PRIVATE_CALL_END_REQUESTED", {
+      callId: session.id,
+      currentUserId,
+      status: session.status,
+    });
+
+    try {
+      if (!endRequestedRef.current && !isPrivateCallTerminalStatus(session.status)) {
+        endRequestedRef.current = true;
+        const res: any = await endPrivateCall(session.id);
+        if (res?.ok && res?.data) {
+          setSession(res.data);
+          console.log("KRISTO_PRIVATE_CALL_SESSION_ENDED", {
+            callId: session.id,
+            endedBy: currentUserId,
+            status: res.data.status,
+            source: "local-end",
+          });
+        }
+      } else {
+        console.log("KRISTO_PRIVATE_CALL_END_DUPLICATE_BLOCKED", {
+          callId: session.id,
+          currentUserId,
+          reason: "end-already-requested-or-terminal",
+          status: session.status,
+        });
+      }
+    } finally {
+      setActionBusy(false);
+      exitCallScreen("local-end-requested", { status: session.status });
+    }
+  }, [session, actionBusy, currentUserId, exitCallScreen]);
+
+  const peerUserId = useMemo(() => {
+    if (!session || !currentUserId) return "";
+    if (session.callerUserId === currentUserId) return session.pastorUserId;
+    if (session.pastorUserId === currentUserId) return session.callerUserId;
+    return "";
+  }, [session, currentUserId]);
 
   useEffect(() => {
     let alive = true;
@@ -265,16 +462,33 @@ export default function PrivateCallScreen() {
   }, [callId]);
 
   useEffect(() => {
-    if (!session || session.status === "accepted" || session.status === "ended") return;
+    if (!session || loading || isPrivateCallTerminalStatus(session.status)) return;
 
-    pollRef.current = setInterval(() => {
-      void refreshSession();
-    }, 2000);
+    const pollMs =
+      session.status === "accepted" ? CONNECTED_SESSION_POLL_MS : RINGING_SESSION_POLL_MS;
 
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+    const poll = async () => {
+      const next = await fetchPrivateCallSession(callId);
+      if (!next) return;
+      setSession(next);
+      if (isPrivateCallTerminalStatus(next.status)) {
+        handleRemoteTermination("session-poll", next.status);
+      }
     };
-  }, [session?.status, refreshSession]);
+
+    void poll();
+    const timer = setInterval(() => {
+      void poll();
+    }, pollMs);
+
+    return () => clearInterval(timer);
+  }, [callId, loading, session?.status, handleRemoteTermination]);
+
+  useEffect(() => {
+    if (loading || !session || exitHandledRef.current) return;
+    if (!isPrivateCallTerminalStatus(session.status)) return;
+    handleRemoteTermination("session-loaded-terminal", session.status);
+  }, [loading, session, handleRemoteTermination]);
 
   useEffect(() => {
     if (!session || session.status !== "accepted" || liveKit) return;
@@ -325,27 +539,11 @@ export default function PrivateCallScreen() {
       }
     } finally {
       setActionBusy(false);
-      router.back();
+      exitCallScreen("local-decline");
     }
   };
 
-  const handleEnd = async () => {
-    if (!session || actionBusy) return;
-    setActionBusy(true);
-    try {
-      const res: any = await endPrivateCall(session.id);
-      if (res?.ok && res?.data) {
-        setSession(res.data);
-        console.log("KRISTO_PRIVATE_CALL_ENDED", {
-          callId: session.id,
-          endedBy: currentUserId,
-        });
-      }
-    } finally {
-      setActionBusy(false);
-      router.back();
-    }
-  };
+  const handleEnd = handleEndCall;
 
   const statusMessage = (() => {
     if (!session) return "";
@@ -398,6 +596,12 @@ export default function PrivateCallScreen() {
           connectOptions={LIVEKIT_CONNECT_OPTIONS as any}
           options={LIVEKIT_ROOM_OPTIONS as any}
         >
+          <PrivateCallHangupSync
+            callId={session.id}
+            peerUserId={peerUserId}
+            onRemoteTermination={handleRemoteTermination}
+            registerRoomDisconnect={registerRoomDisconnect}
+          />
           <PrivateCallAudioRenderer
             callId={session.id}
             roomName={session.roomName}

@@ -29,6 +29,17 @@ export type PrivateCallSession = {
   endedReason?: string;
 };
 
+const TERMINAL_PRIVATE_CALL_STATUSES = new Set([
+  "ended",
+  "declined",
+  "timeout",
+  "failed",
+]);
+
+export function isPrivateCallTerminalStatus(status?: string | null): boolean {
+  return TERMINAL_PRIVATE_CALL_STATUSES.has(String(status || "").trim());
+}
+
 export type StartPastorPrivateCallResult =
   | { ok: true; session: PrivateCallSession }
   | { ok: false; code: string; message: string };
