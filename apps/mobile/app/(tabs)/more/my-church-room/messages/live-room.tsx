@@ -2460,6 +2460,11 @@ function isRemoteVideoPublicationUsable(pub: any, track: any): boolean {
   return true;
 }
 
+function readLiveKitRemotePublicationMuted(publication: any): boolean {
+  if (!publication) return false;
+  return !!(publication.isMuted || publication.muted);
+}
+
 function readRemoteCameraPublicationState(participant: any): {
   hasParticipant: boolean;
   hasPublication: boolean;
@@ -2496,6 +2501,29 @@ function readRemoteCameraPublicationState(participant: any): {
     null;
   const track = cameraPub?.track || cameraPub?.videoTrack || null;
   const userId = extractUserIdFromLiveKitIdentity(String(participant?.identity || ""));
+  const liveKitPublicationMuted = readLiveKitRemotePublicationMuted(cameraPub);
+
+  // If LiveKit publication exists and is unmuted, never poison from registry override.
+  // Clear stale override so later registry reads stay correct.
+  if (cameraPub && !liveKitPublicationMuted) {
+    if (userId && isLiveSlotParticipantCameraPausedOverride(userId)) {
+      setLiveSlotParticipantCameraPausedOverride(userId, false);
+    }
+    const remoteVideoTrackUsable = isRemoteVideoPublicationUsable(cameraPub, track);
+    const participantCameraEnabled =
+      typeof participant?.isCameraEnabled === "boolean" ? participant.isCameraEnabled : null;
+    return {
+      hasParticipant: true,
+      hasPublication: !!track || !!cameraPub,
+      publicationMuted: false,
+      remoteCameraEnabled:
+        participantCameraEnabled !== null ? participantCameraEnabled : true,
+      remoteVideoTrackUsable,
+      publication: cameraPub,
+      track,
+    };
+  }
+
   if (isLiveSlotParticipantCameraPausedOverride(userId)) {
     return {
       hasParticipant: true,
@@ -2507,7 +2535,7 @@ function readRemoteCameraPublicationState(participant: any): {
       track,
     };
   }
-  const publicationMuted = !!(cameraPub?.isMuted || cameraPub?.muted);
+  const publicationMuted = liveKitPublicationMuted;
   const participantCameraEnabled =
     typeof participant?.isCameraEnabled === "boolean" ? participant.isCameraEnabled : null;
   const remoteVideoTrackUsable = isRemoteVideoPublicationUsable(cameraPub, track);
@@ -2582,50 +2610,53 @@ function resolvePreferredRemoteParticipant(
   };
 }
 
-function readLiveKitRemotePublicationMuted(publication: any): boolean {
-  if (!publication) return false;
-  return !!(publication.isMuted || publication.muted);
-}
-
 function resolveViewerRemoteCameraVisualState(input: {
   remoteVideoTrack: any;
   remotePubState: ReturnType<typeof readRemoteCameraPublicationState>;
   participantState: ReturnType<typeof getLiveSlotParticipantState> | null;
   userId: string;
+  ownerUserId?: string;
 }) {
   const trackObj = input.remoteVideoTrack || input.remotePubState.track;
-  // LiveKit publication mute is the only mute authority when a media track is usable.
-  // Do not use readRemoteCameraPublicationState's registry-poisoned muted/enabled flags.
-  const liveKitPublicationMuted = readLiveKitRemotePublicationMuted(
-    input.remotePubState.publication
-  );
+  const publication = input.remotePubState.publication;
+  const hasLiveKitPublication = !!publication;
+  // LiveKit publication mute is the only mute authority when a publication exists.
+  // Never take remotePublicationMuted from slot registry / cameraPausedOverride / pubState.
+  const liveKitPublicationMuted = hasLiveKitPublication
+    ? readLiveKitRemotePublicationMuted(publication)
+    : false;
   const mediaTrackUsable = isRemoteVideoTrackUsable(trackObj);
-  // Usable for viewer means live media + LiveKit publication unmuted.
-  const remoteVideoTrackUsable = mediaTrackUsable && !liveKitPublicationMuted;
 
-  if (remoteVideoTrackUsable) {
-    // Publisher camera is ON according to LiveKit — ignore stale cameraPausedOverride
-    // and any registry/publicationState.values that were poisoned by it.
-    if (input.userId && isLiveSlotParticipantCameraPausedOverride(input.userId)) {
-      setLiveSlotParticipantCameraPausedOverride(input.userId, false);
+  const clearStalePausedOverride = () => {
+    const ids = [input.userId, input.ownerUserId]
+      .map((id) => String(id || "").trim())
+      .filter(Boolean);
+    for (const id of ids) {
+      if (isLiveSlotParticipantCameraPausedOverride(id)) {
+        setLiveSlotParticipantCameraPausedOverride(id, false);
+      }
     }
+  };
+
+  // When LiveKit says publication is unmuted, force camera-on visual flags.
+  // Stale registry cameraPausedOverride must not poison muted/enabled/placeholder.
+  if (hasLiveKitPublication && !liveKitPublicationMuted) {
+    clearStalePausedOverride();
     return {
       trackObj,
       liveKitPublicationMuted: false,
-      remoteVideoTrackUsable: true,
+      remoteVideoTrackUsable: mediaTrackUsable,
       remotePublicationMuted: false,
       remoteCameraEnabled: true,
     };
   }
 
-  // Truly paused / missing / ended — placeholder path.
-  const registryPaused = isLiveSlotParticipantCameraPausedOverride(input.userId);
-  const remotePublicationMuted =
-    liveKitPublicationMuted || registryPaused || !mediaTrackUsable;
+  // LiveKit muted (or no publication yet). Do not read muted from registry/pubState.
+  const remotePublicationMuted = hasLiveKitPublication ? liveKitPublicationMuted : false;
   return {
     trackObj,
     liveKitPublicationMuted,
-    remoteVideoTrackUsable: false,
+    remoteVideoTrackUsable: mediaTrackUsable && !remotePublicationMuted,
     remotePublicationMuted,
     remoteCameraEnabled: false,
   };
@@ -2705,6 +2736,7 @@ function KristoRemoteRoomVideo({
         remotePubState: pubState,
         participantState,
         userId: remote.userId,
+        ownerUserId: mainStageOwnerUserId,
       });
       const videoMediaTrack = visual.trackObj?.mediaStreamTrack || null;
 
@@ -2760,7 +2792,7 @@ function KristoRemoteRoomVideo({
     } catch (e: any) {
       console.log("KRISTO_REMOTE_COMBINED_AV_STREAM_ERROR", String(e?.message || e));
     }
-  }, [room, remoteVideoTrack, remoteAudioTrack, preferredIdentityPrefix, clearRemoteAvStream, remoteAvStreamURL]);
+  }, [room, remoteVideoTrack, remoteAudioTrack, preferredIdentityPrefix, clearRemoteAvStream, remoteAvStreamURL, mainStageOwnerUserId]);
 
   useEffect(() => {
     if (!room) return;
@@ -3010,16 +3042,19 @@ function KristoRemoteRoomVideo({
     remotePubState,
     participantState: remoteParticipantState,
     userId: remoteParticipant.userId,
+    ownerUserId: mainStageOwnerUserId,
   });
   const remotePublicationMuted = viewerVisual.remotePublicationMuted;
   const remoteCameraEnabled = viewerVisual.remoteCameraEnabled;
   const remoteVideoTrackUsable = viewerVisual.remoteVideoTrackUsable;
+  const liveKitPublicationMuted = viewerVisual.liveKitPublicationMuted;
 
   const effectiveRemoteAvStreamURL = (() => {
     if (remoteAvStreamURL) return remoteAvStreamURL;
-    if (!remoteCameraEnabled || !remoteVideoTrackUsable || remotePublicationMuted) return "";
+    // LiveKit unmuted + camera enabled: do not block URL build on registry muted.
+    if (!remoteCameraEnabled || liveKitPublicationMuted) return "";
     const trackObj = viewerVisual.trackObj;
-    if (!trackObj) return "";
+    if (!trackObj || !isRemoteVideoTrackUsable(trackObj)) return "";
     try {
       const { url } = resolveStableMediaStreamUrl(trackObj, remoteAudioTrack);
       return url || "";
@@ -3030,15 +3065,17 @@ function KristoRemoteRoomVideo({
 
   const showRemoteVideo =
     remotePubState.hasParticipant &&
-    remoteVideoTrackUsable &&
-    !remotePublicationMuted &&
     remoteCameraEnabled &&
+    !liveKitPublicationMuted &&
+    remoteVideoTrackUsable &&
     !!effectiveRemoteAvStreamURL;
 
+  // Placeholder only when LiveKit says muted, or no usable video while camera is off.
+  // Never open placeholder from stale registry muted when LiveKit publication muted is false.
   const showPausedPlaceholder =
     remotePubState.hasParticipant &&
-    !(remoteCameraEnabled && remoteVideoTrackUsable) &&
-    (remotePublicationMuted || !remoteVideoTrackUsable);
+    !showRemoteVideo &&
+    liveKitPublicationMuted === true;
 
   const remoteRtcViewKey = remoteAvStreamTrackKey
     ? `remote-av-${remoteAvStreamTrackKey}`
@@ -3698,22 +3735,18 @@ async function awaitLiveKitCameraPublishCompletion(
       });
       if (settled) return;
 
-      // Native LiveKit camera publish is blocking on this device/build.
-      // If the local camera track is already live, unblock preflight from the preview track
-      // instead of freezing JS inside publishTrack/setCameraEnabled.
-      if (trackReady) {
-        console.log("KRISTO_CAMERA_PUBLICATION_CONFIRMED", {
-          ...diag,
-          attemptToken,
-          fallback: "live-local-preview-track",
-          readyState: String(track?.mediaStreamTrack?.readyState || ""),
-          trackId: expectedTrackId,
-        });
-        finish("published");
-        return;
-      }
-
       publishStarted = true;
+
+      // Release pre-created warmup track before SDK camera enable.
+      // Otherwise RN LiveKit can block while trying to acquire the camera twice.
+      if (typeof lp.setCameraEnabled === "function") {
+        try {
+          track?.mediaStreamTrack?.stop?.();
+        } catch {}
+        try {
+          track?.stop?.();
+        } catch {}
+      }
 
       // Completely fire-and-forget. Completion must come from LocalTrackPublished / poll / timeout —
       // never from awaiting publishTrack itself (native addTrack can sync-block the JS thread).
@@ -3722,7 +3755,7 @@ async function awaitLiveKitCameraPublishCompletion(
         // Prefer the SDK camera toggle path; completion is still confirmed only by LocalTrackPublished/poll.
         const publishCall =
           typeof lp.setCameraEnabled === "function"
-            ? lp.setCameraEnabled(true, resolvedOptions as any)
+            ? lp.setCameraEnabled(true)
             : lp.publishTrack(track as any, resolvedOptions as any);
 
         Promise.resolve(publishCall)
@@ -4012,33 +4045,130 @@ async function applyPublisherCameraPauseState(
     cameraPaused: boolean;
     localVideoTrack: any;
     cameraFacing?: "front" | "back";
+    lifecycleGeneration: number;
+    isGenerationCurrent: (generation: number) => boolean;
+    targetPublicationSid?: string;
+    targetTrackId?: string;
   }
-) {
+): Promise<"applied" | "stale" | "mismatch" | "skipped"> {
   const lp: any = room?.localParticipant;
-  if (!lp) return;
+  if (!lp) return "skipped";
+  const generation = Number(input.lifecycleGeneration || 0);
+  const isCurrent = () => input.isGenerationCurrent(generation);
+  if (!isCurrent()) {
+    console.log(
+      input.cameraPaused ? "KRISTO_CAMERA_STALE_PAUSE_ABORTED" : "KRISTO_CAMERA_STALE_RESUME_ABORTED",
+      {
+        generation,
+        reason: "stale-before-start",
+        cameraPaused: input.cameraPaused,
+      }
+    );
+    return "stale";
+  }
+
   const userId = extractUserIdFromLiveKitIdentity(String(lp?.identity || ""));
   const before = readLocalCameraPublicationState(room);
+  const targetPublicationSid = String(
+    input.targetPublicationSid || before.publicationSid || ""
+  ).trim();
+  const targetTrackId = String(
+    input.targetTrackId ||
+      readMediaTrackIdentity(input.localVideoTrack) ||
+      readMediaTrackIdentity(before.track) ||
+      ""
+  ).trim();
+
+  const matchesPauseTarget = (state: ReturnType<typeof readLocalCameraPublicationState>) => {
+    if (!targetPublicationSid && !targetTrackId) return false;
+    const currentSid = String(state.publicationSid || "").trim();
+    const currentTrackId = readMediaTrackIdentity(state.track);
+    if (targetPublicationSid && currentSid && targetPublicationSid !== currentSid) {
+      return false;
+    }
+    if (targetTrackId && currentTrackId && targetTrackId !== currentTrackId) {
+      return false;
+    }
+    if (targetPublicationSid && currentSid) return targetPublicationSid === currentSid;
+    if (targetTrackId && currentTrackId) return targetTrackId === currentTrackId;
+    return false;
+  };
 
   if (input.cameraPaused) {
+    // Intentional pause: set override only while generation is still current.
     if (userId) setLiveSlotParticipantCameraPausedOverride(userId, true);
-    if (input.localVideoTrack?.mediaStreamTrack) {
-      input.localVideoTrack.mediaStreamTrack.enabled = false;
+
+    const pauseTrack = input.localVideoTrack || before.track;
+    const pauseTrackId = readMediaTrackIdentity(pauseTrack);
+    if (
+      pauseTrack?.mediaStreamTrack &&
+      (!targetTrackId || !pauseTrackId || pauseTrackId === targetTrackId)
+    ) {
+      pauseTrack.mediaStreamTrack.enabled = false;
     }
+
     let mutedViaPublication = false;
-    if (before.hasPublication) {
+    if (before.hasPublication && before.cameraPub && typeof before.cameraPub.mute === "function") {
+      if (!matchesPauseTarget(before)) {
+        console.log("KRISTO_CAMERA_PAUSE_TARGET_MISMATCH", {
+          generation,
+          reason: "before-mute",
+          targetPublicationSid,
+          targetTrackId,
+          currentPublicationSid: before.publicationSid,
+          currentTrackId: readMediaTrackIdentity(before.track),
+        });
+        return "mismatch";
+      }
+      const pubToMute = before.cameraPub;
       try {
-        const pub = before.cameraPub;
-        if (pub && typeof pub.mute === "function") {
-          await pub.mute();
-          mutedViaPublication = true;
-        }
+        await pubToMute.mute();
       } catch (e: any) {
         console.log("KRISTO_LIVE_CAMERA_PAUSE_PUB_MUTE_ERROR", String(e?.message || e));
       }
+
+      if (!isCurrent()) {
+        console.log("KRISTO_CAMERA_STALE_PAUSE_ABORTED", {
+          generation,
+          reason: "stale-after-mute-await",
+          targetPublicationSid,
+          targetTrackId,
+        });
+        return "stale";
+      }
+
+      const afterMute = readLocalCameraPublicationState(room);
+      if (!matchesPauseTarget(afterMute)) {
+        console.log("KRISTO_CAMERA_PAUSE_TARGET_MISMATCH", {
+          generation,
+          reason: "after-mute-await",
+          targetPublicationSid,
+          targetTrackId,
+          currentPublicationSid: afterMute.publicationSid,
+          currentTrackId: readMediaTrackIdentity(afterMute.track),
+        });
+        // Do not mute/disable the replacement publication discovered after await.
+        return "mismatch";
+      }
+      mutedViaPublication = true;
     }
+
+    if (!isCurrent()) {
+      console.log("KRISTO_CAMERA_STALE_PAUSE_ABORTED", {
+        generation,
+        reason: "stale-before-pause-log",
+        targetPublicationSid,
+        targetTrackId,
+      });
+      return "stale";
+    }
+
     const after = readLocalCameraPublicationState(room);
     console.log("KRISTO_LIVE_CAMERA_PAUSE_PUBLISHED", {
       userId,
+      generation,
+      targetPublicationSid,
+      targetTrackId,
       mutedViaPublication,
       beforePublicationMuted: before.publicationMuted,
       afterPublicationMuted: after.publicationMuted,
@@ -4047,7 +4177,17 @@ async function applyPublisherCameraPauseState(
       beforeIsCameraEnabled: before.isCameraEnabled,
       afterIsCameraEnabled: after.isCameraEnabled,
     });
-    return;
+    return "applied";
+  }
+
+  if (!isCurrent()) {
+    console.log("KRISTO_CAMERA_STALE_RESUME_ABORTED", {
+      generation,
+      reason: "stale-before-resume-mutations",
+      targetPublicationSid,
+      targetTrackId,
+    });
+    return "stale";
   }
 
   if (userId) setLiveSlotParticipantCameraPausedOverride(userId, false);
@@ -4055,18 +4195,39 @@ async function applyPublisherCameraPauseState(
     input.localVideoTrack.mediaStreamTrack.enabled = true;
   }
   if (!before.hasPublication) {
-    // Initial camera publish is owned exclusively by enableCameraWhenConnected.
-    return;
+    // Initial camera publish / replacement publish is owned by enableCameraWhenConnected.
+    return "skipped";
   }
   try {
-    const pub = readLocalCameraPublicationState(room).cameraPub;
+    const current = readLocalCameraPublicationState(room);
+    const pub = current.cameraPub;
     if (pub?.isMuted && typeof pub.unmute === "function") {
       await pub.unmute();
+      if (!isCurrent()) {
+        console.log("KRISTO_CAMERA_STALE_RESUME_ABORTED", {
+          generation,
+          reason: "stale-after-unmute-await",
+          targetPublicationSid,
+          targetTrackId,
+        });
+        return "stale";
+      }
     }
   } catch (e: any) {
     console.log("KRISTO_LIVE_CAMERA_RESUME_PUB_UNMUTE_ERROR", String(e?.message || e));
   }
-  console.log("KRISTO_LIVE_CAMERA_RESUME_PUBLISHED", readLocalCameraPublicationState(room));
+  if (!isCurrent()) {
+    console.log("KRISTO_CAMERA_STALE_RESUME_ABORTED", {
+      generation,
+      reason: "stale-before-resume-log",
+    });
+    return "stale";
+  }
+  console.log("KRISTO_LIVE_CAMERA_RESUME_PUBLISHED", {
+    ...readLocalCameraPublicationState(room),
+    generation,
+  });
+  return "applied";
 }
 
 function buildCameraEnableDiagnostics(room: any, canPublishCamera: boolean) {
@@ -4327,12 +4488,37 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
   const videoPublishBusyRef = useRef(false);
   const firstFrameLoggedRef = useRef(false);
   const cameraPausedRef = useRef(cameraPaused);
+  const cameraLifecycleGenerationRef = useRef(0);
+  const cameraPauseLifecycleGenerationRef = useRef(0);
+  const cameraResumeLifecycleGenerationRef = useRef(0);
+  const lastHandledCameraPausedPropRef = useRef<boolean | null>(null);
   const clearCameraPublishRetriesRef = useRef<(() => void) | null>(null);
   const cameraEndedRecoveryCountRef = useRef(0);
   const publisherPreviewReadyTrackIdRef = useRef("");
   const publisherPausedTrackIdsRef = useRef<Set<string>>(new Set());
   const requestCameraResumePublishRef = useRef<(() => void) | null>(null);
   const cameraWasPausedRef = useRef(false);
+
+  const bumpCameraLifecycleGeneration = (reason: string, nextPaused: boolean) => {
+    cameraLifecycleGenerationRef.current += 1;
+    const generation = cameraLifecycleGenerationRef.current;
+    if (nextPaused) {
+      cameraPauseLifecycleGenerationRef.current = generation;
+    } else {
+      cameraResumeLifecycleGenerationRef.current = generation;
+    }
+    console.log("KRISTO_CAMERA_LIFECYCLE_GENERATION", {
+      generation,
+      reason,
+      nextPaused,
+      pauseGeneration: cameraPauseLifecycleGenerationRef.current,
+      resumeGeneration: cameraResumeLifecycleGenerationRef.current,
+    });
+    return generation;
+  };
+
+  const isCameraLifecycleGenerationCurrent = (generation: number) =>
+    generation > 0 && generation === cameraLifecycleGenerationRef.current;
 
   useLayoutEffect(() => {
     cameraPausedRef.current = cameraPaused;
@@ -4590,10 +4776,19 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       }
 
       if (isKristoCameraPausedNow(cameraPaused)) {
+        const pausedGeneration =
+          cameraPauseLifecycleGenerationRef.current || cameraLifecycleGenerationRef.current;
+        const publicationStatePaused = readLocalCameraPublicationState(room);
         await applyPublisherCameraPauseState(room, {
           cameraPaused: true,
           localVideoTrack: localVideoTrackRef.current,
           cameraFacing,
+          lifecycleGeneration: pausedGeneration,
+          isGenerationCurrent: isCameraLifecycleGenerationCurrent,
+          targetPublicationSid: publicationStatePaused.publicationSid,
+          targetTrackId: readMediaTrackIdentity(
+            localVideoTrackRef.current || publicationStatePaused.track
+          ),
         });
         logCameraEnableAttempt({
           triggerSource,
@@ -4604,6 +4799,22 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
           ...diagnostics,
         });
         return;
+      }
+
+      if (String(triggerSource || "").includes("camera-resume")) {
+        const resumeGeneration = cameraResumeLifecycleGenerationRef.current;
+        if (
+          resumeGeneration > 0 &&
+          !isCameraLifecycleGenerationCurrent(resumeGeneration)
+        ) {
+          console.log("KRISTO_CAMERA_STALE_RESUME_ABORTED", {
+            generation: resumeGeneration,
+            reason: "obsolete-resume-publish-in-enable",
+            triggerSource,
+            currentGeneration: cameraLifecycleGenerationRef.current,
+          });
+          return;
+        }
       }
 
       const previewAnchorTrackId = publisherPreviewReadyTrackIdRef.current;
@@ -4726,14 +4937,25 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
             publicationState.cameraPub
           );
           if ([...pausedStaleIds].some((id) => publisherPausedTrackIdsRef.current.has(id))) {
-            console.log("KRISTO_CAMERA_EXISTING_PUBLICATION_ENDED_IGNORED", {
+            if (isKristoCameraPausedNow(cameraPaused)) {
+              console.log("KRISTO_CAMERA_EXISTING_PUBLICATION_ENDED_IGNORED", {
+                triggerSource,
+                previewAnchorTrackId,
+                endedTrackId,
+                endedMediaId,
+                reason: "paused-stale-track",
+              });
+              return;
+            }
+
+            console.log("KRISTO_CAMERA_STALE_PUBLICATION_DETECTED", {
               triggerSource,
               previewAnchorTrackId,
               endedTrackId,
               endedMediaId,
-              reason: "paused-stale-track",
+              reason: "paused-track-but-camera-unpaused",
+              cameraPaused: false,
             });
-            return;
           }
           if (cameraEndedRecoveryCountRef.current >= 1) {
             console.log("KRISTO_CAMERA_ENDED_RECOVERY_CAP", {
@@ -4844,8 +5066,25 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         let publishedTrack: any = null;
         let enableMethod: "manual-publish" | "preflight-warmup" = "manual-publish";
 
+        const canUseSdkCameraEnable =
+          typeof (room as any)?.localParticipant?.setCameraEnabled === "function";
+
         const readyWarmupTrack =
-          bridgeId && warmupUserId ? readPublisherVideoTrackWarmup(bridgeId, warmupUserId) : null;
+          !canUseSdkCameraEnable && bridgeId && warmupUserId
+            ? readPublisherVideoTrackWarmup(bridgeId, warmupUserId)
+            : null;
+
+        if (canUseSdkCameraEnable && bridgeId && warmupUserId) {
+          const staleWarmupTrack = takePublisherVideoTrackWarmup(bridgeId, warmupUserId);
+          if (staleWarmupTrack) {
+            try {
+              staleWarmupTrack?.mediaStreamTrack?.stop?.();
+            } catch {}
+            try {
+              staleWarmupTrack?.stop?.();
+            } catch {}
+          }
+        }
         if (readyWarmupTrack) {
           if (
             tryMarkWarmupConsumedOnce({
@@ -5159,6 +5398,25 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     };
     clearCameraPublishRetriesRef.current = clearCameraPublishRetries;
     requestCameraResumePublishRef.current = () => {
+      const resumeGeneration = cameraResumeLifecycleGenerationRef.current;
+      if (
+        resumeGeneration > 0 &&
+        !isCameraLifecycleGenerationCurrent(resumeGeneration)
+      ) {
+        console.log("KRISTO_CAMERA_STALE_RESUME_ABORTED", {
+          generation: resumeGeneration,
+          reason: "obsolete-resume-publish-request",
+          currentGeneration: cameraLifecycleGenerationRef.current,
+        });
+        return;
+      }
+      if (isKristoCameraPausedNow(cameraPausedRef.current)) {
+        console.log("KRISTO_CAMERA_STALE_RESUME_ABORTED", {
+          generation: resumeGeneration,
+          reason: "camera-paused-during-resume-request",
+        });
+        return;
+      }
       resetLivePreflightCameraPublishForRetry("camera-resume");
       cameraPublishScheduledForConnected = false;
       cameraPublishScheduledAt = 0;
@@ -5219,10 +5477,19 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 
     const tryScheduleCameraPublish = (triggerSource: string) => {
       if (isKristoCameraPausedNow(cameraPaused)) {
+        const publicationState = readLocalCameraPublicationState(room);
+        const pausedGeneration =
+          cameraPauseLifecycleGenerationRef.current || cameraLifecycleGenerationRef.current;
         void applyPublisherCameraPauseState(room, {
           cameraPaused: true,
           localVideoTrack: localVideoTrackRef.current,
           cameraFacing,
+          lifecycleGeneration: pausedGeneration,
+          isGenerationCurrent: isCameraLifecycleGenerationCurrent,
+          targetPublicationSid: publicationState.publicationSid,
+          targetTrackId: readMediaTrackIdentity(
+            localVideoTrackRef.current || publicationState.track
+          ),
         });
         return;
       }
@@ -5336,9 +5603,26 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
   useLayoutEffect(() => {
     if (!room || !canPublishCamera) return;
 
-    if (isKristoCameraPausedNow(cameraPaused)) {
+    const pausedNow = isKristoCameraPausedNow(cameraPaused);
+    const previousHandled = lastHandledCameraPausedPropRef.current;
+    const pausedTransitioned =
+      previousHandled === null ? pausedNow : previousHandled !== pausedNow;
+    lastHandledCameraPausedPropRef.current = pausedNow;
+
+    // Intentional pause/resume transitions only — do not re-run destructive pause
+    // work solely because localVideoTrack changed.
+    if (!pausedTransitioned && previousHandled !== null) {
+      return;
+    }
+
+    if (pausedNow) {
+      const generation = bumpCameraLifecycleGeneration("intentional-pause", true);
       cameraWasPausedRef.current = true;
       const publicationState = readLocalCameraPublicationState(room);
+      const targetPublicationSid = String(publicationState.publicationSid || "").trim();
+      const targetTrackId = readMediaTrackIdentity(
+        localVideoTrackRef.current || publicationState.track
+      );
       const pauseIds = collectPublisherCameraTrackIds(
         localVideoTrackRef.current || publicationState.track,
         publicationState.cameraPub
@@ -5361,35 +5645,153 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         cameraPaused: true,
         localVideoTrack: localVideoTrackRef.current,
         cameraFacing,
+        lifecycleGeneration: generation,
+        isGenerationCurrent: isCameraLifecycleGenerationCurrent,
+        targetPublicationSid,
+        targetTrackId,
       });
       return;
     }
 
+    if (!cameraWasPausedRef.current && previousHandled !== true) {
+      // Initial mount / camera already on: do not treat as a resume generation.
+      return;
+    }
+
+    const generation = bumpCameraLifecycleGeneration("intentional-resume", false);
     const publicationState = readLocalCameraPublicationState(room);
-    if (publicationState.hasPublication) {
-      void applyPublisherCameraPauseState(room, {
-        cameraPaused: false,
-        localVideoTrack: localVideoTrackRef.current || publicationState.track,
-        cameraFacing,
-      });
-    }
 
-    if (!cameraWasPausedRef.current) {
+    void (async () => {
+      if (!isCameraLifecycleGenerationCurrent(generation)) {
+        console.log("KRISTO_CAMERA_STALE_RESUME_ABORTED", {
+          generation,
+          reason: "stale-before-resume-work",
+          currentGeneration: cameraLifecycleGenerationRef.current,
+        });
+        return;
+      }
+
+      if (publicationState.hasPublication) {
+        const resumeResult = await applyPublisherCameraPauseState(room, {
+          cameraPaused: false,
+          localVideoTrack: localVideoTrackRef.current || publicationState.track,
+          cameraFacing,
+          lifecycleGeneration: generation,
+          isGenerationCurrent: isCameraLifecycleGenerationCurrent,
+          targetPublicationSid: publicationState.publicationSid,
+          targetTrackId: readMediaTrackIdentity(
+            localVideoTrackRef.current || publicationState.track
+          ),
+        });
+        if (resumeResult === "stale" || resumeResult === "mismatch") {
+          return;
+        }
+      }
+
+      if (!isCameraLifecycleGenerationCurrent(generation)) {
+        console.log("KRISTO_CAMERA_STALE_RESUME_ABORTED", {
+          generation,
+          reason: "stale-after-resume-unmute",
+          currentGeneration: cameraLifecycleGenerationRef.current,
+        });
+        return;
+      }
+
+      const after = readLocalCameraPublicationState(room);
+      const afterMedia = after.track?.mediaStreamTrack;
+      const afterLive = !!afterMedia && String(afterMedia.readyState || "") === "live";
+      if (after.hasPublication && afterLive && !after.publicationMuted) {
+        publisherPausedTrackIdsRef.current.clear();
+        cameraWasPausedRef.current = false;
+
+        const resumedTrack = after.track;
+        const resumedTrackId = readMediaTrackIdentity(resumedTrack);
+
+        if (resumedTrack) {
+          localVideoTrackRef.current = resumedTrack;
+
+          // Force publisher preview renderer to rebuild immediately on resume.
+          // The same LiveKit publication object may be reused, so setState(track)
+          // alone may not trigger the preview sync effect.
+          if (localPreviewTrackKeyRef.current) {
+            clearStableMediaStreamCache(localPreviewTrackKeyRef.current);
+          }
+
+          localPreviewTrackKeyRef.current = "";
+          localPreviewUrlRef.current = "";
+          setLocalPreviewTrackKey("");
+          setLocalPreviewURL("");
+
+          setLocalVideoTrack(null);
+
+          requestAnimationFrame(() => {
+            localVideoTrackRef.current = resumedTrack;
+            setLocalVideoTrack(resumedTrack);
+          });
+        }
+
+        console.log("KRISTO_CAMERA_RESUME_CONFIRMED", {
+          generation,
+          mode: "existing-publication",
+          publicationSid: after.publicationSid,
+          trackId: resumedTrackId,
+          trackReadyState: after.trackReadyState,
+          publicationMuted: after.publicationMuted,
+          publisherPreviewRefreshForced: true,
+        });
+        return;
+      }
+
+      // Existing publication cannot be reused — request a generation-bound replacement publish.
+      // Keep cameraWasPausedRef true until replacement is confirmed live.
+      publisherPreviewReadyTrackIdRef.current = "";
+      resetLivePreflightCameraPublishForRetry("camera-resume");
+      requestCameraResumePublishRef.current?.();
+    })();
+  }, [cameraPaused, room, canPublishCamera, cameraFacing]);
+
+  // Confirm resume generation after a replacement track becomes live (localVideoTrack sync).
+  useLayoutEffect(() => {
+    if (!room || !canPublishCamera) return;
+    if (isKristoCameraPausedNow(cameraPaused)) return;
+    if (!cameraWasPausedRef.current) return;
+    const resumeGeneration = cameraResumeLifecycleGenerationRef.current;
+    if (
+      resumeGeneration <= 0 ||
+      !isCameraLifecycleGenerationCurrent(resumeGeneration)
+    ) {
       return;
     }
-    cameraWasPausedRef.current = false;
-
+    const publicationState = readLocalCameraPublicationState(room);
     const mediaTrack = publicationState.track?.mediaStreamTrack;
     const mediaLive = !!mediaTrack && String(mediaTrack.readyState || "") === "live";
-    if (mediaLive && publicationState.hasPublication) {
-      publisherPausedTrackIdsRef.current.clear();
+    if (!publicationState.hasPublication || !mediaLive || publicationState.publicationMuted) {
       return;
     }
-
-    publisherPreviewReadyTrackIdRef.current = "";
-    resetLivePreflightCameraPublishForRetry("camera-resume");
-    requestCameraResumePublishRef.current?.();
-  }, [localVideoTrack, cameraPaused, room, canPublishCamera, cameraFacing]);
+    const currentIds = collectPublisherCameraTrackIds(
+      publicationState.track,
+      publicationState.cameraPub
+    );
+    // Replacement is confirmed when at least one current identity is not from the paused set.
+    const pausedIds = publisherPausedTrackIdsRef.current;
+    const hasFreshTrackIdentity =
+      currentIds.size === 0
+        ? false
+        : [...currentIds].some((id) => !pausedIds.has(id));
+    if (pausedIds.size > 0 && !hasFreshTrackIdentity) {
+      return;
+    }
+    publisherPausedTrackIdsRef.current.clear();
+    cameraWasPausedRef.current = false;
+    console.log("KRISTO_CAMERA_RESUME_CONFIRMED", {
+      generation: resumeGeneration,
+      mode: "replacement-publication",
+      publicationSid: publicationState.publicationSid,
+      trackId: readMediaTrackIdentity(publicationState.track),
+      trackReadyState: publicationState.trackReadyState,
+      publicationMuted: publicationState.publicationMuted,
+    });
+  }, [localVideoTrack, cameraPaused, room, canPublishCamera]);
 
   useLayoutEffect(() => {
     const diagnostics = buildCameraEnableDiagnostics(room, canPublishCamera);
@@ -5472,7 +5874,11 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
           const isPausedStaleTrack = [...pubIds].some((id) =>
             publisherPausedTrackIdsRef.current.has(id)
           );
-          if (!isPausedStaleTrack) {
+          // Generation-aware: never adopt a paused-generation track as preview authority.
+          const pauseGeneration = cameraPauseLifecycleGenerationRef.current;
+          const pauseStillCurrent =
+            pauseGeneration > 0 && isCameraLifecycleGenerationCurrent(pauseGeneration);
+          if (!isPausedStaleTrack && !(pauseStillCurrent && isKristoCameraPausedNow(cameraPaused))) {
             localVideoTrackRef.current = publicationState.track;
             if (localVideoTrack !== publicationState.track) {
               setLocalVideoTrack(publicationState.track);
@@ -5480,6 +5886,15 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
           }
         } else {
           if (isKristoCameraPausedNow(cameraPaused) || publicationState?.publicationMuted) {
+            return;
+          }
+          // Stale-publication recovery remains, but pause-generation work must not own resume.
+          const pauseGeneration = cameraPauseLifecycleGenerationRef.current;
+          if (
+            pauseGeneration > 0 &&
+            isCameraLifecycleGenerationCurrent(pauseGeneration) &&
+            isKristoCameraPausedNow(true)
+          ) {
             return;
           }
           const endedTrackId = readMediaTrackIdentity(authoritativeTrack);
@@ -5495,6 +5910,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
               previewAnchorTrackId,
               endedTrackId,
               reason: "preview-anchor-mismatch",
+              generation: cameraLifecycleGenerationRef.current,
             });
             return;
           }
@@ -5505,6 +5921,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
             reason: "local-preview-not-live",
             trackId: endedTrackId,
             readyState: String(mediaTrack?.readyState || ""),
+            extra: { generation: cameraLifecycleGenerationRef.current },
           });
           if (localPreviewTrackKeyRef.current || localPreviewUrlRef.current) {
             if (localPreviewTrackKeyRef.current) {
@@ -5543,7 +5960,21 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         }
       }
 
-      previewMediaTrack.enabled = true;
+      // Preview sync may attach a live track, but must not act as pause/resume authority.
+      // Only enable when lifecycle is active and camera is authoritatively not paused.
+      const previewGeneration = cameraLifecycleGenerationRef.current;
+      const pauseGenerationActive =
+        cameraPauseLifecycleGenerationRef.current > 0 &&
+        isCameraLifecycleGenerationCurrent(cameraPauseLifecycleGenerationRef.current);
+      if (
+        !isKristoCameraPausedNow(cameraPaused) &&
+        !pauseGenerationActive &&
+        (previewGeneration === 0 || isCameraLifecycleGenerationCurrent(previewGeneration))
+      ) {
+        previewMediaTrack.enabled = true;
+      } else if (isKristoCameraPausedNow(cameraPaused) || pauseGenerationActive) {
+        return;
+      }
       const { url, trackKey } = resolveStableMediaStreamUrl(previewTrack);
       if (!url || !trackKey) {
         return;
@@ -15765,7 +16196,7 @@ return (
                     cameraPaused={true}
                     style={s.vipSoloCamera as any}
                   fallback={
-                    mainStageLocalVideoReady && !cameraPaused ? (
+                    mainStageLocalVideoReady ? (
                       <View style={s.vipSoloFallback as any} />
                     ) : (
                         <View style={s.vipSoloFallback as any}>
@@ -15998,7 +16429,7 @@ return (
                   hasClaimedMainStageAvatar={mainStageViewerDisplayContext.hasClaimedMainStageAvatar}
                   emitViewerVisualDecision={mainStageViewerDisplayContext.emitViewerVisualDecision}
                   fallback={
-                    mainStageLocalVideoReady && !cameraPaused ? (
+                    mainStageLocalVideoReady ? (
                       <View style={s.teamGridLiveFallback as any} />
                     ) : (
                       <View style={s.teamGridLiveFallback as any}>
@@ -16037,7 +16468,7 @@ return (
                   hasClaimedMainStageAvatar={mainStageViewerDisplayContext.hasClaimedMainStageAvatar}
                   emitViewerVisualDecision={mainStageViewerDisplayContext.emitViewerVisualDecision}
                   fallback={
-                    mainStageLocalVideoReady && !cameraPaused ? (
+                    mainStageLocalVideoReady ? (
                       <View style={s.teamGridLiveFallback as any} />
                     ) : (
                       <View style={s.teamGridLiveFallback as any}>
