@@ -22,10 +22,11 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { TLMC_UNIVERSE_IMAGE, preloadTlmcAssets } from "@/src/lib/tlmcPreload";
 import {
-  MY_WAY_COMMAND_LENGTH,
+  MY_WAY_COMMAND_MAX_LENGTH,
   normalizeMyWayCommandCode,
   resolveMyWayCommand,
 } from "@/src/lib/myWayCommands";
+import { startMyWayPastorPrivateCall } from "@/src/lib/privateCallService";
 
 const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
@@ -340,7 +341,7 @@ export default function TLMCScreen() {
 
   const isMyWayUnlockPad = padMode === "unlock";
   const isRunReady = isMyWayUnlockPad
-    ? cmd.trim().length === MY_WAY_COMMAND_LENGTH
+    ? cmd.trim().length >= 1
     : cmd.trim().length >= requiredCommandLength;
 
   const crossGlow = useRef(new Animated.Value(0.82)).current;
@@ -472,7 +473,7 @@ Vibration.vibrate(120);
   const appendKey = (ch: string) => {
     setErr(null);
 Vibration.vibrate(120);
-    const maxLen = padMode === "unlock" ? MY_WAY_COMMAND_LENGTH : 16;
+    const maxLen = padMode === "unlock" ? MY_WAY_COMMAND_MAX_LENGTH : 16;
     setCmd((p) => (p + ch).slice(0, maxLen));
   };
 
@@ -759,8 +760,9 @@ Vibration.vibrate(120);
     if (myWayInputLogRef.current === sig) return;
     myWayInputLogRef.current = sig;
     console.log("KRISTO_MY_WAY_COMMAND_INPUT", {
-      length: cmd.length,
-      ready: cmd.length === MY_WAY_COMMAND_LENGTH,
+      length: cmd.trim().length,
+      codeLength: cmd.replace(/[^A-Z0-9]/gi, "").trim().length,
+      ready: cmd.trim().length >= 1,
       userId: currentUserId,
     });
   }, [cmd, showPad, padMode, currentUserId]);
@@ -769,8 +771,8 @@ Vibration.vibrate(120);
     if (!isRunReady || runningCommand) return;
 
     const code = normalizeMyWayCommandCode(cmd);
-    if (code.length !== MY_WAY_COMMAND_LENGTH) {
-      setErr("Enter a 6-character command code.");
+    if (!code) {
+      setErr("Command not found. Check the code and try again.");
       Vibration.vibrate(120);
       return;
     }
@@ -778,6 +780,7 @@ Vibration.vibrate(120);
     console.log("KRISTO_MY_WAY_COMMAND_RUN", {
       code,
       length: code.length,
+      inputLength: cmd.trim().length,
       userId: currentUserId,
     });
 
@@ -787,7 +790,51 @@ Vibration.vibrate(120);
     try {
       const resolved = await resolveMyWayCommand(code);
 
-      if (!resolved || resolved.action !== "navigate" || !resolved.route) {
+      if (!resolved) {
+        console.log("KRISTO_MY_WAY_COMMAND_NOT_FOUND", {
+          code,
+          userId: currentUserId,
+        });
+        setErr("Command not found. Check the code and try again.");
+        Vibration.vibrate(120);
+        return;
+      }
+
+      if (resolved.action === "pastor_call") {
+        console.log("KRISTO_MY_WAY_COMMAND_RESOLVED", {
+          code,
+          title: resolved.title,
+          action: resolved.action,
+          source: resolved.source,
+          userId: currentUserId,
+        });
+
+        const churchId = String(session?.churchId || getSessionSync()?.churchId || "").trim();
+        const result = await startMyWayPastorPrivateCall({
+          churchId,
+          currentUserId,
+        });
+
+        if (!result.ok) {
+          setErr(result.message);
+          Vibration.vibrate(120);
+          return;
+        }
+
+        setShowPad(false);
+        setCmd("");
+        setErr(null);
+        setUnlockStep(0);
+        Vibration.vibrate(120);
+
+        router.push({
+          pathname: "/more/private-call/[callId]",
+          params: { callId: result.session.id },
+        } as any);
+        return;
+      }
+
+      if (resolved.action !== "navigate" || !resolved.route) {
         console.log("KRISTO_MY_WAY_COMMAND_NOT_FOUND", {
           code,
           userId: currentUserId,

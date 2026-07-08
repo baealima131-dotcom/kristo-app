@@ -1,11 +1,17 @@
-export const MY_WAY_COMMAND_LENGTH = 6;
+export const MY_WAY_COMMAND_PAD_LENGTH = 6;
+export const MY_WAY_COMMAND_MAX_LENGTH = 16;
+
+/** @deprecated Use MY_WAY_COMMAND_PAD_LENGTH for kingdom-box padding only. */
+export const MY_WAY_COMMAND_LENGTH = MY_WAY_COMMAND_PAD_LENGTH;
+
+export type MyWayCommandAction = "navigate" | "pastor_call";
 
 export type MyWayCommandResolution = {
   code: string;
   title: string;
   description?: string;
-  action: "navigate";
-  route: string;
+  action: MyWayCommandAction;
+  route?: string;
   source: "builtin" | "kingdom-box" | "api" | "local";
 };
 
@@ -69,6 +75,13 @@ const BUILTIN_MY_WAY_COMMANDS: MyWayCommandResolution[] = [
     route: "/more/bible",
     source: "builtin",
   },
+  {
+    code: "CRPT9",
+    title: "Call Pastor",
+    description: "Start a private call with your church pastor.",
+    action: "pastor_call",
+    source: "builtin",
+  },
 ];
 
 function padKingdomBoxCode(raw: string): string {
@@ -77,10 +90,10 @@ function padKingdomBoxCode(raw: string): string {
     .trim()
     .toUpperCase();
   if (!normalized) return "";
-  if (normalized.length >= MY_WAY_COMMAND_LENGTH) {
-    return normalized.slice(0, MY_WAY_COMMAND_LENGTH);
+  if (normalized.length >= MY_WAY_COMMAND_PAD_LENGTH) {
+    return normalized.slice(0, MY_WAY_COMMAND_PAD_LENGTH);
   }
-  return normalized.padEnd(MY_WAY_COMMAND_LENGTH, "0");
+  return normalized.padEnd(MY_WAY_COMMAND_PAD_LENGTH, "0");
 }
 
 function kingdomBoxCommands(): MyWayCommandResolution[] {
@@ -94,7 +107,7 @@ function kingdomBoxCommands(): MyWayCommandResolution[] {
       route,
       source: "kingdom-box" as const,
     };
-  }).filter((entry) => entry.code.length === MY_WAY_COMMAND_LENGTH);
+  }).filter((entry) => !!entry.code);
 }
 
 export function normalizeMyWayCommandCode(value: string): string {
@@ -102,7 +115,7 @@ export function normalizeMyWayCommandCode(value: string): string {
     .replace(/[^A-Z0-9]/gi, "")
     .trim()
     .toUpperCase()
-    .slice(0, MY_WAY_COMMAND_LENGTH);
+    .slice(0, MY_WAY_COMMAND_MAX_LENGTH);
 }
 
 export function listMyWayCommands(): MyWayCommandResolution[] {
@@ -120,6 +133,6 @@ export function listMyWayCommands(): MyWayCommandResolution[] {
 
 export function resolveMyWayCommandCode(code: string): MyWayCommandResolution | null {
   const normalized = normalizeMyWayCommandCode(code);
-  if (normalized.length !== MY_WAY_COMMAND_LENGTH) return null;
+  if (!normalized) return null;
   return listMyWayCommands().find((entry) => entry.code === normalized) || null;
 }

@@ -1,5 +1,4 @@
 import {
-  MY_WAY_COMMAND_LENGTH,
   normalizeMyWayCommandCode,
   resolveMyWayCommandCode,
   type MyWayCommandResolution,
@@ -19,9 +18,9 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
   const code = normalizeMyWayCommandCode(String(body?.code || ""));
 
-  if (code.length !== MY_WAY_COMMAND_LENGTH) {
+  if (!code) {
     return json(
-      { ok: false, error: "invalid_code_length", message: "Command must be exactly 6 characters." },
+      { ok: false, error: "invalid_code", message: "Command code is required." },
       { status: 400 }
     );
   }
@@ -45,7 +44,8 @@ export async function POST(req: NextRequest) {
 
   console.log("KRISTO_MY_WAY_COMMAND_RESOLVED", {
     code,
-    route: resolved.route,
+    route: resolved.route || null,
+    action: resolved.action,
     title: resolved.title,
     userId: viewer.userId || null,
     source: "api",
