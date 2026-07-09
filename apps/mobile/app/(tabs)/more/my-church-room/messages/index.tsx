@@ -23,6 +23,8 @@ import {
 } from "@/src/lib/messagesInbox";
 import { StartNewChatSheet } from "@/src/components/messages/StartNewChatSheet";
 import type { DirectMessageThread } from "@/src/lib/directMessagesApi";
+import { apiGet } from "@/src/lib/kristoApi";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 const BG = "#0A1220";
 const TEXT = "rgba(255,255,255,0.94)";
@@ -91,6 +93,25 @@ export default function MessagesScreen() {
   const [loading, setLoading] = useState(true);
   const [conversations, setConversations] = useState<MessagesInboxConversation[]>([]);
   const [composeOpen, setComposeOpen] = useState(false);
+
+  React.useEffect(() => {
+    let alive = true;
+
+    async function heartbeatMessagesList() {
+      if (!alive) return;
+      await apiGet("/api/auth/presence?heartbeat=1", {
+        headers: getKristoHeaders() as any,
+      }).catch(() => null);
+    }
+
+    void heartbeatMessagesList();
+    const timer = setInterval(heartbeatMessagesList, 5000);
+
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   const refreshInbox = useCallback(async () => {
     const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
