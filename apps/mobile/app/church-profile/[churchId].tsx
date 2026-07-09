@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
@@ -32,6 +32,16 @@ import {
   churchPublicPostIsVideo,
   resolveChurchPublicPostCover,
 } from "@/src/lib/churchProfilePostCover";
+import { ChurchReportSheet } from "@/src/components/church/ChurchReportSheet";
+import {
+  blockHomeFeedChurch,
+  fetchChurchModerationFromApi,
+  getLocalChurchModerationAction,
+  hideHomeFeedChurch,
+  isViewerOwnChurchAdmin,
+  type ChurchFeedActionType,
+  unblockHomeFeedChurch,
+} from "@/src/lib/homeFeedModeration";
 
 const BG = "#05070D";
 const GOLD = "#F4C95D";
@@ -179,6 +189,21 @@ export default function ChurchProfileScreen() {
   const [followBusy, setFollowBusy] = useState(false);
   const [requesting, setRequesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [churchModerationAction, setChurchModerationAction] = useState<ChurchFeedActionType | null>(
+    null
+  );
+  const [reportSheetOpen, setReportSheetOpen] = useState(false);
+  const [safetyBusy, setSafetyBusy] = useState(false);
+
+  const refreshChurchModeration = useCallback(async () => {
+    if (!churchId) return;
+    const local = await getLocalChurchModerationAction(churchId);
+    setChurchModerationAction(local);
+    void fetchChurchModerationFromApi().then((records) => {
+      const match = records.find((row) => row.churchId === churchId.toUpperCase());
+      setChurchModerationAction(match?.actionType || null);
+    });
+  }, [churchId]);
 
   const loadProfile = useCallback(async () => {
     if (!churchId) {
@@ -224,12 +249,145 @@ export default function ChurchProfileScreen() {
     void loadProfile();
   }, [loadProfile]);
 
+  useFocusEffect(
+    useCallback(() => {
+      void refreshChurchModeration();
+    }, [refreshChurchModeration])
+  );
+
   const displayName = profile?.name || hintName || churchId;
   const avatarUri = resolveImageUrl(profile?.avatarUri || profile?.avatarUrl || profile?.logoUrl);
   const initial = displayName.charAt(0).toUpperCase() || "C";
   const locationLine = profile ? buildLocationLine(profile) : "";
+  const churchBlocked = churchModerationAction === "block";
+  const churchHidden = churchModerationAction === "hide";
+
+  const confirmOwnChurchSafetyAction = useCallback(
+    (actionLabel: string, onConfirm: () => void) => {
+      if (!isViewerOwnChurchAdmin(churchId)) {
+        onConfirm();
+        return;
+      }
+
+      Alert.alert(
+        "Your church",
+        `You are a leader of this church. ${actionLabel} may hide your church's content from your own feed and limit connect actions. Continue?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Continue", style: "destructive", onPress: onConfirm },
+        ]
+      );
+    },
+    [churchId]
+  );
+
+  const runHideChurch = useCallback(async () => {
+    if (!profile?.id || safetyBusy) return;
+    setSafetyBusy(true);
+    try {
+      const result = await hideHomeFeedChurch({ churchId: profile.id });
+      if (!result.ok) {
+        Alert.alert("Could not hide church", result.error);
+        return;
+      }
+      setChurchModerationAction("hide");
+      Alert.alert("Posts hidden", "Posts from this church were removed from your Home Feed.");
+    } finally {
+      setSafetyBusy(false);
+    }
+  }, [profile?.id, safetyBusy]);
+
+  const runBlockChurch = useCallback(async () => {
+    if (!profile?.id || safetyBusy) return;
+    setSafetyBusy(true);
+    try {
+      const result = await blockHomeFeedChurch({ churchId: profile.id });
+      if (!result.ok) {
+        Alert.alert("Could not block church", result.error);
+        return;
+      }
+      setChurchModerationAction("block");
+      Alert.alert(
+        "Church blocked",
+        "Content from this church is hidden from your feed and connect actions are disabled."
+      );
+    } finally {
+      setSafetyBusy(false);
+    }
+  }, [profile?.id, safetyBusy]);
+
+  const runUnblockChurch = useCallback(async () => {
+    if (!profile?.id || safetyBusy) return;
+    setSafetyBusy(true);
+    try {
+      const result = await unblockHomeFeedChurch(profile.id);
+      if (!result.ok) {
+        Alert.alert("Could not unblock church", result.error);
+        return;
+      }
+      setChurchModerationAction(null);
+      Alert.alert("Church unblocked", "You can follow or join this church again.");
+    } finally {
+      setSafetyBusy(false);
+    }
+  }, [profile?.id, safetyBusy]);
+
+  const openSafetyMenu = useCallback(() => {
+    if (!profile?.id) return;
+
+    const options: Array<{ label: string; onPress?: () => void; style?: "cancel" | "destructive" }> =
+      [];
+
+    if (!churchBlocked) {
+      options.push({
+        label: "Hide posts from this church",
+        onPress: () => confirmOwnChurchSafetyAction("Hiding posts", () => void runHideChurch()),
+      });
+      options.push({
+        label: "Block this church",
+        style: "destructive",
+        onPress: () =>
+          confirmOwnChurchSafetyAction("Blocking this church", () => void runBlockChurch()),
+      });
+    } else {
+      options.push({
+        label: "Unblock church",
+        onPress: () => void runUnblockChurch(),
+      });
+    }
+
+    options.push({
+      label: "Report this church",
+      onPress: () => setReportSheetOpen(true),
+    });
+    options.push({ label: "Cancel", style: "cancel" });
+
+    Alert.alert(
+      "Safety",
+      churchHidden && !churchBlocked
+        ? "Posts from this church are hidden from your Home Feed."
+        : undefined,
+      options.map((option) => ({
+        text: option.label,
+        style: option.style,
+        onPress: option.onPress,
+      }))
+    );
+  }, [
+    profile?.id,
+    churchBlocked,
+    churchHidden,
+    confirmOwnChurchSafetyAction,
+    runHideChurch,
+    runBlockChurch,
+    runUnblockChurch,
+  ]);
 
   const handleJoin = useCallback(async () => {
+    if (churchBlocked) {
+      Alert.alert("Church blocked", "Unblock this church before requesting to join.");
+      return;
+    }
     const userId = String(session?.userId || "").trim();
     if (!userId) {
       Alert.alert("Sign in required", "Please sign in before requesting to join a church.");
@@ -259,9 +417,14 @@ export default function ChurchProfileScreen() {
     session?.userId,
     viewerState.canJoin,
     viewerState.joinStatus,
+    churchBlocked,
   ]);
 
   const handleFollowToggle = useCallback(async () => {
+    if (churchBlocked) {
+      Alert.alert("Church blocked", "Unblock this church before following.");
+      return;
+    }
     const userId = String(session?.userId || "").trim();
     if (!userId) {
       Alert.alert("Sign in required", "Please sign in before following a church.");
@@ -297,7 +460,7 @@ export default function ChurchProfileScreen() {
     } finally {
       setFollowBusy(false);
     }
-  }, [followBusy, following, profile?.id, session?.userId]);
+  }, [churchBlocked, followBusy, following, profile?.id, session?.userId]);
 
   const handlePostPress = useCallback(
     (post: ChurchPublicPost) => {
@@ -347,12 +510,12 @@ export default function ChurchProfileScreen() {
     return (
       <Pressable
         onPress={() => void handleJoin()}
-        disabled={requesting || !viewerState.canJoin}
+        disabled={requesting || !viewerState.canJoin || churchBlocked}
         style={({ pressed }) => [
           styles.actionSlot,
           styles.joinSlotGlass,
-          (requesting || !viewerState.canJoin) && styles.joinSlotDisabled,
-          pressed && !requesting && viewerState.canJoin && { opacity: 0.92 },
+          (requesting || !viewerState.canJoin || churchBlocked) && styles.joinSlotDisabled,
+          pressed && !requesting && viewerState.canJoin && !churchBlocked && { opacity: 0.92 },
         ]}
         accessibilityRole="button"
         accessibilityLabel="Join Church"
@@ -371,6 +534,7 @@ export default function ChurchProfileScreen() {
     viewerState.canJoin,
     viewerState.joinStatus,
     viewerState.memberOfOtherChurch,
+    churchBlocked,
   ]);
 
   const followButton = useMemo(() => {
@@ -379,12 +543,12 @@ export default function ChurchProfileScreen() {
     return (
       <Pressable
         onPress={() => void handleFollowToggle()}
-        disabled={followBusy}
+        disabled={followBusy || churchBlocked}
         style={({ pressed }) => [
           styles.actionSlot,
           following ? styles.followSlotGold : styles.followSlotOutline,
-          followBusy && styles.actionBusy,
-          pressed && !followBusy && { opacity: 0.92 },
+          (followBusy || churchBlocked) && styles.actionBusy,
+          pressed && !followBusy && !churchBlocked && { opacity: 0.92 },
         ]}
         accessibilityRole="button"
         accessibilityLabel={label}
@@ -410,7 +574,7 @@ export default function ChurchProfileScreen() {
         </Text>
       </Pressable>
     );
-  }, [followBusy, following, handleFollowToggle]);
+  }, [churchBlocked, followBusy, following, handleFollowToggle]);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -437,7 +601,19 @@ export default function ChurchProfileScreen() {
         <Text style={styles.topTitle} numberOfLines={1}>
           Church Profile
         </Text>
-        <View style={styles.backBtnSpacer} />
+        <Pressable
+          onPress={openSafetyMenu}
+          disabled={!profile || safetyBusy}
+          style={({ pressed }) => [
+            styles.menuBtn,
+            pressed && !safetyBusy && { opacity: 0.85 },
+            safetyBusy && { opacity: 0.5 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Safety options"
+        >
+          <Ionicons name="ellipsis-horizontal" size={20} color={GOLD} />
+        </Pressable>
       </View>
 
       {loading ? (
@@ -476,6 +652,44 @@ export default function ChurchProfileScreen() {
             <Text style={styles.churchName}>{displayName}</Text>
             <Text style={styles.churchId}>{profile.id}</Text>
           </View>
+
+          {churchBlocked ? (
+            <View style={styles.blockedBanner}>
+              <View style={styles.blockedBannerTop}>
+                <Ionicons name="shield-outline" size={18} color={GOLD} />
+                <View style={styles.blockedBannerCopy}>
+                  <Text style={styles.blockedBannerTitle}>You blocked this church</Text>
+                  <Text style={styles.blockedBannerText}>
+                    Content from this church is hidden from your feed.
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.blockedBannerActions}>
+                <Pressable
+                  onPress={() => void runUnblockChurch()}
+                  disabled={safetyBusy}
+                  style={({ pressed }) => [
+                    styles.blockedBannerBtn,
+                    pressed && !safetyBusy && { opacity: 0.9 },
+                  ]}
+                >
+                  <Text style={styles.blockedBannerBtnText}>Unblock church</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setReportSheetOpen(true)}
+                  style={({ pressed }) => [styles.blockedBannerLink, pressed && { opacity: 0.85 }]}
+                >
+                  <Text style={styles.blockedBannerLinkText}>Report issue</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : churchHidden ? (
+            <View style={styles.hiddenBanner}>
+              <Text style={styles.hiddenBannerText}>
+                Posts from this church are hidden from your Home Feed.
+              </Text>
+            </View>
+          ) : null}
 
           <View style={styles.statsRow}>
             <View style={styles.statCard}>
@@ -544,6 +758,13 @@ export default function ChurchProfileScreen() {
           </View>
         </ScrollView>
       ) : null}
+
+      <ChurchReportSheet
+        visible={reportSheetOpen}
+        churchId={churchId}
+        churchName={displayName}
+        onClose={() => setReportSheetOpen(false)}
+      />
     </View>
   );
 }
@@ -585,6 +806,12 @@ const styles = StyleSheet.create({
   },
   backBtnSpacer: {
     width: 40,
+  },
+  menuBtn: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
   },
   topTitle: {
     flex: 1,
@@ -668,6 +895,70 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     letterSpacing: 0.4,
+  },
+  blockedBanner: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.28)",
+    backgroundColor: "rgba(244,201,93,0.08)",
+    padding: 14,
+    gap: 10,
+  },
+  blockedBannerTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  blockedBannerCopy: { gap: 4 },
+  blockedBannerTitle: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 15,
+  },
+  blockedBannerText: {
+    color: MUTED,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  blockedBannerActions: {
+    gap: 8,
+    marginTop: 2,
+  },
+  blockedBannerBtn: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: GOLD_SOFT,
+    borderWidth: 1,
+    borderColor: GOLD_BORDER,
+  },
+  blockedBannerBtnText: {
+    color: GOLD,
+    fontWeight: "800",
+    fontSize: 13,
+  },
+  blockedBannerLink: {
+    alignSelf: "flex-start",
+    paddingVertical: 4,
+  },
+  blockedBannerLinkText: {
+    color: "rgba(147,197,253,0.92)",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  hiddenBanner: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: GLASS,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  hiddenBannerText: {
+    color: MUTED,
+    fontSize: 13,
+    lineHeight: 18,
   },
   statsRow: {
     flexDirection: "row",

@@ -197,6 +197,14 @@ import {
   markPostReportedLocally,
   syncReportedPostIdsFromApi,
 } from "@/src/lib/homeFeedReport";
+import {
+  fetchBlockedUserIdsFromApi,
+  fetchChurchModerationFromApi,
+  getLocallyBlockedUserIds,
+  getLocallyExcludedChurchIds,
+  normalizeFeedChurchId,
+  subscribeChurchFeedModeration,
+} from "@/src/lib/homeFeedModeration";
 import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
 import {
   bumpHomeFeedVideoOwnership,
@@ -312,6 +320,7 @@ export default function HomeFeedScreen() {
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
   const [reportTargetPostId, setReportTargetPostId] = useState("");
+  const [reportTargetAuthorUserId, setReportTargetAuthorUserId] = useState("");
   const [commentsSheetOpen, setCommentsSheetOpen] = useState(false);
   const [commentTargetPostId, setCommentTargetPostId] = useState("");
   const [commentRailCount, setCommentRailCount] = useState(0);
@@ -333,6 +342,8 @@ export default function HomeFeedScreen() {
   const openPostHandledRef = useRef("");
   const pendingScrollRowKeyRef = useRef("");
   const reportablePostIdsDigestRef = useRef("");
+  const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
+  const [excludedChurchIds, setExcludedChurchIds] = useState<string[]>([]);
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingScheduleFeedIdRef = useRef<string | null>(null);
   const lastNearEndLoadAtMsRef = useRef(0);
@@ -429,6 +440,24 @@ export default function HomeFeedScreen() {
   const viewerUserId = String(session?.userId || "").trim();
   const viewerChurchId = String(session?.churchId || "").trim();
   const [viewerCanSeeMediaSlots, setViewerCanSeeMediaSlots] = useState(false);
+  const blockedUserIdSet = useMemo(
+    () => new Set(blockedUserIds.map((id) => String(id || "").trim()).filter(Boolean)),
+    [blockedUserIds]
+  );
+  const excludedChurchIdSet = useMemo(
+    () => new Set(excludedChurchIds.map(normalizeFeedChurchId).filter(Boolean)),
+    [excludedChurchIds]
+  );
+
+  const resolveRowAuthorUserId = useCallback((row: any) => {
+    return String(
+      row?.createdBy ||
+        row?.authorUserId ||
+        row?.ownerUserId ||
+        row?.postedByUserId ||
+        ""
+    ).trim();
+  }, []);
 
   const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
   const feedViewportHeight = Math.max(280, contentHeight - topBarHeight);
@@ -1485,7 +1514,23 @@ export default function HomeFeedScreen() {
     displayOrderRebuildRequested,
   ]);
 
-  const displayFeedRows = feedRows;
+  const displayFeedRows = useMemo(() => {
+    const hasUserBlocks = blockedUserIdSet.size > 0;
+    const hasChurchBlocks = excludedChurchIdSet.size > 0;
+    if (!hasUserBlocks && !hasChurchBlocks) return feedRows;
+
+    return feedRows.filter((row) => {
+      if (hasChurchBlocks) {
+        const churchId = normalizeFeedChurchId(homeFeedRowChurchId(row));
+        if (churchId && excludedChurchIdSet.has(churchId)) return false;
+      }
+      if (hasUserBlocks) {
+        const authorUserId = resolveRowAuthorUserId(row);
+        if (authorUserId && blockedUserIdSet.has(authorUserId)) return false;
+      }
+      return true;
+    });
+  }, [feedRows, blockedUserIdSet, excludedChurchIdSet, resolveRowAuthorUserId]);
 
   useEffect(() => {
     if (isHomeFeedDisplayOrderFrozen()) return;
@@ -2026,11 +2071,29 @@ export default function HomeFeedScreen() {
     [visibleData, feedPostFilter]
   );
 
+  const moderatedYoutubeStreamRows = useMemo(() => {
+    const hasUserBlocks = blockedUserIdSet.size > 0;
+    const hasChurchBlocks = excludedChurchIdSet.size > 0;
+    if (!hasUserBlocks && !hasChurchBlocks) return youtubeStreamRows;
+
+    return youtubeStreamRows.filter((row) => {
+      if (hasChurchBlocks) {
+        const churchId = normalizeFeedChurchId(homeFeedRowChurchId(row));
+        if (churchId && excludedChurchIdSet.has(churchId)) return false;
+      }
+      if (hasUserBlocks) {
+        const authorUserId = resolveRowAuthorUserId(row);
+        if (authorUserId && blockedUserIdSet.has(authorUserId)) return false;
+      }
+      return true;
+    });
+  }, [youtubeStreamRows, blockedUserIdSet, excludedChurchIdSet, resolveRowAuthorUserId]);
+
   const youtubeFeedRows = useMemo(() => {
     if (youtubeShowSkeleton) {
       return buildHomeFeedSkeletonRows();
     }
-    const rows = dedupeHomeFeedRowsByKey(filterHomeFeedYoutubeStreamRows(youtubeStreamRows));
+    const rows = dedupeHomeFeedRowsByKey(filterHomeFeedYoutubeStreamRows(moderatedYoutubeStreamRows));
     const deficit = HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE - rows.length;
     const showTailSkeletons =
       deficit > 0 &&
@@ -2043,7 +2106,7 @@ export default function HomeFeedScreen() {
       return [...rows, ...buildHomeFeedSkeletonRows(deficit)];
     }
     return rows;
-  }, [youtubeShowSkeleton, youtubeStreamRows, feedHasMore, youtubePageVisualReady]);
+  }, [youtubeShowSkeleton, moderatedYoutubeStreamRows, feedHasMore, youtubePageVisualReady]);
 
   const feedListRows = youtubeLayout ? youtubeFeedRows : filteredVisibleData;
   const feedCaughtUp =
@@ -2791,6 +2854,52 @@ export default function HomeFeedScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+
+    void getLocallyBlockedUserIds().then((ids) => {
+      if (!alive) return;
+      if (ids.length) setBlockedUserIds(ids);
+    });
+
+    void getLocallyExcludedChurchIds().then((ids) => {
+      if (!alive) return;
+      if (ids.length) setExcludedChurchIds(ids);
+    });
+
+    runAfterHomeDeferredStartup(() => {
+      void fetchBlockedUserIdsFromApi().then((ids) => {
+        if (!alive || !ids.length) return;
+        setBlockedUserIds((prev) => {
+          const merged = Array.from(new Set([...prev, ...ids]));
+          return merged.length === prev.length ? prev : merged;
+        });
+      });
+
+      void fetchChurchModerationFromApi().then((records) => {
+        if (!alive || !records.length) return;
+        const ids = records.map((row) => row.churchId).filter(Boolean);
+        setExcludedChurchIds((prev) => {
+          const merged = Array.from(new Set([...prev, ...ids]));
+          return merged.length === prev.length ? prev : merged;
+        });
+      });
+    }, { reason: "home-feed-blocked-users-sync" });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    return subscribeChurchFeedModeration(() => {
+      void getLocallyExcludedChurchIds().then((ids) => {
+        setExcludedChurchIds(ids);
+        setDisplayOrderRebuildRequested(true);
+      });
+    });
+  }, []);
+
   const reportablePostIdsDigest = useMemo(() => {
     return feedRows
       .filter((item) => isVideoPost(item) || isImagePost(item))
@@ -3022,9 +3131,11 @@ export default function HomeFeedScreen() {
   const handleReport = useCallback((item: any) => {
     const postId = normalizeCommentPostId(String(item?.id || "").trim());
     if (!postId) return;
+    const authorUserId = resolveRowAuthorUserId(item);
     setReportTargetPostId(postId);
+    setReportTargetAuthorUserId(authorUserId);
     setReportSheetOpen(true);
-  }, []);
+  }, [resolveRowAuthorUserId]);
 
   useEffect(() => {
     console.log("KRISTO_REPORT_OPEN_STATE", {
@@ -3042,6 +3153,22 @@ export default function HomeFeedScreen() {
     setHomeFeedReported(cleanId);
     setSuccessBanner("Report submitted. Thank you for helping keep Kristo safe.");
 
+    if (successBannerTimerRef.current) {
+      clearTimeout(successBannerTimerRef.current);
+    }
+    successBannerTimerRef.current = setTimeout(() => {
+      setSuccessBanner("");
+    }, 3200);
+  }, []);
+
+  const handleBlockedUser = useCallback((blockedUserId: string) => {
+    const uid = String(blockedUserId || "").trim();
+    if (!uid) return;
+    setBlockedUserIds((prev) => {
+      if (prev.includes(uid)) return prev;
+      return [...prev, uid];
+    });
+    setSuccessBanner("User blocked. Their content was removed from your feed.");
     if (successBannerTimerRef.current) {
       clearTimeout(successBannerTimerRef.current);
     }
@@ -3170,8 +3297,13 @@ export default function HomeFeedScreen() {
         <FeedReportSheet
           visible={reportSheetOpen}
           postId={reportTargetPostId}
-          onClose={() => setReportSheetOpen(false)}
+          authorUserId={reportTargetAuthorUserId}
+          onClose={() => {
+            setReportSheetOpen(false);
+            setReportTargetAuthorUserId("");
+          }}
           onReported={handleReported}
+          onBlocked={handleBlockedUser}
         />
       ) : null}
 
