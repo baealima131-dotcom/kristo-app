@@ -2932,7 +2932,15 @@ export default function MessageThreadScreen() {
           authRole.includes("church_admin") ||
           authRole.includes("admin");
 
-        if (!selfId || !currentMinistryId || isChurchLiveControlAssignment || isChurchAuthority) {
+        if (
+          !selfId ||
+          !currentMinistryId ||
+          isPersonToPersonDm ||
+          currentMinistryId.startsWith("dm:") ||
+          currentMinistryId.startsWith("dm_") ||
+          isChurchLiveControlAssignment ||
+          isChurchAuthority
+        ) {
           membershipMissCountRef.current = 0;
           if (alive) setMembershipAlive(true);
           return;
