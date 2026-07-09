@@ -3979,12 +3979,58 @@ const displayHeaderTitle = assignmentDisplayTitle;
     });
   }, [kristoSession, params, realMinistry, ministryAvatarFallback, routeAvatar]);
 
+  const peerUserIdForPresence = String((params as any)?.peerUserId || "").trim();
+  const [peerPresence, setPeerPresence] = useState<{ online: boolean; text: string; lastSeenAt?: number } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadPeerPresence() {
+      if (!isPersonToPersonDm || !peerUserIdForPresence) {
+        if (alive) setPeerPresence(null);
+        return;
+      }
+
+      try {
+        const res: any = await apiGet(
+          `/api/auth/presence?userId=${encodeURIComponent(peerUserIdForPresence)}`,
+          { headers: getKristoHeaders() as any }
+        );
+
+        const data = res?.data || {};
+        if (!alive) return;
+
+        setPeerPresence({
+          online: !!data.online,
+          text: String(data.text || (data.online ? "online now" : "last seen recently")),
+          lastSeenAt: Number(data.lastSeenAt || 0),
+        });
+      } catch {
+        if (alive) setPeerPresence({ online: false, text: "last seen recently" });
+      }
+    }
+
+    void loadPeerPresence();
+    const timer = setInterval(loadPeerPresence, 30000);
+
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [isPersonToPersonDm, peerUserIdForPresence]);
+
   const presence = useMemo(
-    () => ({
-      online: !isSuspended,
-      text: !isSuspended ? "online now" : "paused",
-    }),
-    [isSuspended]
+    () => {
+      if (isPersonToPersonDm) {
+        return peerPresence || { online: false, text: "last seen recently" };
+      }
+
+      return {
+        online: !isSuspended,
+        text: !isSuspended ? "online now" : "paused",
+      };
+    },
+    [isPersonToPersonDm, peerPresence, isSuspended]
   );
 
   const presenceMessages = useMemo(
@@ -3993,8 +4039,8 @@ const displayHeaderTitle = assignmentDisplayTitle;
         ? ["online now", "assignment room active", "team connected"]
         : isMinistryThread
           ? [isSuspended ? "paused" : "online now", `${currentRole} access`, isSuspended ? "ministry paused" : "ministry active"]
-          : ["online now", "member connected", "public profile"],
-    [isAssignmentThread, isMinistryThread, isSuspended, currentRole]
+          : [presence.text, "member connected", "public profile"],
+    [isAssignmentThread, isMinistryThread, isSuspended, currentRole, presence.text]
   );
 
   const presenceIndex = 0;
