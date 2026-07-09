@@ -9400,51 +9400,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                               />
                             </View>
                           </View>
-
-                          <View style={s.menuSectionBlock}>
-                            <Text style={t.menuSection}>Communication</Text>
-                            <View style={s.menuTileGrid}>
-                              <MenuTile
-                                icon="mail-outline"
-                                label="V2 • Targeted msg"
-                                v2Restricted
-                                compact
-                                onPress={() => {}}
-                              />
-
-                              <MenuTile
-                                icon="megaphone-outline"
-                                label="V2 • Broadcast"
-                                v2Restricted
-                                compact
-                                onPress={() => {}}
-                              />
-                            </View>
-                          </View>
                         </View>
 
                         <View style={s.assignmentMenuColumnRight}>
-                          <View style={s.menuSectionBlock}>
-                            <Text style={t.menuSection}>TLMC system</Text>
-                            <View style={s.menuTileGrid}>
-                              <MenuTile
-                                icon="sparkles-outline"
-                                label="V2 • TLMC panel"
-                                v2Restricted
-                                compact
-                                onPress={() => {}}
-                              />
-
-                              <MenuTile
-                                icon="checkbox-outline"
-                                label="V2 • Election"
-                                v2Restricted
-                                compact
-                                onPress={() => {}}
-                              />
-                            </View>
-                          </View>
-
                           <View style={s.menuSectionBlock}>
                             <Text style={t.menuSection}>Scheduling</Text>
                             <View style={s.menuTileGrid}>
@@ -9481,24 +9439,6 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                           <View style={s.menuSectionBlock}>
                             <Text style={t.menuSection}>Control</Text>
                             <View style={s.menuTileGrid}>
-                              <MenuTile
-                                icon="eye-outline"
-                                label="V2 • Visibility"
-                                activeGlow={ministryToolAccess.visibility}
-                                locked={!ministryToolAccess.visibility}
-                                disabled={actionLoading !== null}
-                                onPress={() => onThreadMenuAction("visibility")}
-                              />
-
-                              <MenuTile
-                                icon="shield-checkmark-outline"
-                                label="V2 • Permissions"
-                                activeGlow={ministryToolAccess.permissions}
-                                locked={!ministryToolAccess.permissions}
-                                disabled={actionLoading !== null}
-                                onPress={() => onThreadMenuAction("permissions")}
-                              />
-
                               <MenuTile
                                 icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"}
                                 label={actionLoading === "pause" ? "Pausing..." : "Pause assignment"}
