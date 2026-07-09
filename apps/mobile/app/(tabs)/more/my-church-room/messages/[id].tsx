@@ -8119,11 +8119,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             }
 
             if (router.canGoBack()) {
-              handleThreadBack();
+              router.back();
               return;
             }
 
-            router.replace("/(tabs)/profile/messages");
+            handleThreadBack();
           }}
           style={({ pressed }) => [s.hBtn, pressed ? ({ opacity: 0.85 } as ViewStyle) : null]}
         >
