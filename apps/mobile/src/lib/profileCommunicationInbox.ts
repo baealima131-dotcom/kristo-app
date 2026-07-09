@@ -57,11 +57,6 @@ export function countProfileCommunicationInboxFromItems(
     if (item.read) continue;
 
     const type = String(item.type || "");
-    if (type === "MinistryChatMessageCreated") {
-      unreadMessages += 1;
-      continue;
-    }
-
     if (type !== "PastorPrivateCallIncoming") continue;
 
     const callId = parsePrivateCallIdFromNotification(item);
