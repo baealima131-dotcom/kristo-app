@@ -4023,7 +4023,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
   const presence = useMemo(
     () => {
       if (isPersonToPersonDm) {
-        return peerPresence || { online: false, text: "last seen recently" };
+        return peerPresence || { online: false, text: "checking..." };
       }
 
       return {
@@ -4040,7 +4040,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
         ? ["online now", "assignment room active", "team connected"]
         : isMinistryThread
           ? [isSuspended ? "paused" : "online now", `${currentRole} access`, isSuspended ? "ministry paused" : "ministry active"]
-          : [presence.text, "member connected", "public profile"],
+          : [peerPresence ? presence.text : "checking...", "member connected", "public profile"],
     [isAssignmentThread, isMinistryThread, isSuspended, currentRole, presence.text]
   );
 
