@@ -8118,11 +8118,6 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               return;
             }
 
-            if (router.canGoBack()) {
-              router.back();
-              return;
-            }
-
             handleThreadBack();
           }}
           style={({ pressed }) => [s.hBtn, pressed ? ({ opacity: 0.85 } as ViewStyle) : null]}
