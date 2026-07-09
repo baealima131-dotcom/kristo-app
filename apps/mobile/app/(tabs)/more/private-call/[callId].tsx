@@ -13,13 +13,23 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { LiveKitRoom, useRoomContext } from "@livekit/react-native";
-import { RoomEvent } from "livekit-client";
+import { LiveKitRoom, registerGlobals, useRoomContext } from "@livekit/react-native";
+import { Room, RoomEvent } from "livekit-client";
 
 import LiveMainStageSaturnOrbit from "@/src/components/live/LiveMainStageSaturnOrbit";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { PrivateCallAudioRenderer } from "@/src/lib/privateCallAudioRenderer";
+import {
+  PrivateCallAudioRenderer,
+  PrivateCallLiveKitRoomDiagnostics,
+  ensurePrivateCallAudioSession,
+  logPrivateCallAudioLatencyDiag,
+} from "@/src/lib/privateCallAudioRenderer";
+import { logLiveKitTokenClaims } from "@/src/lib/liveKitTokenDecode";
 import { buildLiveKitRoomOptions } from "@/src/lib/liveKitVideoQuality";
+import {
+  buildPrivateCallConnectOptions,
+  logPrivateCallAutoSubscribeEffective,
+} from "@/src/lib/privateCallLiveKitConnect";
 import {
   acceptPrivateCall,
   declinePrivateCall,
@@ -27,15 +37,34 @@ import {
   fetchPrivateCallLiveKitCredentials,
   fetchPrivateCallSession,
   isPrivateCallTerminalStatus,
+  prefetchPrivateCallLiveKitCredentials,
   type PrivateCallSession,
 } from "@/src/lib/privateCallService";
 
 const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
-const LIVEKIT_CONNECT_OPTIONS = { autoSubscribe: true, maxRetries: 2, websocketTimeout: 15000 };
-const LIVEKIT_ROOM_OPTIONS = buildLiveKitRoomOptions();
+
+let privateCallLiveKitGlobalsReady = false;
+function ensurePrivateCallLiveKitGlobals() {
+  if (privateCallLiveKitGlobalsReady) return;
+  privateCallLiveKitGlobalsReady = true;
+  registerGlobals();
+}
+ensurePrivateCallLiveKitGlobals();
+
+type StableLiveKitBinding = {
+  callId: string;
+  roomName: string;
+  serverUrl: string;
+  token: string;
+};
+
+type ConnectedPeerDisplay = {
+  peerName: string;
+  peerAvatar?: string;
+};
 const AVATAR_SIZE = 112;
-const RINGING_SESSION_POLL_MS = 2000;
+const RINGING_SESSION_POLL_MS = 500;
 const CONNECTED_SESSION_POLL_MS = 1500;
 const REMOTE_DISCONNECT_GRACE_MS = 5000;
 const OUTGOING_RINGING_HAPTIC_MS = 1700;
@@ -301,18 +330,19 @@ function PrivateCallHangupSync({
 }
 
 function PrivateCallConnectedRoom({
-  session,
+  callId,
+  peerName,
+  peerAvatar,
   currentUserId,
   onEnd,
 }: {
-  session: PrivateCallSession;
+  callId: string;
+  peerName: string;
+  peerAvatar?: string;
   currentUserId: string;
   onEnd: () => void;
 }) {
   const room = useRoomContext();
-  const isCaller = session.callerUserId === currentUserId;
-  const peerName = isCaller ? session.pastorName : session.callerName;
-  const peerAvatar = isCaller ? session.pastorAvatarUrl : session.callerAvatarUrl;
 
   const [micEnabled, setMicEnabled] = useState(true);
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -347,7 +377,7 @@ function PrivateCallConnectedRoom({
     durationStartedRef.current = true;
 
     console.log("KRISTO_PRIVATE_CALL_DURATION_START", {
-      callId: session.id,
+      callId,
       currentUserId,
     });
 
@@ -362,12 +392,12 @@ function PrivateCallConnectedRoom({
     return () => {
       clearInterval(timer);
       console.log("KRISTO_PRIVATE_CALL_DURATION_STOP", {
-        callId: session.id,
+        callId,
         currentUserId,
         elapsedSec: elapsedSecRef.current,
       });
     };
-  }, [session.id, currentUserId]);
+  }, [callId, currentUserId]);
 
   const handleToggleMute = async () => {
     if (!room) return;
@@ -381,7 +411,7 @@ function PrivateCallConnectedRoom({
     }
 
     console.log("KRISTO_PRIVATE_CALL_MUTE_TOGGLE", {
-      callId: session.id,
+      callId,
       currentUserId,
       muted: !nextMicEnabled,
       micEnabled: nextMicEnabled,
@@ -420,6 +450,218 @@ function PrivateCallConnectedRoom({
   );
 }
 
+const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
+  binding,
+  peerUserId,
+  currentUserId,
+  peerDisplay,
+  onEndRef,
+  onRemoteTerminationRef,
+  registerRoomDisconnect,
+  latencyMarksRef,
+}: {
+  binding: StableLiveKitBinding;
+  peerUserId: string;
+  currentUserId: string;
+  peerDisplay: ConnectedPeerDisplay;
+  onEndRef: React.MutableRefObject<() => void>;
+  onRemoteTerminationRef: React.MutableRefObject<(source: string, status: string) => void>;
+  registerRoomDisconnect: (disconnect: (() => void) | null) => void;
+  latencyMarksRef: React.MutableRefObject<Record<string, number>>;
+}) {
+  const liveKitRoomKey = useMemo(
+    () => `${binding.callId}|${binding.roomName}|${binding.token}`,
+    [binding.callId, binding.roomName, binding.token]
+  );
+  const liveKitOptions = useMemo(() => buildLiveKitRoomOptions(), []);
+  const stableConnectOptions = useMemo(() => buildPrivateCallConnectOptions(), []);
+  const [ownedRoom, setOwnedRoom] = useState<Room | null>(null);
+  const connectSessionRef = useRef(0);
+  const mountLoggedRef = useRef("");
+
+  useEffect(() => {
+    console.log("KRISTO_PRIVATE_CALL_LIVEKIT_KEY", {
+      liveKitRoomKey,
+      callId: binding.callId,
+      roomName: binding.roomName,
+    });
+    console.log("KRISTO_PRIVATE_CALL_LIVEKIT_PROPS_STABLE", {
+      callId: binding.callId,
+      roomName: binding.roomName,
+      serverUrl: binding.serverUrl,
+      tokenLen: binding.token.length,
+      connect: true,
+      audioCapture: false,
+      autoSubscribe: stableConnectOptions.autoSubscribe,
+      ts: Date.now(),
+    });
+    logLiveKitTokenClaims(binding.token, {
+      source: "private-call-shell-bind",
+      callId: binding.callId,
+      roomName: binding.roomName,
+    });
+  }, [
+    binding.callId,
+    binding.roomName,
+    binding.serverUrl,
+    binding.token,
+    liveKitRoomKey,
+    stableConnectOptions.autoSubscribe,
+  ]);
+
+  useEffect(() => {
+    const session = ++connectSessionRef.current;
+    const room = new Room(liveKitOptions);
+
+    console.log("KRISTO_PRIVATE_CALL_ROOM_CONNECT_START", {
+      callId: binding.callId,
+      roomName: binding.roomName,
+      autoSubscribeRequested: stableConnectOptions.autoSubscribe,
+      ts: Date.now(),
+    });
+
+    void (async () => {
+      try {
+        await room.connect(binding.serverUrl, binding.token, stableConnectOptions);
+        if (session !== connectSessionRef.current) {
+          await room.disconnect(true);
+          return;
+        }
+
+        logPrivateCallAutoSubscribeEffective(room, {
+          callId: binding.callId,
+          roomName: binding.roomName,
+          source: "manual-room-connect",
+          requestedAutoSubscribe: stableConnectOptions.autoSubscribe,
+        });
+
+        await room.localParticipant.setMicrophoneEnabled(true).catch(() => {});
+        setOwnedRoom(room);
+      } catch (error: any) {
+        if (session !== connectSessionRef.current) return;
+        console.log("KRISTO_PRIVATE_CALL_ROOM_CONNECT_ERROR", {
+          callId: binding.callId,
+          roomName: binding.roomName,
+          error: String(error?.message || error),
+          ts: Date.now(),
+        });
+        setOwnedRoom(null);
+      }
+    })();
+
+    return () => {
+      connectSessionRef.current++;
+      void room.disconnect(true);
+      setOwnedRoom(null);
+    };
+  }, [
+    binding.callId,
+    binding.roomName,
+    binding.serverUrl,
+    binding.token,
+    liveKitOptions,
+    stableConnectOptions,
+  ]);
+
+  useEffect(() => {
+    if (mountLoggedRef.current === liveKitRoomKey) {
+      console.log("KRISTO_PRIVATE_CALL_ROOM_REMOUNT_BLOCKED", {
+        liveKitRoomKey,
+        callId: binding.callId,
+      });
+      return;
+    }
+    if (mountLoggedRef.current) {
+      console.log("KRISTO_PRIVATE_CALL_ROOM_UNMOUNT", {
+        liveKitRoomKey: mountLoggedRef.current,
+        callId: binding.callId,
+      });
+    }
+    mountLoggedRef.current = liveKitRoomKey;
+    const ts = Date.now();
+    latencyMarksRef.current.roomMount = ts;
+    logPrivateCallAudioLatencyDiag(latencyMarksRef.current, "room-mount", {
+      callId: binding.callId,
+    });
+    console.log("KRISTO_PRIVATE_CALL_ROOM_MOUNT", {
+      callId: binding.callId,
+      currentUserId,
+      liveKitRoomKey,
+      ts,
+    });
+
+    return () => {
+      console.log("KRISTO_PRIVATE_CALL_ROOM_UNMOUNT", {
+        callId: binding.callId,
+        liveKitRoomKey,
+        ts: Date.now(),
+      });
+      if (mountLoggedRef.current === liveKitRoomKey) {
+        mountLoggedRef.current = "";
+      }
+    };
+  }, [binding.callId, currentUserId, latencyMarksRef, liveKitRoomKey]);
+
+  const handleEnd = useCallback(() => {
+    onEndRef.current();
+  }, [onEndRef]);
+
+  const handleRemoteTermination = useCallback(
+    (source: string, status: string) => {
+      onRemoteTerminationRef.current(source, status);
+    },
+    [onRemoteTerminationRef]
+  );
+
+  if (!ownedRoom) {
+    return (
+      <View style={styles.centerStage}>
+        <ActivityIndicator color={GOLD} />
+      </View>
+    );
+  }
+
+  return (
+    <LiveKitRoom
+      key={liveKitRoomKey}
+      room={ownedRoom}
+      serverUrl={binding.serverUrl}
+      token={binding.token}
+      connect={true}
+      audio={false}
+      video={false}
+      connectOptions={stableConnectOptions as any}
+      options={liveKitOptions as any}
+    >
+      <PrivateCallLiveKitRoomDiagnostics
+        callId={binding.callId}
+        roomName={binding.roomName}
+        token={binding.token}
+        currentUserId={currentUserId}
+      />
+      <PrivateCallHangupSync
+        callId={binding.callId}
+        peerUserId={peerUserId}
+        onRemoteTermination={handleRemoteTermination}
+        registerRoomDisconnect={registerRoomDisconnect}
+      />
+      <PrivateCallAudioRenderer
+        callId={binding.callId}
+        roomName={binding.roomName}
+        currentUserId={currentUserId}
+        latencyMarksRef={latencyMarksRef}
+      />
+      <PrivateCallConnectedRoom
+        callId={binding.callId}
+        peerName={peerDisplay.peerName}
+        peerAvatar={peerDisplay.peerAvatar}
+        currentUserId={currentUserId}
+        onEnd={handleEnd}
+      />
+    </LiveKitRoom>
+  );
+});
+
 export default function PrivateCallScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -432,11 +674,20 @@ export default function PrivateCallScreen() {
   const [session, setSession] = useState<PrivateCallSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [liveKit, setLiveKit] = useState<{ url: string; token: string } | null>(null);
+  const [liveKitBinding, setLiveKitBinding] = useState<StableLiveKitBinding | null>(null);
+  const [connectedPeerDisplay, setConnectedPeerDisplay] = useState<ConnectedPeerDisplay | null>(
+    null
+  );
   const [actionBusy, setActionBusy] = useState(false);
   const exitHandledRef = useRef(false);
   const endRequestedRef = useRef(false);
   const roomDisconnectRef = useRef<(() => void) | null>(null);
+  const liveKitJoinRef = useRef(false);
+  const liveKitBindingRef = useRef<StableLiveKitBinding | null>(null);
+  const latencyMarksRef = useRef<Record<string, number>>({});
+  const sessionStatusRef = useRef<string>("");
+  const onEndRef = useRef<() => void>(() => {});
+  const onRemoteTerminationRef = useRef<(source: string, status: string) => void>(() => {});
 
   const role = useMemo(() => {
     if (!session || !currentUserId) return "unknown";
@@ -548,12 +799,90 @@ export default function PrivateCallScreen() {
     }
   }, [session, actionBusy, currentUserId, exitCallScreen]);
 
+  onEndRef.current = handleEndCall;
+  onRemoteTerminationRef.current = handleRemoteTermination;
+
+  const resolveConnectedPeerDisplay = useCallback(
+    (joinSession: PrivateCallSession): ConnectedPeerDisplay => {
+      const isCaller = joinSession.callerUserId === currentUserId;
+      return {
+        peerName: isCaller ? joinSession.pastorName : joinSession.callerName,
+        peerAvatar: isCaller ? joinSession.pastorAvatarUrl : joinSession.callerAvatarUrl,
+      };
+    },
+    [currentUserId]
+  );
+
   const peerUserId = useMemo(() => {
     if (!session || !currentUserId) return "";
     if (session.callerUserId === currentUserId) return session.pastorUserId;
     if (session.pastorUserId === currentUserId) return session.callerUserId;
     return "";
   }, [session, currentUserId]);
+
+  useEffect(() => {
+    liveKitJoinRef.current = false;
+    liveKitBindingRef.current = null;
+    latencyMarksRef.current = {};
+    sessionStatusRef.current = "";
+    setLiveKitBinding(null);
+    setConnectedPeerDisplay(null);
+  }, [callId]);
+
+  const commitLiveKitBinding = useCallback(
+    (joinSession: PrivateCallSession, creds: { url: string; token: string }) => {
+      if (liveKitBindingRef.current) {
+        console.log("KRISTO_PRIVATE_CALL_ROOM_REMOUNT_BLOCKED", {
+          callId: joinSession.id,
+          reason: "binding-already-committed",
+        });
+        return;
+      }
+
+      const binding: StableLiveKitBinding = {
+        callId: joinSession.id,
+        roomName: joinSession.roomName,
+        serverUrl: creds.url,
+        token: creds.token,
+      };
+      liveKitBindingRef.current = binding;
+      setLiveKitBinding(binding);
+      setConnectedPeerDisplay(resolveConnectedPeerDisplay(joinSession));
+    },
+    [resolveConnectedPeerDisplay]
+  );
+
+  const startLiveKitJoin = useCallback(
+    async (joinSession: PrivateCallSession, source: string) => {
+      if (liveKitJoinRef.current || liveKitBindingRef.current) return;
+      liveKitJoinRef.current = true;
+
+      const marks = latencyMarksRef.current;
+      logPrivateCallAudioLatencyDiag(marks, "livekit-join-start", { source });
+
+      void ensurePrivateCallAudioSession(joinSession.id);
+
+      const creds = await fetchPrivateCallLiveKitCredentials({
+        roomName: joinSession.roomName,
+        identity: currentUserId,
+        source: `private-call-join-${source}`,
+      });
+
+      marks.tokenFetchDone = Date.now();
+      logPrivateCallAudioLatencyDiag(marks, "token-fetch-complete", {
+        source,
+        ok: !!creds,
+      });
+
+      if (!creds) {
+        liveKitJoinRef.current = false;
+        return;
+      }
+
+      commitLiveKitBinding(joinSession, creds);
+    },
+    [commitLiveKitBinding, currentUserId]
+  );
 
   useEffect(() => {
     let alive = true;
@@ -568,6 +897,10 @@ export default function PrivateCallScreen() {
           return;
         }
         setSession(initial);
+        sessionStatusRef.current = initial.status;
+        if (initial.status === "accepted") {
+          void startLiveKitJoin(initial, "initial-load");
+        }
         if (initial.pastorUserId === currentUserId) {
           console.log("KRISTO_PRIVATE_CALL_RECEIVER_SCREEN_OPENED", {
             callId: initial.id,
@@ -589,7 +922,22 @@ export default function PrivateCallScreen() {
     return () => {
       alive = false;
     };
-  }, [callId]);
+  }, [callId, currentUserId, startLiveKitJoin]);
+
+  useEffect(() => {
+    if (!session) return;
+    sessionStatusRef.current = session.status;
+  }, [session?.status]);
+
+  useEffect(() => {
+    if (!session?.roomName || session.status !== "ringing") return;
+    prefetchPrivateCallLiveKitCredentials({
+      roomName: session.roomName,
+      identity: currentUserId,
+      source: "private-call-ringing",
+    });
+    void ensurePrivateCallAudioSession(session.id);
+  }, [session?.id, session?.roomName, session?.status, currentUserId]);
 
   useEffect(() => {
     if (!session || loading || isPrivateCallTerminalStatus(session.status)) return;
@@ -600,10 +948,35 @@ export default function PrivateCallScreen() {
     const poll = async () => {
       const next = await fetchPrivateCallSession(callId);
       if (!next) return;
-      setSession(next);
+
       if (isPrivateCallTerminalStatus(next.status)) {
+        setSession(next);
         handleRemoteTermination("session-poll", next.status);
+        return;
       }
+
+      if (next.status === "accepted") {
+        const wasRinging = sessionStatusRef.current === "ringing";
+        if (wasRinging) {
+          setSession(next);
+          sessionStatusRef.current = next.status;
+        }
+        if (wasRinging && !liveKitJoinRef.current && !liveKitBindingRef.current) {
+          latencyMarksRef.current.acceptDetected = Date.now();
+          logPrivateCallAudioLatencyDiag(latencyMarksRef.current, "accept-detected-poll", {
+            callId: next.id,
+          });
+          void startLiveKitJoin(next, "poll-accept");
+        }
+        return;
+      }
+
+      setSession((prev) => {
+        if (!prev) return next;
+        if (prev.status === next.status && prev.updatedAt === next.updatedAt) return prev;
+        return next;
+      });
+      sessionStatusRef.current = next.status;
     };
 
     void poll();
@@ -612,43 +985,42 @@ export default function PrivateCallScreen() {
     }, pollMs);
 
     return () => clearInterval(timer);
-  }, [callId, loading, session?.status, handleRemoteTermination]);
+  }, [callId, loading, session?.status, handleRemoteTermination, startLiveKitJoin]);
 
   useEffect(() => {
     if (loading || !session || exitHandledRef.current) return;
     if (!isPrivateCallTerminalStatus(session.status)) return;
     handleRemoteTermination("session-loaded-terminal", session.status);
-  }, [loading, session, handleRemoteTermination]);
+  }, [loading, session?.status, handleRemoteTermination]);
 
   useEffect(() => {
-    if (!session || session.status !== "accepted" || liveKit) return;
-
-    let alive = true;
-    (async () => {
-      const creds = await fetchPrivateCallLiveKitCredentials({
-        roomName: session.roomName,
-        identity: currentUserId,
-      });
-      if (!alive || !creds) return;
-      setLiveKit(creds);
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [session?.status, session?.roomName, currentUserId, liveKit]);
+    if (!session || session.status !== "accepted" || liveKitBindingRef.current) return;
+    void startLiveKitJoin(session, "accepted-status");
+  }, [session?.id, session?.roomName, session?.status, startLiveKitJoin]);
 
   const handleAccept = async () => {
     if (!session || actionBusy) return;
+    const acceptTapTs = Date.now();
+    latencyMarksRef.current.acceptTap = acceptTapTs;
+    console.log("KRISTO_PRIVATE_CALL_ACCEPT_TAP", {
+      callId: session.id,
+      currentUserId,
+      ts: acceptTapTs,
+    });
+    logPrivateCallAudioLatencyDiag(latencyMarksRef.current, "accept-tap");
+
     setActionBusy(true);
     try {
       const res: any = await acceptPrivateCall(session.id);
       if (res?.ok && res?.data) {
         setSession(res.data);
+        sessionStatusRef.current = res.data.status;
         console.log("KRISTO_PRIVATE_CALL_ACCEPTED", {
           callId: session.id,
           pastorUserId: currentUserId,
+          ts: Date.now(),
         });
+        void startLiveKitJoin(res.data, "accept-response");
       }
     } finally {
       setActionBusy(false);
@@ -714,40 +1086,24 @@ export default function PrivateCallScreen() {
     );
   }
 
-  if (session.status === "accepted" && liveKit) {
+  if (session.status === "accepted" && liveKitBinding && connectedPeerDisplay) {
     return (
       <View style={[styles.screen, { paddingTop: insets.top }]}>
-        <LiveKitRoom
-          serverUrl={liveKit.url}
-          token={liveKit.token}
-          connect
-          audio
-          video={false}
-          connectOptions={LIVEKIT_CONNECT_OPTIONS as any}
-          options={LIVEKIT_ROOM_OPTIONS as any}
-        >
-          <PrivateCallHangupSync
-            callId={session.id}
-            peerUserId={peerUserId}
-            onRemoteTermination={handleRemoteTermination}
-            registerRoomDisconnect={registerRoomDisconnect}
-          />
-          <PrivateCallAudioRenderer
-            callId={session.id}
-            roomName={session.roomName}
-            currentUserId={currentUserId}
-          />
-          <PrivateCallConnectedRoom
-            session={session}
-            currentUserId={currentUserId}
-            onEnd={handleEnd}
-          />
-        </LiveKitRoom>
+        <PrivateCallLiveKitShell
+          binding={liveKitBinding}
+          peerUserId={peerUserId}
+          currentUserId={currentUserId}
+          peerDisplay={connectedPeerDisplay}
+          onEndRef={onEndRef}
+          onRemoteTerminationRef={onRemoteTerminationRef}
+          registerRoomDisconnect={registerRoomDisconnect}
+          latencyMarksRef={latencyMarksRef}
+        />
       </View>
     );
   }
 
-  if (session.status === "accepted" && !liveKit) {
+  if (session.status === "accepted" && !liveKitBinding) {
     return (
       <View style={[styles.screen, { paddingTop: insets.top + 24 }]}>
         <ActivityIndicator color={GOLD} />
