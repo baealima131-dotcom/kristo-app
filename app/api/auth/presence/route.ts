@@ -12,7 +12,7 @@ const ONLINE_WINDOW_MS = 20_000;
 const MESSAGE_LIST_ROOM = "__messages_list__";
 
 function text(lastSeenAt: number, now: number) {
-  if (!lastSeenAt) return "last seen recently";
+  if (!lastSeenAt) return "not active in messages yet";
 
   const ageMs = Math.max(0, now - lastSeenAt);
 
