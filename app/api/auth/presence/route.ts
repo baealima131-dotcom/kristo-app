@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 function presenceText(lastSeenAt: number, now: number) {
   const ageMs = Math.max(0, now - Number(lastSeenAt || 0));
-  if (lastSeenAt > 0 && ageMs <= 60_000) return "online now";
+  if (lastSeenAt > 0 && ageMs <= 10_000) return "online now";
   if (!lastSeenAt) return "last seen recently";
 
   const min = Math.floor(ageMs / 60_000);
@@ -34,7 +34,7 @@ export async function GET(req: Request) {
 
   const now = Date.now();
   const lastSeenAt = Number(user?.lastSeenAt || 0);
-  const online = lastSeenAt > 0 && now - lastSeenAt <= 60_000;
+  const online = lastSeenAt > 0 && now - lastSeenAt <= 10_000;
 
   return NextResponse.json({
     ok: true,

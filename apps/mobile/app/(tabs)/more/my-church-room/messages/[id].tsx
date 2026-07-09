@@ -4011,7 +4011,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
     }
 
     void loadPeerPresence();
-    const timer = setInterval(loadPeerPresence, 30000);
+    const timer = setInterval(loadPeerPresence, 5000);
 
     return () => {
       alive = false;
