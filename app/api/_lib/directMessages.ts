@@ -14,6 +14,7 @@ export type DirectMessageThreadRecord = {
   createdAt: number;
   updatedAt: number;
   readAtByUserId: Record<string, number>;
+  createdByUserId?: string;
 };
 
 export type DirectMessagePeerPreview = {
@@ -290,6 +291,7 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
     createdAt: now,
     updatedAt: now,
     readAtByUserId: {},
+    createdByUserId: viewerUserId,
   };
   store[key] = record;
   await writeThreadStore(store);
@@ -515,6 +517,10 @@ export async function listDirectMessageInbox(args: {
       const profile = await getProfile(peerUserId).catch(() => null);
       const church = await getChurchById(churchId).catch(() => null);
       const lastMessage = await lastMessageForThread(churchId, thread.roomId);
+      const createdByUserId = normUserId((thread as any)?.createdByUserId || "");
+      const isEmptyStarterThread = !lastMessage && createdByUserId === viewerUserId;
+      if (!lastMessage && !isEmptyStarterThread) return null;
+
       const readAt = Number(thread.readAtByUserId?.[viewerUserId] || 0);
       const unreadCount = await unreadCountForThread({
         churchId,
@@ -539,5 +545,5 @@ export async function listDirectMessageInbox(args: {
     })
   );
 
-  return items.sort((a, b) => b.timestampMs - a.timestampMs);
+  return items.filter(Boolean).sort((a, b) => b.timestampMs - a.timestampMs) as DirectMessageInboxItem[];
 }
