@@ -11,7 +11,7 @@ const MESSAGE_LIST_ROOM = "__messages_list__";
 type PresenceStore = Record<string, Record<string, number>>;
 
 function text(lastSeenAt: number, now: number) {
-  if (!lastSeenAt) return "offline";
+  if (!lastSeenAt) return "last seen recently";
   const ageMs = Math.max(0, now - lastSeenAt);
   if (ageMs <= ONLINE_WINDOW_MS) return "online now";
   const min = Math.floor(ageMs / 60_000);
