@@ -19,20 +19,25 @@ import {
   fetchPostReportStatus,
   submitHomeFeedReport,
 } from "@/src/lib/homeFeedReport";
+import { blockHomeFeedUser } from "@/src/lib/homeFeedModeration";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 
 type Props = {
   visible: boolean;
   postId: string;
+  authorUserId?: string;
   onClose: () => void;
   onReported: (postId: string) => void;
+  onBlocked?: (blockedUserId: string) => void;
 };
 
 export const FeedReportSheet = memo(function FeedReportSheet({
   visible,
   postId,
+  authorUserId = "",
   onClose,
   onReported,
+  onBlocked,
 }: Props) {
   const insets = useSafeAreaInsets();
   const [loadingStatus, setLoadingStatus] = useState(false);
@@ -41,6 +46,7 @@ export const FeedReportSheet = memo(function FeedReportSheet({
   const [selectedReason, setSelectedReason] = useState<HomeFeedReportReason | null>(null);
   const [details, setDetails] = useState("");
   const [error, setError] = useState("");
+  const [blocking, setBlocking] = useState(false);
 
   useEffect(() => {
     console.log("KRISTO_REPORT_SHEET_VISIBLE", {
@@ -107,6 +113,24 @@ export const FeedReportSheet = memo(function FeedReportSheet({
     onReported,
     onClose,
   ]);
+
+  const handleBlockUser = useCallback(async () => {
+    const targetUserId = String(authorUserId || "").trim();
+    if (!targetUserId || blocking) return;
+    setBlocking(true);
+    setError("");
+    const result = await blockHomeFeedUser({
+      blockedUserId: targetUserId,
+      reason: "User blocked from Home Feed",
+    });
+    setBlocking(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    onBlocked?.(targetUserId);
+    onClose();
+  }, [authorUserId, blocking, onBlocked, onClose]);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -181,6 +205,20 @@ export const FeedReportSheet = memo(function FeedReportSheet({
             </ScrollView>
 
             <View style={[styles.footer, { paddingBottom: insets.bottom + 28 }]}>
+              {authorUserId ? (
+                <Pressable
+                  style={[styles.blockBtn, blocking ? styles.submitBtnDisabled : null]}
+                  disabled={blocking}
+                  onPress={handleBlockUser}
+                >
+                  {blocking ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.blockBtnText}>Block user</Text>
+                  )}
+                </Pressable>
+              ) : null}
+
               <Pressable
                 style={[
                   styles.submitBtn,
@@ -353,6 +391,20 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: "center",
+  },
+  blockBtn: {
+    backgroundColor: "rgba(255,107,107,0.24)",
+    borderColor: "rgba(255,107,107,0.48)",
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  blockBtnText: {
+    color: "#FFD0D0",
+    fontSize: 14,
+    fontWeight: "900",
   },
   submitBtnDisabled: {
     opacity: 0.55,

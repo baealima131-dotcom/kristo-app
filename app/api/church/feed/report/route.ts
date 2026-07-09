@@ -8,6 +8,7 @@ import {
   isFeedReportDatabaseError,
   submitFeedPostReport,
 } from "@/app/api/_lib/store/feedReportDb";
+import { createModerationEvent } from "@/app/api/_lib/store/moderationEventsDb";
 
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -97,6 +98,15 @@ export async function POST(req: NextRequest) {
       reason,
       details,
     });
+
+    await createModerationEvent({
+      eventType: "report_post",
+      actorUserId: reporterUserId,
+      actorChurchId: ctxOrRes.churchId || "",
+      targetPostId: postId,
+      reason,
+      details,
+    }).catch(() => {});
 
     if (result.duplicate) {
       return json({

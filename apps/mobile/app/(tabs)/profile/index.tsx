@@ -73,6 +73,10 @@ import {
   loadOfflineAgentProfileInvites,
   respondOfflineAgentProfileInvite,
 } from "@/src/lib/profileOfflineAgentInvites";
+import {
+  fetchProfileCommunicationInboxSnapshot,
+  formatProfileCommunicationBadgeCount,
+} from "@/src/lib/profileCommunicationInbox";
 
 type AuthProfile = {
   userId: string;
@@ -510,6 +514,7 @@ export default function MeScreen() {
   const [identityModal, setIdentityModal] = useState<{ label: string; value: string } | null>(null);
   const [claimedModalOpen, setClaimedModalOpen] = useState(false);
   const [claimedFeedTick, setClaimedFeedTick] = useState(0);
+  const [communicationInboxCount, setCommunicationInboxCount] = useState(0);
   const insets = useSafeAreaInsets();
   const { session, setSession } = useKristoSession();
   const userId = String(session?.userId || "").trim();
@@ -888,9 +893,31 @@ export default function MeScreen() {
     } catch {}
   }, [session, setSession]);
 
+  const refreshCommunicationInbox = useCallback(async () => {
+    if (isSessionExitInProgress()) return;
+    if (shouldPauseBackgroundProfileRefresh()) return;
+
+    const uid = String(session?.userId || "").trim();
+    if (!uid) {
+      setCommunicationInboxCount(0);
+      return;
+    }
+
+    const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+    if (!base) return;
+
+    try {
+      const snapshot = await fetchProfileCommunicationInboxSnapshot({ base });
+      setCommunicationInboxCount(snapshot.total);
+    } catch {
+      // Keep the last known server-backed count on transient failures.
+    }
+  }, [session?.userId]);
+
   useEffect(() => {
     if (!session?.userId) return;
     void refreshInvitations();
+    void refreshCommunicationInbox();
 
     const unsubPayments = subscribePayments(() => {
       setPaymentsState(getPaymentsState());
@@ -899,7 +926,7 @@ export default function MeScreen() {
     return () => {
       unsubPayments();
     };
-  }, [session?.userId, refreshInvitations]);
+  }, [session?.userId, refreshInvitations, refreshCommunicationInbox]);
 
   const hasProfileCacheRef = React.useRef(Boolean(profileCachePeek));
 
@@ -1248,6 +1275,7 @@ export default function MeScreen() {
   useFocusEffect(
     useCallback(() => {
       void refreshInvitations();
+      void refreshCommunicationInbox();
 
       void (async () => {
         const draft = userId ? await loadProfileDraft(userId) : null;
@@ -1264,7 +1292,7 @@ export default function MeScreen() {
 
       void refreshActiveChurch();
       void loadProfileLight({ silent: true });
-    }, [userId, refreshActiveChurch, loadProfileLight, refreshInvitations])
+    }, [userId, refreshActiveChurch, loadProfileLight, refreshInvitations, refreshCommunicationInbox])
   );
 
   useEffect(() => {
@@ -1273,11 +1301,12 @@ export default function MeScreen() {
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active" && !isSessionExitInProgress()) {
         void refreshInvitations();
+        void refreshCommunicationInbox();
       }
     });
 
     return () => sub.remove();
-  }, [session?.userId, refreshInvitations]);
+  }, [session?.userId, refreshInvitations, refreshCommunicationInbox]);
 
   useEffect(() => {
     if (!session?.userId) return;
@@ -1605,6 +1634,7 @@ const resolvedName = useMemo(() => {
 
       console.log("[ProfileTab] silent refresh");
       await refreshInvitations();
+      await refreshCommunicationInbox();
       await loadProfileLight({ silent: true, bypassThrottle: true });
       setClaimedFeedTick((v) => v + 1);
     },
@@ -1820,11 +1850,23 @@ const resolvedName = useMemo(() => {
                   <Text style={s.profileQuickSub}>Schedules</Text>
                 </Pressable>
 
-                <Pressable style={s.profileQuickCard} onPress={() => Alert.alert("Friends", "Friends connection screen is next.")}>
-                  <Ionicons name="people-outline" size={22} color="#F4D06F" />
-                  <Text style={s.profileQuickTitle}>Friends</Text>
-                  <Text style={s.profileQuickValue}>{user.following}</Text>
-                  <Text style={s.profileQuickSub}>Connected</Text>
+                <Pressable
+                  style={[s.profileQuickCard, s.profileQuickCardInbox]}
+                  onPress={() => router.push("/(tabs)/profile/messages" as any)}
+                >
+                  <View style={s.profileCommsIconWrap}>
+                    <Ionicons name="chatbubble-ellipses" size={44} color="#F4D06F" />
+                    <View style={s.profileCommsCallGlyph} pointerEvents="none">
+                      <Ionicons name="call" size={16} color="#FFFFFF" />
+                    </View>
+                    {communicationInboxCount > 0 ? (
+                      <View style={s.profileCommsBadge} pointerEvents="none">
+                        <Text style={s.profileCommsBadgeText}>
+                          {formatProfileCommunicationBadgeCount(communicationInboxCount)}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
                 </Pressable>
               </View>
             )}
@@ -3620,6 +3662,49 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.045)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.09)",
+  },
+  profileQuickCardInbox: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  profileCommsIconWrap: {
+    width: 68,
+    height: 68,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  profileCommsCallGlyph: {
+    position: "absolute",
+    right: -2,
+    bottom: 3,
+    width: 27,
+    height: 27,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(10,18,32,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(244,208,111,0.42)",
+  },
+  profileCommsBadge: {
+    position: "absolute",
+    top: -3,
+    right: -5,
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FF3B30",
+    borderWidth: 1.5,
+    borderColor: "rgba(10,18,32,0.95)",
+  },
+  profileCommsBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "900",
+    lineHeight: 14,
   },
   profileQuickTitle: {
     color: "#F4D06F",

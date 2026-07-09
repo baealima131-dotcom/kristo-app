@@ -357,6 +357,8 @@ export async function unblockHomeFeedChurch(churchId: string) {
   }
 
   console.log("KRISTO_CHURCH_UNBLOCK_REQUESTED", { churchId: id, userId: session.userId });
+
+  try {
     const res: any = await apiDelete(
       `/api/church/feed/block-church?churchId=${encodeURIComponent(id)}`,
       { headers: authedHeaders() }
