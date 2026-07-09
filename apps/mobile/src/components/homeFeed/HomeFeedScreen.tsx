@@ -2876,13 +2876,10 @@ export default function HomeFeedScreen() {
         });
       });
 
-      void fetchChurchModerationFromApi().then((records) => {
-        if (!alive || !records.length) return;
+      void fetchChurchModerationFromApi().then(({ ok, records }) => {
+        if (!alive || !ok) return;
         const ids = records.map((row) => row.churchId).filter(Boolean);
-        setExcludedChurchIds((prev) => {
-          const merged = Array.from(new Set([...prev, ...ids]));
-          return merged.length === prev.length ? prev : merged;
-        });
+        setExcludedChurchIds(ids);
       });
     }, { reason: "home-feed-blocked-users-sync" });
 
@@ -2899,6 +2896,17 @@ export default function HomeFeedScreen() {
       });
     });
   }, []);
+
+  useEffect(() => {
+    if (!excludedChurchIdSet.size && feedRows.length === displayFeedRows.length) return;
+    console.log("KRISTO_HOME_FEED_CHURCH_FILTER_APPLIED", {
+      excludedChurchIds: Array.from(excludedChurchIdSet),
+      excludedCount: excludedChurchIdSet.size,
+      beforeCount: feedRows.length,
+      afterCount: displayFeedRows.length,
+      removedCount: Math.max(0, feedRows.length - displayFeedRows.length),
+    });
+  }, [excludedChurchIdSet, feedRows.length, displayFeedRows.length]);
 
   const reportablePostIdsDigest = useMemo(() => {
     return feedRows

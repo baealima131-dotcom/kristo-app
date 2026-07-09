@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -39,7 +39,9 @@ import {
   getLocalChurchModerationAction,
   hideHomeFeedChurch,
   isViewerOwnChurchAdmin,
+  normalizeFeedChurchId,
   type ChurchFeedActionType,
+  unhideHomeFeedChurch,
   unblockHomeFeedChurch,
 } from "@/src/lib/homeFeedModeration";
 
@@ -194,15 +196,36 @@ export default function ChurchProfileScreen() {
   );
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
   const [safetyBusy, setSafetyBusy] = useState(false);
+  const [safetyBanner, setSafetyBanner] = useState("");
+  const safetyBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showSafetyBanner = useCallback((message: string) => {
+    setSafetyBanner(message);
+    if (safetyBannerTimerRef.current) {
+      clearTimeout(safetyBannerTimerRef.current);
+    }
+    safetyBannerTimerRef.current = setTimeout(() => {
+      setSafetyBanner("");
+    }, 3200);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (safetyBannerTimerRef.current) {
+        clearTimeout(safetyBannerTimerRef.current);
+      }
+    };
+  }, []);
 
   const refreshChurchModeration = useCallback(async () => {
     if (!churchId) return;
+    const normalizedId = normalizeFeedChurchId(churchId);
     const local = await getLocalChurchModerationAction(churchId);
     setChurchModerationAction(local);
-    void fetchChurchModerationFromApi().then((records) => {
-      const match = records.find((row) => row.churchId === churchId.toUpperCase());
-      setChurchModerationAction(match?.actionType || null);
-    });
+    const { ok, records } = await fetchChurchModerationFromApi();
+    if (!ok) return;
+    const match = records.find((row) => row.churchId === normalizedId);
+    setChurchModerationAction(match?.actionType || null);
   }, [churchId]);
 
   const loadProfile = useCallback(async () => {
@@ -291,30 +314,59 @@ export default function ChurchProfileScreen() {
         return;
       }
       setChurchModerationAction("hide");
-      Alert.alert("Posts hidden", "Posts from this church were removed from your Home Feed.");
+      showSafetyBanner("Posts from this church were hidden from your Home Feed.");
     } finally {
       setSafetyBusy(false);
     }
-  }, [profile?.id, safetyBusy]);
+  }, [profile?.id, safetyBusy, showSafetyBanner]);
 
   const runBlockChurch = useCallback(async () => {
     if (!profile?.id || safetyBusy) return;
     setSafetyBusy(true);
     try {
+      if (following) {
+        try {
+          const unfollowResult = await setChurchFollow(profile.id, false);
+          if (unfollowResult.ok) {
+            setFollowing(false);
+            setProfile((prev) => {
+              if (!prev) return prev;
+              const current = Number(prev.followerCount ?? 0);
+              return { ...prev, followerCount: Math.max(0, current - 1) };
+            });
+          }
+        } catch {}
+      }
+
       const result = await blockHomeFeedChurch({ churchId: profile.id });
       if (!result.ok) {
         Alert.alert("Could not block church", result.error);
         return;
       }
       setChurchModerationAction("block");
-      Alert.alert(
-        "Church blocked",
-        "Content from this church is hidden from your feed and connect actions are disabled."
+      showSafetyBanner(
+        "Church blocked. Content is hidden from your feed and connect actions are disabled."
       );
     } finally {
       setSafetyBusy(false);
     }
-  }, [profile?.id, safetyBusy]);
+  }, [following, profile?.id, safetyBusy, showSafetyBanner]);
+
+  const runUnhideChurch = useCallback(async () => {
+    if (!profile?.id || safetyBusy) return;
+    setSafetyBusy(true);
+    try {
+      const result = await unhideHomeFeedChurch(profile.id);
+      if (!result.ok) {
+        Alert.alert("Could not unhide church", result.error);
+        return;
+      }
+      setChurchModerationAction(null);
+      showSafetyBanner("Posts from this church can appear in your Home Feed again.");
+    } finally {
+      setSafetyBusy(false);
+    }
+  }, [profile?.id, safetyBusy, showSafetyBanner]);
 
   const runUnblockChurch = useCallback(async () => {
     if (!profile?.id || safetyBusy) return;
@@ -326,11 +378,70 @@ export default function ChurchProfileScreen() {
         return;
       }
       setChurchModerationAction(null);
-      Alert.alert("Church unblocked", "You can follow or join this church again.");
+      showSafetyBanner("Church unblocked. You can follow or join again.");
     } finally {
       setSafetyBusy(false);
     }
-  }, [profile?.id, safetyBusy]);
+  }, [profile?.id, safetyBusy, showSafetyBanner]);
+
+  const requestHideChurch = useCallback(() => {
+    Alert.alert(
+      "Hide posts from this church?",
+      "Posts from this church will be removed from your Home Feed. You can still visit this profile.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Hide posts",
+          onPress: () =>
+            confirmOwnChurchSafetyAction("Hiding posts", () => void runHideChurch()),
+        },
+      ]
+    );
+  }, [confirmOwnChurchSafetyAction, runHideChurch]);
+
+  const requestBlockChurch = useCallback(() => {
+    Alert.alert(
+      "Block this church?",
+      "All posts from this church will be removed from your Home Feed. Follow and Join will be disabled until you unblock.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Block church",
+          style: "destructive",
+          onPress: () =>
+            confirmOwnChurchSafetyAction("Blocking this church", () => void runBlockChurch()),
+        },
+      ]
+    );
+  }, [confirmOwnChurchSafetyAction, runBlockChurch]);
+
+  const requestUnhideChurch = useCallback(() => {
+    Alert.alert(
+      "Unhide posts from this church?",
+      "Posts from this church can appear in your Home Feed again.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Unhide posts", onPress: () => void runUnhideChurch() },
+      ]
+    );
+  }, [runUnhideChurch]);
+
+  const requestUnblockChurch = useCallback(() => {
+    Alert.alert(
+      "Unblock this church?",
+      "You will be able to follow or join this church again.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Unblock church", onPress: () => void runUnblockChurch() },
+      ]
+    );
+  }, [runUnblockChurch]);
+
+  const safetyPillLabel = useMemo(() => {
+    if (churchBlocked) return "Blocked";
+    if (churchHidden) return "Hidden";
+    return "Safety";
+  }, [churchBlocked, churchHidden]);
 
   const openSafetyMenu = useCallback(() => {
     if (!profile?.id) return;
@@ -338,21 +449,30 @@ export default function ChurchProfileScreen() {
     const options: Array<{ label: string; onPress?: () => void; style?: "cancel" | "destructive" }> =
       [];
 
-    if (!churchBlocked) {
+    if (churchBlocked) {
       options.push({
-        label: "Hide posts from this church",
-        onPress: () => confirmOwnChurchSafetyAction("Hiding posts", () => void runHideChurch()),
+        label: "Unblock this church",
+        onPress: requestUnblockChurch,
+      });
+    } else if (churchHidden) {
+      options.push({
+        label: "Unhide posts from this church",
+        onPress: requestUnhideChurch,
       });
       options.push({
         label: "Block this church",
         style: "destructive",
-        onPress: () =>
-          confirmOwnChurchSafetyAction("Blocking this church", () => void runBlockChurch()),
+        onPress: requestBlockChurch,
       });
     } else {
       options.push({
-        label: "Unblock church",
-        onPress: () => void runUnblockChurch(),
+        label: "Hide posts from this church",
+        onPress: requestHideChurch,
+      });
+      options.push({
+        label: "Block this church",
+        style: "destructive",
+        onPress: requestBlockChurch,
       });
     }
 
@@ -362,25 +482,19 @@ export default function ChurchProfileScreen() {
     });
     options.push({ label: "Cancel", style: "cancel" });
 
-    Alert.alert(
-      "Safety",
-      churchHidden && !churchBlocked
-        ? "Posts from this church are hidden from your Home Feed."
-        : undefined,
-      options.map((option) => ({
-        text: option.label,
-        style: option.style,
-        onPress: option.onPress,
-      }))
-    );
+    Alert.alert("Church safety", undefined, options.map((option) => ({
+      text: option.label,
+      style: option.style,
+      onPress: option.onPress,
+    })));
   }, [
     profile?.id,
     churchBlocked,
     churchHidden,
-    confirmOwnChurchSafetyAction,
-    runHideChurch,
-    runBlockChurch,
-    runUnblockChurch,
+    requestHideChurch,
+    requestBlockChurch,
+    requestUnhideChurch,
+    requestUnblockChurch,
   ]);
 
   const handleJoin = useCallback(async () => {
@@ -605,16 +719,42 @@ export default function ChurchProfileScreen() {
           onPress={openSafetyMenu}
           disabled={!profile || safetyBusy}
           style={({ pressed }) => [
-            styles.menuBtn,
-            pressed && !safetyBusy && { opacity: 0.85 },
-            safetyBusy && { opacity: 0.5 },
+            styles.safetyBtn,
+            churchBlocked && styles.safetyBtnBlocked,
+            churchHidden && !churchBlocked && styles.safetyBtnHidden,
+            pressed && !safetyBusy && styles.safetyBtnPressed,
+            safetyBusy && styles.safetyBtnBusy,
           ]}
           accessibilityRole="button"
-          accessibilityLabel="Safety options"
+          accessibilityLabel="Church safety options"
         >
-          <Ionicons name="ellipsis-horizontal" size={20} color={GOLD} />
+          <View style={styles.safetyBtnInner}>
+            <Ionicons
+              name={churchBlocked ? "warning-outline" : "shield-outline"}
+              size={14}
+              color={churchBlocked ? "#FF9B9B" : GOLD}
+            />
+            <Text
+              style={[
+                styles.safetyBtnText,
+                churchBlocked && styles.safetyBtnTextBlocked,
+                churchHidden && !churchBlocked && styles.safetyBtnTextHidden,
+              ]}
+            >
+              {safetyPillLabel}
+            </Text>
+            {!churchBlocked ? (
+              <Ionicons name="ellipsis-horizontal" size={12} color="rgba(244,201,93,0.82)" />
+            ) : null}
+          </View>
         </Pressable>
       </View>
+
+      {safetyBanner ? (
+        <View style={styles.safetyBanner} pointerEvents="none">
+          <Text style={styles.safetyBannerText}>{safetyBanner}</Text>
+        </View>
+      ) : null}
 
       {loading ? (
         <View style={styles.centerState}>
@@ -666,7 +806,7 @@ export default function ChurchProfileScreen() {
               </View>
               <View style={styles.blockedBannerActions}>
                 <Pressable
-                  onPress={() => void runUnblockChurch()}
+                  onPress={requestUnblockChurch}
                   disabled={safetyBusy}
                   style={({ pressed }) => [
                     styles.blockedBannerBtn,
@@ -764,6 +904,9 @@ export default function ChurchProfileScreen() {
         churchId={churchId}
         churchName={displayName}
         onClose={() => setReportSheetOpen(false)}
+        onReported={() => {
+          showSafetyBanner("Report submitted. Thank you for helping keep Kristo safe.");
+        }}
       />
     </View>
   );
@@ -807,11 +950,70 @@ const styles = StyleSheet.create({
   backBtnSpacer: {
     width: 40,
   },
-  menuBtn: {
-    width: 40,
-    height: 40,
+  safetyBtn: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.45)",
+    backgroundColor: "rgba(255,255,255,0.07)",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    shadowColor: GOLD,
+    shadowOpacity: 0.24,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 4,
+  },
+  safetyBtnBlocked: {
+    borderColor: "rgba(255,110,110,0.62)",
+    backgroundColor: "rgba(255,72,72,0.12)",
+    shadowColor: "#FF5C5C",
+    shadowOpacity: 0.3,
+  },
+  safetyBtnHidden: {
+    borderColor: "rgba(244,201,93,0.32)",
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  safetyBtnInner: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 5,
+  },
+  safetyBtnText: {
+    color: GOLD,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.35,
+    textTransform: "uppercase",
+  },
+  safetyBtnTextBlocked: {
+    color: "#FFB4B4",
+  },
+  safetyBtnTextHidden: {
+    color: "rgba(244,201,93,0.82)",
+  },
+  safetyBtnPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.98 }],
+  },
+  safetyBtnBusy: {
+    opacity: 0.5,
+  },
+  safetyBanner: {
+    marginHorizontal: 18,
+    marginBottom: 8,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "rgba(59,130,246,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(147,197,253,0.28)",
+  },
+  safetyBannerText: {
+    color: "rgba(219,234,254,0.96)",
+    fontWeight: "700",
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: "center",
   },
   topTitle: {
     flex: 1,

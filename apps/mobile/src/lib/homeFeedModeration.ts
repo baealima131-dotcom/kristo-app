@@ -207,9 +207,12 @@ export async function removeChurchModerationLocally(churchId: string) {
   notifyChurchFeedModerationChanged();
 }
 
-export async function fetchChurchModerationFromApi(): Promise<ChurchModerationRecord[]> {
+export async function fetchChurchModerationFromApi(): Promise<{
+  ok: boolean;
+  records: ChurchModerationRecord[];
+}> {
   const session = getSessionSync() as any;
-  if (!session?.userId) return [];
+  if (!session?.userId) return { ok: false, records: [] };
 
   try {
     const res: any = await apiGet(
@@ -217,6 +220,10 @@ export async function fetchChurchModerationFromApi(): Promise<ChurchModerationRe
       { headers: authedHeaders() },
       { screen: "HomeFeedChurchModeration", throttleMs: 0 }
     );
+
+    if (!res?.ok) {
+      return { ok: false, records: [] };
+    }
 
     const records = Array.isArray(res?.data?.records)
       ? res.data.records
@@ -230,18 +237,19 @@ export async function fetchChurchModerationFromApi(): Promise<ChurchModerationRe
           .filter((row: ChurchModerationRecord) => Boolean(row.churchId))
       : [];
 
-    if (records.length) {
-      const cache = await readChurchModerationCache();
-      for (const row of records) {
-        cache[row.churchId] = row;
-      }
-      await writeChurchModerationCache(cache);
-      notifyChurchFeedModerationChanged();
+    const cache = await readChurchModerationCache();
+    for (const key of Object.keys(cache)) {
+      delete cache[key];
     }
+    for (const row of records) {
+      cache[row.churchId] = row;
+    }
+    await writeChurchModerationCache(cache);
+    notifyChurchFeedModerationChanged();
 
-    return records;
+    return { ok: true, records };
   } catch {
-    return [];
+    return { ok: false, records: [] };
   }
 }
 
@@ -253,6 +261,8 @@ export async function hideHomeFeedChurch(input: { churchId: string; reason?: str
   if (!session?.userId) {
     return { ok: false as const, error: "Sign in to hide churches" };
   }
+
+  console.log("KRISTO_CHURCH_HIDE_REQUESTED", { churchId, userId: session.userId });
 
   try {
     const res: any = await apiPost(
@@ -285,6 +295,8 @@ export async function blockHomeFeedChurch(input: { churchId: string; reason?: st
     return { ok: false as const, error: "Sign in to block churches" };
   }
 
+  console.log("KRISTO_CHURCH_BLOCK_REQUESTED", { churchId, userId: session.userId });
+
   try {
     const res: any = await apiPost(
       "/api/church/feed/block-church",
@@ -307,6 +319,34 @@ export async function blockHomeFeedChurch(input: { churchId: string; reason?: st
   }
 }
 
+export async function unhideHomeFeedChurch(churchId: string) {
+  const id = normalizeFeedChurchId(churchId);
+  if (!id) return { ok: false as const, error: "Missing church id" };
+
+  const session = getSessionSync() as any;
+  if (!session?.userId) {
+    return { ok: false as const, error: "Sign in to unhide churches" };
+  }
+
+  console.log("KRISTO_CHURCH_UNHIDE_REQUESTED", { churchId: id, userId: session.userId });
+
+  try {
+    const res: any = await apiDelete(
+      `/api/church/feed/block-church?churchId=${encodeURIComponent(id)}`,
+      { headers: authedHeaders() }
+    );
+
+    if (!res?.ok) {
+      return { ok: false as const, error: String(res?.error || "Failed to unhide church") };
+    }
+
+    await removeChurchModerationLocally(id);
+    return { ok: true as const };
+  } catch (error: any) {
+    return { ok: false as const, error: String(error?.message || "Failed to unhide church") };
+  }
+}
+
 export async function unblockHomeFeedChurch(churchId: string) {
   const id = normalizeFeedChurchId(churchId);
   if (!id) return { ok: false as const, error: "Missing church id" };
@@ -316,7 +356,7 @@ export async function unblockHomeFeedChurch(churchId: string) {
     return { ok: false as const, error: "Sign in to unblock churches" };
   }
 
-  try {
+  console.log("KRISTO_CHURCH_UNBLOCK_REQUESTED", { churchId: id, userId: session.userId });
     const res: any = await apiDelete(
       `/api/church/feed/block-church?churchId=${encodeURIComponent(id)}`,
       { headers: authedHeaders() }

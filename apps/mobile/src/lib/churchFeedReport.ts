@@ -43,6 +43,12 @@ export async function submitChurchReport(input: {
       return { ok: false as const, error: String(res?.error || "Failed to submit report") };
     }
 
+    console.log("KRISTO_CHURCH_REPORT_SUBMITTED", {
+      churchId,
+      reason: input.reason,
+      userId: session.userId,
+    });
+
     return { ok: true as const };
   } catch (error: any) {
     return { ok: false as const, error: String(error?.message || "Failed to submit report") };
