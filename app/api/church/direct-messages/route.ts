@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
 import {
+  ensureDirectMessageThreadFromRoomId,
   listDirectMessageInbox,
   markDirectMessageThreadRead,
   openDirectMessageThread,
@@ -69,12 +70,38 @@ export async function POST(req: NextRequest) {
 
   const body = (await req.json().catch(() => null)) as {
     targetUserId?: string;
+    roomId?: string;
     churchId?: string;
+    action?: string;
   } | null;
 
   const viewerUserId = String(ctxOrRes.viewer.userId || "").trim();
   const targetUserId = String(body?.targetUserId || "").trim();
+  const roomId = String(body?.roomId || "").trim();
   const churchId = String(body?.churchId || ctxOrRes.churchId || "").trim();
+  const action = String(body?.action || "").trim().toLowerCase();
+
+  if (action === "ensure" || roomId) {
+    if (!roomId) {
+      return json({ ok: false, error: "roomId is required." }, { status: 400 });
+    }
+    if (!churchId) {
+      return json({ ok: false, error: "churchId is required." }, { status: 400 });
+    }
+
+    const thread = await ensureDirectMessageThreadFromRoomId({
+      viewerUserId,
+      churchId,
+      roomId,
+      intent: "repair",
+    });
+
+    if (!thread) {
+      return json({ ok: false, error: "Could not open this conversation." }, { status: 400 });
+    }
+
+    return json({ ok: true, data: thread });
+  }
 
   if (!targetUserId) {
     return json({ ok: false, error: "targetUserId is required." }, { status: 400 });
@@ -127,7 +154,13 @@ export async function PATCH(req: NextRequest) {
   });
 
   if (!updated) {
-    return json({ ok: false, error: "Conversation not found." }, { status: 404 });
+    console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
+      reason: "mark_read_failed",
+      roomId,
+      churchId,
+      viewerUserId,
+    });
+    return json({ ok: false, error: "Could not mark conversation read." }, { status: 400 });
   }
 
   return json({ ok: true });

@@ -114,6 +114,46 @@ export async function openDirectMessageThread(args: {
   };
 }
 
+export async function ensureDirectMessageThreadFromRoomId(args: {
+  roomId: string;
+  churchId?: string;
+}): Promise<DirectMessageThread | null> {
+  const roomId = String(args.roomId || "").trim();
+  const churchId = String(args.churchId || "").trim();
+  if (!roomId) return null;
+
+  const res: any = await apiPost(
+    "/api/church/direct-messages",
+    {
+      action: "ensure",
+      roomId,
+      ...(churchId ? { churchId } : {}),
+    },
+    { headers: authHeaders() }
+  );
+
+  if (!res?.ok || !res?.data) {
+    if (__DEV__) {
+      console.warn("KRISTO_DM_ENSURE_FAILED", {
+        roomId,
+        churchId,
+        error: String(res?.error || "ensure failed"),
+      });
+    }
+    return null;
+  }
+
+  const row = res.data;
+  return {
+    roomId: String(row?.roomId || roomId),
+    churchId: String(row?.churchId || churchId),
+    peerUserId: String(row?.peerUserId || ""),
+    title: String(row?.title || "Member"),
+    subtitle: String(row?.subtitle || "Direct message"),
+    avatarUri: String(row?.avatarUri || row?.avatarUrl || ""),
+  };
+}
+
 export async function markDirectMessageThreadRead(args: {
   roomId: string;
   churchId?: string;
@@ -122,12 +162,15 @@ export async function markDirectMessageThreadRead(args: {
   const churchId = String(args.churchId || "").trim();
   if (!roomId) return;
 
+  const ensured = await ensureDirectMessageThreadFromRoomId({ roomId, churchId });
+  if (!ensured) return;
+
   await apiPatch(
     "/api/church/direct-messages",
     {
       action: "read",
-      roomId,
-      ...(churchId ? { churchId } : {}),
+      roomId: ensured.roomId,
+      ...(ensured.churchId ? { churchId: ensured.churchId } : churchId ? { churchId } : {}),
     },
     { headers: authHeaders() }
   ).catch(() => null);

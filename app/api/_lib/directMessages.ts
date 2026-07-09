@@ -1,10 +1,11 @@
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 import { readRoomMessagesJsonFile } from "@/app/api/_lib/store/roomMessageDb";
+import {
+  readDirectMessageThreadStore,
+  updateDirectMessageThreadStore,
+} from "@/app/api/_lib/store/directMessageThreadDb";
 import { getChurchById } from "@/app/api/_lib/churches";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
-
-const THREADS_STORE_FILE = "direct-message-threads.json";
 
 export type DirectMessageThreadRecord = {
   roomId: string;
@@ -35,6 +36,15 @@ export type DirectMessageInboxItem = {
   timestampLabel: string;
   timestampMs: number;
   unreadCount: number;
+};
+
+export type DirectMessageThreadView = {
+  roomId: string;
+  churchId: string;
+  peerUserId: string;
+  title: string;
+  subtitle: string;
+  avatarUri: string;
 };
 
 function normUserId(value: string) {
@@ -90,13 +100,17 @@ export function isParticipantInDirectRoom(roomId: string, userId: string) {
   return participants[0] === uid || participants[1] === uid;
 }
 
+function peerUserIdFromParticipants(participants: [string, string], viewerUserId: string) {
+  return participants[0] === viewerUserId ? participants[1] : participants[0];
+}
+
 async function readThreadStore(): Promise<Record<string, DirectMessageThreadRecord>> {
-  const data = await readJsonFile<Record<string, DirectMessageThreadRecord>>(THREADS_STORE_FILE, {});
+  const data = await readDirectMessageThreadStore<Record<string, DirectMessageThreadRecord>>({});
   return data && typeof data === "object" ? data : {};
 }
 
 async function writeThreadStore(data: Record<string, DirectMessageThreadRecord>) {
-  await updateJsonFile(THREADS_STORE_FILE, () => data);
+  await updateDirectMessageThreadStore(() => data, {});
 }
 
 function formatTimestampLabel(ms: number) {
@@ -136,6 +150,23 @@ export async function assertActiveChurchMember(churchId: string, userId: string)
   return active.has(uid);
 }
 
+async function buildThreadView(args: {
+  roomId: string;
+  churchId: string;
+  peerUserId: string;
+}): Promise<DirectMessageThreadView> {
+  const peerProfile = await getProfile(args.peerUserId).catch(() => null);
+  const church = await getChurchById(args.churchId).catch(() => null);
+  return {
+    roomId: args.roomId,
+    churchId: args.churchId,
+    peerUserId: args.peerUserId,
+    title: pickDisplayName(peerProfile),
+    subtitle: String(church?.name || church?.churchName || "Direct message").trim(),
+    avatarUri: pickAvatar(peerProfile),
+  };
+}
+
 export async function resolveDirectMessagePeerPreview(args: {
   kristoId: string;
   churchId: string;
@@ -161,6 +192,127 @@ export async function resolveDirectMessagePeerPreview(args: {
   };
 }
 
+export async function ensureDirectMessageThreadFromRoomId(args: {
+  viewerUserId: string;
+  churchId: string;
+  roomId: string;
+  intent?: "create" | "repair";
+}): Promise<DirectMessageThreadView | null> {
+  const viewerUserId = normUserId(args.viewerUserId);
+  const churchId = String(args.churchId || "").trim();
+  const rawRoomId = String(args.roomId || "").trim();
+  const intent = args.intent === "create" ? "create" : "repair";
+
+  if (!viewerUserId || !churchId || !rawRoomId || !isDirectRoomId(rawRoomId)) {
+    console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
+      reason: "invalid_room_or_context",
+      roomId: rawRoomId,
+      churchId,
+      viewerUserId,
+    });
+    return null;
+  }
+
+  const participants = parseDirectRoomParticipants(rawRoomId);
+  if (!participants) {
+    console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
+      reason: "invalid_room_participants",
+      roomId: rawRoomId,
+      churchId,
+      viewerUserId,
+    });
+    return null;
+  }
+
+  const canonicalRoomId = buildDirectRoomId(participants[0], participants[1]);
+  if (!canonicalRoomId || canonicalRoomId !== rawRoomId) {
+    console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
+      reason: "room_id_not_canonical",
+      roomId: rawRoomId,
+      canonicalRoomId,
+      churchId,
+      viewerUserId,
+    });
+    return null;
+  }
+
+  if (!isParticipantInDirectRoom(canonicalRoomId, viewerUserId)) {
+    console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
+      reason: "viewer_not_participant",
+      roomId: canonicalRoomId,
+      churchId,
+      viewerUserId,
+    });
+    return null;
+  }
+
+  const peerUserId = peerUserIdFromParticipants(participants, viewerUserId);
+  const [viewerMember, peerMember] = await Promise.all([
+    assertActiveChurchMember(churchId, viewerUserId),
+    assertActiveChurchMember(churchId, peerUserId),
+  ]);
+
+  if (!viewerMember || !peerMember) {
+    console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
+      reason: "inactive_membership",
+      roomId: canonicalRoomId,
+      churchId,
+      viewerUserId,
+      peerUserId,
+      viewerMember,
+      peerMember,
+    });
+    return null;
+  }
+
+  const now = Date.now();
+  const store = await readThreadStore();
+  const key = threadStoreKey(churchId, canonicalRoomId);
+  const existing = store[key];
+
+  if (existing) {
+    existing.updatedAt = Math.max(existing.updatedAt, now);
+    store[key] = existing;
+    await writeThreadStore(store);
+    console.log("KRISTO_DM_THREAD_FOUND", {
+      roomId: canonicalRoomId,
+      churchId,
+      viewerUserId,
+      peerUserId,
+    });
+    return buildThreadView({ roomId: canonicalRoomId, churchId, peerUserId });
+  }
+
+  const record: DirectMessageThreadRecord = {
+    roomId: canonicalRoomId,
+    churchId,
+    participantUserIds: participants,
+    createdAt: now,
+    updatedAt: now,
+    readAtByUserId: {},
+  };
+  store[key] = record;
+  await writeThreadStore(store);
+
+  if (intent === "create") {
+    console.log("KRISTO_DM_THREAD_CREATED", {
+      roomId: canonicalRoomId,
+      churchId,
+      viewerUserId,
+      peerUserId,
+    });
+  } else {
+    console.log("KRISTO_DM_THREAD_REPAIRED_FROM_ROOM_ID", {
+      roomId: canonicalRoomId,
+      churchId,
+      viewerUserId,
+      peerUserId,
+    });
+  }
+
+  return buildThreadView({ roomId: canonicalRoomId, churchId, peerUserId });
+}
+
 export async function openDirectMessageThread(args: {
   viewerUserId: string;
   targetUserId: string;
@@ -177,52 +329,20 @@ export async function openDirectMessageThread(args: {
     throw new Error("You cannot start a chat with yourself.");
   }
 
-  const [viewerMember, targetMember] = await Promise.all([
-    assertActiveChurchMember(churchId, viewerUserId),
-    assertActiveChurchMember(churchId, targetUserId),
-  ]);
-
-  if (!viewerMember) {
-    throw new Error("You must be an active member of this church to start a chat.");
-  }
-  if (!targetMember) {
-    throw new Error("That person is not an active member of this church.");
-  }
-
   const roomId = buildDirectRoomId(viewerUserId, targetUserId);
   if (!roomId) throw new Error("Could not create conversation.");
 
-  const now = Date.now();
-  const store = await readThreadStore();
-  const key = threadStoreKey(churchId, roomId);
-  const existing = store[key];
-  const participants = parseDirectRoomParticipants(roomId);
-  if (!participants) throw new Error("Invalid conversation id.");
-
-  const record: DirectMessageThreadRecord = existing || {
-    roomId,
+  const ensured = await ensureDirectMessageThreadFromRoomId({
+    viewerUserId,
     churchId,
-    participantUserIds: participants,
-    createdAt: now,
-    updatedAt: now,
-    readAtByUserId: {},
-  };
-
-  record.updatedAt = Math.max(record.updatedAt, now);
-  store[key] = record;
-  await writeThreadStore(store);
-
-  const peerProfile = await getProfile(targetUserId).catch(() => null);
-  const church = await getChurchById(churchId).catch(() => null);
-
-  return {
     roomId,
-    churchId,
-    peerUserId: targetUserId,
-    title: pickDisplayName(peerProfile),
-    subtitle: String(church?.name || church?.churchName || "Direct message").trim(),
-    avatarUri: pickAvatar(peerProfile),
-  };
+    intent: "create",
+  });
+  if (!ensured) {
+    throw new Error("Could not create conversation.");
+  }
+
+  return ensured;
 }
 
 export async function markDirectMessageThreadRead(args: {
@@ -234,10 +354,16 @@ export async function markDirectMessageThreadRead(args: {
   const roomId = String(args.roomId || "").trim();
   const userId = normUserId(args.userId);
   if (!churchId || !roomId || !userId) return false;
-  if (!isDirectRoomId(roomId) || !isParticipantInDirectRoom(roomId, userId)) return false;
+
+  const ensured = await ensureDirectMessageThreadFromRoomId({
+    viewerUserId: userId,
+    churchId,
+    roomId,
+  });
+  if (!ensured) return false;
 
   const store = await readThreadStore();
-  const key = threadStoreKey(churchId, roomId);
+  const key = threadStoreKey(churchId, ensured.roomId);
   const record = store[key];
   if (!record) return false;
 
@@ -263,20 +389,18 @@ export async function touchDirectMessageThread(args: {
   const senderUserId = normUserId(args.senderUserId);
   if (!churchId || !roomId || !senderUserId || !isDirectRoomId(roomId)) return;
 
-  const participants = parseDirectRoomParticipants(roomId);
-  if (!participants) return;
+  const ensured = await ensureDirectMessageThreadFromRoomId({
+    viewerUserId: senderUserId,
+    churchId,
+    roomId,
+  });
+  if (!ensured) return;
 
   const now = args.createdAt || Date.now();
   const store = await readThreadStore();
-  const key = threadStoreKey(churchId, roomId);
-  const record: DirectMessageThreadRecord = store[key] || {
-    roomId,
-    churchId,
-    participantUserIds: participants,
-    createdAt: now,
-    updatedAt: now,
-    readAtByUserId: {},
-  };
+  const key = threadStoreKey(churchId, ensured.roomId);
+  const record = store[key];
+  if (!record) return;
 
   record.updatedAt = now;
   record.readAtByUserId = {
@@ -322,9 +446,57 @@ async function lastMessageForThread(churchId: string, roomId: string) {
   const latest = sorted[0];
   if (!latest) return null;
   return {
-    preview: String(latest?.text || "").trim() || (Array.isArray(latest?.attachments) && latest.attachments.length ? "Attachment" : ""),
+    preview:
+      String(latest?.text || "").trim() ||
+      (Array.isArray(latest?.attachments) && latest.attachments.length ? "Attachment" : ""),
     timestampMs: Number(latest?.createdAt || 0),
   };
+}
+
+async function discoverDirectRoomIdsFromMessages(churchId: string, viewerUserId: string) {
+  const store = await readRoomMessagesJsonFile<Record<string, any[]>>("room-messages.json", {});
+  const prefix = `${churchId}::dm:`;
+  const roomIds = new Set<string>();
+
+  for (const key of Object.keys(store || {})) {
+    if (!key.startsWith(prefix)) continue;
+    const roomId = key.slice(prefix.length);
+    if (isParticipantInDirectRoom(roomId, viewerUserId)) {
+      roomIds.add(roomId);
+    }
+  }
+
+  return Array.from(roomIds);
+}
+
+async function collectThreadRecordsForViewer(churchId: string, viewerUserId: string) {
+  const store = await readThreadStore();
+  const fromStore = Object.values(store).filter(
+    (thread) =>
+      String(thread?.churchId || "") === churchId &&
+      Array.isArray(thread?.participantUserIds) &&
+      thread.participantUserIds.includes(viewerUserId)
+  );
+
+  const discoveredRoomIds = await discoverDirectRoomIdsFromMessages(churchId, viewerUserId);
+  const knownRoomIds = new Set(fromStore.map((thread) => thread.roomId));
+
+  for (const roomId of discoveredRoomIds) {
+    if (knownRoomIds.has(roomId)) continue;
+    await ensureDirectMessageThreadFromRoomId({
+      viewerUserId,
+      churchId,
+      roomId,
+    });
+  }
+
+  const refreshed = await readThreadStore();
+  return Object.values(refreshed).filter(
+    (thread) =>
+      String(thread?.churchId || "") === churchId &&
+      Array.isArray(thread?.participantUserIds) &&
+      thread.participantUserIds.includes(viewerUserId)
+  );
 }
 
 export async function listDirectMessageInbox(args: {
@@ -335,20 +507,11 @@ export async function listDirectMessageInbox(args: {
   const viewerUserId = normUserId(args.viewerUserId);
   if (!churchId || !viewerUserId) return [];
 
-  const store = await readThreadStore();
-  const threads = Object.values(store).filter(
-    (thread) =>
-      String(thread?.churchId || "") === churchId &&
-      Array.isArray(thread?.participantUserIds) &&
-      thread.participantUserIds.includes(viewerUserId)
-  );
+  const threads = await collectThreadRecordsForViewer(churchId, viewerUserId);
 
   const items = await Promise.all(
     threads.map(async (thread) => {
-      const peerUserId =
-        thread.participantUserIds[0] === viewerUserId
-          ? thread.participantUserIds[1]
-          : thread.participantUserIds[0];
+      const peerUserId = peerUserIdFromParticipants(thread.participantUserIds, viewerUserId);
       const profile = await getProfile(peerUserId).catch(() => null);
       const church = await getChurchById(churchId).catch(() => null);
       const lastMessage = await lastMessageForThread(churchId, thread.roomId);
