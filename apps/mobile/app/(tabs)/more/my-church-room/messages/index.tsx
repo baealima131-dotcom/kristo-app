@@ -21,6 +21,8 @@ import {
   fetchMessagesInboxConversations,
   type MessagesInboxConversation,
 } from "@/src/lib/messagesInbox";
+import { StartNewChatSheet } from "@/src/components/messages/StartNewChatSheet";
+import type { DirectMessageThread } from "@/src/lib/directMessagesApi";
 
 const BG = "#0A1220";
 const TEXT = "rgba(255,255,255,0.94)";
@@ -88,6 +90,7 @@ export default function MessagesScreen() {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [conversations, setConversations] = useState<MessagesInboxConversation[]>([]);
+  const [composeOpen, setComposeOpen] = useState(false);
 
   const refreshInbox = useCallback(async () => {
     const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
@@ -133,9 +136,27 @@ export default function MessagesScreen() {
           title: item.title,
           sub: item.subtitle,
           avatar: item.avatarUri,
-          tab: "ministries",
-          ministryId: item.id,
-          roomKind: "ministry",
+          roomKind: "direct",
+          peerUserId: item.peerUserId,
+          churchId: item.churchId,
+        },
+      } as any);
+    },
+    [router]
+  );
+
+  const openThread = useCallback(
+    (thread: DirectMessageThread) => {
+      router.push({
+        pathname: "/(tabs)/more/my-church-room/messages/[id]",
+        params: {
+          id: thread.roomId,
+          title: thread.title,
+          sub: thread.subtitle,
+          avatar: thread.avatarUri,
+          roomKind: "direct",
+          peerUserId: thread.peerUserId,
+          churchId: thread.churchId,
         },
       } as any);
     },
@@ -143,10 +164,7 @@ export default function MessagesScreen() {
   );
 
   const onCompose = useCallback(() => {
-    Alert.alert(
-      "New message",
-      "Person-to-person conversations will be available here when messaging opens."
-    );
+    setComposeOpen(true);
   }, []);
 
   const onCalls = useCallback(() => {
@@ -160,7 +178,7 @@ export default function MessagesScreen() {
   const headerActions = useMemo(
     () => [
       { key: "calls", icon: "call-outline" as const, onPress: onCalls, label: "Calls" },
-      { key: "compose", icon: "add" as const, onPress: onCompose, label: "Start conversation" },
+      { key: "compose", icon: "add" as const, onPress: onCompose, label: "Start new chat" },
       {
         key: "settings",
         icon: "settings-outline" as const,
@@ -259,6 +277,15 @@ export default function MessagesScreen() {
           }
         />
       )}
+
+      <StartNewChatSheet
+        visible={composeOpen}
+        onClose={() => setComposeOpen(false)}
+        onStarted={(thread) => {
+          void refreshInbox();
+          openThread(thread);
+        }}
+      />
     </View>
   );
 }

@@ -115,6 +115,7 @@ import {
 import { getApiBase } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { markDirectMessageThreadRead } from "@/src/lib/directMessagesApi";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
 import {
   applyPastorAuthorityToMinistryBoard,
@@ -2788,8 +2789,16 @@ export default function MessageThreadScreen() {
     String((params as any)?.source || "").toLowerCase() === "media" ||
     String((params as any)?.roomKind || "").toLowerCase() === "media";
 
+  const isPersonToPersonDm =
+    normalizedRoomKind === "direct" ||
+    normalizedRoomKind === "dm" ||
+    normalizedRoomKind === "private" ||
+    String(threadId || "").startsWith("dm:");
+
   const isMinistryThread =
-    String((params as any)?.roomKind || "") === "assignment"
+    isPersonToPersonDm
+      ? false
+      : String((params as any)?.roomKind || "") === "assignment"
       ? false
       : String(threadId || "") === "church-live-control"
         ? false
@@ -2799,8 +2808,8 @@ export default function MessageThreadScreen() {
   const isStructuredRoom = isMinistryThread || isAssignmentThread;
 
   // V1 messaging policy:
-  // - Enabled: ministry chat, assignment / church-live control chat.
-  // - Disabled until V2: church room threads + direct/private (DM) chats.
+  // - Enabled: ministry chat, assignment / church-live control chat, person-to-person DMs.
+  // - Disabled until V2: church room threads and non-DM private rooms.
   const isChurchRoomThread =
     normalizedRoomKind === "church-room" ||
     normalizedRoomKind === "church-thread" ||
@@ -2818,7 +2827,8 @@ export default function MessageThreadScreen() {
     String((params as any)?.isChurchThread || "") === "1";
 
   const isMessagingDisabledV1 =
-    isChurchRoomThread || isDirectOrPrivateRoom || hasDirectOrPrivateFlag;
+    isChurchRoomThread ||
+    ((isDirectOrPrivateRoom || hasDirectOrPrivateFlag) && !isPersonToPersonDm);
 
   // Precise roomKind sent to the backend so server-side V1 enforcement does not
   // depend on the frontend. Never send a generic "chat" for a disabled room.
@@ -2867,6 +2877,17 @@ export default function MessageThreadScreen() {
     () => String(backendRoomId || "").trim() === "church-media-room",
     [backendRoomId]
   );
+
+  useEffect(() => {
+    if (!isPersonToPersonDm || !isFocused) return;
+    const roomId = String(threadId || backendRoomId || "").trim();
+    if (!roomId.startsWith("dm:") && !roomId.startsWith("dm_")) return;
+
+    void markDirectMessageThreadRead({
+      roomId,
+      churchId: String((params as any)?.churchId || churchId || "").trim() || undefined,
+    });
+  }, [isPersonToPersonDm, isFocused, threadId, backendRoomId, churchId, (params as any)?.churchId]);
 
   const mediaRoomCacheFreshRef = useRef(false);
   const mediaRoomHydratedRef = useRef(false);
