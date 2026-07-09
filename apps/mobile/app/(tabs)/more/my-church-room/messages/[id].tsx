@@ -3986,7 +3986,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
     let alive = true;
 
     async function loadPeerPresence() {
-      if (!isPersonToPersonDm || !peerUserIdForPresence) {
+      if (!isFocused || !isPersonToPersonDm || !peerUserIdForPresence) {
         if (alive) setPeerPresence(null);
         return;
       }
@@ -4018,7 +4018,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
       alive = false;
       clearInterval(timer);
     };
-  }, [isPersonToPersonDm, peerUserIdForPresence, backendRoomId]);
+  }, [isPersonToPersonDm, peerUserIdForPresence, backendRoomId, isFocused]);
 
   const presence = useMemo(
     () => {

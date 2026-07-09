@@ -94,8 +94,9 @@ export default function MessagesScreen() {
   const [conversations, setConversations] = useState<MessagesInboxConversation[]>([]);
   const [composeOpen, setComposeOpen] = useState(false);
 
-  React.useEffect(() => {
-    let alive = true;
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
 
     async function heartbeatMessagesList() {
       if (!alive) return;
@@ -109,11 +110,12 @@ export default function MessagesScreen() {
     void heartbeatMessagesList();
     const timer = setInterval(heartbeatMessagesList, 5000);
 
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
+      return () => {
+        alive = false;
+        clearInterval(timer);
+      };
+    }, [])
+  );
 
   const refreshInbox = useCallback(async () => {
     const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
