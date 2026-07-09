@@ -5,7 +5,7 @@ import { readSession } from "@/app/api/auth/_lib/session";
 export const runtime = "nodejs";
 
 const STORE_FILE = "message-presence.json";
-const ONLINE_WINDOW_MS = 10_000;
+const ONLINE_WINDOW_MS = 20_000;
 const MESSAGE_LIST_ROOM = "__messages_list__";
 
 type PresenceStore = Record<string, Record<string, number>>;

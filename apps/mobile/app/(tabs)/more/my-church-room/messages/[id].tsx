@@ -4017,7 +4017,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
       alive = false;
       clearInterval(timer);
     };
-  }, [isPersonToPersonDm, peerUserIdForPresence]);
+  }, [isPersonToPersonDm, peerUserIdForPresence, backendRoomId]);
 
   const presence = useMemo(
     () => {
