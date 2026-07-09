@@ -3993,8 +3993,9 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
       try {
         const res: any = await apiGet(
-          `/api/auth/presence?userId=${encodeURIComponent(peerUserIdForPresence)}&roomId=${encodeURIComponent(backendRoomId)}&heartbeat=1`,
-          { headers: getKristoHeaders() as any }
+          `/api/auth/presence?userId=${encodeURIComponent(peerUserIdForPresence)}&roomId=${encodeURIComponent(backendRoomId)}&heartbeat=1&t=${Date.now()}`,
+          { headers: getKristoHeaders() as any },
+          { screen: `DmPresence:${backendRoomId}`, throttleMs: 0, dedupe: false } as any
         );
 
         const data = res?.data || {};

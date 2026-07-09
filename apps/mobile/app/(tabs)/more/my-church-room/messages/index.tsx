@@ -99,9 +99,11 @@ export default function MessagesScreen() {
 
     async function heartbeatMessagesList() {
       if (!alive) return;
-      await apiGet("/api/auth/presence?heartbeat=1", {
-        headers: getKristoHeaders() as any,
-      }).catch(() => null);
+      await apiGet(
+        `/api/auth/presence?heartbeat=1&t=${Date.now()}`,
+        { headers: getKristoHeaders() as any },
+        { screen: "MessagesListPresenceHeartbeat", throttleMs: 0, dedupe: false } as any
+      ).catch(() => null);
     }
 
     void heartbeatMessagesList();
