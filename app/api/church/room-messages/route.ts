@@ -11,6 +11,11 @@ import {
   writeRoomMessagesJsonFile,
 } from "@/app/api/_lib/store/roomMessageDb";
 import { purgeFeedSchedulesForDeletedRoomCards } from "@/app/api/_lib/reconcileMediaScheduleFeed";
+import {
+  isDirectRoomId,
+  isParticipantInDirectRoom,
+  touchDirectMessageThread,
+} from "@/app/api/_lib/directMessages";
 
 export const runtime = "nodejs";
 
@@ -29,10 +34,9 @@ const V1_DISABLED_ROOM_KINDS = new Set([
   "church-room",
   "church-thread",
   "thread",
-  "direct",
-  "dm",
-  "private",
 ]);
+
+const V1_DIRECT_ROOM_KINDS = new Set(["direct", "dm", "private"]);
 
 function isV1DisabledRoomTextSend(roomKind: string, kind: string) {
   const rk = String(roomKind || "").trim().toLowerCase();
@@ -362,6 +366,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
   }
 
+  const normalizedRoomKind = String(roomKind || "").trim().toLowerCase();
+  const isDirectRoom =
+    V1_DIRECT_ROOM_KINDS.has(normalizedRoomKind) || isDirectRoomId(roomId);
+
+  if (isDirectRoom) {
+    if (!isDirectRoomId(roomId)) {
+      return NextResponse.json(
+        { ok: false, error: "Invalid direct message room." },
+        { status: 400 }
+      );
+    }
+    if (!isParticipantInDirectRoom(roomId, userId)) {
+      return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
+    }
+  }
+
   // V1: assignment / church-live control room chat is disabled. Reject plain
   // text/attachment sends with a clean response instead of persisting/crashing.
   if (isV1DisabledRoomTextSend(roomKind, kind)) {
@@ -479,6 +499,23 @@ export async function POST(req: Request) {
       { ok: false, error: "Message store unavailable. Please try again later." },
       { status: 503 }
     );
+  }
+
+  if (isDirectRoom) {
+    try {
+      await touchDirectMessageThread({
+        churchId,
+        roomId,
+        senderUserId: userId,
+        previewText: text,
+        createdAt: msg.createdAt,
+      });
+    } catch (touchError) {
+      console.log("KRISTO_DIRECT_MESSAGE_THREAD_TOUCH_FAILED", {
+        roomId,
+        error: String((touchError as any)?.message || touchError),
+      });
+    }
   }
 
   // Verify durability by re-reading the document straight back from the store.
