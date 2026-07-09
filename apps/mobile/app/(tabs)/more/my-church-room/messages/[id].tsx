@@ -3993,7 +3993,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
       try {
         const res: any = await apiGet(
-          `/api/auth/presence?userId=${encodeURIComponent(peerUserIdForPresence)}`,
+          `/api/auth/presence?userId=${encodeURIComponent(peerUserIdForPresence)}&roomId=${encodeURIComponent(backendRoomId)}&heartbeat=1`,
           { headers: getKristoHeaders() as any }
         );
 

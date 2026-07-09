@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
-import { getUserById, readSession, touchUser } from "@/app/api/auth/_lib/session";
+import { readJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
+import { readSession } from "@/app/api/auth/_lib/session";
 
 export const runtime = "nodejs";
 
+const STORE_FILE = "message-presence.json";
+const ONLINE_WINDOW_MS = 10_000;
+
+type PresenceStore = Record<string, Record<string, number>>;
+
 function presenceText(lastSeenAt: number, now: number) {
-  const ageMs = Math.max(0, now - Number(lastSeenAt || 0));
-  if (lastSeenAt > 0 && ageMs <= 10_000) return "online now";
-  if (!lastSeenAt) return "last seen recently";
+  if (!lastSeenAt) return "offline";
+  const ageMs = Math.max(0, now - lastSeenAt);
+  if (ageMs <= ONLINE_WINDOW_MS) return "online now";
 
   const min = Math.floor(ageMs / 60_000);
   if (min < 1) return "last seen just now";
@@ -26,20 +32,40 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  await touchUser(viewerUserId).catch(() => null);
-
   const url = new URL(req.url);
-  const targetUserId = String(url.searchParams.get("userId") || viewerUserId).trim();
-  const user = await getUserById(targetUserId);
-
+  const roomId = String(url.searchParams.get("roomId") || "").trim();
+  const targetUserId = String(url.searchParams.get("userId") || "").trim();
+  const heartbeat = String(url.searchParams.get("heartbeat") || "") === "1";
   const now = Date.now();
-  const lastSeenAt = Number(user?.lastSeenAt || 0);
-  const online = lastSeenAt > 0 && now - lastSeenAt <= 10_000;
+
+  if (!roomId || !targetUserId) {
+    return NextResponse.json({
+      ok: true,
+      data: {
+        userId: targetUserId,
+        online: false,
+        lastSeenAt: 0,
+        serverNow: now,
+        text: "offline",
+      },
+    });
+  }
+
+  const store = await readJsonFile<PresenceStore>(STORE_FILE, {});
+
+  if (heartbeat) {
+    store[roomId] = { ...(store[roomId] || {}), [viewerUserId]: now };
+    await writeJsonFile(STORE_FILE, store);
+  }
+
+  const lastSeenAt = Number(store?.[roomId]?.[targetUserId] || 0);
+  const online = lastSeenAt > 0 && now - lastSeenAt <= ONLINE_WINDOW_MS;
 
   return NextResponse.json({
     ok: true,
     data: {
       userId: targetUserId,
+      roomId,
       online,
       lastSeenAt,
       serverNow: now,
