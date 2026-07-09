@@ -130,7 +130,7 @@ export default function MessagesScreen() {
   const openConversation = useCallback(
     (item: MessagesInboxConversation) => {
       router.push({
-        pathname: "/(tabs)/more/my-church-room/messages/[id]",
+        pathname: "/(tabs)/profile/messages/[id]",
         params: {
           id: item.id,
           title: item.title,
@@ -148,7 +148,7 @@ export default function MessagesScreen() {
   const openThread = useCallback(
     (thread: DirectMessageThread) => {
       router.push({
-        pathname: "/(tabs)/more/my-church-room/messages/[id]",
+        pathname: "/(tabs)/profile/messages/[id]",
         params: {
           id: thread.roomId,
           title: thread.title,
@@ -193,7 +193,7 @@ export default function MessagesScreen() {
     <View style={[s.screen, { paddingTop: insets.top + 10 }]}>
       <View style={s.header}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => router.replace("/(tabs)/profile" as any)}
           style={({ pressed }) => [s.headerBtn, pressed ? s.headerBtnPressed : null]}
         >
           <Ionicons name="chevron-back" size={18} color={TEXT} />

@@ -2679,7 +2679,7 @@ export default function MessageThreadScreen() {
   const params = useLocalSearchParams<{ id?: string; title?: string; sub?: string; openMenu?: string; returnToken?: string; tab?: string; source?: string; backTo?: string; missionTitle?: string; missionUnlocked?: string; missionLive?: string; roomKind?: string; assignmentTitle?: string; assignmentSubtitle?: string; assignmentRole?: string; assignmentStatus?: string; assignmentInitials?: string; avatar?: string }>();
 
   function handleThreadBack() {
-    router.replace("/more/my-church-room/messages?tab=chats" as any);
+    router.replace("/(tabs)/profile/messages" as any);
   }
 
   const threadId = String(params.id || "");
