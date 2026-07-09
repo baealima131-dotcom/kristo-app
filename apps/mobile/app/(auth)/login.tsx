@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useRouter, Href } from "expo-router";
-import { Keyboard, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Keyboard, Linking, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { setSessionSync } from "@/src/lib/kristoSession";
 import { loadProfileDraft } from "@/src/lib/profileStore";
@@ -11,6 +11,7 @@ import { resolveActiveChurchFromProfileResponse } from "@/src/lib/churchMembersh
 import { resolvePlatformRoleFromAuthPayload } from "@/src/lib/platformRole";
 import { recoverChurchIdFromMembership } from "@/src/lib/churchLockedRecovery";
 import { realignRevenueCatIdentityForChurch } from "@/src/lib/payments/mobileSubscriptions";
+import { SUBSCRIPTION_SUPPORT_URL } from "@/src/components/payments/SubscriptionLegalDisclosure";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -450,6 +451,15 @@ export default function LoginScreen() {
           <Text style={s.btnText}>{saving ? "..." : "Sign in"}</Text>
         </Pressable>
 
+        <Pressable
+          onPress={() => {
+            void Linking.openURL(SUBSCRIPTION_SUPPORT_URL);
+          }}
+          style={s.supportBtn}
+        >
+          <Text style={s.supportText}>Need help? Contact Support</Text>
+        </Pressable>
+
         <Pressable onPress={() => router.push("/(auth)/signup" as Href)} style={s.linkBtn}>
           <Text style={s.linkText}>Create account (Sign up)</Text>
         </Pressable>
@@ -612,6 +622,8 @@ const s = StyleSheet.create({
 
   linkBtn: { marginTop: 12, paddingVertical: 10, alignItems: "center" },
   linkText: { color: "rgba(255,255,255,0.75)", fontWeight: "800" },
+  supportBtn: { marginTop: 10, paddingVertical: 8, alignItems: "center" },
+  supportText: { color: "rgba(147,197,253,0.95)", fontWeight: "800", fontSize: 13 },
 
   loginOverlay: {
     position: "absolute",

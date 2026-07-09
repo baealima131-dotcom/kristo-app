@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { useRouter, Href } from "expo-router";
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { saveProfileDraft } from "@/src/lib/profileStore";
 import { apiGet, apiPost, getApiBase } from "@/src/lib/kristoApi";
@@ -10,6 +10,7 @@ import {
   filterKristoCountries,
   type KristoCountry,
 } from "@/src/lib/countries";
+import { SUBSCRIPTION_SUPPORT_URL } from "@/src/components/payments/SubscriptionLegalDisclosure";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -702,6 +703,15 @@ export default function SignupScreen() {
           </>
         )}
 
+        <Pressable
+          onPress={() => {
+            void Linking.openURL(SUBSCRIPTION_SUPPORT_URL);
+          }}
+          style={s.supportBtn}
+        >
+          <Text style={s.supportText}>Need help? Contact Support</Text>
+        </Pressable>
+
         <Pressable onPress={() => router.replace("/(auth)/login" as Href)} style={s.linkBtn}>
           <Text style={s.linkText}>Back to Login</Text>
         </Pressable>
@@ -1292,5 +1302,7 @@ const s = StyleSheet.create({
 
   linkBtn: { marginTop: 8, paddingVertical: 8, alignItems: "center" },
   linkText: { color: "rgba(255,255,255,0.75)", fontWeight: "900" },
+  supportBtn: { marginTop: 10, paddingVertical: 8, alignItems: "center" },
+  supportText: { color: "rgba(147,197,253,0.95)", fontWeight: "900", fontSize: 13 },
 }
 );
