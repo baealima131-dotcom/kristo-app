@@ -6,6 +6,7 @@ import {
   fetchPrivateCallSession,
   type PrivateCallSession,
 } from "@/src/lib/privateCallService";
+import { fetchDirectMessageInbox } from "@/src/lib/directMessagesApi";
 
 export type ProfileCommunicationInboxSnapshot = {
   unreadMessages: number;
@@ -114,7 +115,19 @@ export async function fetchProfileCommunicationInboxSnapshot(args: {
   });
 
   const callStatusById = await resolveCallStatusesForNotifications(result.items);
-  return countProfileCommunicationInboxFromItems(result.items, callStatusById);
+  const notificationSnapshot = countProfileCommunicationInboxFromItems(result.items, callStatusById);
+
+  const directRows = await fetchDirectMessageInbox().catch(() => []);
+  const unreadMessages = directRows.reduce(
+    (total, row) => total + Math.max(0, Number(row.unreadCount || 0)),
+    0
+  );
+
+  return {
+    unreadMessages,
+    missedCalls: notificationSnapshot.missedCalls,
+    total: unreadMessages + notificationSnapshot.missedCalls,
+  };
 }
 
 export function formatProfileCommunicationBadgeCount(count: number): string {
