@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   fetchPrivateCallHistory,
   type PrivateCallSession,
@@ -266,9 +267,12 @@ export default function CallsHistoryScreen() {
   const insets = useSafeAreaInsets();
   const kristoSession = useKristoSession() as any;
 
-  const currentUserId = sessionUserId(
-    kristoSession?.session
-  );
+  const currentUserId =
+    String(
+      (getKristoHeaders() as any)?.["x-kristo-user-id"] ||
+      sessionUserId(kristoSession?.session) ||
+      sessionUserId(kristoSession)
+    ).trim();
 
   const [calls, setCalls] = useState<
     PrivateCallSession[]
@@ -284,6 +288,7 @@ export default function CallsHistoryScreen() {
 
       try {
         const rows = await fetchPrivateCallHistory();
+
         setCalls(rows);
       } catch (error) {
         console.log(
@@ -300,7 +305,7 @@ export default function CallsHistoryScreen() {
         setRefreshing(false);
       }
     },
-    []
+    [currentUserId]
   );
 
   useFocusEffect(

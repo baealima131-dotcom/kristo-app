@@ -69,10 +69,18 @@ export async function fetchPrivateCallSession(callId: string): Promise<PrivateCa
 }
 
 export async function fetchPrivateCallHistory(): Promise<PrivateCallSession[]> {
-  const res: any = await apiGet(PRIVATE_CALL_API_PATH, {
-    headers: authHeaders(),
-    cache: "no-store" as RequestCache,
-  });
+  const res: any = await apiGet(
+    `${PRIVATE_CALL_API_PATH}?history=1&t=${Date.now()}`,
+    {
+      headers: authHeaders(),
+      cache: "no-store" as RequestCache,
+    },
+    {
+      screen: "PrivateCallHistory",
+      throttleMs: 0,
+      dedupe: false,
+    } as any
+  );
 
   if (isPrivateCallApiUnavailable(res, Number(res?.status || 0) || undefined)) {
     return [];
