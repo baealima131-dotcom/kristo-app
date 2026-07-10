@@ -13,7 +13,11 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { LiveKitRoom, registerGlobals, useRoomContext } from "@livekit/react-native";
+import {
+  RoomContext,
+  registerGlobals,
+  useRoomContext,
+} from "@livekit/react-native";
 import { Room, RoomEvent } from "livekit-client";
 
 import LiveMainStageSaturnOrbit from "@/src/components/live/LiveMainStageSaturnOrbit";
@@ -43,6 +47,10 @@ import {
 
 const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
+const PRIVATE_CALL_AUDIO_ENABLED =
+  String(process.env.EXPO_PUBLIC_PRIVATE_CALL_AUDIO_ENABLED || "true")
+    .trim()
+    .toLowerCase() !== "false";
 
 let privateCallLiveKitGlobalsReady = false;
 function ensurePrivateCallLiveKitGlobals() {
@@ -622,17 +630,7 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
   }
 
   return (
-    <LiveKitRoom
-      key={liveKitRoomKey}
-      room={ownedRoom}
-      serverUrl={binding.serverUrl}
-      token={binding.token}
-      connect={true}
-      audio={false}
-      video={false}
-      connectOptions={stableConnectOptions as any}
-      options={liveKitOptions as any}
-    >
+    <RoomContext.Provider value={ownedRoom}>
       <PrivateCallLiveKitRoomDiagnostics
         callId={binding.callId}
         roomName={binding.roomName}
@@ -658,7 +656,7 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
         currentUserId={currentUserId}
         onEnd={handleEnd}
       />
-    </LiveKitRoom>
+    </RoomContext.Provider>
   );
 });
 
@@ -855,6 +853,10 @@ export default function PrivateCallScreen() {
   const startLiveKitJoin = useCallback(
     async (joinSession: PrivateCallSession, source: string) => {
       if (liveKitJoinRef.current || liveKitBindingRef.current) return;
+      if (!PRIVATE_CALL_AUDIO_ENABLED) {
+        setConnectedPeerDisplay(resolveConnectedPeerDisplay(joinSession));
+        return;
+      }
       liveKitJoinRef.current = true;
 
       const marks = latencyMarksRef.current;
@@ -881,7 +883,7 @@ export default function PrivateCallScreen() {
 
       commitLiveKitBinding(joinSession, creds);
     },
-    [commitLiveKitBinding, currentUserId]
+    [commitLiveKitBinding, currentUserId, resolveConnectedPeerDisplay]
   );
 
   useEffect(() => {
@@ -994,9 +996,20 @@ export default function PrivateCallScreen() {
   }, [loading, session?.status, handleRemoteTermination]);
 
   useEffect(() => {
-    if (!session || session.status !== "accepted" || liveKitBindingRef.current) return;
+    if (!session || session.status !== "accepted") return;
+    if (!PRIVATE_CALL_AUDIO_ENABLED) {
+      setConnectedPeerDisplay(resolveConnectedPeerDisplay(session));
+      return;
+    }
+    if (liveKitBindingRef.current) return;
     void startLiveKitJoin(session, "accepted-status");
-  }, [session?.id, session?.roomName, session?.status, startLiveKitJoin]);
+  }, [
+    session?.id,
+    session?.roomName,
+    session?.status,
+    startLiveKitJoin,
+    resolveConnectedPeerDisplay,
+  ]);
 
   const handleAccept = async () => {
     if (!session || actionBusy) return;
@@ -1086,6 +1099,40 @@ export default function PrivateCallScreen() {
     );
   }
 
+  if (session.status === "accepted" && !PRIVATE_CALL_AUDIO_ENABLED && connectedPeerDisplay) {
+    return (
+      <View style={[styles.screen, { paddingTop: insets.top }]}>
+        <View style={styles.centerStage}>
+          <PrivateCallAvatar
+            avatarUri={connectedPeerDisplay.peerAvatar}
+            animate
+          />
+
+          <Text style={styles.title}>Connected</Text>
+          <Text style={styles.subtitle}>
+            {connectedPeerDisplay.peerName}
+          </Text>
+
+          <View style={styles.connectedControls}>
+            <Pressable
+              onPress={handleEndCall}
+              style={styles.endBtn}
+            >
+              <Ionicons
+                name="call"
+                size={20}
+                color="#fff"
+              />
+              <Text style={styles.endBtnText}>
+                End Call
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   if (session.status === "accepted" && liveKitBinding && connectedPeerDisplay) {
     return (
       <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -1103,7 +1150,11 @@ export default function PrivateCallScreen() {
     );
   }
 
-  if (session.status === "accepted" && !liveKitBinding) {
+  if (
+    session.status === "accepted" &&
+    PRIVATE_CALL_AUDIO_ENABLED &&
+    !liveKitBinding
+  ) {
     return (
       <View style={[styles.screen, { paddingTop: insets.top + 24 }]}>
         <ActivityIndicator color={GOLD} />
