@@ -67,6 +67,49 @@ type StableLiveKitBinding = {
   token: string;
 };
 
+type PreconnectedPrivateCallRoom = {
+  callId: string;
+  roomName: string;
+  serverUrl: string;
+  token: string;
+  room: Room;
+};
+
+const preconnectedPrivateCallRooms = new Map<
+  string,
+  PreconnectedPrivateCallRoom
+>();
+
+function takePreconnectedPrivateCallRoom(
+  callId: string,
+  roomName: string
+): PreconnectedPrivateCallRoom | null {
+  const existing = preconnectedPrivateCallRooms.get(callId) || null;
+  if (!existing) return null;
+
+  if (existing.roomName !== roomName) {
+    preconnectedPrivateCallRooms.delete(callId);
+    void existing.room.disconnect(true);
+    return null;
+  }
+
+  preconnectedPrivateCallRooms.delete(callId);
+  return existing;
+}
+
+async function disposePreconnectedPrivateCallRoom(callId: string) {
+  const existing = preconnectedPrivateCallRooms.get(callId);
+  if (!existing) return;
+
+  preconnectedPrivateCallRooms.delete(callId);
+
+  try {
+    await existing.room.disconnect(true);
+  } catch {
+    // Best effort cleanup.
+  }
+}
+
 type ConnectedPeerDisplay = {
   peerName: string;
   peerAvatar?: string;
@@ -519,18 +562,37 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
 
   useEffect(() => {
     const session = ++connectSessionRef.current;
-    const room = new Room(liveKitOptions);
 
-    console.log("KRISTO_PRIVATE_CALL_ROOM_CONNECT_START", {
-      callId: binding.callId,
-      roomName: binding.roomName,
-      autoSubscribeRequested: stableConnectOptions.autoSubscribe,
-      ts: Date.now(),
-    });
+    const preconnected = takePreconnectedPrivateCallRoom(
+      binding.callId,
+      binding.roomName
+    );
+
+    const room = preconnected?.room || new Room(liveKitOptions);
 
     void (async () => {
       try {
-        await room.connect(binding.serverUrl, binding.token, stableConnectOptions);
+        if (preconnected) {
+          console.log("KRISTO_PRIVATE_CALL_PRECONNECTED_ROOM_ADOPTED", {
+            callId: binding.callId,
+            roomName: binding.roomName,
+            ts: Date.now(),
+          });
+        } else {
+          console.log("KRISTO_PRIVATE_CALL_ROOM_CONNECT_START", {
+            callId: binding.callId,
+            roomName: binding.roomName,
+            autoSubscribeRequested: stableConnectOptions.autoSubscribe,
+            ts: Date.now(),
+          });
+
+          await room.connect(
+            binding.serverUrl,
+            binding.token,
+            stableConnectOptions
+          );
+        }
+
         if (session !== connectSessionRef.current) {
           await room.disconnect(true);
           return;
@@ -539,20 +601,37 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
         logPrivateCallAutoSubscribeEffective(room, {
           callId: binding.callId,
           roomName: binding.roomName,
-          source: "manual-room-connect",
+          source: preconnected
+            ? "ringing-preconnect-adopted"
+            : "manual-room-connect",
           requestedAutoSubscribe: stableConnectOptions.autoSubscribe,
         });
 
-        await room.localParticipant.setMicrophoneEnabled(true).catch(() => {});
         setOwnedRoom(room);
+
+        void room.localParticipant
+          .setMicrophoneEnabled(true)
+          .catch((error: any) => {
+            console.log("KRISTO_PRIVATE_CALL_MIC_ENABLE_ERROR", {
+              callId: binding.callId,
+              roomName: binding.roomName,
+              error: String(error?.message || error),
+              ts: Date.now(),
+            });
+          });
       } catch (error: any) {
         if (session !== connectSessionRef.current) return;
+
         console.log("KRISTO_PRIVATE_CALL_ROOM_CONNECT_ERROR", {
           callId: binding.callId,
           roomName: binding.roomName,
+          source: preconnected
+            ? "ringing-preconnect-adopt"
+            : "manual-room-connect",
           error: String(error?.message || error),
           ts: Date.now(),
         });
+
         setOwnedRoom(null);
       }
     })();
@@ -682,6 +761,7 @@ export default function PrivateCallScreen() {
   const roomDisconnectRef = useRef<(() => void) | null>(null);
   const liveKitJoinRef = useRef(false);
   const liveKitBindingRef = useRef<StableLiveKitBinding | null>(null);
+  const ringingPreconnectPromiseRef = useRef<Promise<void> | null>(null);
   const latencyMarksRef = useRef<Record<string, number>>({});
   const sessionStatusRef = useRef<string>("");
   const onEndRef = useRef<() => void>(() => {});
@@ -821,6 +901,7 @@ export default function PrivateCallScreen() {
   useEffect(() => {
     liveKitJoinRef.current = false;
     liveKitBindingRef.current = null;
+    ringingPreconnectPromiseRef.current = null;
     latencyMarksRef.current = {};
     sessionStatusRef.current = "";
     setLiveKitBinding(null);
@@ -848,6 +929,161 @@ export default function PrivateCallScreen() {
       setConnectedPeerDisplay(resolveConnectedPeerDisplay(joinSession));
     },
     [resolveConnectedPeerDisplay]
+  );
+
+  const preconnectLiveKitWhileRinging = useCallback(
+    async (ringingSession: PrivateCallSession) => {
+      if (!PRIVATE_CALL_AUDIO_ENABLED) return;
+      if (!ringingSession.roomName || !currentUserId) return;
+      if (preconnectedPrivateCallRooms.has(ringingSession.id)) return;
+      if (liveKitBindingRef.current) return;
+
+      if (ringingPreconnectPromiseRef.current) {
+        await ringingPreconnectPromiseRef.current;
+        return;
+      }
+
+      // Reserve LiveKit join ownership so Accept cannot create a second Room
+      // while the ringing-time connection is still in progress.
+      liveKitJoinRef.current = true;
+
+      const task = (async () => {
+        console.log("KRISTO_PRIVATE_CALL_RINGING_PRECONNECT_START", {
+          callId: ringingSession.id,
+          roomName: ringingSession.roomName,
+          currentUserId,
+          ts: Date.now(),
+        });
+
+        let room: Room | null = null;
+
+        try {
+          void ensurePrivateCallAudioSession(ringingSession.id);
+
+          const creds = await fetchPrivateCallLiveKitCredentials({
+            roomName: ringingSession.roomName,
+            identity: currentUserId,
+            source: "private-call-ringing-preconnect",
+          });
+
+          if (!creds) {
+            throw new Error("Private-call LiveKit credentials unavailable");
+          }
+
+          const statusBeforeConnect = sessionStatusRef.current;
+          if (
+            statusBeforeConnect &&
+            statusBeforeConnect !== "ringing" &&
+            statusBeforeConnect !== "accepted"
+          ) {
+            return;
+          }
+
+          room = new Room(buildLiveKitRoomOptions());
+
+          await room.connect(
+            creds.url,
+            creds.token,
+            buildPrivateCallConnectOptions()
+          );
+
+          const statusAfterConnect = sessionStatusRef.current;
+
+          if (
+            statusAfterConnect &&
+            statusAfterConnect !== "ringing" &&
+            statusAfterConnect !== "accepted"
+          ) {
+            await room.disconnect(true);
+            room = null;
+            return;
+          }
+
+          preconnectedPrivateCallRooms.set(ringingSession.id, {
+            callId: ringingSession.id,
+            roomName: ringingSession.roomName,
+            serverUrl: creds.url,
+            token: creds.token,
+            room,
+          });
+
+          room = null;
+
+          console.log("KRISTO_PRIVATE_CALL_RINGING_PRECONNECT_READY", {
+            callId: ringingSession.id,
+            roomName: ringingSession.roomName,
+            currentUserId,
+            status: statusAfterConnect || "ringing",
+            ts: Date.now(),
+          });
+
+          // Accept may have happened while room.connect() was running.
+          // Commit immediately so Shell adopts this already-connected Room.
+          if (statusAfterConnect === "accepted") {
+            commitLiveKitBinding(ringingSession, creds);
+          }
+        } catch (error: any) {
+          if (room) {
+            await room.disconnect(true).catch(() => {});
+          }
+
+          console.log("KRISTO_PRIVATE_CALL_RINGING_PRECONNECT_ERROR", {
+            callId: ringingSession.id,
+            roomName: ringingSession.roomName,
+            currentUserId,
+            status: sessionStatusRef.current,
+            error: String(error?.message || error),
+            ts: Date.now(),
+          });
+
+          // If Accept already happened, fall back to the normal Shell
+          // connection instead of leaving the screen waiting forever.
+          if (
+            sessionStatusRef.current === "accepted" &&
+            !liveKitBindingRef.current
+          ) {
+            try {
+              const fallbackCreds =
+                await fetchPrivateCallLiveKitCredentials({
+                  roomName: ringingSession.roomName,
+                  identity: currentUserId,
+                  source: "private-call-preconnect-fallback",
+                });
+
+              if (fallbackCreds && !liveKitBindingRef.current) {
+                commitLiveKitBinding(
+                  ringingSession,
+                  fallbackCreds
+                );
+              }
+            } catch (fallbackError: any) {
+              console.log(
+                "KRISTO_PRIVATE_CALL_PRECONNECT_FALLBACK_ERROR",
+                {
+                  callId: ringingSession.id,
+                  roomName: ringingSession.roomName,
+                  error: String(
+                    fallbackError?.message || fallbackError
+                  ),
+                  ts: Date.now(),
+                }
+              );
+            }
+          }
+        } finally {
+          ringingPreconnectPromiseRef.current = null;
+
+          // Once a binding exists, the Shell owns the joined call.
+          // Otherwise permit a later normal join attempt.
+          liveKitJoinRef.current =
+            Boolean(liveKitBindingRef.current);
+        }
+      })();
+
+      ringingPreconnectPromiseRef.current = task;
+      await task;
+    },
+    [commitLiveKitBinding, currentUserId]
   );
 
   const startLiveKitJoin = useCallback(
@@ -994,6 +1230,26 @@ export default function PrivateCallScreen() {
     if (!isPrivateCallTerminalStatus(session.status)) return;
     handleRemoteTermination("session-loaded-terminal", session.status);
   }, [loading, session?.status, handleRemoteTermination]);
+
+  useEffect(() => {
+    if (!session || session.status !== "ringing") return;
+
+    void preconnectLiveKitWhileRinging(session);
+
+    return () => {
+      if (
+        sessionStatusRef.current !== "accepted" &&
+        sessionStatusRef.current !== "ringing"
+      ) {
+        void disposePreconnectedPrivateCallRoom(session.id);
+      }
+    };
+  }, [
+    session?.id,
+    session?.roomName,
+    session?.status,
+    preconnectLiveKitWhileRinging,
+  ]);
 
   useEffect(() => {
     if (!session || session.status !== "accepted") return;
