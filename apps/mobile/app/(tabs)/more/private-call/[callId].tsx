@@ -32,6 +32,7 @@ import { logLiveKitTokenClaims } from "@/src/lib/liveKitTokenDecode";
 import { buildLiveKitRoomOptions } from "@/src/lib/liveKitVideoQuality";
 import {
   buildPrivateCallConnectOptions,
+  getPrivateCallRoomInstanceId,
   logPrivateCallAutoSubscribeEffective,
 } from "@/src/lib/privateCallLiveKitConnect";
 import {
@@ -73,12 +74,189 @@ type PreconnectedPrivateCallRoom = {
   serverUrl: string;
   token: string;
   room: Room;
+  subscriptionBridgeCleanup?: () => void;
 };
 
 const preconnectedPrivateCallRooms = new Map<
   string,
   PreconnectedPrivateCallRoom
 >();
+
+function installPrivateCallRingingSubscriptionBridge(
+  room: Room,
+  meta: {
+    callId: string;
+    roomName: string;
+    currentUserId: string;
+  }
+) {
+  const requestedTrackSids = new Set<string>();
+  let active = true;
+
+  console.log("KRISTO_PRIVATE_CALL_SUBSCRIPTION_OWNER_RINGING", {
+    ...meta,
+    roomInstanceId: getPrivateCallRoomInstanceId(room),
+    ts: Date.now(),
+  });
+
+  const isRemoteAudioPublication = (publication: any) => {
+    const kind = String(
+      publication?.kind ?? publication?.track?.kind ?? ""
+    ).toLowerCase();
+    const source = String(
+      publication?.source ?? publication?.track?.source ?? ""
+    ).toLowerCase();
+
+    return (
+      kind === "audio" ||
+      source.includes("microphone") ||
+      source.includes("screen_share_audio")
+    );
+  };
+
+  const reconcilePublication = (
+    publication: any,
+    participant: any,
+    reason: string
+  ) => {
+    if (!active || !participant || participant.isLocal) return;
+    if (!isRemoteAudioPublication(publication)) return;
+
+    const trackSid = String(
+      publication?.trackSid || publication?.sid || ""
+    ).trim();
+
+    if (!trackSid) return;
+
+    if (publication?.isSubscribed && publication?.track) {
+      console.log(
+        "KRISTO_PRIVATE_CALL_RINGING_SUBSCRIPTION_ALREADY_READY",
+        {
+          ...meta,
+          identity: String(participant?.identity || ""),
+          trackSid,
+          reason,
+          ts: Date.now(),
+        }
+      );
+      return;
+    }
+
+    if (requestedTrackSids.has(trackSid)) return;
+    if (typeof publication?.setSubscribed !== "function") return;
+
+    requestedTrackSids.add(trackSid);
+
+    console.log("KRISTO_PRIVATE_CALL_RINGING_SUBSCRIBE_REQUEST", {
+      ...meta,
+      identity: String(participant?.identity || ""),
+      participantSid: String(participant?.sid || ""),
+      trackSid,
+      reason,
+      isDesired: publication?.isDesired !== false,
+      isSubscribed: !!publication?.isSubscribed,
+      hasTrack: !!publication?.track,
+      ts: Date.now(),
+    });
+
+    try {
+      publication.setSubscribed(true);
+    } catch (error: any) {
+      requestedTrackSids.delete(trackSid);
+
+      console.log("KRISTO_PRIVATE_CALL_RINGING_SUBSCRIPTION_ERROR", {
+        ...meta,
+        identity: String(participant?.identity || ""),
+        trackSid,
+        reason,
+        error: String(error?.message || error),
+        ts: Date.now(),
+      });
+    }
+  };
+
+  const primeParticipant = (participant: any, reason: string) => {
+    if (!participant || participant.isLocal) return;
+
+    participant.trackPublications?.forEach?.((publication: any) => {
+      reconcilePublication(publication, participant, reason);
+    });
+  };
+
+  const primeAll = (reason: string) => {
+    room.remoteParticipants.forEach((participant: any) => {
+      primeParticipant(participant, reason);
+    });
+  };
+
+  const onTrackPublished = (publication: any, participant: any) => {
+    reconcilePublication(
+      publication,
+      participant,
+      "ringing-track-published"
+    );
+  };
+
+  const onParticipantConnected = (participant: any) => {
+    primeParticipant(
+      participant,
+      "ringing-participant-connected"
+    );
+  };
+
+  const onTrackSubscribed = (
+    track: any,
+    publication: any,
+    participant: any
+  ) => {
+    if (!isRemoteAudioPublication(publication)) return;
+
+    console.log("KRISTO_PRIVATE_CALL_RINGING_REMOTE_AUDIO_READY", {
+      ...meta,
+      identity: String(participant?.identity || ""),
+      trackSid: String(
+        publication?.trackSid || publication?.sid || ""
+      ),
+      hasTrack: !!publication?.track,
+      hasMediaStreamTrack: !!track?.mediaStreamTrack,
+      ts: Date.now(),
+    });
+  };
+
+  const onReconnected = () => {
+    primeAll("ringing-reconnected");
+  };
+
+  room.on(RoomEvent.TrackPublished, onTrackPublished);
+  room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+  room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+  room.on(RoomEvent.Reconnected, onReconnected);
+
+  primeAll("ringing-bridge-installed");
+
+  console.log("KRISTO_PRIVATE_CALL_RINGING_SUBSCRIPTION_BRIDGE_READY", {
+    ...meta,
+    remoteParticipantCount: room.remoteParticipants.size,
+    ts: Date.now(),
+  });
+
+  return () => {
+    if (!active) return;
+    active = false;
+
+    requestedTrackSids.clear();
+
+    room.off(RoomEvent.TrackPublished, onTrackPublished);
+    room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+    room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    room.off(RoomEvent.Reconnected, onReconnected);
+
+    console.log("KRISTO_PRIVATE_CALL_RINGING_SUBSCRIPTION_BRIDGE_CLEANUP", {
+      ...meta,
+      ts: Date.now(),
+    });
+  };
+}
 
 function takePreconnectedPrivateCallRoom(
   callId: string,
@@ -89,6 +267,7 @@ function takePreconnectedPrivateCallRoom(
 
   if (existing.roomName !== roomName) {
     preconnectedPrivateCallRooms.delete(callId);
+    existing.subscriptionBridgeCleanup?.();
     void existing.room.disconnect(true);
     return null;
   }
@@ -102,6 +281,7 @@ async function disposePreconnectedPrivateCallRoom(callId: string) {
   if (!existing) return;
 
   preconnectedPrivateCallRooms.delete(callId);
+  existing.subscriptionBridgeCleanup?.();
 
   try {
     await existing.room.disconnect(true);
@@ -573,9 +753,28 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
     void (async () => {
       try {
         if (preconnected) {
+          const hadRingingOwner =
+            !!preconnected.subscriptionBridgeCleanup;
+
+          preconnected.subscriptionBridgeCleanup?.();
+
+          console.log(
+            "KRISTO_PRIVATE_CALL_SUBSCRIPTION_OWNER_HANDOFF",
+            {
+              callId: binding.callId,
+              roomName: binding.roomName,
+              roomInstanceId:
+                getPrivateCallRoomInstanceId(room),
+              from: hadRingingOwner ? "ringing" : "none",
+              to: "renderer",
+              ts: Date.now(),
+            }
+          );
+
           console.log("KRISTO_PRIVATE_CALL_PRECONNECTED_ROOM_ADOPTED", {
             callId: binding.callId,
             roomName: binding.roomName,
+            ringingSubscriptionBridgeActive: false,
             ts: Date.now(),
           });
         } else {
@@ -987,6 +1186,13 @@ export default function PrivateCallScreen() {
             buildPrivateCallConnectOptions()
           );
 
+          const subscriptionBridgeCleanup =
+            installPrivateCallRingingSubscriptionBridge(room, {
+              callId: ringingSession.id,
+              roomName: ringingSession.roomName,
+              currentUserId,
+            });
+
           const statusAfterConnect = sessionStatusRef.current;
 
           if (
@@ -994,6 +1200,7 @@ export default function PrivateCallScreen() {
             statusAfterConnect !== "ringing" &&
             statusAfterConnect !== "accepted"
           ) {
+            subscriptionBridgeCleanup();
             await room.disconnect(true);
             room = null;
             return;
@@ -1005,6 +1212,7 @@ export default function PrivateCallScreen() {
             serverUrl: creds.url,
             token: creds.token,
             room,
+            subscriptionBridgeCleanup,
           });
 
           room = null;

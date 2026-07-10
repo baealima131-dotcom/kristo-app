@@ -12,6 +12,7 @@ import {
 let activeAudioSessionCallId = "";
 let audioSessionReadyPromise: Promise<void> | null = null;
 
+const SUBSCRIBE_RECONCILE_MS = 700;
 const SUBSCRIBE_FALLBACK_MS = 3000;
 
 function privateCallLogTs() {
@@ -131,27 +132,55 @@ function PrivateCallSubscribeDiagnostics({
     [callId, roomName, room]
   );
   const subscribeRequestedRef = useRef(new Set<string>());
+  const retryTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>()
+  );
   const remoteAudioReadyRef = useRef(false);
 
   useEffect(() => {
     if (!room) return;
 
+    console.log(
+      "KRISTO_PRIVATE_CALL_SUBSCRIPTION_OWNER_RENDERER",
+      {
+        callId: meta.callId,
+        roomName: meta.roomName,
+        roomInstanceId: meta.roomInstanceId,
+        ts: privateCallLogTs(),
+      }
+    );
+
     const getLatencyMarks = () => latencyMarksRef?.current || {};
+
+    const clearRetryTimer = (trackSid: string) => {
+      const timer = retryTimersRef.current.get(trackSid);
+      if (!timer) return;
+
+      clearTimeout(timer);
+      retryTimersRef.current.delete(trackSid);
+    };
 
     const requestSubscribe = (
       publication: any,
       participant: any,
-      reason: string,
-      force = false
+      reason: string
     ) => {
-      if (!participant || participant.isLocal || !isRemoteAudioPublication(publication)) {
+      if (
+        !participant ||
+        participant.isLocal ||
+        !isRemoteAudioPublication(publication)
+      ) {
         return;
       }
 
-      const trackSid = String(publication?.trackSid || publication?.sid || "").trim();
+      const trackSid = String(
+        publication?.trackSid || publication?.sid || ""
+      ).trim();
+
       if (!trackSid) return;
 
       const participantSid = String(participant?.sid || "").trim();
+
       if (!participantSid) {
         console.log("KRISTO_PRIVATE_CALL_SUBSCRIBE_DEFERRED", {
           callId: meta.callId,
@@ -165,9 +194,15 @@ function PrivateCallSubscribeDiagnostics({
         return;
       }
 
-      if (!force && subscribeRequestedRef.current.has(trackSid)) return;
+      if (publication?.isSubscribed && publication?.track) {
+        clearRetryTimer(trackSid);
+        return;
+      }
+
+      if (subscribeRequestedRef.current.has(trackSid)) return;
 
       subscribeRequestedRef.current.add(trackSid);
+
       const before = readPublicationSnapshot(publication);
 
       console.log("KRISTO_PRIVATE_CALL_SUBSCRIBE_REQUEST", {
@@ -181,23 +216,12 @@ function PrivateCallSubscribeDiagnostics({
         ts: privateCallLogTs(),
       });
 
-      const finish = (error?: unknown) => {
-        const after = readPublicationSnapshot(publication);
-        if (error) {
-          console.log("KRISTO_PRIVATE_CALL_SUBSCRIBE_ERROR", {
-            callId: meta.callId,
-            roomName: meta.roomName,
-            roomInstanceId: meta.roomInstanceId,
-            reason,
-            identity: String(participant?.identity || ""),
-            trackSid,
-            before,
-            after,
-            error: String((error as any)?.message || error),
-            ts: privateCallLogTs(),
-          });
-          return;
+      try {
+        if (typeof publication?.setSubscribed !== "function") {
+          throw new Error("publication.setSubscribed unavailable");
         }
+
+        publication.setSubscribed(true);
 
         console.log("KRISTO_PRIVATE_CALL_SUBSCRIBE_RESULT", {
           callId: meta.callId,
@@ -207,28 +231,85 @@ function PrivateCallSubscribeDiagnostics({
           identity: String(participant?.identity || ""),
           trackSid,
           before,
-          after,
+          after: readPublicationSnapshot(publication),
           ts: privateCallLogTs(),
         });
-      };
+      } catch (error: any) {
+        subscribeRequestedRef.current.delete(trackSid);
 
-      try {
-        if (typeof publication?.setSubscribed !== "function") {
-          finish(new Error("publication.setSubscribed unavailable"));
+        console.log("KRISTO_PRIVATE_CALL_SUBSCRIBE_ERROR", {
+          callId: meta.callId,
+          roomName: meta.roomName,
+          roomInstanceId: meta.roomInstanceId,
+          reason,
+          identity: String(participant?.identity || ""),
+          trackSid,
+          before,
+          after: readPublicationSnapshot(publication),
+          error: String(error?.message || error),
+          ts: privateCallLogTs(),
+        });
+
+        return;
+      }
+
+      if (retryTimersRef.current.has(trackSid)) return;
+
+      const timer = setTimeout(() => {
+        retryTimersRef.current.delete(trackSid);
+
+        if (String((room as any)?.state || "") !== "connected") {
           return;
         }
 
-        const result = publication.setSubscribed(true) as unknown;
-        if (result && typeof (result as Promise<unknown>).then === "function") {
-          void Promise.resolve(result as Promise<unknown>)
-            .then(() => finish())
-            .catch((error) => finish(error));
-        } else {
-          finish();
+        const currentParticipant =
+          room.remoteParticipants.get(participantSid);
+
+        if (!currentParticipant) return;
+
+        const currentPublication =
+          currentParticipant.trackPublications.get(trackSid) ||
+          publication;
+
+        if (
+          currentPublication?.isSubscribed &&
+          currentPublication?.track
+        ) {
+          return;
         }
-      } catch (error) {
-        finish(error);
-      }
+
+        console.log(
+          "KRISTO_PRIVATE_CALL_SUBSCRIBE_BOUNDED_RETRY",
+          {
+            callId: meta.callId,
+            roomName: meta.roomName,
+            roomInstanceId: meta.roomInstanceId,
+            identity: String(participant?.identity || ""),
+            participantSid,
+            trackSid,
+            snapshot:
+              readPublicationSnapshot(currentPublication),
+            ts: privateCallLogTs(),
+          }
+        );
+
+        try {
+          currentPublication?.setSubscribed?.(true);
+        } catch (error: any) {
+          console.log("KRISTO_PRIVATE_CALL_SUBSCRIBE_ERROR", {
+            callId: meta.callId,
+            roomName: meta.roomName,
+            roomInstanceId: meta.roomInstanceId,
+            reason: "bounded-retry",
+            identity: String(participant?.identity || ""),
+            trackSid,
+            error: String(error?.message || error),
+            ts: privateCallLogTs(),
+          });
+        }
+      }, SUBSCRIBE_FALLBACK_MS);
+
+      retryTimersRef.current.set(trackSid, timer);
     };
 
     const logRemotePublication = (
@@ -291,6 +372,14 @@ function PrivateCallSubscribeDiagnostics({
 
     const onTrackSubscribed = (track: any, publication: any, participant: any) => {
       if (participant?.isLocal || !isRemoteAudioPublication(publication)) return;
+
+      const subscribedTrackSid = String(
+        publication?.trackSid || publication?.sid || ""
+      );
+
+      clearRetryTimer(subscribedTrackSid);
+      subscribeRequestedRef.current.delete(subscribedTrackSid);
+
       logRemotePublication(publication, participant, "track-subscribed-event");
       const ts = privateCallLogTs();
       console.log("KRISTO_PRIVATE_CALL_REMOTE_TRACK_SUBSCRIBED", {
@@ -399,24 +488,6 @@ function PrivateCallSubscribeDiagnostics({
       });
     };
 
-    const runSubscribeFallback = () => {
-      if (remoteAudioReadyRef.current) return;
-      console.log("KRISTO_PRIVATE_CALL_SUBSCRIBE_FALLBACK", {
-        callId: meta.callId,
-        roomName: meta.roomName,
-        roomInstanceId: meta.roomInstanceId,
-        reason: "bounded-fallback-once",
-        remoteParticipantCount: room.remoteParticipants.size,
-        ts: privateCallLogTs(),
-      });
-      room.remoteParticipants.forEach((participant: any) => {
-        participant.trackPublications.forEach((publication: any) => {
-          if (!isRemoteAudioPublication(publication)) return;
-          if (publication?.isSubscribed && publication?.track) return;
-          requestSubscribe(publication, participant, "bounded-fallback-once", true);
-        });
-      });
-    };
 
     room.on(RoomEvent.Connected, onConnected);
     room.on(RoomEvent.Reconnected, onConnected);
@@ -433,10 +504,13 @@ function PrivateCallSubscribeDiagnostics({
       onConnected();
     }
 
-    const fallbackTimer = setTimeout(runSubscribeFallback, SUBSCRIBE_FALLBACK_MS);
 
     return () => {
-      clearTimeout(fallbackTimer);
+      retryTimersRef.current.forEach((timer) => {
+        clearTimeout(timer);
+      });
+      retryTimersRef.current.clear();
+      subscribeRequestedRef.current.clear();
       room.off(RoomEvent.Connected, onConnected);
       room.off(RoomEvent.Reconnected, onConnected);
       room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
