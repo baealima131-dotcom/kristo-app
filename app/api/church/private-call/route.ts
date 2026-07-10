@@ -79,71 +79,142 @@ export async function POST(req: NextRequest) {
 
   const churchId = String(ctxOrRes.churchId || "").trim();
   const callerUserId = String(ctxOrRes.viewer.userId || "").trim();
+
   if (!churchId || !callerUserId) {
-    return json({ ok: false, error: "Church membership required" }, { status: 400 });
+    return json(
+      { ok: false, error: "Church membership required" },
+      { status: 400 }
+    );
   }
 
-  const pastor = await resolveChurchPastorUserId(churchId);
-  const pastorUserId = String(pastor.actualChurchPastorUserId || "").trim();
-  if (!pastorUserId) {
-    console.log("KRISTO_MY_WAY_PASTOR_RESOLVE_FAILED", {
+  const body = await req
+    .json()
+    .catch(() => ({} as Record<string, unknown>));
+
+  const requestedTargetUserId = String(
+    body?.targetUserId || ""
+  ).trim();
+
+  let receiverUserId = "";
+  let receiverSourceField = "";
+  let receiverFallbackName = "Kristo user";
+
+  if (requestedTargetUserId) {
+    receiverUserId = requestedTargetUserId;
+    receiverSourceField = "direct-call-back";
+    receiverFallbackName = "Kristo user";
+  } else {
+    const pastor = await resolveChurchPastorUserId(churchId);
+
+    receiverUserId = String(
+      pastor.actualChurchPastorUserId || ""
+    ).trim();
+
+    receiverSourceField = String(
+      pastor.sourceField || "church-pastor"
+    ).trim();
+
+    receiverFallbackName = "Pastor";
+
+    if (!receiverUserId) {
+      console.log("KRISTO_MY_WAY_PASTOR_RESOLVE_FAILED", {
+        churchId,
+        callerUserId,
+        reason: "no-pastor",
+      });
+
+      return json(
+        {
+          ok: false,
+          error: "pastor_unavailable",
+          message:
+            "Your church pastor is not available for calling right now.",
+        },
+        { status: 404 }
+      );
+    }
+
+    console.log("KRISTO_MY_WAY_PASTOR_RESOLVED", {
       churchId,
       callerUserId,
-      reason: "no-pastor",
+      pastorUserId: receiverUserId,
+      sourceField: receiverSourceField,
     });
+  }
+
+  if (!receiverUserId) {
     return json(
       {
         ok: false,
-        error: "pastor_unavailable",
-        message: "Your church pastor is not available for calling right now.",
+        error: "target_unavailable",
+        message: "This person is not available for calling.",
       },
       { status: 404 }
     );
   }
 
-  if (pastorUserId === callerUserId) {
+  if (receiverUserId === callerUserId) {
     return json(
       {
         ok: false,
         error: "self_call_blocked",
-        message: "You are the church pastor. Use MY WAY to reach members another way.",
+        message: "You cannot call yourself.",
       },
       { status: 400 }
     );
   }
 
-  const [callerName, pastorName, pastorProfile, callerProfile] = await Promise.all([
+  const [
+    callerName,
+    receiverName,
+    receiverProfile,
+    callerProfile,
+  ] = await Promise.all([
     displayNameForUser(callerUserId, "Church member"),
-    displayNameForUser(pastorUserId, "Pastor"),
-    getProfile(pastorUserId).catch(() => null),
+    displayNameForUser(
+      receiverUserId,
+      receiverFallbackName
+    ),
+    getProfile(receiverUserId).catch(() => null),
     getProfile(callerUserId).catch(() => null),
   ]);
 
-  console.log("KRISTO_MY_WAY_PASTOR_RESOLVED", {
-    churchId,
-    callerUserId,
-    pastorUserId,
-    sourceField: pastor.sourceField,
-  });
+  if (requestedTargetUserId && !receiverProfile) {
+    return json(
+      {
+        ok: false,
+        error: "target_not_found",
+        message: "This Kristo user could not be found.",
+      },
+      { status: 404 }
+    );
+  }
 
   const session = await createPrivateCallSession({
     churchId,
     callerUserId,
     callerName,
-    callerAvatarUrl: String(callerProfile?.avatarUrl || "").trim() || undefined,
-    pastorUserId,
-    pastorName,
-    pastorAvatarUrl: String(pastorProfile?.avatarUrl || "").trim() || undefined,
-    pastorSourceField: pastor.sourceField,
+    callerAvatarUrl:
+      String(callerProfile?.avatarUrl || "").trim() ||
+      undefined,
+
+    // Existing session schema uses pastorUserId as the receiver ID.
+    pastorUserId: receiverUserId,
+    pastorName: receiverName,
+    pastorAvatarUrl:
+      String(receiverProfile?.avatarUrl || "").trim() ||
+      undefined,
+    pastorSourceField: receiverSourceField,
   });
 
   console.log("KRISTO_PRIVATE_CALL_SESSION_CREATED", {
     callId: session.id,
     callerUserId,
-    receiverUserId: pastorUserId,
+    receiverUserId,
     churchId,
     status: session.status,
     roomName: session.roomName,
+    sourceField: receiverSourceField,
   });
 
   try {
@@ -152,9 +223,11 @@ export async function POST(req: NextRequest) {
     console.log("KRISTO_PRIVATE_CALL_NOTIFICATION_FAILED", {
       callId: session.id,
       callerUserId,
-      receiverUserId: pastorUserId,
+      receiverUserId,
       churchId,
-      error: String((error as Error)?.message || error),
+      error: String(
+        (error as Error)?.message || error
+      ),
     });
   }
 
@@ -163,18 +236,26 @@ export async function POST(req: NextRequest) {
     churchId,
     roomName: session.roomName,
     callerUserId,
-    pastorUserId,
+    receiverUserId,
     status: session.status,
+    directCallBack: Boolean(requestedTargetUserId),
   });
 
   console.log("KRISTO_PRIVATE_CALL_RINGING", {
     callId: session.id,
-    pastorUserId,
+    receiverUserId,
     callerUserId,
     ringExpiresAt: session.ringExpiresAt,
   });
 
-  return json({ ok: true, data: session });
+  return json(
+    { ok: true, data: session },
+    {
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    }
+  );
 }
 
 export async function PATCH(req: NextRequest) {

@@ -121,6 +121,50 @@ export async function createPastorPrivateCall(): Promise<StartPastorPrivateCallR
   };
 }
 
+
+export async function createPrivateCallToUser(
+  targetUserId: string
+): Promise<StartPastorPrivateCallResult> {
+  const receiverUserId = String(targetUserId || "").trim();
+
+  if (!receiverUserId) {
+    return {
+      ok: false,
+      code: "missing_target",
+      message: "This person is not available for calling.",
+    };
+  }
+
+  const res: any = await apiPost(
+    PRIVATE_CALL_API_PATH,
+    {
+      targetUserId: receiverUserId,
+    },
+    {
+      headers: authHeaders(),
+      cache: "no-store" as RequestCache,
+    }
+  );
+
+  if (res?.ok && res?.data?.id) {
+    return {
+      ok: true,
+      session: res.data as PrivateCallSession,
+    };
+  }
+
+  const failure = sanitizePrivateCallApiFailure(
+    res,
+    PRIVATE_CALL_API_PATH
+  );
+
+  return {
+    ok: false,
+    code: failure.code,
+    message: failure.message,
+  };
+}
+
 export async function acceptPrivateCall(callId: string) {
   return apiPatch(
     PRIVATE_CALL_API_PATH,

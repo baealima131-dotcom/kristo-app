@@ -5,6 +5,7 @@ import React, {
 } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   Pressable,
@@ -21,6 +22,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
+  createPrivateCallToUser,
   fetchPrivateCallHistory,
   type PrivateCallSession,
 } from "@/src/lib/privateCallService";
@@ -173,8 +175,12 @@ function buildGroups(
 
 function CallRow({
   item,
+  onOpenChat,
+  onCallBack,
 }: {
   item: CallHistoryGroup;
+  onOpenChat: () => void;
+  onCallBack: () => void;
 }) {
   const initial =
     String(item.peerName || "?")
@@ -192,7 +198,14 @@ function CallRow({
 
   return (
     <View style={s.row}>
-      <View style={s.avatarWrap}>
+      <Pressable
+        onPress={onOpenChat}
+        style={({ pressed }) => [
+          s.rowMainPressable,
+          pressed ? s.rowPressed : null,
+        ]}
+      >
+        <View style={s.avatarWrap}>
         {item.peerAvatar ? (
           <Image
             source={{ uri: item.peerAvatar }}
@@ -245,19 +258,29 @@ function CallRow({
         </View>
       </View>
 
-      <View style={s.rightSide}>
-        <Text style={s.timeText}>
-          {formatCallTime(item.latest.createdAt)}
-        </Text>
-
-        <View style={s.callIcon}>
-          <Ionicons
-            name="call-outline"
-            size={20}
-            color={GOLD}
-          />
+        <View style={s.rightMeta}>
+          <Text style={s.timeText}>
+            {formatCallTime(item.latest.createdAt)}
+          </Text>
         </View>
-      </View>
+      </Pressable>
+
+      <Pressable
+        onPress={onCallBack}
+        hitSlop={12}
+        style={({ pressed }) => [
+          s.callBackButton,
+          pressed ? s.callBackButtonPressed : null,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={`Call ${item.peerName}`}
+      >
+        <Ionicons
+          name="call-outline"
+          size={22}
+          color={GOLD}
+        />
+      </Pressable>
     </View>
   );
 }
@@ -319,6 +342,67 @@ export default function CallsHistoryScreen() {
     [calls, currentUserId]
   );
 
+  const openChat = useCallback(
+    (item: CallHistoryGroup) => {
+      const peerUserId = String(item.peerUserId || "").trim();
+      if (!peerUserId) return;
+
+      const roomId = [currentUserId, peerUserId]
+        .sort()
+        .join("::");
+
+      router.push({
+        pathname: "/(tabs)/more/my-church-room/messages/[id]",
+        params: {
+          id: `dm:${roomId}`,
+          title: item.peerName,
+          avatar: item.peerAvatar || "",
+          roomKind: "direct",
+          peerUserId,
+        },
+      } as any);
+    },
+    [router, currentUserId]
+  );
+
+  const callBack = useCallback(
+    async (item: CallHistoryGroup) => {
+      const peerUserId = String(
+        item.peerUserId || ""
+      ).trim();
+
+      if (!peerUserId) {
+        Alert.alert(
+          "Call unavailable",
+          "This person could not be identified."
+        );
+        return;
+      }
+
+      const result = await createPrivateCallToUser(
+        peerUserId
+      );
+
+      if (!result.ok) {
+        Alert.alert(
+          "Could not start call",
+          result.message ||
+            "Please try again in a moment."
+        );
+        return;
+      }
+
+      router.push({
+        pathname:
+          "/(tabs)/more/private-call/[callId]",
+        params: {
+          callId: result.session.id,
+        },
+      } as any);
+    },
+    [router]
+  );
+
   return (
     <View
       style={[
@@ -371,7 +455,11 @@ export default function CallsHistoryScreen() {
           data={data}
           keyExtractor={(item) => item.key}
           renderItem={({ item }) => (
-            <CallRow item={item} />
+            <CallRow
+              item={item}
+              onOpenChat={() => openChat(item)}
+              onCallBack={() => callBack(item)}
+            />
           )}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
@@ -536,6 +624,14 @@ const s = StyleSheet.create({
     borderColor: BG,
   },
 
+  rowMainPressable: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+
   rowBody: {
     flex: 1,
     minWidth: 0,
@@ -564,11 +660,23 @@ const s = StyleSheet.create({
     fontWeight: "500",
   },
 
-  rightSide: {
+  rightMeta: {
     marginLeft: 10,
     alignItems: "flex-end",
     justifyContent: "center",
-    gap: 7,
+  },
+
+  callBackButton: {
+    width: 50,
+    height: 50,
+    marginLeft: 4,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 25,
+  },
+
+  callBackButtonPressed: {
+    backgroundColor: "rgba(217,179,95,0.12)",
   },
 
   timeText: {
