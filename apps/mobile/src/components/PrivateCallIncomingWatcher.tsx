@@ -91,7 +91,12 @@ export function PrivateCallIncomingWatcher() {
         source: "incoming-poll",
       });
 
-      router.push(`/more/private-call/${encodeURIComponent(nextCall.id)}` as any);
+      router.push({
+        pathname: "/more/private-call/[callId]",
+        params: {
+          callId: nextCall.id,
+        },
+      } as any);
       navigatingRef.current = false;
     };
 

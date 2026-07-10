@@ -397,6 +397,7 @@ export default function CallsHistoryScreen() {
           "/(tabs)/more/private-call/[callId]",
         params: {
           callId: result.session.id,
+          returnTo: "/(tabs)/more/my-church-room/messages/calls",
         },
       } as any);
     },

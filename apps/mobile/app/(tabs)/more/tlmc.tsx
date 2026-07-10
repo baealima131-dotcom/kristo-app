@@ -829,7 +829,10 @@ Vibration.vibrate(120);
 
         router.push({
           pathname: "/more/private-call/[callId]",
-          params: { callId: result.session.id },
+          params: {
+            callId: result.session.id,
+            returnTo: "/(tabs)/more/tlmc",
+          },
         } as any);
         return;
       }

@@ -941,10 +941,14 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
 export default function PrivateCallScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ callId?: string }>();
+  const params = useLocalSearchParams<{
+    callId?: string;
+    returnTo?: string;
+  }>();
   const { session: authSession } = useKristoSession();
 
   const callId = String(params.callId || "").trim();
+  const returnTo = String(params.returnTo || "").trim();
   const currentUserId = String(authSession?.userId || "").trim();
 
   const [session, setSession] = useState<PrivateCallSession | null>(null);
@@ -977,6 +981,20 @@ export default function PrivateCallScreen() {
     roomDisconnectRef.current = disconnect;
   }, []);
 
+  const leaveCallRoute = useCallback(() => {
+    if (returnTo) {
+      router.replace(returnTo as any);
+      return;
+    }
+
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    router.replace("/(tabs)/more" as any);
+  }, [returnTo, router]);
+
   const exitCallScreen = useCallback(
     (source: string, meta?: Record<string, unknown>) => {
       if (exitHandledRef.current) {
@@ -1000,11 +1018,13 @@ export default function PrivateCallScreen() {
         callId,
         currentUserId,
         source,
+        returnTo: returnTo || null,
         ...(meta || {}),
       });
-      router.back();
+
+      leaveCallRoute();
     },
-    [callId, currentUserId, router]
+    [callId, currentUserId, leaveCallRoute, returnTo]
   );
 
   const handleRemoteTermination = useCallback(
@@ -1180,11 +1200,34 @@ export default function PrivateCallScreen() {
 
           room = new Room(buildLiveKitRoomOptions());
 
+          const ringingConnectOptions =
+            buildPrivateCallConnectOptions();
+
+          console.log(
+            "KRISTO_PRIVATE_CALL_RINGING_CONNECT_OPTIONS",
+            {
+              callId: ringingSession.id,
+              roomName: ringingSession.roomName,
+              autoSubscribe:
+                ringingConnectOptions.autoSubscribe,
+              subscriptionOwner: "livekit-auto",
+              ts: Date.now(),
+            }
+          );
+
           await room.connect(
             creds.url,
             creds.token,
-            buildPrivateCallConnectOptions()
+            ringingConnectOptions
           );
+
+          logPrivateCallAutoSubscribeEffective(room, {
+            callId: ringingSession.id,
+            roomName: ringingSession.roomName,
+            source: "ringing-preconnect-connected",
+            requestedAutoSubscribe:
+              ringingConnectOptions.autoSubscribe,
+          });
 
           const subscriptionBridgeCleanup =
             installPrivateCallRingingSubscriptionBridge(room, {
@@ -1556,7 +1599,7 @@ export default function PrivateCallScreen() {
       <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
         <Text style={styles.title}>Private Call</Text>
         <Text style={styles.errorText}>{error || "Call unavailable."}</Text>
-        <Pressable onPress={() => router.back()} style={styles.secondaryBtn}>
+        <Pressable onPress={leaveCallRoute} style={styles.secondaryBtn}>
           <Text style={styles.secondaryBtnText}>Close</Text>
         </Pressable>
       </View>
@@ -1631,7 +1674,7 @@ export default function PrivateCallScreen() {
     return (
       <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
         <Text style={styles.title}>{statusMessage}</Text>
-        <Pressable onPress={() => router.back()} style={styles.secondaryBtn}>
+        <Pressable onPress={leaveCallRoute} style={styles.secondaryBtn}>
           <Text style={styles.secondaryBtnText}>Close</Text>
         </Pressable>
       </View>
@@ -1640,7 +1683,17 @@ export default function PrivateCallScreen() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
-      <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
+      <Pressable
+        onPress={() => {
+          if (session.status === "ringing") {
+            void handleEndCall();
+            return;
+          }
+          leaveCallRoute();
+        }}
+        style={styles.backBtn}
+        hitSlop={12}
+      >
         <Ionicons name="chevron-back" size={22} color="#fff" />
       </Pressable>
 
