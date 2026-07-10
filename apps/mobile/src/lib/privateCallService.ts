@@ -1,6 +1,6 @@
 import { apiGet, apiPatch, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { fetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
+import { fetchLiveKitToken, prefetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
 import {
   fetchChurchPastorProfile,
   logChurchPastorResolution,
@@ -68,6 +68,25 @@ export async function fetchPrivateCallSession(callId: string): Promise<PrivateCa
   return res?.ok && res?.data ? (res.data as PrivateCallSession) : null;
 }
 
+export async function fetchPrivateCallHistory(): Promise<PrivateCallSession[]> {
+  const res: any = await apiGet(PRIVATE_CALL_API_PATH, {
+    headers: authHeaders(),
+    cache: "no-store" as RequestCache,
+  });
+
+  if (isPrivateCallApiUnavailable(res, Number(res?.status || 0) || undefined)) {
+    return [];
+  }
+
+  if (!res?.ok || !Array.isArray(res?.data)) return [];
+
+  return (res.data as PrivateCallSession[]).sort(
+    (a, b) =>
+      Date.parse(String(b.createdAt || "")) -
+      Date.parse(String(a.createdAt || ""))
+  );
+}
+
 export async function fetchIncomingPrivateCalls(): Promise<PrivateCallSession[]> {
   const res: any = await apiGet(`${PRIVATE_CALL_API_PATH}?incoming=1`, {
     headers: authHeaders(),
@@ -121,19 +140,65 @@ export async function endPrivateCall(callId: string) {
 export async function fetchPrivateCallLiveKitCredentials(input: {
   roomName: string;
   identity: string;
+  source?: string;
 }) {
+  const roomName = String(input.roomName || "").trim();
+  const identity = String(input.identity || "").trim();
+  const source = String(input.source || "private-call").trim();
+  const startedAt = Date.now();
+
+  console.log("KRISTO_PRIVATE_CALL_TOKEN_FETCH_START", {
+    roomName,
+    identity,
+    source,
+    ts: startedAt,
+  });
+
   const headers = {
     ...authHeaders(),
     "x-kristo-live-may-publish": "1",
     "x-kristo-role": "Host",
   };
 
-  return fetchLiveKitToken({
-    roomName: input.roomName,
-    identity: input.identity,
+  const creds = await fetchLiveKitToken({
+    roomName,
+    identity,
     canPublish: true,
     headers,
-    source: "private-call",
+    source,
+  });
+
+  console.log("KRISTO_PRIVATE_CALL_TOKEN_FETCH_DONE", {
+    roomName,
+    identity,
+    source,
+    ok: !!creds,
+    ms: Date.now() - startedAt,
+    ts: Date.now(),
+  });
+
+  return creds;
+}
+
+export function prefetchPrivateCallLiveKitCredentials(input: {
+  roomName: string;
+  identity: string;
+  source?: string;
+}) {
+  const roomName = String(input.roomName || "").trim();
+  const identity = String(input.identity || "").trim();
+  if (!roomName || !identity) return;
+
+  prefetchLiveKitToken({
+    roomName,
+    identity,
+    canPublish: true,
+    headers: {
+      ...authHeaders(),
+      "x-kristo-live-may-publish": "1",
+      "x-kristo-role": "Host",
+    },
+    source: String(input.source || "private-call-prefetch").trim(),
   });
 }
 

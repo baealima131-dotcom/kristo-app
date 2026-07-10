@@ -193,8 +193,10 @@ export default function MessagesScreen() {
   }, []);
 
   const onCalls = useCallback(() => {
-    Alert.alert("Calls", "Voice calls will appear here when calling is available.");
-  }, []);
+    router.push(
+      "/(tabs)/more/my-church-room/messages/calls" as any
+    );
+  }, [router]);
 
   const onMessageSettings = useCallback(() => {
     Alert.alert("Message settings", "Message settings are not available yet.");
