@@ -5593,6 +5593,33 @@ const displayHeaderTitle = assignmentDisplayTitle;
       openProfileFromThread();
       return;
     }
+
+    if (action === "appointment") {
+      closeThreadMenu();
+
+      router.push({
+        pathname:
+          "/kingdom/church-project-tool/[assignmentId]/[tool]" as any,
+        params: {
+          assignmentId: String(backendRoomId || threadId || ""),
+          tool: "appointment",
+          source: "direct-message",
+          roomId: String(backendRoomId || threadId || ""),
+          pastorId: String(otherUserId || ""),
+          pastorName: String(headerTitle || "Pastor"),
+          requesterRole: "member",
+        },
+      });
+
+      console.log("KRISTO_DM_APPOINTMENT_OPENED", {
+        roomId: backendRoomId,
+        threadId,
+        pastorId: otherUserId,
+        pastorName: headerTitle,
+      });
+
+      return;
+    }
     if (action === "leave") {
       closeThreadMenu();
       Alert.alert("Leave", isAssignmentThread ? "Leave assignment flow next." : "Quit ministry flow next.");
@@ -10008,24 +10035,99 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   </View>
                 </>
               ) : (
-                <>
-                  <MenuRow icon="person-circle-outline" label="View profile" onPress={() => onThreadMenuAction("profile")} />
-                  <MenuRow icon="search-outline" label="Search in conversation" onPress={() => onThreadMenuAction("search")} />
-                  <MenuRow
-                    icon={dmConversationSettings?.muted ? "notifications-outline" : "notifications-off-outline"}
-                    label={dmConversationSettings?.muted ? "Unmute notifications" : "Mute notifications"}
-                    onPress={() => onThreadMenuAction("mute")}
-                  />
-                  <MenuRow
-                    icon={dmConversationSettings?.blockedByMe ? "checkmark-circle-outline" : "ban-outline"}
-                    label={dmConversationSettings?.blockedByMe ? "Unblock user" : "Block user"}
-                    danger={!dmConversationSettings?.blockedByMe}
-                    onPress={() => onThreadMenuAction("block")}
-                  />
-                  <MenuRow icon="flag-outline" label="Report user" danger onPress={() => onThreadMenuAction("report")} />
-                  <MenuRow icon="trash-bin-outline" label="Clear chat" danger onPress={() => onThreadMenuAction("clear")} />
-                  <MenuRow icon="close-circle-outline" label="Delete conversation" danger onPress={() => onThreadMenuAction("delete")} />
-                </>
+                <View style={s.dmSettingsDashboard}>
+                  <View style={s.menuSectionBlock}>
+                    <Text style={t.menuSection}>General</Text>
+
+                    <View style={s.menuTileGrid}>
+                      <MenuTile
+                        icon="person-circle-outline"
+                        label="View profile"
+                        onPress={() => onThreadMenuAction("profile")}
+                      />
+
+                      <MenuTile
+                        icon="search-outline"
+                        label="Search chat"
+                        onPress={() => onThreadMenuAction("search")}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={s.menuSectionBlock}>
+                    <Text style={t.menuSection}>Notifications</Text>
+
+                    <View style={s.menuTileGrid}>
+                      <MenuTile
+                        icon="calendar-outline"
+                        label="Appointment"
+                        onPress={() => onThreadMenuAction("appointment")}
+                      />
+
+                      <MenuTile
+                        icon={
+                          dmConversationSettings?.muted
+                            ? "notifications-outline"
+                            : "notifications-off-outline"
+                        }
+                        label={
+                          dmConversationSettings?.muted
+                            ? "Unmute notifications"
+                            : "Mute notifications"
+                        }
+                        onPress={() => onThreadMenuAction("mute")}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={s.menuSectionBlock}>
+                    <Text style={t.menuSection}>Safety</Text>
+
+                    <View style={s.menuTileGrid}>
+                      <MenuTile
+                        icon={
+                          dmConversationSettings?.blockedByMe
+                            ? "checkmark-circle-outline"
+                            : "ban-outline"
+                        }
+                        label={
+                          dmConversationSettings?.blockedByMe
+                            ? "Unblock user"
+                            : "Block user"
+                        }
+                        danger={!dmConversationSettings?.blockedByMe}
+                        onPress={() => onThreadMenuAction("block")}
+                      />
+
+                      <MenuTile
+                        icon="flag-outline"
+                        label="Report user"
+                        danger
+                        onPress={() => onThreadMenuAction("report")}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={s.menuSectionBlock}>
+                    <Text style={t.menuSection}>Danger zone</Text>
+
+                    <View style={s.menuTileGrid}>
+                      <MenuTile
+                        icon="trash-bin-outline"
+                        label="Clear chat"
+                        danger
+                        onPress={() => onThreadMenuAction("clear")}
+                      />
+
+                      <MenuTile
+                        icon="close-circle-outline"
+                        label="Delete conversation"
+                        danger
+                        onPress={() => onThreadMenuAction("delete")}
+                      />
+                    </View>
+                  </View>
+                </View>
               )}
 
             </ScrollView>
@@ -12768,6 +12870,11 @@ videoEditorSplitTimelineBadgeText: {
 
   menuSectionBlock: {
     marginBottom: 10,
+  } as ViewStyle,
+
+  dmSettingsDashboard: {
+    width: "100%",
+    paddingBottom: 24,
   } as ViewStyle,
 
   menuTileGrid: {
