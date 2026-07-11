@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Dimensions,
   Easing,
@@ -25,6 +26,10 @@ import {
   type ViewStyle
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import {
+  useAudioPlayer,
+  useAudioPlayerStatus,
+} from "expo-audio";
 import { BlurView } from "expo-blur";
 import Slider from "@react-native-community/slider";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -151,6 +156,7 @@ import { pushLiveRoomWithSilentPreflight } from "@/src/lib/liveSilentPreflight";
 import { parseLiveAllScheduleSlotsJson } from "@/src/lib/scheduleSlotUtils";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
+import Svg, { Circle } from "react-native-svg";
 import ImageViewing from "react-native-image-viewing";
 
 const BG = "#0B0F17";
@@ -1214,7 +1220,7 @@ function renderAssignmentCardBody(
         >
           {(() => {
             const rawNotes = Array.isArray(card.notes)
-              ? card.notes.map((x) => String(x || "").trim()).filter(Boolean)
+              ? card.notes.map((x: any) => String(x || "").trim()).filter(Boolean)
               : [];
 
             const meetingDateValue = String((card as any)?.meetingDate || "").trim();
@@ -1228,26 +1234,26 @@ function renderAssignmentCardBody(
             }
 
             const audienceNote =
-              rawNotes.find((x) => /^audience:/i.test(x)) || "";
+              rawNotes.find((x: any) => /^audience:/i.test(x)) || "";
 
             const reviewNote =
-              rawNotes.find((x) => /^review detail:/i.test(x)) || "";
+              rawNotes.find((x: any) => /^review detail:/i.test(x)) || "";
 
             const rawMeetingDayNote =
-              rawNotes.find((x) => /^meeting day:/i.test(x)) || "";
+              rawNotes.find((x: any) => /^meeting day:/i.test(x)) || "";
 
             const meetingDayNote = realMeetingDay
               ? `Meeting day: ${realMeetingDay}`
               : rawMeetingDayNote;
 
             const allocatedNote =
-              rawNotes.find((x) => /^allocated:/i.test(x)) || "";
+              rawNotes.find((x: any) => /^allocated:/i.test(x)) || "";
 
             const splitNote =
-              rawNotes.find((x) => /^split segment:/i.test(x)) || "";
+              rawNotes.find((x: any) => /^split segment:/i.test(x)) || "";
 
             const finalAdjustedNote =
-              rawNotes.find((x) => /^final adjusted/i.test(x)) || "";
+              rawNotes.find((x: any) => /^final adjusted/i.test(x)) || "";
 
             const noteList = [
               audienceNote,
@@ -1730,6 +1736,40 @@ function isSharedContentMessage(m: MsgItem) {
   return String(m.kind || "") === "shared_content" && !!m.sharedContent;
 }
 
+function isAppointmentRequestMessage(m: MsgItem) {
+  return (
+    String(m.kind || "") === "appointment_request" &&
+    String((m.card as any)?.type || "") === "appointment_request"
+  );
+}
+
+function isAppointmentResponseMessage(m: MsgItem) {
+  return (
+    String(m.kind || "") === "appointment_response" &&
+    String((m.card as any)?.type || "") === "appointment_response"
+  );
+}
+
+function isAppointmentTimeProposalMessage(m: MsgItem) {
+  return (
+    String(m.kind || "") === "appointment_time_proposed" &&
+    String((m.card as any)?.type || "") === "appointment_time_proposed"
+  );
+}
+
+function isAppointmentConfirmedMessage(m: MsgItem) {
+  return (
+    String(m.kind || "") === "appointment_confirmed" &&
+    String((m.card as any)?.type || "") === "appointment_confirmed"
+  );
+}
+
+function appointmentClientId(prefix: string) {
+  return `${prefix}_${Date.now()}_${Math.random()
+    .toString(16)
+    .slice(2)}`;
+}
+
 function shouldHideExpiredAssignmentCardInRoom(m: MsgItem, nowMs: number) {
   if (!isAssignmentCardMessage(m) || !m.card) return false;
   return isScheduleSlotExpired(m.card, nowMs);
@@ -2194,6 +2234,917 @@ function MessageAttachmentsBlock({
   );
 }
 
+
+function formatAppointmentVoiceDuration(seconds: unknown) {
+  const total = Math.max(0, Math.round(Number(seconds || 0)));
+  const minutes = Math.floor(total / 60);
+  const remaining = total % 60;
+
+  return `${minutes}:${String(remaining).padStart(2, "0")}`;
+}
+
+function AppointmentVoicePlaylist({
+  voiceNotes,
+}: {
+  voiceNotes: Array<Record<string, any>>;
+}) {
+  const playableNotes = React.useMemo<
+    Array<Record<string, any>>
+  >(
+    () =>
+      (
+        Array.isArray(voiceNotes)
+          ? voiceNotes
+          : []
+      )
+        .slice(0, 5)
+        .map(
+          (
+            rawNote: Record<string, any>,
+            index: number
+          ) => {
+            const source = String(
+              rawNote?.url ||
+                rawNote?.uri ||
+                rawNote?.audioUrl ||
+                rawNote?.fileUrl ||
+                ""
+            ).trim();
+
+            return {
+              ...rawNote,
+              voiceIndex: index,
+              source,
+            };
+          }
+        )
+        .filter(
+          (note: Record<string, any>) =>
+            !!String(
+              note?.source || ""
+            ).trim()
+        ),
+    [voiceNotes]
+  );
+
+  const [currentIndex, setCurrentIndex] =
+    React.useState(0);
+
+  const [completedVoices, setCompletedVoices] =
+    React.useState<Record<number, true>>({});
+
+  const currentNote =
+    playableNotes[currentIndex] || null;
+
+  const player = useAudioPlayer(
+    currentNote?.source
+      ? {
+          uri: String(
+            currentNote.source
+          ),
+        }
+      : null,
+    {
+      updateInterval: 100,
+    }
+  );
+
+  const status = useAudioPlayerStatus(player);
+  const autoAdvanceRef = React.useRef("");
+
+  React.useEffect(() => {
+    if (
+      playableNotes.length > 0 &&
+      currentIndex >= playableNotes.length
+    ) {
+      setCurrentIndex(0);
+    }
+  }, [
+    currentIndex,
+    playableNotes.length,
+  ]);
+
+  React.useEffect(() => {
+    if (!status.didJustFinish) return;
+
+    setCompletedVoices((current) => ({
+      ...current,
+      [currentIndex]: true,
+    }));
+
+    const marker =
+      `${currentIndex}:${playableNotes.length}`;
+
+    if (
+      autoAdvanceRef.current === marker
+    ) {
+      return;
+    }
+
+    autoAdvanceRef.current = marker;
+
+    const nextIndex = currentIndex + 1;
+
+    if (
+      nextIndex >= playableNotes.length
+    ) {
+      return;
+    }
+
+    const nextNote =
+      playableNotes[nextIndex];
+
+    const nextSource = String(
+      nextNote?.source || ""
+    ).trim();
+
+    if (!nextSource) return;
+
+    setCurrentIndex(nextIndex);
+
+    player.replace({
+      uri: nextSource,
+    });
+
+    setTimeout(() => {
+      player.play();
+    }, 100);
+  }, [
+    status.didJustFinish,
+    currentIndex,
+    playableNotes,
+    player,
+  ]);
+
+  if (!playableNotes.length) {
+    return null;
+  }
+
+  function playVoice(index: number) {
+    const selectedNote =
+      playableNotes[index];
+
+    const selectedSource = String(
+      selectedNote?.source || ""
+    ).trim();
+
+    if (!selectedSource) return;
+
+    const isActive =
+      index === currentIndex;
+
+    if (
+      isActive &&
+      status.playing
+    ) {
+      player.pause();
+      return;
+    }
+
+    const activeDuration = Number(
+      status.duration || 0
+    );
+
+    const activeTime = Number(
+      status.currentTime || 0
+    );
+
+    const activeFinished =
+      !!completedVoices[index] ||
+      (
+        isActive &&
+        activeDuration > 0 &&
+        activeTime >=
+          activeDuration - 0.1
+      );
+
+    if (!isActive) {
+      autoAdvanceRef.current = "";
+
+      setCompletedVoices(
+        (current) => {
+          const next = {
+            ...current,
+          };
+
+          delete next[index];
+
+          return next;
+        }
+      );
+
+      setCurrentIndex(index);
+
+      player.replace({
+        uri: selectedSource,
+      });
+
+      setTimeout(() => {
+        player.play();
+      }, 100);
+
+      return;
+    }
+
+    if (activeFinished) {
+      autoAdvanceRef.current = "";
+
+      setCompletedVoices(
+        (current) => {
+          const next = {
+            ...current,
+          };
+
+          delete next[index];
+
+          return next;
+        }
+      );
+
+      player.seekTo(0);
+    }
+
+    player.play();
+  }
+
+  const RING_SIZE = 44;
+  const RING_STROKE = 3;
+  const RING_RADIUS =
+    (RING_SIZE - RING_STROKE) / 2;
+
+  const RING_CIRCUMFERENCE =
+    2 * Math.PI * RING_RADIUS;
+
+  return (
+    <View
+      style={{
+        marginTop: 14,
+      }}
+    >
+      <View
+        style={{
+          marginBottom: 9,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent:
+            "space-between",
+        }}
+      >
+        <Text
+          style={{
+            color:
+              "rgba(255,255,255,0.72)",
+            fontSize: 11,
+            fontWeight: "900",
+          }}
+        >
+          Voice messages
+        </Text>
+
+        <Text
+          style={{
+            color:
+              "rgba(217,179,95,0.82)",
+            fontSize: 10,
+            fontWeight: "900",
+          }}
+        >
+          {playableNotes.length} / 5
+        </Text>
+      </View>
+
+      <View
+        style={{
+          width: "100%",
+          flexDirection: "row",
+          gap: 6,
+        }}
+      >
+        {playableNotes.map(
+          (
+            note: Record<string, any>,
+            index: number
+          ) => {
+            const active =
+              index === currentIndex;
+
+            const playing =
+              active &&
+              status.playing;
+
+            const loading =
+              active &&
+              (
+                status.isBuffering ||
+                !status.isLoaded
+              );
+
+            const savedDuration =
+              Number(
+                note?.durationSec ||
+                  note?.duration ||
+                  0
+              );
+
+            const duration =
+              active &&
+              Number(
+                status.duration || 0
+              ) > 0
+                ? Number(
+                    status.duration
+                  )
+                : savedDuration;
+
+            const liveProgress =
+              active &&
+              duration > 0
+                ? Math.min(
+                    1,
+                    Math.max(
+                      0,
+                      Number(
+                        status.currentTime ||
+                          0
+                      ) / duration
+                    )
+                  )
+                : 0;
+
+            const progress =
+              completedVoices[index]
+                ? 1
+                : liveProgress;
+
+            const dashOffset =
+              RING_CIRCUMFERENCE *
+              (1 - progress);
+
+            return (
+              <Pressable
+                key={String(
+                  note?.id ||
+                    `appointment_voice_${index}`
+                )}
+                onPress={() =>
+                  playVoice(index)
+                }
+                style={({ pressed }) => ({
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: 88,
+                  paddingHorizontal: 3,
+                  paddingVertical: 8,
+                  borderRadius: 15,
+                  alignItems: "center",
+                  justifyContent:
+                    "center",
+                  backgroundColor:
+                    active
+                      ? "rgba(217,179,95,0.11)"
+                      : "rgba(255,255,255,0.035)",
+                  borderWidth: 1,
+                  borderColor:
+                    active
+                      ? "rgba(217,179,95,0.38)"
+                      : "rgba(255,255,255,0.08)",
+                  opacity:
+                    pressed ? 0.76 : 1,
+                })}
+              >
+                <Text
+                  style={{
+                    marginBottom: 5,
+                    color:
+                      active ||
+                      completedVoices[
+                        index
+                      ]
+                        ? "#F4D06F"
+                        : "rgba(255,255,255,0.52)",
+                    fontSize: 9,
+                    fontWeight: "900",
+                  }}
+                >
+                  {index + 1}
+                </Text>
+
+                <View
+                  style={{
+                    width: RING_SIZE,
+                    height: RING_SIZE,
+                    alignItems: "center",
+                    justifyContent:
+                      "center",
+                  }}
+                >
+                  <Svg
+                    width={RING_SIZE}
+                    height={RING_SIZE}
+                    style={{
+                      position: "absolute",
+                      transform: [
+                        {
+                          rotate: "-90deg",
+                        },
+                      ],
+                    }}
+                  >
+                    <Circle
+                      cx={RING_SIZE / 2}
+                      cy={RING_SIZE / 2}
+                      r={RING_RADIUS}
+                      stroke="rgba(255,255,255,0.10)"
+                      strokeWidth={
+                        RING_STROKE
+                      }
+                      fill="transparent"
+                    />
+
+                    <Circle
+                      cx={RING_SIZE / 2}
+                      cy={RING_SIZE / 2}
+                      r={RING_RADIUS}
+                      stroke="#D9B35F"
+                      strokeWidth={
+                        RING_STROKE
+                      }
+                      fill="transparent"
+                      strokeLinecap="round"
+                      strokeDasharray={`${RING_CIRCUMFERENCE} ${RING_CIRCUMFERENCE}`}
+                      strokeDashoffset={
+                        dashOffset
+                      }
+                    />
+                  </Svg>
+
+                  <View
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: 16,
+                      alignItems: "center",
+                      justifyContent:
+                        "center",
+                      backgroundColor:
+                        active
+                          ? "rgba(217,179,95,0.18)"
+                          : "rgba(255,255,255,0.055)",
+                    }}
+                  >
+                    {loading ? (
+                      <ActivityIndicator
+                        size="small"
+                        color={GOLD}
+                      />
+                    ) : (
+                      <Ionicons
+                        name={
+                          playing
+                            ? "pause"
+                            : completedVoices[
+                                  index
+                                ]
+                              ? "checkmark"
+                              : "play"
+                        }
+                        size={15}
+                        color={
+                          active ||
+                          completedVoices[
+                            index
+                          ]
+                            ? GOLD
+                            : "#FFFFFF"
+                        }
+                      />
+                    )}
+                  </View>
+                </View>
+
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    marginTop: 5,
+                    color:
+                      "rgba(255,255,255,0.52)",
+                    fontSize: 8,
+                    fontWeight: "800",
+                    fontVariant: [
+                      "tabular-nums",
+                    ],
+                  }}
+                >
+                  {formatAppointmentVoiceDuration(
+                    duration
+                  )}
+                </Text>
+              </Pressable>
+            );
+          }
+        )}
+      </View>
+    </View>
+  );
+}
+
+function AppointmentRequestVipCard({
+  message,
+  appointment,
+  mine,
+  senderName,
+  senderAvatarUri,
+  createdAt,
+  currentUserId,
+  busy,
+  selected,
+  onPress,
+  onLongPress,
+  onAccept,
+  onReply,
+  onReject,
+}: {
+  message: MsgItem;
+  appointment: Record<string, any>;
+  mine: boolean;
+  senderName: string;
+  senderAvatarUri: string;
+  createdAt: number;
+  currentUserId: string;
+  busy: string | null;
+  selected?: boolean;
+  onPress?: () => void;
+  onLongPress: () => void;
+  onAccept: () => void;
+  onReply: () => void;
+  onReject: () => void;
+}) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  const status = String(
+    appointment?.status || "pending"
+  ).toLowerCase();
+
+  const requestText = String(
+    appointment?.message || message.text || ""
+  ).trim();
+
+  const voiceNotes = Array.isArray(
+    appointment?.voiceNotes
+  )
+    ? appointment.voiceNotes.slice(0, 5)
+    : [];
+
+  const canRespond =
+    !mine &&
+    status === "pending" &&
+    currentUserId ===
+      String(
+        appointment?.recipientId || ""
+      ).trim();
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={280}
+      style={[
+        {
+          width: "96%",
+          maxWidth: 430,
+          alignSelf: mine ? "flex-end" : "flex-start",
+          marginVertical: 8,
+          shadowColor:
+            status === "pending"
+              ? "#D9B35F"
+              : "#7C3AED",
+          shadowOpacity: 0.24,
+          shadowRadius: 24,
+          shadowOffset: { width: 0, height: 10 },
+          elevation: 10,
+        } as ViewStyle,
+        selected ? s.bubbleSelectedGlow : null,
+      ]}
+    >
+      <LinearGradient
+        colors={
+          mine
+            ? [
+                "rgba(79,59,21,0.94)",
+                "rgba(33,28,35,0.98)",
+                "rgba(17,20,31,0.99)",
+              ]
+            : [
+                "rgba(29,35,51,0.99)",
+                "rgba(18,22,35,0.99)",
+                "rgba(13,16,27,0.99)",
+              ]
+        }
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={{
+          borderRadius: 27,
+          overflow: "hidden",
+          borderWidth: 1,
+          borderColor: mine
+            ? "rgba(217,179,95,0.48)"
+            : "rgba(157,138,255,0.30)",
+        }}
+      >
+        <LinearGradient
+          pointerEvents="none"
+          colors={[
+            "rgba(255,255,255,0.16)",
+            "rgba(255,255,255,0.035)",
+            "transparent",
+          ]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0.8, y: 1 }}
+          style={StyleSheet.absoluteFillObject}
+        />
+
+        <View style={{ padding: 18 }}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 11,
+            }}
+          >
+            <View
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: 24,
+                padding: 2,
+                backgroundColor:
+                  "rgba(217,179,95,0.22)",
+                borderWidth: 1,
+                borderColor:
+                  "rgba(217,179,95,0.60)",
+              }}
+            >
+              {senderAvatarUri ? (
+                <Image
+                  source={{ uri: senderAvatarUri }}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    borderRadius: 22,
+                  }}
+                />
+              ) : (
+                <View
+                  style={{
+                    flex: 1,
+                    borderRadius: 22,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor:
+                      "rgba(255,255,255,0.07)",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: GOLD,
+                      fontSize: 15,
+                      fontWeight: "900",
+                    }}
+                  >
+                    {initials(senderName || "A")}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text
+                numberOfLines={1}
+                style={{
+                  color: "#FFFFFF",
+                  fontSize: 17,
+                  lineHeight: 22,
+                  fontWeight: "900",
+                  letterSpacing: -0.25,
+                }}
+              >
+                Appointment request
+              </Text>
+
+              <Text
+                numberOfLines={1}
+                style={{
+                  marginTop: 2,
+                  color: "rgba(217,179,95,0.90)",
+                  fontSize: 11,
+                  fontWeight: "800",
+                }}
+              >
+                {mine
+                  ? `To ${String(
+                      appointment?.recipientName ||
+                        "Member"
+                    )}`
+                  : `From ${senderName}`}
+              </Text>
+            </View>
+
+            <View
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 8,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor:
+                  "rgba(245,190,65,0.13)",
+                shadowColor: "#F5BE41",
+                shadowOpacity: 0.9,
+                shadowRadius: 9,
+                shadowOffset: { width: 0, height: 0 },
+              }}
+            >
+              <View
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: 4,
+                  backgroundColor:
+                    status === "pending"
+                      ? "#F5BE41"
+                      : "#4ADE80",
+                }}
+              />
+            </View>
+          </View>
+
+          {requestText ? (
+            <View style={{ marginTop: 16 }}>
+              <Text
+                numberOfLines={
+                  expanded ? undefined : 3
+                }
+                style={{
+                  color: "rgba(255,255,255,0.88)",
+                  fontSize: 14,
+                  lineHeight: 21,
+                  fontWeight: "700",
+                }}
+              >
+                {requestText}
+              </Text>
+
+              {requestText.length > 115 ? (
+                <Pressable
+                  onPress={() =>
+                    setExpanded((value) => !value)
+                  }
+                  hitSlop={8}
+                  style={{
+                    alignSelf: "flex-start",
+                    marginTop: 7,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: GOLD,
+                      fontSize: 11,
+                      fontWeight: "900",
+                    }}
+                  >
+                    {expanded
+                      ? "View less"
+                      : "View more"}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
+
+          <AppointmentVoicePlaylist
+            voiceNotes={voiceNotes}
+          />
+
+          {canRespond ? (
+            <View
+              style={{
+                marginTop: 17,
+                flexDirection: "row",
+                gap: 7,
+              }}
+            >
+              {[
+                {
+                  key: "accept",
+                  label: "Accept",
+                  color: "#86EFAC",
+                  background:
+                    "rgba(34,197,94,0.17)",
+                  border:
+                    "rgba(34,197,94,0.42)",
+                  action: onAccept,
+                },
+                {
+                  key: "reply",
+                  label: "Reply",
+                  color: GOLD,
+                  background:
+                    "rgba(217,179,95,0.12)",
+                  border:
+                    "rgba(217,179,95,0.34)",
+                  action: onReply,
+                },
+                {
+                  key: "reject",
+                  label: "Reject",
+                  color: "#FF8A8A",
+                  background:
+                    "rgba(239,68,68,0.11)",
+                  border:
+                    "rgba(239,68,68,0.34)",
+                  action: onReject,
+                },
+              ].map((item) => (
+                <Pressable
+                  key={item.key}
+                  disabled={busy !== null}
+                  onPress={item.action}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    minHeight: 42,
+                    borderRadius: 14,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor:
+                      item.background,
+                    borderWidth: 1,
+                    borderColor: item.border,
+                    opacity: pressed ? 0.78 : 1,
+                  })}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      color: item.color,
+                      fontSize: 11,
+                      fontWeight: "900",
+                    }}
+                  >
+                    {busy === item.key
+                      ? "..."
+                      : item.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+
+          <View
+            style={{
+              marginTop: 16,
+              paddingTop: 12,
+              borderTopWidth: 1,
+              borderTopColor:
+                "rgba(255,255,255,0.08)",
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <Text
+              style={{
+                color: "rgba(255,255,255,0.47)",
+                fontSize: 10,
+                fontWeight: "800",
+              }}
+            >
+              {mine
+                ? "Waiting for response"
+                : voiceNotes.length
+                  ? `${voiceNotes.length} voice ${
+                      voiceNotes.length === 1
+                        ? "message"
+                        : "messages"
+                    }`
+                  : "Review request"}
+            </Text>
+
+            <Text
+              style={{
+                color: "rgba(255,255,255,0.42)",
+                fontSize: 10,
+                fontWeight: "800",
+              }}
+            >
+              {formatTime(createdAt)}
+            </Text>
+          </View>
+        </View>
+      </LinearGradient>
+    </Pressable>
+  );
+}
+
 function Bubble({
   m,
   showAvatar,
@@ -2246,6 +3197,236 @@ function Bubble({
   const mine = m.sender === "me";
   const pastorMessage = isPastorMessage(m, { churchPastorUserId });
   const senderAvatar = resolveMessageSenderAvatar(m);
+  const appointmentRouter = useRouter();
+  const [appointmentBusy, setAppointmentBusy] = useState<string | null>(null);
+
+  const appointmentCurrentUserId = String(
+    (getKristoHeaders() as any)?.["x-kristo-user-id"] || ""
+  ).trim();
+
+  async function sendAppointmentWorkflowMessage(args: {
+    kind:
+      | "appointment_response"
+      | "appointment_time_proposed"
+      | "appointment_confirmed";
+    text?: string;
+    card: Record<string, any>;
+  }) {
+    const roomId = String(m.threadId || "").trim();
+    const clientId = appointmentClientId(args.kind);
+
+    if (!roomId) {
+      throw new Error("Appointment conversation room is missing.");
+    }
+
+    const headers: Record<string, string> = {
+      ...(getKristoHeaders() as Record<string, string>),
+      "Content-Type": "application/json",
+    };
+
+    const response = await fetch(
+      `${String(getApiBase() || "").replace(/\/+$/, "")}/api/church/room-messages`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          roomId,
+          roomKind: "direct",
+          kind: args.kind,
+          text: String(args.text || "").trim(),
+          attachments: [],
+          clientId,
+          card: args.card,
+        }),
+      }
+    );
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(
+        String(
+          payload?.message ||
+            payload?.error ||
+            "Appointment action could not be completed."
+        )
+      );
+    }
+
+    sendMessage(
+      roomId,
+      {
+        id: String(payload?.data?.id || `local_${clientId}`),
+        clientId,
+        text: String(args.text || "").trim(),
+        attachments: [],
+        createdAt: Number(payload?.data?.createdAt || Date.now()),
+        pending: false,
+        senderUserId: appointmentCurrentUserId,
+        displayName: String(
+          headers["x-kristo-user-name"] ||
+            headers["x-kristo-display-name"] ||
+            "Me"
+        ),
+        senderRole: String(headers["x-kristo-role"] || ""),
+        kind: args.kind,
+        card: args.card,
+      },
+      { disableAutoReply: true }
+    );
+
+    return payload;
+  }
+
+  function promptAppointmentReply(appointment: any) {
+    const prompt = (Alert as any)?.prompt;
+
+    if (typeof prompt !== "function") {
+      Alert.alert(
+        "Reply",
+        "Text reply requires the input prompt on this device."
+      );
+      return;
+    }
+
+    prompt(
+      "Reply to appointment",
+      "Write a reply of up to 500 characters.",
+      async (value: string) => {
+        const reply = String(value || "").trim();
+
+        if (!reply) return;
+
+        if (reply.length > 500) {
+          Alert.alert(
+            "Reply too long",
+            "Appointment replies cannot exceed 500 characters."
+          );
+          return;
+        }
+
+        setAppointmentBusy("reply");
+
+        try {
+          await sendAppointmentWorkflowMessage({
+            kind: "appointment_response",
+            text: reply,
+            card: {
+              type: "appointment_response",
+              appointmentId: String(appointment?.appointmentId || ""),
+              status: "reply",
+              requesterId: String(appointment?.requesterId || ""),
+              recipientId: String(appointment?.recipientId || ""),
+              message: reply,
+              createdAt: Date.now(),
+            },
+          });
+        } catch (error: any) {
+          Alert.alert(
+            "Reply failed",
+            String(error?.message || "Please try again.")
+          );
+        } finally {
+          setAppointmentBusy(null);
+        }
+      }
+    );
+  }
+
+  function rejectAppointmentRequest(appointment: any) {
+    const prompt = (Alert as any)?.prompt;
+
+    const submit = async (reason: string) => {
+      setAppointmentBusy("reject");
+
+      try {
+        await sendAppointmentWorkflowMessage({
+          kind: "appointment_response",
+          text: String(reason || "").trim(),
+          card: {
+            type: "appointment_response",
+            appointmentId: String(appointment?.appointmentId || ""),
+            status: "rejected",
+            requesterId: String(appointment?.requesterId || ""),
+            recipientId: String(appointment?.recipientId || ""),
+            message: String(reason || "").trim(),
+            createdAt: Date.now(),
+          },
+        });
+      } catch (error: any) {
+        Alert.alert(
+          "Reject failed",
+          String(error?.message || "Please try again.")
+        );
+      } finally {
+        setAppointmentBusy(null);
+      }
+    };
+
+    if (typeof prompt === "function") {
+      prompt(
+        "Reject appointment?",
+        "You may write a short reason.",
+        (value: string) => void submit(value),
+        "plain-text",
+        ""
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Reject appointment?",
+      "This request will be declined.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reject",
+          style: "destructive",
+          onPress: () => void submit(""),
+        },
+      ]
+    );
+  }
+
+  async function acceptAppointmentRequest(appointment: any) {
+    setAppointmentBusy("accept");
+
+    try {
+      await sendAppointmentWorkflowMessage({
+        kind: "appointment_response",
+        card: {
+          type: "appointment_response",
+          appointmentId: String(appointment?.appointmentId || ""),
+          status: "accepted_awaiting_time",
+          requesterId: String(appointment?.requesterId || ""),
+          recipientId: String(appointment?.recipientId || ""),
+          message: "",
+          createdAt: Date.now(),
+        },
+      });
+
+      appointmentRouter.push({
+        pathname:
+          "/(tabs)/more/my-church-room/messages/appointment/schedule/[appointmentId]" as any,
+        params: {
+          appointmentId: String(appointment?.appointmentId || ""),
+          roomId: String(m.threadId || ""),
+          requesterId: String(appointment?.requesterId || ""),
+          recipientId: String(appointment?.recipientId || ""),
+          requesterName: String(
+            appointment?.requesterName || m.displayName || "Member"
+          ),
+        },
+      });
+    } catch (error: any) {
+      Alert.alert(
+        "Accept failed",
+        String(error?.message || "Please try again.")
+      );
+    } finally {
+      setAppointmentBusy(null);
+    }
+  }
 
   if (m.kind === "shared_content" && m.sharedContent) {
     const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
@@ -2268,6 +3449,448 @@ function Bubble({
           onOpenPost={onOpenSharedPost}
         />
       </Pressable>
+    );
+  }
+
+  if (isAppointmentRequestMessage(m)) {
+    const appointment = (m.card || {}) as any;
+
+    return (
+      <AppointmentRequestVipCard
+        message={m}
+        appointment={appointment}
+        mine={mine}
+        senderName={String(
+          m.displayName ||
+            appointment?.requesterName ||
+            "Member"
+        )}
+        senderAvatarUri={senderAvatar.uri}
+        createdAt={m.createdAt}
+        currentUserId={appointmentCurrentUserId}
+        busy={appointmentBusy}
+        selected={selected || actionHighlighted}
+        onPress={onPress}
+        onLongPress={onLongPress}
+        onAccept={() =>
+          void acceptAppointmentRequest(
+            appointment
+          )
+        }
+        onReply={() =>
+          promptAppointmentReply(appointment)
+        }
+        onReject={() =>
+          rejectAppointmentRequest(appointment)
+        }
+      />
+    );
+  }
+
+  if (isAppointmentResponseMessage(m)) {
+    const responseCard = (m.card || {}) as any;
+    const responseStatus = String(
+      responseCard?.status || "reply"
+    ).trim();
+
+    const isRejected = responseStatus === "rejected";
+    const isAccepted =
+      responseStatus === "accepted_awaiting_time";
+    const isReply = responseStatus === "reply";
+    const isReschedule =
+      responseStatus === "reschedule_requested";
+
+    return (
+      <Pressable
+        onPress={onPress}
+        onLongPress={onLongPress}
+        delayLongPress={280}
+        style={[
+          s.bubbleWrap,
+          mine
+            ? ({ alignSelf: "flex-end" } as ViewStyle)
+            : ({ alignSelf: "flex-start" } as ViewStyle),
+        ]}
+      >
+        <View
+          style={{
+            width: 286,
+            maxWidth: "88%",
+            padding: 16,
+            borderRadius: 21,
+            backgroundColor: isRejected
+              ? "rgba(48,12,20,0.96)"
+              : "rgba(18,22,34,0.97)",
+            borderWidth: 1,
+            borderColor: isRejected
+              ? "rgba(239,68,68,0.40)"
+              : "rgba(217,179,95,0.28)",
+          }}
+        >
+          <Text
+            style={{
+              color: isRejected ? "#FF8A8A" : GOLD,
+              fontSize: 11,
+              fontWeight: "900",
+              textTransform: "uppercase",
+              letterSpacing: 0.8,
+            }}
+          >
+            {isRejected
+              ? "Appointment declined"
+              : isAccepted
+                ? "Appointment accepted"
+                : isReschedule
+                  ? "Another time requested"
+                  : "Appointment reply"}
+          </Text>
+
+          {String(responseCard?.message || m.text || "").trim() ? (
+            <Text
+              style={{
+                marginTop: 10,
+                color: "rgba(255,255,255,0.88)",
+                fontSize: 13.5,
+                lineHeight: 20,
+                fontWeight: "700",
+              }}
+            >
+              {String(responseCard?.message || m.text || "").trim()}
+            </Text>
+          ) : null}
+
+          {isAccepted ? (
+            <Text
+              style={{
+                marginTop: 10,
+                color: "rgba(255,255,255,0.58)",
+                fontSize: 11,
+                lineHeight: 17,
+                fontWeight: "800",
+              }}
+            >
+              Waiting for the recipient to propose a date and time.
+            </Text>
+          ) : null}
+
+          <Text style={[t.msgTime, { marginTop: 12 }]}>
+            {formatTime(m.createdAt)}
+          </Text>
+        </View>
+      </Pressable>
+    );
+  }
+
+  if (isAppointmentTimeProposalMessage(m)) {
+    const proposal = (m.card || {}) as any;
+    const requesterCanRespond =
+      appointmentCurrentUserId ===
+      String(proposal?.requesterId || "").trim();
+
+    async function confirmProposal() {
+      setAppointmentBusy("confirm");
+
+      try {
+        await sendAppointmentWorkflowMessage({
+          kind: "appointment_confirmed",
+          card: {
+            type: "appointment_confirmed",
+            appointmentId: String(proposal?.appointmentId || ""),
+            status: "confirmed",
+            requesterId: String(proposal?.requesterId || ""),
+            recipientId: String(proposal?.recipientId || ""),
+            date: String(proposal?.date || ""),
+            time: String(proposal?.time || ""),
+            durationMin: Number(proposal?.durationMin || 30),
+            location: String(proposal?.location || ""),
+            note: String(proposal?.note || ""),
+            confirmedAt: Date.now(),
+            createdAt: Date.now(),
+          },
+        });
+      } catch (error: any) {
+        Alert.alert(
+          "Confirmation failed",
+          String(error?.message || "Please try again.")
+        );
+      } finally {
+        setAppointmentBusy(null);
+      }
+    }
+
+    function requestAnotherTime() {
+      const prompt = (Alert as any)?.prompt;
+
+      if (typeof prompt !== "function") return;
+
+      prompt(
+        "Request another time",
+        "Explain which time would work better.",
+        async (value: string) => {
+          const message = String(value || "").trim();
+          if (!message) return;
+
+          setAppointmentBusy("reschedule");
+
+          try {
+            await sendAppointmentWorkflowMessage({
+              kind: "appointment_response",
+              text: message,
+              card: {
+                type: "appointment_response",
+                appointmentId: String(proposal?.appointmentId || ""),
+                status: "reschedule_requested",
+                requesterId: String(proposal?.requesterId || ""),
+                recipientId: String(proposal?.recipientId || ""),
+                message,
+                createdAt: Date.now(),
+              },
+            });
+          } catch (error: any) {
+            Alert.alert(
+              "Request failed",
+              String(error?.message || "Please try again.")
+            );
+          } finally {
+            setAppointmentBusy(null);
+          }
+        }
+      );
+    }
+
+    return (
+      <View
+        style={[
+          s.bubbleWrap,
+          mine
+            ? ({ alignSelf: "flex-end" } as ViewStyle)
+            : ({ alignSelf: "flex-start" } as ViewStyle),
+        ]}
+      >
+        <View
+          style={{
+            width: 300,
+            maxWidth: "90%",
+            padding: 17,
+            borderRadius: 22,
+            backgroundColor: "rgba(17,28,34,0.98)",
+            borderWidth: 1,
+            borderColor: "rgba(34,197,94,0.36)",
+          }}
+        >
+          <Text
+            style={{
+              color: "#86EFAC",
+              fontSize: 11,
+              fontWeight: "900",
+              textTransform: "uppercase",
+              letterSpacing: 0.8,
+            }}
+          >
+            Appointment time proposed
+          </Text>
+
+          <Text
+            style={{
+              marginTop: 13,
+              color: "#FFFFFF",
+              fontSize: 18,
+              fontWeight: "900",
+            }}
+          >
+            {String(proposal?.date || "Date pending")}
+          </Text>
+
+          <Text
+            style={{
+              marginTop: 5,
+              color: GOLD,
+              fontSize: 16,
+              fontWeight: "900",
+            }}
+          >
+            {String(proposal?.time || "Time pending")}
+            {"  •  "}
+            {Number(proposal?.durationMin || 30)} min
+          </Text>
+
+          {String(proposal?.location || "").trim() ? (
+            <Text
+              style={{
+                marginTop: 10,
+                color: "rgba(255,255,255,0.72)",
+                fontSize: 12,
+                fontWeight: "800",
+              }}
+            >
+              {String(proposal.location)}
+            </Text>
+          ) : null}
+
+          {String(proposal?.note || "").trim() ? (
+            <Text
+              style={{
+                marginTop: 9,
+                color: "rgba(255,255,255,0.62)",
+                fontSize: 12,
+                lineHeight: 18,
+                fontWeight: "700",
+              }}
+            >
+              {String(proposal.note)}
+            </Text>
+          ) : null}
+
+          {requesterCanRespond && !mine ? (
+            <View style={{ marginTop: 16, gap: 9 }}>
+              <Pressable
+                disabled={appointmentBusy !== null}
+                onPress={() => void confirmProposal()}
+                style={{
+                  minHeight: 45,
+                  borderRadius: 14,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "rgba(34,197,94,0.20)",
+                  borderWidth: 1,
+                  borderColor: "rgba(34,197,94,0.45)",
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#86EFAC",
+                    fontSize: 12,
+                    fontWeight: "900",
+                  }}
+                >
+                  {appointmentBusy === "confirm"
+                    ? "Confirming..."
+                    : "Accept time"}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={appointmentBusy !== null}
+                onPress={requestAnotherTime}
+                style={{
+                  minHeight: 43,
+                  borderRadius: 14,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "rgba(255,255,255,0.04)",
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.10)",
+                }}
+              >
+                <Text
+                  style={{
+                    color: "rgba(255,255,255,0.76)",
+                    fontSize: 12,
+                    fontWeight: "900",
+                  }}
+                >
+                  Request another time
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          <Text style={[t.msgTime, { marginTop: 13 }]}>
+            {formatTime(m.createdAt)}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (isAppointmentConfirmedMessage(m)) {
+    const confirmed = (m.card || {}) as any;
+
+    return (
+      <View
+        style={[
+          s.bubbleWrap,
+          mine
+            ? ({ alignSelf: "flex-end" } as ViewStyle)
+            : ({ alignSelf: "flex-start" } as ViewStyle),
+        ]}
+      >
+        <View
+          style={{
+            width: 300,
+            maxWidth: "90%",
+            padding: 18,
+            borderRadius: 22,
+            backgroundColor: "rgba(11,38,27,0.97)",
+            borderWidth: 1,
+            borderColor: "rgba(34,197,94,0.50)",
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 9,
+            }}
+          >
+            <Ionicons
+              name="checkmark-circle"
+              size={22}
+              color="#4ADE80"
+            />
+            <Text
+              style={{
+                color: "#86EFAC",
+                fontSize: 14,
+                fontWeight: "900",
+              }}
+            >
+              Appointment confirmed
+            </Text>
+          </View>
+
+          <Text
+            style={{
+              marginTop: 14,
+              color: "#FFFFFF",
+              fontSize: 18,
+              fontWeight: "900",
+            }}
+          >
+            {String(confirmed?.date || "")}
+          </Text>
+
+          <Text
+            style={{
+              marginTop: 5,
+              color: GOLD,
+              fontSize: 16,
+              fontWeight: "900",
+            }}
+          >
+            {String(confirmed?.time || "")}
+            {"  •  "}
+            {Number(confirmed?.durationMin || 30)} min
+          </Text>
+
+          {String(confirmed?.location || "").trim() ? (
+            <Text
+              style={{
+                marginTop: 10,
+                color: "rgba(255,255,255,0.72)",
+                fontSize: 12,
+                fontWeight: "800",
+              }}
+            >
+              {String(confirmed.location)}
+            </Text>
+          ) : null}
+
+          <Text style={[t.msgTime, { marginTop: 13 }]}>
+            {formatTime(m.createdAt)}
+          </Text>
+        </View>
+      </View>
     );
   }
 
@@ -3878,7 +5501,7 @@ export default function MessageThreadScreen() {
           String((params as any)?.ministryId || ""),
           String(resolvedMinistryId || ""),
         ]
-          .map((x) => String(x || "").trim())
+          .map((x: any) => String(x || "").trim())
           .filter(Boolean)
       );
 
@@ -4623,7 +6246,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
       const scope = options?.scope ?? "local";
       const logKey = scope === "everyone" ? "delete-everyone" : "delete";
       const deletable = ids.filter((id) => {
-        const msg = messages.find((x) => x.id === id);
+        const msg = messages.find((x: any) => x.id === id);
         return msg && canDeleteMessage(msg);
       });
       if (!deletable.length) {
@@ -4636,14 +6259,14 @@ const displayHeaderTitle = assignmentDisplayTitle;
           ? "Delete for everyone"
           : deletable.length > 1
             ? "Delete messages"
-            : deletable.length === 1 && messages.find((x) => x.id === deletable[0])?.sender === "me"
+            : deletable.length === 1 && messages.find((x: any) => x.id === deletable[0])?.sender === "me"
               ? "Delete for me"
               : "Delete from my view";
       const body = isEveryone
         ? "Remove this message for everyone in the chat?"
         : deletable.length > 1
           ? `Delete ${deletable.length} selected messages from your view?`
-          : deletable.length === 1 && messages.find((x) => x.id === deletable[0])?.sender === "me"
+          : deletable.length === 1 && messages.find((x: any) => x.id === deletable[0])?.sender === "me"
             ? "Remove this message from your view only?"
             : "Remove this message from your view?";
       Alert.alert(title, body, [
@@ -4659,7 +6282,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
               let anySuccess = false;
 
               for (const id of deletable) {
-                const msg = messages.find((x) => x.id === id);
+                const msg = messages.find((x: any) => x.id === id);
                 const senderUserId = String(msg?.senderUserId || "").trim();
 
                 console.log(`[MessageActions] ${logKey}`, id);
@@ -4808,7 +6431,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
   }, [visibleMessages, closeMessageActions]);
 
   function removePending(id: string) {
-    setPending((prev) => prev.filter((x) => x.id !== id));
+    setPending((prev) => prev.filter((x: any) => x.id !== id));
   }
 
   const openImagePreview = useCallback(
@@ -5597,25 +7220,66 @@ const displayHeaderTitle = assignmentDisplayTitle;
     if (action === "appointment") {
       closeThreadMenu();
 
+      const appointmentRoomId = String(
+        backendRoomId || threadId || ""
+      ).trim();
+
+      const appointmentSelfId = String(
+        effectiveAuthUserId || ""
+      ).trim();
+
+      const appointmentRoomParticipants = appointmentRoomId
+        .replace(/^dm[:_]/i, "")
+        .split(/[:_]/)
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+
+      const appointmentRecipientId = String(
+        (params as any)?.recipientId ||
+          (params as any)?.peerUserId ||
+          (params as any)?.otherUserId ||
+          (params as any)?.userId ||
+          appointmentRoomParticipants.find(
+            (value) => value !== appointmentSelfId
+          ) ||
+          ""
+      ).trim();
+
+      if (!appointmentRoomId || !appointmentRecipientId) {
+        Alert.alert(
+          "Appointment",
+          "The other person in this conversation could not be identified."
+        );
+
+        console.log("KRISTO_DM_APPOINTMENT_RECIPIENT_MISSING", {
+          roomId: appointmentRoomId,
+          threadId,
+          selfId: appointmentSelfId,
+          participants: appointmentRoomParticipants,
+        });
+
+        return;
+      }
+
       router.push({
         pathname:
-          "/kingdom/church-project-tool/[assignmentId]/[tool]" as any,
+          "/(tabs)/more/my-church-room/messages/appointment/[roomId]" as any,
         params: {
-          assignmentId: String(backendRoomId || threadId || ""),
-          tool: "appointment",
+          roomId: appointmentRoomId,
+          threadId: String(threadId || appointmentRoomId),
+          recipientId: appointmentRecipientId,
+          recipientName: String(headerTitle || "Member"),
+          roomKind: "direct",
+          churchId: String(churchId || ""),
           source: "direct-message",
-          roomId: String(backendRoomId || threadId || ""),
-          pastorId: String(otherUserId || ""),
-          pastorName: String(headerTitle || "Pastor"),
-          requesterRole: "member",
         },
       });
 
-      console.log("KRISTO_DM_APPOINTMENT_OPENED", {
-        roomId: backendRoomId,
+      console.log("KRISTO_DM_APPOINTMENT_COMPOSER_OPENED", {
+        roomId: appointmentRoomId,
         threadId,
-        pastorId: otherUserId,
-        pastorName: headerTitle,
+        recipientId: appointmentRecipientId,
+        recipientName: headerTitle,
       });
 
       return;
@@ -6557,7 +8221,7 @@ async function toggleAssignmentPreviewPlayback() {
     uri?: string;
     sourceDurationSec?: number;
   }) {
-    const targetMsg = messages.find((x) => x.id === args.messageId);
+    const targetMsg = messages.find((x: any) => x.id === args.messageId);
     const durationMin = Math.max(1, Number(targetMsg?.card?.durationMin || 1));
     const firstClip = makeAssignmentVideoClip(args);
 
@@ -6591,7 +8255,7 @@ async function toggleAssignmentPreviewPlayback() {
   }
 
   function selectAssignmentClip(clipId: string) {
-    const clip = assignmentVideoDraft.clips.find((x) => x.id === clipId);
+    const clip = assignmentVideoDraft.clips.find((x: any) => x.id === clipId);
     if (!clip) return;
 
     setAssignmentVideoDraft((prev: any) => ({
@@ -7449,7 +9113,7 @@ function saveAssignmentVideoTrim() {
       return;
     }
 
-    const targetMsg = messages.find((x) => String(x.id) === String(slotId));
+    const targetMsg = messages.find((x: any) => String(x.id) === String(slotId));
     const existingOwner = String((targetMsg?.card as any)?.claimedByUserId || "").trim();
     const cardStatus = String((targetMsg?.card as any)?.status || "open").toLowerCase();
     if (
@@ -7675,29 +9339,29 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     if (!isAssignmentThread) return null;
 
     const members = assignmentMembers.length;
-    const admins = assignmentMembers.filter((x) => x.role === "Pastor" || x.role === "Admin").length;
-    const paused = assignmentMembers.filter((x) => x.status === "Suspended").length;
+    const admins = assignmentMembers.filter((x: any) => x.role === "Pastor" || x.role === "Admin").length;
+    const paused = assignmentMembers.filter((x: any) => x.status === "Suspended").length;
 
     return { members, admins, paused };
   }, [isAssignmentThread, assignmentMembers]);
 
   const ministryAdmins = useMemo(
-    () => ministryMembers.filter((x) => x.role === "Pastor" || x.role === "Admin"),
+    () => ministryMembers.filter((x: any) => x.role === "Pastor" || x.role === "Admin"),
     [ministryMembers]
   );
 
   const ministryActiveCount = useMemo(
-    () => ministryMembers.filter((x) => x.status === "Active").length,
+    () => ministryMembers.filter((x: any) => x.status === "Active").length,
     [ministryMembers]
   );
 
   const ministrySuspendedCount = useMemo(
-    () => ministryMembers.filter((x) => x.status === "Suspended").length,
+    () => ministryMembers.filter((x: any) => x.status === "Suspended").length,
     [ministryMembers]
   );
 
   const ministrySuspendedMembers = useMemo(
-    () => ministryMembers.filter((x) => x.status === "Suspended"),
+    () => ministryMembers.filter((x: any) => x.status === "Suspended"),
     [ministryMembers]
   );
 
@@ -7737,17 +9401,17 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     displayMemberBoardPeople.length > 0 ? displayMemberBoardPeople : assignmentMembers;
 
   const assignmentAdmins = useMemo(
-    () => assignmentStatsSource.filter((x) => x.role === "Pastor" || x.role === "Admin"),
+    () => assignmentStatsSource.filter((x: any) => x.role === "Pastor" || x.role === "Admin"),
     [assignmentStatsSource]
   );
 
   const assignmentActiveCount = useMemo(
-    () => assignmentStatsSource.filter((x) => x.status === "Active").length,
+    () => assignmentStatsSource.filter((x: any) => x.status === "Active").length,
     [assignmentStatsSource]
   );
 
   const assignmentSuspendedMembers = useMemo(
-    () => assignmentStatsSource.filter((x) => x.status === "Suspended"),
+    () => assignmentStatsSource.filter((x: any) => x.status === "Suspended"),
     [assignmentStatsSource]
   );
 
@@ -8353,7 +10017,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           String((params as any)?.assignmentId || ""),
           String(threadId || ""),
         ]
-          .map((x) => x.trim())
+          .map((x: any) => x.trim())
           .filter(Boolean)
           .filter((x, index, arr) => arr.indexOf(x) === index);
 
@@ -8451,7 +10115,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
   const memberBoardLeaders = useMemo(
     () =>
-      memberBoardSource.filter((x) => {
+      memberBoardSource.filter((x: any) => {
         const r = String(x.role || "").toLowerCase();
         return (
           r.includes("pastor") ||
@@ -8465,7 +10129,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
   const memberBoardGuests = useMemo(
     () =>
-      memberBoardSource.filter((x) => {
+      memberBoardSource.filter((x: any) => {
         const r = String(x.role || "").toLowerCase();
         const st = String(x.status || "").toLowerCase();
         return r.includes("guest") || st.includes("guest") || st.includes("pending");
@@ -8476,14 +10140,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   const memberBoardVisible = useMemo(() => {
     if (memberBoardTab === "leaders") return memberBoardLeaders;
     if (memberBoardTab === "guests") return memberBoardGuests;
-    return memberBoardSource.filter((x) => {
+    return memberBoardSource.filter((x: any) => {
       const r = String(x.role || "").toLowerCase();
       return !r.includes("pastor") && !r.includes("admin") && !r.includes("leader");
     });
   }, [memberBoardTab, memberBoardSource, memberBoardLeaders, memberBoardGuests]);
 
   const mcHostCandidates = useMemo(
-    () => memberBoardSource.filter((x) => String(x.status || "").toLowerCase() !== "suspended"),
+    () => memberBoardSource.filter((x: any) => String(x.status || "").toLowerCase() !== "suspended"),
     [memberBoardSource]
   );
 
@@ -8494,7 +10158,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
     if (!currentUserIdForMc || !mcHostIds.includes(currentUserIdForMc)) return [];
 
-    const selfFromList = mcHostCandidates.find((x) => {
+    const selfFromList = mcHostCandidates.find((x: any) => {
       const id = String((x as any).userId || x.id || "").trim();
       return id === currentUserIdForMc;
     });
@@ -8520,8 +10184,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         {
           assignmentId: assignmentKey,
           hostUserIds: nextIds
-            .map((x) => String(x || "").trim())
-            .filter((x) => x.startsWith("u_"))
+            .map((x: any) => String(x || "").trim())
+            .filter((x: any) => x.startsWith("u_"))
             .filter((x, index, arr) => arr.indexOf(x) === index)
             .slice(0, 2),
         },
@@ -8574,14 +10238,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       }
 
       const cleanPrev = prev
-        .map((x) => String(x || "").trim())
-        .filter((x) => x.startsWith("u_"))
+        .map((x: any) => String(x || "").trim())
+        .filter((x: any) => x.startsWith("u_"))
         .filter((x, index, arr) => arr.indexOf(x) === index);
 
       let next = cleanPrev;
 
       if (cleanPrev.includes(id)) {
-        next = cleanPrev.filter((x) => x !== id);
+        next = cleanPrev.filter((x: any) => x !== id);
       } else {
         if (cleanPrev.length >= 2) {
           Alert.alert("Limit reached", "You can choose only 2 MC+ Hosts.");
@@ -8596,7 +10260,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   }
 
   const mcSelectedHosts = useMemo(
-    () => mcHostCandidates.filter((x) => mcHostIds.includes(String((x as any).userId || x.id))),
+    () => mcHostCandidates.filter((x: any) => mcHostIds.includes(String((x as any).userId || x.id))),
     [mcHostCandidates, mcHostIds]
   );
 
