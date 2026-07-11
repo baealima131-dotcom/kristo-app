@@ -7,6 +7,14 @@ import { getChurchById } from "@/app/api/_lib/churches";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
 
+export type DirectMessageReportRecord = {
+  reporterUserId: string;
+  reportedUserId: string;
+  reason: string;
+  details?: string;
+  createdAt: number;
+};
+
 export type DirectMessageThreadRecord = {
   roomId: string;
   churchId: string;
@@ -15,6 +23,23 @@ export type DirectMessageThreadRecord = {
   updatedAt: number;
   readAtByUserId: Record<string, number>;
   createdByUserId?: string;
+  mutedByUserId?: Record<string, boolean>;
+  blockedByUserId?: Record<string, boolean>;
+  clearedAtByUserId?: Record<string, number>;
+  deletedAtByUserId?: Record<string, number>;
+  reports?: DirectMessageReportRecord[];
+};
+
+export type DirectMessageConversationSettings = {
+  roomId: string;
+  churchId: string;
+  peerUserId: string;
+  muted: boolean;
+  blockedByMe: boolean;
+  blockedByPeer: boolean;
+  blocked: boolean;
+  clearedAt: number;
+  deletedAt: number;
 };
 
 export type DirectMessagePeerPreview = {
@@ -163,7 +188,7 @@ async function buildThreadView(args: {
     churchId: args.churchId,
     peerUserId: args.peerUserId,
     title: pickDisplayName(peerProfile),
-    subtitle: String(church?.name || church?.churchName || "Direct message").trim(),
+    subtitle: String(church?.name || church?.name || "Direct message").trim(),
     avatarUri: pickAvatar(peerProfile),
   };
 }
@@ -189,7 +214,7 @@ export async function resolveDirectMessagePeerPreview(args: {
     avatarUrl: pickAvatar(profile),
     kristoId: String(profile.userCode || kristoId).trim().toUpperCase(),
     churchId,
-    churchName: String(church?.name || church?.churchName || "Church").trim(),
+    churchName: String(church?.name || church?.name || "Church").trim(),
   };
 }
 
@@ -379,6 +404,257 @@ export async function markDirectMessageThreadRead(args: {
   return true;
 }
 
+
+export async function getDirectMessageConversationSettings(args: {
+  churchId: string;
+  roomId: string;
+  userId: string;
+}): Promise<DirectMessageConversationSettings | null> {
+  const churchId = String(args.churchId || "").trim();
+  const roomId = String(args.roomId || "").trim();
+  const userId = normUserId(args.userId);
+
+  if (
+    !churchId ||
+    !roomId ||
+    !userId ||
+    !isDirectRoomId(roomId) ||
+    !isParticipantInDirectRoom(roomId, userId)
+  ) {
+    return null;
+  }
+
+  const participants = parseDirectRoomParticipants(roomId);
+  if (!participants) return null;
+
+  const store = await readThreadStore();
+  const record = store[threadStoreKey(churchId, roomId)];
+  if (!record) return null;
+
+  const peerUserId = peerUserIdFromParticipants(
+    participants,
+    userId
+  );
+
+  const blockedByMe =
+    record.blockedByUserId?.[userId] === true;
+  const blockedByPeer =
+    record.blockedByUserId?.[peerUserId] === true;
+
+  return {
+    roomId,
+    churchId,
+    peerUserId,
+    muted: record.mutedByUserId?.[userId] === true,
+    blockedByMe,
+    blockedByPeer,
+    blocked: blockedByMe || blockedByPeer,
+    clearedAt: Number(
+      record.clearedAtByUserId?.[userId] || 0
+    ),
+    deletedAt: Number(
+      record.deletedAtByUserId?.[userId] || 0
+    ),
+  };
+}
+
+export async function updateDirectMessageConversationSettings(args: {
+  churchId: string;
+  roomId: string;
+  userId: string;
+  action:
+    | "mute"
+    | "unmute"
+    | "block"
+    | "unblock"
+    | "clear"
+    | "delete"
+    | "restore";
+}): Promise<DirectMessageConversationSettings | null> {
+  const churchId = String(args.churchId || "").trim();
+  const roomId = String(args.roomId || "").trim();
+  const userId = normUserId(args.userId);
+
+  if (
+    !churchId ||
+    !roomId ||
+    !userId ||
+    !isDirectRoomId(roomId) ||
+    !isParticipantInDirectRoom(roomId, userId)
+  ) {
+    return null;
+  }
+
+  const ensured = await ensureDirectMessageThreadFromRoomId({
+    viewerUserId: userId,
+    churchId,
+    roomId,
+    intent: "repair",
+  });
+
+  if (!ensured) return null;
+
+  const now = Date.now();
+
+  await updateDirectMessageThreadStore<
+    Record<string, DirectMessageThreadRecord>
+  >((current) => {
+    const next = current && typeof current === "object"
+      ? { ...current }
+      : {};
+
+    const key = threadStoreKey(churchId, roomId);
+    const record = next[key];
+    if (!record) return next;
+
+    if (args.action === "mute" || args.action === "unmute") {
+      record.mutedByUserId = {
+        ...(record.mutedByUserId || {}),
+        [userId]: args.action === "mute",
+      };
+    }
+
+    if (args.action === "block" || args.action === "unblock") {
+      record.blockedByUserId = {
+        ...(record.blockedByUserId || {}),
+        [userId]: args.action === "block",
+      };
+    }
+
+    if (args.action === "clear") {
+      record.clearedAtByUserId = {
+        ...(record.clearedAtByUserId || {}),
+        [userId]: now,
+      };
+      record.readAtByUserId = {
+        ...(record.readAtByUserId || {}),
+        [userId]: now,
+      };
+    }
+
+    if (args.action === "delete") {
+      record.deletedAtByUserId = {
+        ...(record.deletedAtByUserId || {}),
+        [userId]: now,
+      };
+      record.readAtByUserId = {
+        ...(record.readAtByUserId || {}),
+        [userId]: now,
+      };
+    }
+
+    if (args.action === "restore") {
+      record.deletedAtByUserId = {
+        ...(record.deletedAtByUserId || {}),
+        [userId]: 0,
+      };
+    }
+
+    record.updatedAt = Math.max(
+      Number(record.updatedAt || 0),
+      now
+    );
+
+    next[key] = record;
+    return next;
+  }, {});
+
+  console.log("KRISTO_DM_CONVERSATION_SETTING_UPDATED", {
+    churchId,
+    roomId,
+    userId,
+    action: args.action,
+    ts: now,
+  });
+
+  return getDirectMessageConversationSettings({
+    churchId,
+    roomId,
+    userId,
+  });
+}
+
+export async function reportDirectMessageUser(args: {
+  churchId: string;
+  roomId: string;
+  reporterUserId: string;
+  reason: string;
+  details?: string;
+}) {
+  const churchId = String(args.churchId || "").trim();
+  const roomId = String(args.roomId || "").trim();
+  const reporterUserId = normUserId(args.reporterUserId);
+  const reason = String(args.reason || "").trim();
+  const details = String(args.details || "").trim();
+
+  if (
+    !churchId ||
+    !roomId ||
+    !reporterUserId ||
+    !reason ||
+    !isParticipantInDirectRoom(roomId, reporterUserId)
+  ) {
+    return false;
+  }
+
+  const participants = parseDirectRoomParticipants(roomId);
+  if (!participants) return false;
+
+  const reportedUserId = peerUserIdFromParticipants(
+    participants,
+    reporterUserId
+  );
+
+  const createdAt = Date.now();
+
+  await updateDirectMessageThreadStore<
+    Record<string, DirectMessageThreadRecord>
+  >((current) => {
+    const next = current && typeof current === "object"
+      ? { ...current }
+      : {};
+
+    const key = threadStoreKey(churchId, roomId);
+    const record = next[key];
+    if (!record) return next;
+
+    record.reports = [
+      ...(record.reports || []),
+      {
+        reporterUserId,
+        reportedUserId,
+        reason,
+        ...(details ? { details } : {}),
+        createdAt,
+      },
+    ].slice(-200);
+
+    next[key] = record;
+    return next;
+  }, {});
+
+  console.log("KRISTO_DM_USER_REPORTED", {
+    churchId,
+    roomId,
+    reporterUserId,
+    reportedUserId,
+    reason,
+    createdAt,
+  });
+
+  return true;
+}
+
+export async function isDirectMessageBlocked(args: {
+  churchId: string;
+  roomId: string;
+  userId: string;
+}) {
+  const settings =
+    await getDirectMessageConversationSettings(args);
+  return settings?.blocked === true;
+}
+
 export async function touchDirectMessageThread(args: {
   churchId: string;
   roomId: string;
@@ -437,14 +713,45 @@ async function unreadCountForThread(args: {
   }, 0);
 }
 
-async function lastMessageForThread(churchId: string, roomId: string) {
+async function lastMessageForThread(
+  churchId: string,
+  roomId: string,
+  viewerUserId = "",
+  clearedAt = 0
+) {
   const store = await readRoomMessagesJsonFile<Record<string, any[]>>("room-messages.json", {});
   const rows = Array.isArray(store[roomMessagesKey(churchId, roomId)])
     ? store[roomMessagesKey(churchId, roomId)]
     : [];
+  const normalizedViewerUserId =
+    normUserId(viewerUserId);
+
   const sorted = rows
+    .filter((row: any) => {
+      const createdAt = Number(row?.createdAt || 0);
+      const deletedFor = Array.isArray(row?.deletedFor)
+        ? row.deletedFor.map(String)
+        : [];
+
+      if (
+        normalizedViewerUserId &&
+        deletedFor.includes(normalizedViewerUserId)
+      ) {
+        return false;
+      }
+
+      if (createdAt <= Number(clearedAt || 0)) {
+        return false;
+      }
+
+      return true;
+    })
     .slice()
-    .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0));
+    .sort(
+      (a, b) =>
+        Number(b?.createdAt || 0) -
+        Number(a?.createdAt || 0)
+    );
   const latest = sorted[0];
   if (!latest) return null;
   return {
@@ -516,10 +823,35 @@ export async function listDirectMessageInbox(args: {
       const peerUserId = peerUserIdFromParticipants(thread.participantUserIds, viewerUserId);
       const profile = await getProfile(peerUserId).catch(() => null);
       const church = await getChurchById(churchId).catch(() => null);
-      const lastMessage = await lastMessageForThread(churchId, thread.roomId);
+      const clearedAt = Number(
+        thread.clearedAtByUserId?.[viewerUserId] || 0
+      );
+      const deletedAt = Number(
+        thread.deletedAtByUserId?.[viewerUserId] || 0
+      );
+
+      const lastMessage = await lastMessageForThread(
+        churchId,
+        thread.roomId,
+        viewerUserId,
+        clearedAt
+      );
+
       if (!lastMessage) return null;
 
-      const readAt = Number(thread.readAtByUserId?.[viewerUserId] || 0);
+      // A locally deleted conversation remains hidden until a newer
+      // message arrives after the deletion timestamp.
+      if (
+        deletedAt > 0 &&
+        Number(lastMessage.timestampMs || 0) <= deletedAt
+      ) {
+        return null;
+      }
+
+      const readAt = Math.max(
+        Number(thread.readAtByUserId?.[viewerUserId] || 0),
+        clearedAt
+      );
       const unreadCount = await unreadCountForThread({
         churchId,
         roomId: thread.roomId,
@@ -533,7 +865,7 @@ export async function listDirectMessageInbox(args: {
         churchId,
         peerUserId,
         title: pickDisplayName(profile),
-        subtitle: String(church?.name || church?.churchName || "Direct message").trim(),
+        subtitle: String(church?.name || church?.name || "Direct message").trim(),
         avatarUri: pickAvatar(profile),
         lastMessagePreview: String(lastMessage?.preview || "No messages yet"),
         timestampLabel: formatTimestampLabel(timestampMs),
@@ -543,5 +875,5 @@ export async function listDirectMessageInbox(args: {
     })
   );
 
-  return items.filter(Boolean).sort((a, b) => b.timestampMs - a.timestampMs) as DirectMessageInboxItem[];
+  return items.filter(Boolean).sort((a, b) => (b?.timestampMs ?? 0) - (a?.timestampMs ?? 0)) as DirectMessageInboxItem[];
 }

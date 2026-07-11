@@ -5,9 +5,12 @@ import { guard } from "@/app/api/_lib/rbac";
 import {
   ensureDirectMessageThreadFromRoomId,
   listDirectMessageInbox,
+  getDirectMessageConversationSettings,
   markDirectMessageThreadRead,
   openDirectMessageThread,
+  reportDirectMessageUser,
   resolveDirectMessagePeerPreview,
+  updateDirectMessageConversationSettings,
 } from "@/app/api/_lib/directMessages";
 
 export const runtime = "nodejs";
@@ -25,6 +28,38 @@ export async function GET(req: NextRequest) {
   const action = String(url.searchParams.get("action") || "").trim().toLowerCase();
   const viewerUserId = String(ctxOrRes.viewer.userId || "").trim();
   const churchId = String(ctxOrRes.churchId || "").trim();
+
+  if (action === "settings") {
+    const roomId = String(
+      url.searchParams.get("roomId") || ""
+    ).trim();
+
+    if (!roomId || !churchId) {
+      return json(
+        {
+          ok: false,
+          error: "roomId and churchId are required.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const settings =
+      await getDirectMessageConversationSettings({
+        churchId,
+        roomId,
+        userId: viewerUserId,
+      });
+
+    if (!settings) {
+      return json(
+        { ok: false, error: "Conversation not found." },
+        { status: 404 }
+      );
+    }
+
+    return json({ ok: true, data: settings });
+  }
 
   if (action === "resolve") {
     const kristoId = String(url.searchParams.get("kristoId") || url.searchParams.get("kristoID") || "").trim();
@@ -132,11 +167,31 @@ export async function PATCH(req: NextRequest) {
     roomId?: string;
     churchId?: string;
     action?: string;
+    reason?: string;
+    details?: string;
   } | null;
 
-  const action = String(body?.action || "read").trim().toLowerCase();
-  if (action !== "read") {
-    return json({ ok: false, error: "Unsupported action." }, { status: 400 });
+  const action = String(
+    body?.action || "read"
+  ).trim().toLowerCase();
+
+  const supportedActions = new Set([
+    "read",
+    "mute",
+    "unmute",
+    "block",
+    "unblock",
+    "clear",
+    "delete",
+    "restore",
+    "report",
+  ]);
+
+  if (!supportedActions.has(action)) {
+    return json(
+      { ok: false, error: "Unsupported action." },
+      { status: 400 }
+    );
   }
 
   const roomId = String(body?.roomId || "").trim();
@@ -145,6 +200,61 @@ export async function PATCH(req: NextRequest) {
 
   if (!roomId || !churchId) {
     return json({ ok: false, error: "roomId and churchId are required." }, { status: 400 });
+  }
+
+  if (action === "report") {
+    const reason = String(body?.reason || "").trim();
+
+    if (!reason) {
+      return json(
+        { ok: false, error: "Report reason is required." },
+        { status: 400 }
+      );
+    }
+
+    const reported = await reportDirectMessageUser({
+      churchId,
+      roomId,
+      reporterUserId: viewerUserId,
+      reason,
+      details: String(body?.details || "").trim(),
+    });
+
+    return reported
+      ? json({ ok: true })
+      : json(
+          { ok: false, error: "Could not report user." },
+          { status: 400 }
+        );
+  }
+
+  if (action !== "read") {
+    const settings =
+      await updateDirectMessageConversationSettings({
+        churchId,
+        roomId,
+        userId: viewerUserId,
+        action: action as
+          | "mute"
+          | "unmute"
+          | "block"
+          | "unblock"
+          | "clear"
+          | "delete"
+          | "restore",
+      });
+
+    if (!settings) {
+      return json(
+        {
+          ok: false,
+          error: "Could not update conversation.",
+        },
+        { status: 400 }
+      );
+    }
+
+    return json({ ok: true, data: settings });
   }
 
   const updated = await markDirectMessageThreadRead({

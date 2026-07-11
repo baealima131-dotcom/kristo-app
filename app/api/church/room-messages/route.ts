@@ -12,6 +12,7 @@ import {
 } from "@/app/api/_lib/store/roomMessageDb";
 import { purgeFeedSchedulesForDeletedRoomCards } from "@/app/api/_lib/reconcileMediaScheduleFeed";
 import {
+  isDirectMessageBlocked,
   isDirectRoomId,
   isParticipantInDirectRoom,
   touchDirectMessageThread,
@@ -378,7 +379,34 @@ export async function POST(req: Request) {
       );
     }
     if (!isParticipantInDirectRoom(roomId, userId)) {
-      return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: "Forbidden" },
+        { status: 403 }
+      );
+    }
+
+    const blocked = await isDirectMessageBlocked({
+      churchId,
+      roomId,
+      userId,
+    });
+
+    if (blocked) {
+      console.log("KRISTO_DM_SEND_BLOCKED", {
+        churchId,
+        roomId,
+        senderUserId: userId,
+      });
+
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "conversation_blocked",
+          message:
+            "Messages cannot be sent in this blocked conversation.",
+        },
+        { status: 403 }
+      );
     }
   }
 

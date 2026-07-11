@@ -3,6 +3,10 @@ import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
 import { resolveChurchPastorUserId } from "@/app/api/_lib/churchPastor";
+import {
+  buildDirectRoomId,
+  isDirectMessageBlocked,
+} from "@/app/api/_lib/directMessages";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { notifyPastorPrivateCallIncoming } from "@/app/api/_lib/privateCallNotifications";
 import {
@@ -23,7 +27,7 @@ function json(data: unknown, init?: ResponseInit) {
 async function displayNameForUser(userId: string, fallback = "Kristo user") {
   const profile = await getProfile(String(userId || "")).catch(() => null);
   return String(
-    profile?.fullName || profile?.displayName || profile?.email || fallback
+    profile?.fullName || profile?.fullName || profile?.email || fallback
   ).trim();
 }
 
@@ -162,6 +166,40 @@ export async function POST(req: NextRequest) {
       },
       { status: 400 }
     );
+  }
+
+  if (requestedTargetUserId) {
+    const directRoomId = buildDirectRoomId(
+      callerUserId,
+      receiverUserId
+    );
+
+    const blocked = directRoomId
+      ? await isDirectMessageBlocked({
+          churchId,
+          roomId: directRoomId,
+          userId: callerUserId,
+        })
+      : false;
+
+    if (blocked) {
+      console.log("KRISTO_PRIVATE_CALL_BLOCKED_CONVERSATION", {
+        churchId,
+        directRoomId,
+        callerUserId,
+        receiverUserId,
+      });
+
+      return json(
+        {
+          ok: false,
+          error: "conversation_blocked",
+          message:
+            "This call cannot be started because the conversation is blocked.",
+        },
+        { status: 403 }
+      );
+    }
   }
 
   // Direct calls are pastoral calls only:

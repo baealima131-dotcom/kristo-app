@@ -175,3 +175,107 @@ export async function markDirectMessageThreadRead(args: {
     { headers: authHeaders() }
   ).catch(() => null);
 }
+
+export type DirectMessageConversationSettings = {
+  roomId: string;
+  churchId: string;
+  peerUserId: string;
+  muted: boolean;
+  blockedByMe: boolean;
+  blockedByPeer: boolean;
+  blocked: boolean;
+  clearedAt: number;
+  deletedAt: number;
+};
+
+export async function fetchDirectMessageConversationSettings(
+  args: {
+    roomId: string;
+    churchId?: string;
+  }
+): Promise<DirectMessageConversationSettings> {
+  const roomId = String(args.roomId || "").trim();
+  const churchId = String(args.churchId || "").trim();
+
+  const query = new URLSearchParams({
+    action: "settings",
+    roomId,
+    ...(churchId ? { churchId } : {}),
+  });
+
+  const res: any = await apiGet(
+    `/api/church/direct-messages?${query.toString()}`,
+    { headers: authHeaders() }
+  );
+
+  if (!res?.ok || !res?.data) {
+    throw new Error(
+      String(res?.error || "Could not load conversation settings.")
+    );
+  }
+
+  return res.data as DirectMessageConversationSettings;
+}
+
+export async function updateDirectMessageConversationSetting(
+  args: {
+    roomId: string;
+    churchId?: string;
+    action:
+      | "mute"
+      | "unmute"
+      | "block"
+      | "unblock"
+      | "clear"
+      | "delete"
+      | "restore";
+  }
+): Promise<DirectMessageConversationSettings> {
+  const res: any = await apiPatch(
+    "/api/church/direct-messages",
+    {
+      roomId: String(args.roomId || "").trim(),
+      ...(args.churchId
+        ? { churchId: String(args.churchId).trim() }
+        : {}),
+      action: args.action,
+    },
+    { headers: authHeaders() }
+  );
+
+  if (!res?.ok || !res?.data) {
+    throw new Error(
+      String(res?.error || "Could not update conversation.")
+    );
+  }
+
+  return res.data as DirectMessageConversationSettings;
+}
+
+export async function reportDirectMessageConversation(args: {
+  roomId: string;
+  churchId?: string;
+  reason: string;
+  details?: string;
+}) {
+  const res: any = await apiPatch(
+    "/api/church/direct-messages",
+    {
+      roomId: String(args.roomId || "").trim(),
+      ...(args.churchId
+        ? { churchId: String(args.churchId).trim() }
+        : {}),
+      action: "report",
+      reason: String(args.reason || "").trim(),
+      details: String(args.details || "").trim(),
+    },
+    { headers: authHeaders() }
+  );
+
+  if (!res?.ok) {
+    throw new Error(
+      String(res?.error || "Could not report this user.")
+    );
+  }
+}
+
