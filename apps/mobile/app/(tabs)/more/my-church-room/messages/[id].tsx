@@ -2725,14 +2725,41 @@ function AppointmentRequestVipCard({
   onReply: () => void;
   onReject: () => void;
 }) {
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] =
+    React.useState(false);
 
   const status = String(
     appointment?.status || "pending"
   ).toLowerCase();
 
+  const isPending =
+    status === "pending";
+
+  const isAccepted =
+    status === "accepted_awaiting_time" ||
+    status === "accepted";
+
+  const isRejected =
+    status === "rejected";
+
+  const isProposed =
+    status === "time_proposed";
+
+  const isConfirmed =
+    status === "confirmed";
+
+  const isReschedule =
+    status === "reschedule_requested";
+
   const requestText = String(
-    appointment?.message || message.text || ""
+    appointment?.originalMessage ||
+      appointment?.message ||
+      message.text ||
+      ""
+  ).trim();
+
+  const workflowMessage = String(
+    appointment?.message || ""
   ).trim();
 
   const voiceNotes = Array.isArray(
@@ -2741,13 +2768,106 @@ function AppointmentRequestVipCard({
     ? appointment.voiceNotes.slice(0, 5)
     : [];
 
+  const requesterId = String(
+    appointment?.requesterId || ""
+  ).trim();
+
+  const recipientId = String(
+    appointment?.recipientId || ""
+  ).trim();
+
   const canRespond =
     !mine &&
-    status === "pending" &&
-    currentUserId ===
-      String(
-        appointment?.recipientId || ""
-      ).trim();
+    isPending &&
+    currentUserId === recipientId;
+
+  const canRespondToProposal =
+    isProposed &&
+    currentUserId === requesterId;
+
+  const title = isRejected
+    ? "Appointment rejected"
+    : isConfirmed
+      ? "Appointment confirmed"
+      : isProposed
+        ? "Appointment time proposed"
+        : isAccepted
+          ? "Appointment accepted"
+          : isReschedule
+            ? "New time requested"
+            : "Appointment request";
+
+  const accent = isRejected
+    ? "#FF6B72"
+    : isConfirmed || isAccepted
+      ? "#4ADE80"
+      : isProposed || isReschedule
+        ? "#A78BFA"
+        : "#F5BE41";
+
+  const shadowColor = accent;
+
+  const borderColor = isRejected
+    ? "rgba(239,68,68,0.52)"
+    : isConfirmed || isAccepted
+      ? "rgba(34,197,94,0.52)"
+      : isProposed || isReschedule
+        ? "rgba(167,139,250,0.48)"
+        : mine
+          ? "rgba(217,179,95,0.48)"
+          : "rgba(157,138,255,0.30)";
+
+  const gradientColors = isRejected
+    ? [
+        "rgba(76,18,29,0.97)",
+        "rgba(38,17,26,0.99)",
+        "rgba(18,16,24,0.99)",
+      ]
+    : isConfirmed || isAccepted
+      ? [
+          "rgba(18,68,45,0.96)",
+          "rgba(16,39,32,0.99)",
+          "rgba(13,20,25,0.99)",
+        ]
+      : isProposed || isReschedule
+        ? [
+            "rgba(59,42,91,0.96)",
+            "rgba(29,28,49,0.99)",
+            "rgba(14,18,29,0.99)",
+          ]
+        : mine
+          ? [
+              "rgba(79,59,21,0.94)",
+              "rgba(33,28,35,0.98)",
+              "rgba(17,20,31,0.99)",
+            ]
+          : [
+              "rgba(29,35,51,0.99)",
+              "rgba(18,22,35,0.99)",
+              "rgba(13,16,27,0.99)",
+            ];
+
+  const footerLabel = isRejected
+    ? "Request declined"
+    : isConfirmed
+      ? "Appointment ready"
+      : isProposed
+        ? canRespondToProposal
+          ? "Review the proposed time"
+          : "Waiting for time confirmation"
+        : isAccepted
+          ? "Waiting for date and time"
+          : isReschedule
+            ? "Waiting for a new proposal"
+            : mine
+              ? "Waiting for response"
+              : voiceNotes.length
+                ? `${voiceNotes.length} voice ${
+                    voiceNotes.length === 1
+                      ? "message"
+                      : "messages"
+                  }`
+                : "Review request";
 
   return (
     <Pressable
@@ -2758,43 +2878,33 @@ function AppointmentRequestVipCard({
         {
           width: "96%",
           maxWidth: 430,
-          alignSelf: mine ? "flex-end" : "flex-start",
+          alignSelf: mine
+            ? "flex-end"
+            : "flex-start",
           marginVertical: 8,
-          shadowColor:
-            status === "pending"
-              ? "#D9B35F"
-              : "#7C3AED",
-          shadowOpacity: 0.24,
+          shadowColor,
+          shadowOpacity: 0.25,
           shadowRadius: 24,
-          shadowOffset: { width: 0, height: 10 },
+          shadowOffset: {
+            width: 0,
+            height: 10,
+          },
           elevation: 10,
         } as ViewStyle,
-        selected ? s.bubbleSelectedGlow : null,
+        selected
+          ? s.bubbleSelectedGlow
+          : null,
       ]}
     >
       <LinearGradient
-        colors={
-          mine
-            ? [
-                "rgba(79,59,21,0.94)",
-                "rgba(33,28,35,0.98)",
-                "rgba(17,20,31,0.99)",
-              ]
-            : [
-                "rgba(29,35,51,0.99)",
-                "rgba(18,22,35,0.99)",
-                "rgba(13,16,27,0.99)",
-              ]
-        }
+        colors={gradientColors as any}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={{
           borderRadius: 27,
           overflow: "hidden",
           borderWidth: 1,
-          borderColor: mine
-            ? "rgba(217,179,95,0.48)"
-            : "rgba(157,138,255,0.30)",
+          borderColor,
         }}
       >
         <LinearGradient
@@ -2806,7 +2916,9 @@ function AppointmentRequestVipCard({
           ]}
           start={{ x: 0, y: 0 }}
           end={{ x: 0.8, y: 1 }}
-          style={StyleSheet.absoluteFillObject}
+          style={
+            StyleSheet.absoluteFillObject
+          }
         />
 
         <View style={{ padding: 18 }}>
@@ -2824,15 +2936,16 @@ function AppointmentRequestVipCard({
                 borderRadius: 24,
                 padding: 2,
                 backgroundColor:
-                  "rgba(217,179,95,0.22)",
+                  `${accent}22`,
                 borderWidth: 1,
-                borderColor:
-                  "rgba(217,179,95,0.60)",
+                borderColor: `${accent}99`,
               }}
             >
               {senderAvatarUri ? (
                 <Image
-                  source={{ uri: senderAvatarUri }}
+                  source={{
+                    uri: senderAvatarUri,
+                  }}
                   style={{
                     width: "100%",
                     height: "100%",
@@ -2845,25 +2958,33 @@ function AppointmentRequestVipCard({
                     flex: 1,
                     borderRadius: 22,
                     alignItems: "center",
-                    justifyContent: "center",
+                    justifyContent:
+                      "center",
                     backgroundColor:
                       "rgba(255,255,255,0.07)",
                   }}
                 >
                   <Text
                     style={{
-                      color: GOLD,
+                      color: accent,
                       fontSize: 15,
                       fontWeight: "900",
                     }}
                   >
-                    {initials(senderName || "A")}
+                    {initials(
+                      senderName || "A"
+                    )}
                   </Text>
                 </View>
               )}
             </View>
 
-            <View style={{ flex: 1, minWidth: 0 }}>
+            <View
+              style={{
+                flex: 1,
+                minWidth: 0,
+              }}
+            >
               <Text
                 numberOfLines={1}
                 style={{
@@ -2874,14 +2995,14 @@ function AppointmentRequestVipCard({
                   letterSpacing: -0.25,
                 }}
               >
-                Appointment request
+                {title}
               </Text>
 
               <Text
                 numberOfLines={1}
                 style={{
                   marginTop: 2,
-                  color: "rgba(217,179,95,0.90)",
+                  color: accent,
                   fontSize: 11,
                   fontWeight: "800",
                 }}
@@ -2897,41 +3018,71 @@ function AppointmentRequestVipCard({
 
             <View
               style={{
-                width: 16,
-                height: 16,
-                borderRadius: 8,
+                width: 28,
+                height: 28,
+                borderRadius: 14,
                 alignItems: "center",
                 justifyContent: "center",
                 backgroundColor:
-                  "rgba(245,190,65,0.13)",
-                shadowColor: "#F5BE41",
-                shadowOpacity: 0.9,
+                  `${accent}20`,
+                borderWidth: 1,
+                borderColor: `${accent}66`,
+                shadowColor: accent,
+                shadowOpacity: 0.75,
                 shadowRadius: 9,
-                shadowOffset: { width: 0, height: 0 },
+                shadowOffset: {
+                  width: 0,
+                  height: 0,
+                },
               }}
             >
-              <View
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: 4,
-                  backgroundColor:
-                    status === "pending"
-                      ? "#F5BE41"
-                      : "#4ADE80",
-                }}
-              />
+              {isRejected ? (
+                <Ionicons
+                  name="close"
+                  size={17}
+                  color={accent}
+                />
+              ) : isConfirmed ||
+                isAccepted ? (
+                <Ionicons
+                  name="checkmark"
+                  size={17}
+                  color={accent}
+                />
+              ) : isProposed ||
+                isReschedule ? (
+                <Ionicons
+                  name="time-outline"
+                  size={16}
+                  color={accent}
+                />
+              ) : (
+                <View
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    backgroundColor:
+                      accent,
+                  }}
+                />
+              )}
             </View>
           </View>
 
           {requestText ? (
-            <View style={{ marginTop: 16 }}>
+            <View
+              style={{
+                marginTop: 16,
+              }}
+            >
               <Text
                 numberOfLines={
                   expanded ? undefined : 3
                 }
                 style={{
-                  color: "rgba(255,255,255,0.88)",
+                  color:
+                    "rgba(255,255,255,0.88)",
                   fontSize: 14,
                   lineHeight: 21,
                   fontWeight: "700",
@@ -2943,17 +3094,20 @@ function AppointmentRequestVipCard({
               {requestText.length > 115 ? (
                 <Pressable
                   onPress={() =>
-                    setExpanded((value) => !value)
+                    setExpanded(
+                      (value) => !value
+                    )
                   }
                   hitSlop={8}
                   style={{
-                    alignSelf: "flex-start",
+                    alignSelf:
+                      "flex-start",
                     marginTop: 7,
                   }}
                 >
                   <Text
                     style={{
-                      color: GOLD,
+                      color: accent,
                       fontSize: 11,
                       fontWeight: "900",
                     }}
@@ -2967,9 +3121,280 @@ function AppointmentRequestVipCard({
             </View>
           ) : null}
 
-          <AppointmentVoicePlaylist
-            voiceNotes={voiceNotes}
-          />
+          {voiceNotes.length ? (
+            <AppointmentVoicePlaylist
+              voiceNotes={voiceNotes}
+            />
+          ) : null}
+
+          {isAccepted ? (
+            <View
+              style={{
+                marginTop: 16,
+                padding: 14,
+                borderRadius: 17,
+                backgroundColor:
+                  "rgba(34,197,94,0.10)",
+                borderWidth: 1,
+                borderColor:
+                  "rgba(34,197,94,0.28)",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
+              <Ionicons
+                name="calendar-outline"
+                size={19}
+                color="#86EFAC"
+              />
+
+              <Text
+                style={{
+                  flex: 1,
+                  color:
+                    "rgba(255,255,255,0.76)",
+                  fontSize: 12,
+                  lineHeight: 18,
+                  fontWeight: "800",
+                }}
+              >
+                The request was accepted.
+                Waiting for the recipient to
+                choose a date and time.
+              </Text>
+            </View>
+          ) : null}
+
+          {isRejected ? (
+            <View
+              style={{
+                marginTop: 16,
+                padding: 14,
+                borderRadius: 17,
+                backgroundColor:
+                  "rgba(239,68,68,0.09)",
+                borderWidth: 1,
+                borderColor:
+                  "rgba(239,68,68,0.25)",
+              }}
+            >
+              <Text
+                style={{
+                  color: "#FF9A9F",
+                  fontSize: 11,
+                  fontWeight: "900",
+                  textTransform:
+                    "uppercase",
+                  letterSpacing: 0.7,
+                }}
+              >
+                Appointment rejected
+              </Text>
+
+              {workflowMessage ? (
+                <Text
+                  style={{
+                    marginTop: 7,
+                    color:
+                      "rgba(255,255,255,0.78)",
+                    fontSize: 12,
+                    lineHeight: 18,
+                    fontWeight: "700",
+                  }}
+                >
+                  {workflowMessage}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          {isProposed || isConfirmed ? (
+            <View
+              style={{
+                marginTop: 16,
+                padding: 15,
+                borderRadius: 18,
+                backgroundColor:
+                  isConfirmed
+                    ? "rgba(34,197,94,0.10)"
+                    : "rgba(167,139,250,0.10)",
+                borderWidth: 1,
+                borderColor:
+                  isConfirmed
+                    ? "rgba(34,197,94,0.30)"
+                    : "rgba(167,139,250,0.30)",
+              }}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <Ionicons
+                  name={
+                    isConfirmed
+                      ? "checkmark-circle"
+                      : "calendar-outline"
+                  }
+                  size={19}
+                  color={
+                    isConfirmed
+                      ? "#4ADE80"
+                      : "#C4B5FD"
+                  }
+                />
+
+                <Text
+                  style={{
+                    color:
+                      isConfirmed
+                        ? "#86EFAC"
+                        : "#DDD6FE",
+                    fontSize: 11,
+                    fontWeight: "900",
+                    textTransform:
+                      "uppercase",
+                    letterSpacing: 0.7,
+                  }}
+                >
+                  {isConfirmed
+                    ? "Confirmed time"
+                    : "Proposed time"}
+                </Text>
+              </View>
+
+              <Text
+                style={{
+                  marginTop: 12,
+                  color: "#FFFFFF",
+                  fontSize: 18,
+                  fontWeight: "900",
+                }}
+              >
+                {String(
+                  appointment?.date ||
+                    "Date pending"
+                )}
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 5,
+                  color: accent,
+                  fontSize: 15,
+                  fontWeight: "900",
+                }}
+              >
+                {String(
+                  appointment?.time ||
+                    "Time pending"
+                )}
+                {"  •  "}
+                {Number(
+                  appointment?.durationMin ||
+                    30
+                )}{" "}
+                min
+              </Text>
+
+              {String(
+                appointment?.location || ""
+              ).trim() ? (
+                <View
+                  style={{
+                    marginTop: 10,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 7,
+                  }}
+                >
+                  <Ionicons
+                    name="location-outline"
+                    size={15}
+                    color="rgba(255,255,255,0.66)"
+                  />
+
+                  <Text
+                    style={{
+                      flex: 1,
+                      color:
+                        "rgba(255,255,255,0.72)",
+                      fontSize: 12,
+                      fontWeight: "800",
+                    }}
+                  >
+                    {String(
+                      appointment.location
+                    )}
+                  </Text>
+                </View>
+              ) : null}
+
+              {String(
+                appointment?.note || ""
+              ).trim() ? (
+                <Text
+                  style={{
+                    marginTop: 9,
+                    color:
+                      "rgba(255,255,255,0.62)",
+                    fontSize: 12,
+                    lineHeight: 18,
+                    fontWeight: "700",
+                  }}
+                >
+                  {String(
+                    appointment.note
+                  )}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          {isReschedule &&
+          workflowMessage ? (
+            <View
+              style={{
+                marginTop: 16,
+                padding: 14,
+                borderRadius: 17,
+                backgroundColor:
+                  "rgba(167,139,250,0.09)",
+                borderWidth: 1,
+                borderColor:
+                  "rgba(167,139,250,0.26)",
+              }}
+            >
+              <Text
+                style={{
+                  color: "#DDD6FE",
+                  fontSize: 11,
+                  fontWeight: "900",
+                  textTransform:
+                    "uppercase",
+                  letterSpacing: 0.7,
+                }}
+              >
+                Negotiation message
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 7,
+                  color:
+                    "rgba(255,255,255,0.80)",
+                  fontSize: 12,
+                  lineHeight: 18,
+                  fontWeight: "700",
+                }}
+              >
+                {workflowMessage}
+              </Text>
+            </View>
+          ) : null}
 
           {canRespond ? (
             <View
@@ -3020,12 +3445,15 @@ function AppointmentRequestVipCard({
                     minHeight: 42,
                     borderRadius: 14,
                     alignItems: "center",
-                    justifyContent: "center",
+                    justifyContent:
+                      "center",
                     backgroundColor:
                       item.background,
                     borderWidth: 1,
-                    borderColor: item.border,
-                    opacity: pressed ? 0.78 : 1,
+                    borderColor:
+                      item.border,
+                    opacity:
+                      pressed ? 0.78 : 1,
                   })}
                 >
                   <Text
@@ -3045,6 +3473,78 @@ function AppointmentRequestVipCard({
             </View>
           ) : null}
 
+          {canRespondToProposal ? (
+            <View
+              style={{
+                marginTop: 16,
+                flexDirection: "row",
+                gap: 8,
+              }}
+            >
+              <Pressable
+                disabled={busy !== null}
+                onPress={onAccept}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  minHeight: 45,
+                  borderRadius: 14,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor:
+                    "rgba(34,197,94,0.20)",
+                  borderWidth: 1,
+                  borderColor:
+                    "rgba(34,197,94,0.45)",
+                  opacity:
+                    pressed ? 0.78 : 1,
+                })}
+              >
+                <Text
+                  style={{
+                    color: "#86EFAC",
+                    fontSize: 12,
+                    fontWeight: "900",
+                  }}
+                >
+                  {busy === "confirm"
+                    ? "Confirming..."
+                    : "Confirm"}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={busy !== null}
+                onPress={onReply}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  minHeight: 45,
+                  borderRadius: 14,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor:
+                    "rgba(167,139,250,0.13)",
+                  borderWidth: 1,
+                  borderColor:
+                    "rgba(167,139,250,0.35)",
+                  opacity:
+                    pressed ? 0.78 : 1,
+                })}
+              >
+                <Text
+                  style={{
+                    color: "#DDD6FE",
+                    fontSize: 12,
+                    fontWeight: "900",
+                  }}
+                >
+                  {busy === "reschedule"
+                    ? "Sending..."
+                    : "Negotiate"}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+
           <View
             style={{
               marginTop: 16,
@@ -3054,35 +3554,35 @@ function AppointmentRequestVipCard({
                 "rgba(255,255,255,0.08)",
               flexDirection: "row",
               alignItems: "center",
-              justifyContent: "space-between",
+              justifyContent:
+                "space-between",
             }}
           >
             <Text
               style={{
-                color: "rgba(255,255,255,0.47)",
+                color:
+                  "rgba(255,255,255,0.52)",
                 fontSize: 10,
                 fontWeight: "800",
               }}
             >
-              {mine
-                ? "Waiting for response"
-                : voiceNotes.length
-                  ? `${voiceNotes.length} voice ${
-                      voiceNotes.length === 1
-                        ? "message"
-                        : "messages"
-                    }`
-                  : "Review request"}
+              {footerLabel}
             </Text>
 
             <Text
               style={{
-                color: "rgba(255,255,255,0.42)",
+                color:
+                  "rgba(255,255,255,0.42)",
                 fontSize: 10,
                 fontWeight: "800",
               }}
             >
-              {formatTime(createdAt)}
+              {formatTime(
+                Number(
+                  appointment?.workflowCreatedAt ||
+                    createdAt
+                )
+              )}
             </Text>
           </View>
         </View>
@@ -3374,6 +3874,122 @@ function Bubble({
     }
   }
 
+  async function confirmAppointmentProposal(
+    proposal: any
+  ) {
+    setAppointmentBusy("confirm");
+
+    try {
+      await sendAppointmentWorkflowMessage({
+        kind: "appointment_confirmed",
+        card: {
+          type: "appointment_confirmed",
+          appointmentId: String(
+            proposal?.appointmentId || ""
+          ),
+          status: "confirmed",
+          requesterId: String(
+            proposal?.requesterId || ""
+          ),
+          recipientId: String(
+            proposal?.recipientId || ""
+          ),
+          date: String(
+            proposal?.date || ""
+          ),
+          time: String(
+            proposal?.time || ""
+          ),
+          durationMin: Number(
+            proposal?.durationMin || 30
+          ),
+          location: String(
+            proposal?.location || ""
+          ),
+          note: String(
+            proposal?.note || ""
+          ),
+          confirmedAt: Date.now(),
+          createdAt: Date.now(),
+        },
+      });
+    } catch (error: any) {
+      Alert.alert(
+        "Confirmation failed",
+        String(
+          error?.message ||
+            "Please try again."
+        )
+      );
+    } finally {
+      setAppointmentBusy(null);
+    }
+  }
+
+  function negotiateAppointmentProposal(
+    proposal: any
+  ) {
+    const prompt = (Alert as any)?.prompt;
+
+    if (typeof prompt !== "function") {
+      Alert.alert(
+        "Negotiate time",
+        "Text input is not available on this device."
+      );
+      return;
+    }
+
+    prompt(
+      "Negotiate appointment time",
+      "Explain which date or time would work better.",
+      async (value: string) => {
+        const message = String(
+          value || ""
+        ).trim();
+
+        if (!message) return;
+
+        setAppointmentBusy("reschedule");
+
+        try {
+          await sendAppointmentWorkflowMessage({
+            kind: "appointment_response",
+            text: message,
+            card: {
+              type: "appointment_response",
+              appointmentId: String(
+                proposal?.appointmentId ||
+                  ""
+              ),
+              status:
+                "reschedule_requested",
+              requesterId: String(
+                proposal?.requesterId ||
+                  ""
+              ),
+              recipientId: String(
+                proposal?.recipientId ||
+                  ""
+              ),
+              message,
+              createdAt: Date.now(),
+            },
+          });
+        } catch (error: any) {
+          Alert.alert(
+            "Negotiation failed",
+            String(
+              error?.message ||
+                "Please try again."
+            )
+          );
+        } finally {
+          setAppointmentBusy(null);
+        }
+      }
+    );
+  }
+
   if (m.kind === "shared_content" && m.sharedContent) {
     const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
 
@@ -3399,7 +4015,16 @@ function Bubble({
   }
 
   if (isAppointmentRequestMessage(m)) {
-    const appointment = (m.card || {}) as any;
+    const appointment =
+      (m.card || {}) as any;
+
+    const appointmentStatus = String(
+      appointment?.status || "pending"
+    ).toLowerCase();
+
+    const proposalActive =
+      appointmentStatus ===
+      "time_proposed";
 
     return (
       <AppointmentRequestVipCard
@@ -3413,21 +4038,44 @@ function Bubble({
         )}
         senderAvatarUri={senderAvatar.uri}
         createdAt={m.createdAt}
-        currentUserId={appointmentCurrentUserId}
+        currentUserId={
+          appointmentCurrentUserId
+        }
         busy={appointmentBusy}
-        selected={selected || actionHighlighted}
+        selected={
+          selected ||
+          actionHighlighted
+        }
         onPress={onPress}
         onLongPress={onLongPress}
-        onAccept={() =>
+        onAccept={() => {
+          if (proposalActive) {
+            void confirmAppointmentProposal(
+              appointment
+            );
+            return;
+          }
+
           void acceptAppointmentRequest(
             appointment
-          )
-        }
-        onReply={() =>
-          promptAppointmentReply(appointment)
-        }
+          );
+        }}
+        onReply={() => {
+          if (proposalActive) {
+            negotiateAppointmentProposal(
+              appointment
+            );
+            return;
+          }
+
+          promptAppointmentReply(
+            appointment
+          );
+        }}
         onReject={() =>
-          rejectAppointmentRequest(appointment)
+          rejectAppointmentRequest(
+            appointment
+          )
         }
       />
     );
@@ -4935,10 +5583,145 @@ export default function MessageThreadScreen() {
   }, [isStructuredRoom]);
 
   const visibleMessages = useMemo(() => {
-    const paginated = paginateMessages(messages, 120);
-    if (!isStructuredRoom) return paginated;
-    return paginated.filter((m) => !shouldHideExpiredAssignmentCardInRoom(m, liveCountdownNow));
-  }, [messages, isStructuredRoom, liveCountdownNow]);
+    const workflowKinds = new Set([
+      "appointment_response",
+      "appointment_time_proposed",
+      "appointment_confirmed",
+    ]);
+
+    const latestWorkflowByAppointmentId =
+      new Map<string, MsgItem>();
+
+    for (const message of messages) {
+      const kind = String(message.kind || "");
+
+      if (!workflowKinds.has(kind)) {
+        continue;
+      }
+
+      const appointmentId = String(
+        (message.card as any)?.appointmentId || ""
+      ).trim();
+
+      if (!appointmentId) continue;
+
+      const current =
+        latestWorkflowByAppointmentId.get(
+          appointmentId
+        );
+
+      if (
+        !current ||
+        Number(message.createdAt || 0) >
+          Number(current.createdAt || 0)
+      ) {
+        latestWorkflowByAppointmentId.set(
+          appointmentId,
+          message
+        );
+      }
+    }
+
+    const foldedMessages = messages
+      .filter(
+        (message) =>
+          !workflowKinds.has(
+            String(message.kind || "")
+          )
+      )
+      .map((message) => {
+        if (!isAppointmentRequestMessage(message)) {
+          return message;
+        }
+
+        const requestCard =
+          ((message.card || {}) as Record<
+            string,
+            any
+          >);
+
+        const appointmentId = String(
+          requestCard.appointmentId || ""
+        ).trim();
+
+        if (!appointmentId) return message;
+
+        const workflow =
+          latestWorkflowByAppointmentId.get(
+            appointmentId
+          );
+
+        if (!workflow?.card) return message;
+
+        const workflowCard =
+          workflow.card as Record<string, any>;
+
+        const workflowKind = String(
+          workflow.kind || ""
+        );
+
+        let status = String(
+          workflowCard.status ||
+            requestCard.status ||
+            "pending"
+        ).toLowerCase();
+
+        if (
+          workflowKind ===
+          "appointment_time_proposed"
+        ) {
+          status = "time_proposed";
+        }
+
+        if (
+          workflowKind ===
+          "appointment_confirmed"
+        ) {
+          status = "confirmed";
+        }
+
+        return {
+          ...message,
+          card: {
+            ...requestCard,
+            ...workflowCard,
+            type: "appointment_request",
+            appointmentId,
+            status,
+            workflowKind,
+            workflowCreatedAt:
+              workflow.createdAt,
+            originalMessage:
+              requestCard.message ||
+              message.text ||
+              "",
+            voiceNotes:
+              requestCard.voiceNotes || [],
+          },
+        } as MsgItem;
+      });
+
+    const paginated = paginateMessages(
+      foldedMessages,
+      120
+    );
+
+    if (!isStructuredRoom) {
+      return paginated;
+    }
+
+    return paginated.filter(
+      (message) =>
+        !shouldHideExpiredAssignmentCardInRoom(
+          message,
+          liveCountdownNow
+        )
+    );
+  }, [
+    messages,
+    isStructuredRoom,
+    liveCountdownNow,
+  ]);
 
   const churchLiveControlScheduleRenderById = useMemo(
     () =>
