@@ -156,7 +156,6 @@ import { pushLiveRoomWithSilentPreflight } from "@/src/lib/liveSilentPreflight";
 import { parseLiveAllScheduleSlotsJson } from "@/src/lib/scheduleSlotUtils";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
-import Svg, { Circle } from "react-native-svg";
 import ImageViewing from "react-native-image-viewing";
 
 const BG = "#0B0F17";
@@ -2243,6 +2242,335 @@ function formatAppointmentVoiceDuration(seconds: unknown) {
   return `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
 
+function AppointmentVoiceChip({
+  note,
+  index,
+  active,
+  onActivate,
+}: {
+  note: Record<string, any>;
+  index: number;
+  active: boolean;
+  onActivate: (index: number) => void;
+}) {
+  const source = String(
+    note?.source ||
+      note?.url ||
+      note?.uri ||
+      note?.audioUrl ||
+      note?.fileUrl ||
+      ""
+  ).trim();
+
+  const player = useAudioPlayer(
+    source ? { uri: source } : null,
+    {
+      updateInterval: 100,
+    }
+  );
+
+  const status = useAudioPlayerStatus(player);
+
+  const [completed, setCompleted] =
+    React.useState(false);
+
+  const mountedRef = React.useRef(true);
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+
+      try {
+        player.pause();
+      } catch {}
+    };
+  }, [player]);
+
+  React.useEffect(() => {
+    if (active || !status.playing) return;
+
+    try {
+      player.pause();
+    } catch {}
+  }, [
+    active,
+    player,
+    status.playing,
+  ]);
+
+  React.useEffect(() => {
+    if (!status.didJustFinish) return;
+
+    setCompleted(true);
+
+    console.log(
+      "KRISTO_APPOINTMENT_VOICE_COMPLETED",
+      {
+        voiceIndex: index + 1,
+      }
+    );
+  }, [
+    index,
+    status.didJustFinish,
+  ]);
+
+  const savedDuration = Number(
+    note?.durationSec ||
+      note?.duration ||
+      0
+  );
+
+  const duration =
+    Number(status.duration || 0) > 0
+      ? Number(status.duration)
+      : savedDuration;
+
+  const currentTime = Number(
+    status.currentTime || 0
+  );
+
+  const progress = completed
+    ? 1
+    : duration > 0
+      ? Math.min(
+          1,
+          Math.max(
+            0,
+            currentTime / duration
+          )
+        )
+      : 0;
+
+  const loading =
+    active &&
+    (
+      status.isBuffering ||
+      !status.isLoaded
+    );
+
+  const playing =
+    active && status.playing;
+
+  function toggleVoice() {
+    if (!source) return;
+
+    onActivate(index);
+
+    try {
+      if (status.playing) {
+        player.pause();
+        return;
+      }
+
+      const finished =
+        completed ||
+        (
+          duration > 0 &&
+          currentTime >= duration - 0.1
+        );
+
+      if (finished) {
+        player.seekTo(0);
+        setCompleted(false);
+      }
+
+      player.play();
+
+      console.log(
+        "KRISTO_APPOINTMENT_VOICE_PLAY",
+        {
+          voiceIndex: index + 1,
+          resumed: !finished,
+        }
+      );
+    } catch (error: any) {
+      console.warn(
+        "KRISTO_APPOINTMENT_VOICE_PLAY_FAILED",
+        {
+          voiceIndex: index + 1,
+          message: String(
+            error?.message || error || ""
+          ),
+        }
+      );
+    }
+  }
+
+  const segmentCount = 16;
+  const filledSegments = Math.round(
+    progress * segmentCount
+  );
+
+  const ringSize = 44;
+  const ringCenter = ringSize / 2;
+  const ringRadius = 19;
+
+  return (
+    <Pressable
+      onPress={toggleVoice}
+      style={({ pressed }) => ({
+        flex: 1,
+        minWidth: 0,
+        minHeight: 82,
+        paddingHorizontal: 2,
+        paddingVertical: 7,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: active
+          ? "rgba(217,179,95,0.11)"
+          : "rgba(255,255,255,0.035)",
+        borderWidth: 1,
+        borderColor: active
+          ? "rgba(217,179,95,0.40)"
+          : "rgba(255,255,255,0.08)",
+        opacity: pressed ? 0.76 : 1,
+      })}
+    >
+      <Text
+        style={{
+          marginBottom: 4,
+          color:
+            active || completed
+              ? "#F4D06F"
+              : "rgba(255,255,255,0.52)",
+          fontSize: 9,
+          fontWeight: "900",
+        }}
+      >
+        {index + 1}
+      </Text>
+
+      <View
+        style={{
+          width: ringSize,
+          height: ringSize,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {Array.from(
+          { length: segmentCount },
+          (_, segmentIndex) => {
+            const angle =
+              (
+                segmentIndex /
+                segmentCount
+              ) *
+                Math.PI *
+                2 -
+              Math.PI / 2;
+
+            const dotWidth = 3;
+            const dotHeight = 6;
+
+            const left =
+              ringCenter +
+              Math.cos(angle) *
+                ringRadius -
+              dotWidth / 2;
+
+            const top =
+              ringCenter +
+              Math.sin(angle) *
+                ringRadius -
+              dotHeight / 2;
+
+            const filled =
+              segmentIndex <
+              filledSegments;
+
+            return (
+              <View
+                key={`voice_ring_${index}_${segmentIndex}`}
+                style={{
+                  position: "absolute",
+                  left,
+                  top,
+                  width: dotWidth,
+                  height: dotHeight,
+                  borderRadius: 3,
+                  backgroundColor: filled
+                    ? "#D9B35F"
+                    : "rgba(255,255,255,0.12)",
+                  transform: [
+                    {
+                      rotate:
+                        `${
+                          (
+                            segmentIndex /
+                            segmentCount
+                          ) *
+                          360
+                        }deg`,
+                    },
+                  ],
+                }}
+              />
+            );
+          }
+        )}
+
+        <View
+          style={{
+            width: 31,
+            height: 31,
+            borderRadius: 16,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: active
+              ? "rgba(217,179,95,0.18)"
+              : "rgba(255,255,255,0.055)",
+          }}
+        >
+          {loading ? (
+            <ActivityIndicator
+              size="small"
+              color={GOLD}
+            />
+          ) : (
+            <Ionicons
+              name={
+                playing
+                  ? "pause"
+                  : completed
+                    ? "checkmark"
+                    : "play"
+              }
+              size={15}
+              color={
+                active || completed
+                  ? GOLD
+                  : "#FFFFFF"
+              }
+            />
+          )}
+        </View>
+      </View>
+
+      <Text
+        numberOfLines={1}
+        style={{
+          marginTop: 4,
+          color:
+            "rgba(255,255,255,0.52)",
+          fontSize: 8,
+          fontWeight: "800",
+          fontVariant: [
+            "tabular-nums",
+          ],
+        }}
+      >
+        {formatAppointmentVoiceDuration(
+          duration
+        )}
+      </Text>
+    </Pressable>
+  );
+}
+
 function AppointmentVoicePlaylist({
   voiceNotes,
 }: {
@@ -2287,193 +2615,12 @@ function AppointmentVoicePlaylist({
     [voiceNotes]
   );
 
-  const [currentIndex, setCurrentIndex] =
-    React.useState(0);
-
-  const [completedVoices, setCompletedVoices] =
-    React.useState<Record<number, true>>({});
-
-  const currentNote =
-    playableNotes[currentIndex] || null;
-
-  const player = useAudioPlayer(
-    currentNote?.source
-      ? {
-          uri: String(
-            currentNote.source
-          ),
-        }
-      : null,
-    {
-      updateInterval: 100,
-    }
-  );
-
-  const status = useAudioPlayerStatus(player);
-  const autoAdvanceRef = React.useRef("");
-
-  React.useEffect(() => {
-    if (
-      playableNotes.length > 0 &&
-      currentIndex >= playableNotes.length
-    ) {
-      setCurrentIndex(0);
-    }
-  }, [
-    currentIndex,
-    playableNotes.length,
-  ]);
-
-  React.useEffect(() => {
-    if (!status.didJustFinish) return;
-
-    setCompletedVoices((current) => ({
-      ...current,
-      [currentIndex]: true,
-    }));
-
-    const marker =
-      `${currentIndex}:${playableNotes.length}`;
-
-    if (
-      autoAdvanceRef.current === marker
-    ) {
-      return;
-    }
-
-    autoAdvanceRef.current = marker;
-
-    const nextIndex = currentIndex + 1;
-
-    if (
-      nextIndex >= playableNotes.length
-    ) {
-      return;
-    }
-
-    const nextNote =
-      playableNotes[nextIndex];
-
-    const nextSource = String(
-      nextNote?.source || ""
-    ).trim();
-
-    if (!nextSource) return;
-
-    setCurrentIndex(nextIndex);
-
-    player.replace({
-      uri: nextSource,
-    });
-
-    setTimeout(() => {
-      player.play();
-    }, 100);
-  }, [
-    status.didJustFinish,
-    currentIndex,
-    playableNotes,
-    player,
-  ]);
+  const [activeIndex, setActiveIndex] =
+    React.useState<number | null>(null);
 
   if (!playableNotes.length) {
     return null;
   }
-
-  function playVoice(index: number) {
-    const selectedNote =
-      playableNotes[index];
-
-    const selectedSource = String(
-      selectedNote?.source || ""
-    ).trim();
-
-    if (!selectedSource) return;
-
-    const isActive =
-      index === currentIndex;
-
-    if (
-      isActive &&
-      status.playing
-    ) {
-      player.pause();
-      return;
-    }
-
-    const activeDuration = Number(
-      status.duration || 0
-    );
-
-    const activeTime = Number(
-      status.currentTime || 0
-    );
-
-    const activeFinished =
-      !!completedVoices[index] ||
-      (
-        isActive &&
-        activeDuration > 0 &&
-        activeTime >=
-          activeDuration - 0.1
-      );
-
-    if (!isActive) {
-      autoAdvanceRef.current = "";
-
-      setCompletedVoices(
-        (current) => {
-          const next = {
-            ...current,
-          };
-
-          delete next[index];
-
-          return next;
-        }
-      );
-
-      setCurrentIndex(index);
-
-      player.replace({
-        uri: selectedSource,
-      });
-
-      setTimeout(() => {
-        player.play();
-      }, 100);
-
-      return;
-    }
-
-    if (activeFinished) {
-      autoAdvanceRef.current = "";
-
-      setCompletedVoices(
-        (current) => {
-          const next = {
-            ...current,
-          };
-
-          delete next[index];
-
-          return next;
-        }
-      );
-
-      player.seekTo(0);
-    }
-
-    player.play();
-  }
-
-  const RING_SIZE = 44;
-  const RING_STROKE = 3;
-  const RING_RADIUS =
-    (RING_SIZE - RING_STROKE) / 2;
-
-  const RING_CIRCUMFERENCE =
-    2 * Math.PI * RING_RADIUS;
 
   return (
     <View
@@ -2483,7 +2630,7 @@ function AppointmentVoicePlaylist({
     >
       <View
         style={{
-          marginBottom: 9,
+          marginBottom: 8,
           flexDirection: "row",
           alignItems: "center",
           justifyContent:
@@ -2524,224 +2671,23 @@ function AppointmentVoicePlaylist({
           (
             note: Record<string, any>,
             index: number
-          ) => {
-            const active =
-              index === currentIndex;
-
-            const playing =
-              active &&
-              status.playing;
-
-            const loading =
-              active &&
-              (
-                status.isBuffering ||
-                !status.isLoaded
-              );
-
-            const savedDuration =
-              Number(
-                note?.durationSec ||
-                  note?.duration ||
-                  0
-              );
-
-            const duration =
-              active &&
-              Number(
-                status.duration || 0
-              ) > 0
-                ? Number(
-                    status.duration
-                  )
-                : savedDuration;
-
-            const liveProgress =
-              active &&
-              duration > 0
-                ? Math.min(
-                    1,
-                    Math.max(
-                      0,
-                      Number(
-                        status.currentTime ||
-                          0
-                      ) / duration
-                    )
-                  )
-                : 0;
-
-            const progress =
-              completedVoices[index]
-                ? 1
-                : liveProgress;
-
-            const dashOffset =
-              RING_CIRCUMFERENCE *
-              (1 - progress);
-
-            return (
-              <Pressable
-                key={String(
-                  note?.id ||
-                    `appointment_voice_${index}`
-                )}
-                onPress={() =>
-                  playVoice(index)
-                }
-                style={({ pressed }) => ({
-                  flex: 1,
-                  minWidth: 0,
-                  minHeight: 88,
-                  paddingHorizontal: 3,
-                  paddingVertical: 8,
-                  borderRadius: 15,
-                  alignItems: "center",
-                  justifyContent:
-                    "center",
-                  backgroundColor:
-                    active
-                      ? "rgba(217,179,95,0.11)"
-                      : "rgba(255,255,255,0.035)",
-                  borderWidth: 1,
-                  borderColor:
-                    active
-                      ? "rgba(217,179,95,0.38)"
-                      : "rgba(255,255,255,0.08)",
-                  opacity:
-                    pressed ? 0.76 : 1,
-                })}
-              >
-                <Text
-                  style={{
-                    marginBottom: 5,
-                    color:
-                      active ||
-                      completedVoices[
-                        index
-                      ]
-                        ? "#F4D06F"
-                        : "rgba(255,255,255,0.52)",
-                    fontSize: 9,
-                    fontWeight: "900",
-                  }}
-                >
-                  {index + 1}
-                </Text>
-
-                <View
-                  style={{
-                    width: RING_SIZE,
-                    height: RING_SIZE,
-                    alignItems: "center",
-                    justifyContent:
-                      "center",
-                  }}
-                >
-                  <Svg
-                    width={RING_SIZE}
-                    height={RING_SIZE}
-                    style={{
-                      position: "absolute",
-                      transform: [
-                        {
-                          rotate: "-90deg",
-                        },
-                      ],
-                    }}
-                  >
-                    <Circle
-                      cx={RING_SIZE / 2}
-                      cy={RING_SIZE / 2}
-                      r={RING_RADIUS}
-                      stroke="rgba(255,255,255,0.10)"
-                      strokeWidth={
-                        RING_STROKE
-                      }
-                      fill="transparent"
-                    />
-
-                    <Circle
-                      cx={RING_SIZE / 2}
-                      cy={RING_SIZE / 2}
-                      r={RING_RADIUS}
-                      stroke="#D9B35F"
-                      strokeWidth={
-                        RING_STROKE
-                      }
-                      fill="transparent"
-                      strokeLinecap="round"
-                      strokeDasharray={`${RING_CIRCUMFERENCE} ${RING_CIRCUMFERENCE}`}
-                      strokeDashoffset={
-                        dashOffset
-                      }
-                    />
-                  </Svg>
-
-                  <View
-                    style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: 16,
-                      alignItems: "center",
-                      justifyContent:
-                        "center",
-                      backgroundColor:
-                        active
-                          ? "rgba(217,179,95,0.18)"
-                          : "rgba(255,255,255,0.055)",
-                    }}
-                  >
-                    {loading ? (
-                      <ActivityIndicator
-                        size="small"
-                        color={GOLD}
-                      />
-                    ) : (
-                      <Ionicons
-                        name={
-                          playing
-                            ? "pause"
-                            : completedVoices[
-                                  index
-                                ]
-                              ? "checkmark"
-                              : "play"
-                        }
-                        size={15}
-                        color={
-                          active ||
-                          completedVoices[
-                            index
-                          ]
-                            ? GOLD
-                            : "#FFFFFF"
-                        }
-                      />
-                    )}
-                  </View>
-                </View>
-
-                <Text
-                  numberOfLines={1}
-                  style={{
-                    marginTop: 5,
-                    color:
-                      "rgba(255,255,255,0.52)",
-                    fontSize: 8,
-                    fontWeight: "800",
-                    fontVariant: [
-                      "tabular-nums",
-                    ],
-                  }}
-                >
-                  {formatAppointmentVoiceDuration(
-                    duration
-                  )}
-                </Text>
-              </Pressable>
-            );
-          }
+          ) => (
+            <AppointmentVoiceChip
+              key={String(
+                note?.id ||
+                  note?.source ||
+                  `appointment_voice_${index}`
+              )}
+              note={note}
+              index={index}
+              active={
+                activeIndex === index
+              }
+              onActivate={
+                setActiveIndex
+              }
+            />
+          )
         )}
       </View>
     </View>
