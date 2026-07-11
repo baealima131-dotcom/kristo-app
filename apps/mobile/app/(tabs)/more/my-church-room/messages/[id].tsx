@@ -2787,6 +2787,23 @@ function AppointmentRequestVipCard({
     isProposed &&
     currentUserId === requesterId;
 
+  const workflowSenderUserId = String(
+    appointment?.workflowSenderUserId || ""
+  ).trim();
+
+  const receivedNegotiation =
+    isReschedule &&
+    !!currentUserId &&
+    !!workflowSenderUserId &&
+    currentUserId !== workflowSenderUserId;
+
+  const canAcceptNegotiation =
+    receivedNegotiation &&
+    currentUserId === recipientId;
+
+  const canReplyToNegotiation =
+    receivedNegotiation;
+
   const canScheduleAccepted =
     isAccepted &&
     currentUserId === recipientId;
@@ -2864,7 +2881,9 @@ function AppointmentRequestVipCard({
         : isAccepted
           ? "Waiting for date and time"
           : isReschedule
-            ? "Waiting for a new proposal"
+            ? canReplyToNegotiation
+              ? "Respond to the negotiation"
+              : "Waiting for a response"
             : mine
               ? "Waiting for response"
               : voiceNotes.length
@@ -3539,6 +3558,135 @@ function AppointmentRequestVipCard({
             </View>
           ) : null}
 
+          {canReplyToNegotiation ? (
+            <View
+              style={{
+                marginTop: 16,
+                flexDirection: "row",
+                gap: 7,
+              }}
+            >
+              {canAcceptNegotiation ? (
+                <Pressable
+                  disabled={busy !== null}
+                  onPress={onSchedule}
+                  style={({ pressed }) => [
+                    {
+                      flex: 1,
+                      minHeight: 44,
+                      borderRadius: 14,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor:
+                        "rgba(34,197,94,0.18)",
+                      borderWidth: 1,
+                      borderColor:
+                        "rgba(34,197,94,0.45)",
+                    },
+                    pressed
+                      ? {
+                          opacity: 0.78,
+                          transform: [
+                            {
+                              scale: 0.985,
+                            },
+                          ],
+                        }
+                      : null,
+                  ]}
+                >
+                  <Text
+                    style={{
+                      color: "#86EFAC",
+                      fontSize: 11,
+                      fontWeight: "900",
+                    }}
+                  >
+                    Accept
+                  </Text>
+                </Pressable>
+              ) : null}
+
+              <Pressable
+                disabled={busy !== null}
+                onPress={onReply}
+                style={({ pressed }) => [
+                  {
+                    flex: 1,
+                    minHeight: 44,
+                    borderRadius: 14,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor:
+                      "rgba(167,139,250,0.14)",
+                    borderWidth: 1,
+                    borderColor:
+                      "rgba(167,139,250,0.38)",
+                  },
+                  pressed
+                    ? {
+                        opacity: 0.78,
+                        transform: [
+                          {
+                            scale: 0.985,
+                          },
+                        ],
+                      }
+                    : null,
+                ]}
+              >
+                <Text
+                  style={{
+                    color: "#DDD6FE",
+                    fontSize: 11,
+                    fontWeight: "900",
+                  }}
+                >
+                  Reply
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={busy !== null}
+                onPress={onReject}
+                style={({ pressed }) => [
+                  {
+                    flex: 1,
+                    minHeight: 44,
+                    borderRadius: 14,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor:
+                      "rgba(239,68,68,0.12)",
+                    borderWidth: 1,
+                    borderColor:
+                      "rgba(239,68,68,0.38)",
+                  },
+                  pressed
+                    ? {
+                        opacity: 0.78,
+                        transform: [
+                          {
+                            scale: 0.985,
+                          },
+                        ],
+                      }
+                    : null,
+                ]}
+              >
+                <Text
+                  style={{
+                    color: "#FF9298",
+                    fontSize: 11,
+                    fontWeight: "900",
+                  }}
+                >
+                  Reject
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+
           {canRespondToProposal ? (
             <View
               style={{
@@ -3711,6 +3859,21 @@ function Bubble({
   const senderAvatar = resolveMessageSenderAvatar(m);
   const appointmentRouter = useRouter();
   const [appointmentBusy, setAppointmentBusy] = useState<string | null>(null);
+
+  const [
+    negotiationModalOpen,
+    setNegotiationModalOpen,
+  ] = useState(false);
+
+  const [
+    negotiationText,
+    setNegotiationText,
+  ] = useState("");
+
+  const [
+    negotiationProposal,
+    setNegotiationProposal,
+  ] = useState<any>(null);
 
   const appointmentCurrentUserId = String(
     (getKristoHeaders() as any)?.["x-kristo-user-id"] || ""
@@ -3992,68 +4155,90 @@ function Bubble({
     }
   }
 
+  function closeAppointmentNegotiationModal() {
+    if (
+      appointmentBusy ===
+      "reschedule"
+    ) {
+      return;
+    }
+
+    setNegotiationModalOpen(false);
+    setNegotiationText("");
+    setNegotiationProposal(null);
+  }
+
   function negotiateAppointmentProposal(
     proposal: any
   ) {
-    const prompt = (Alert as any)?.prompt;
+    setNegotiationProposal(proposal);
+    setNegotiationText("");
+    setNegotiationModalOpen(true);
+  }
 
-    if (typeof prompt !== "function") {
+  async function submitAppointmentNegotiation() {
+    const message = String(
+      negotiationText || ""
+    )
+      .trim()
+      .slice(0, 45);
+
+    if (!message) return;
+
+    const proposal =
+      negotiationProposal;
+
+    if (!proposal) {
       Alert.alert(
-        "Negotiate time",
-        "Text input is not available on this device."
+        "Negotiation unavailable",
+        "The appointment information could not be found."
       );
       return;
     }
 
-    prompt(
-      "Negotiate appointment time",
-      "Explain which date or time would work better.",
-      async (value: string) => {
-        const message = String(
-          value || ""
-        ).trim();
+    setAppointmentBusy("reschedule");
 
-        if (!message) return;
+    try {
+      await sendAppointmentWorkflowMessage({
+        kind: "appointment_response",
+        text: message,
+        card: {
+          type: "appointment_response",
+          appointmentId: String(
+            proposal?.appointmentId ||
+              ""
+          ),
+          status:
+            "reschedule_requested",
+          senderUserId:
+            appointmentCurrentUserId,
+          requesterId: String(
+            proposal?.requesterId ||
+              ""
+          ),
+          recipientId: String(
+            proposal?.recipientId ||
+              ""
+          ),
+          message,
+          createdAt: Date.now(),
+        },
+      });
 
-        setAppointmentBusy("reschedule");
-
-        try {
-          await sendAppointmentWorkflowMessage({
-            kind: "appointment_response",
-            text: message,
-            card: {
-              type: "appointment_response",
-              appointmentId: String(
-                proposal?.appointmentId ||
-                  ""
-              ),
-              status:
-                "reschedule_requested",
-              requesterId: String(
-                proposal?.requesterId ||
-                  ""
-              ),
-              recipientId: String(
-                proposal?.recipientId ||
-                  ""
-              ),
-              message,
-              createdAt: Date.now(),
-            },
-          });
-        } catch (error: any) {
-          Alert.alert(
-            "Negotiation failed",
-            String(
-              error?.message ||
-                "Please try again."
-            )
-          );
-        } finally {
-          setAppointmentBusy(null);
-        }
-      }
-    );
+      setNegotiationModalOpen(false);
+      setNegotiationText("");
+      setNegotiationProposal(null);
+    } catch (error: any) {
+      Alert.alert(
+        "Negotiation failed",
+        String(
+          error?.message ||
+            "Please try again."
+        )
+      );
+    } finally {
+      setAppointmentBusy(null);
+    }
   }
 
   if (m.kind === "shared_content" && m.sharedContent) {
@@ -4092,8 +4277,13 @@ function Bubble({
       appointmentStatus ===
       "time_proposed";
 
+    const negotiationActive =
+      appointmentStatus ===
+      "reschedule_requested";
+
     return (
-      <AppointmentRequestVipCard
+      <>
+        <AppointmentRequestVipCard
         message={m}
         appointment={appointment}
         mine={mine}
@@ -4127,7 +4317,10 @@ function Bubble({
           );
         }}
         onReply={() => {
-          if (proposalActive) {
+          if (
+            proposalActive ||
+            negotiationActive
+          ) {
             negotiateAppointmentProposal(
               appointment
             );
@@ -4171,7 +4364,300 @@ function Bubble({
             },
           });
         }}
-      />
+        />
+
+        <Modal
+          visible={negotiationModalOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={
+            closeAppointmentNegotiationModal
+          }
+        >
+          <KeyboardAvoidingView
+            behavior={
+              Platform.OS === "ios"
+                ? "padding"
+                : undefined
+            }
+            style={{
+              flex: 1,
+              justifyContent: "center",
+              paddingHorizontal: 20,
+            }}
+          >
+            <Pressable
+              onPress={
+                closeAppointmentNegotiationModal
+              }
+              style={{
+                ...StyleSheet.absoluteFillObject,
+                backgroundColor:
+                  "rgba(0,0,0,0.76)",
+              }}
+            />
+
+            <View
+              style={{
+                borderRadius: 24,
+                padding: 18,
+                backgroundColor:
+                  "#151425",
+                borderWidth: 1,
+                borderColor:
+                  "rgba(167,139,250,0.42)",
+                shadowColor: "#8B5CF6",
+                shadowOpacity: 0.28,
+                shadowRadius: 28,
+                shadowOffset: {
+                  width: 0,
+                  height: 12,
+                },
+              }}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 11,
+                }}
+              >
+                <View
+                  style={{
+                    width: 42,
+                    height: 42,
+                    borderRadius: 21,
+                    alignItems: "center",
+                    justifyContent:
+                      "center",
+                    backgroundColor:
+                      "rgba(167,139,250,0.14)",
+                    borderWidth: 1,
+                    borderColor:
+                      "rgba(167,139,250,0.36)",
+                  }}
+                >
+                  <Ionicons
+                    name="time-outline"
+                    size={21}
+                    color="#C4B5FD"
+                  />
+                </View>
+
+                <View
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: "#FFFFFF",
+                      fontSize: 17,
+                      fontWeight: "900",
+                    }}
+                  >
+                    Negotiate time
+                  </Text>
+
+                  <Text
+                    style={{
+                      marginTop: 3,
+                      color:
+                        "rgba(255,255,255,0.48)",
+                      fontSize: 10,
+                      fontWeight: "700",
+                    }}
+                  >
+                    Write a short message
+                  </Text>
+                </View>
+
+                <Text
+                  style={{
+                    color:
+                      negotiationText.length >=
+                      45
+                        ? "#FF9298"
+                        : "#C4B5FD",
+                    fontSize: 11,
+                    fontWeight: "900",
+                    fontVariant: [
+                      "tabular-nums",
+                    ],
+                  }}
+                >
+                  {negotiationText.length} / 45
+                </Text>
+              </View>
+
+              <TextInput
+                autoFocus
+                value={negotiationText}
+                onChangeText={(value) => {
+                  setNegotiationText(
+                    String(value || "").slice(
+                      0,
+                      45
+                    )
+                  );
+                }}
+                maxLength={45}
+                multiline
+                numberOfLines={3}
+                textAlignVertical="top"
+                placeholder="Which time works better?"
+                placeholderTextColor="rgba(255,255,255,0.28)"
+                returnKeyType="done"
+                blurOnSubmit
+                style={{
+                  marginTop: 17,
+                  minHeight: 104,
+                  maxHeight: 130,
+                  paddingHorizontal: 14,
+                  paddingTop: 13,
+                  paddingBottom: 13,
+                  borderRadius: 17,
+                  color: "#FFFFFF",
+                  fontSize: 14,
+                  lineHeight: 20,
+                  fontWeight: "700",
+                  backgroundColor:
+                    "rgba(5,7,14,0.72)",
+                  borderWidth: 1,
+                  borderColor:
+                    negotiationText.length >=
+                    45
+                      ? "rgba(255,107,114,0.50)"
+                      : "rgba(167,139,250,0.25)",
+                }}
+              />
+
+              <View
+                style={{
+                  marginTop: 16,
+                  flexDirection: "row",
+                  gap: 10,
+                }}
+              >
+                <Pressable
+                  disabled={
+                    appointmentBusy ===
+                    "reschedule"
+                  }
+                  onPress={
+                    closeAppointmentNegotiationModal
+                  }
+                  style={({ pressed }) => [
+                    {
+                      flex: 1,
+                      minHeight: 48,
+                      borderRadius: 15,
+                      alignItems: "center",
+                      justifyContent:
+                        "center",
+                      backgroundColor:
+                        "rgba(255,255,255,0.055)",
+                      borderWidth: 1,
+                      borderColor:
+                        "rgba(255,255,255,0.11)",
+                    },
+                    pressed
+                      ? {
+                          opacity: 0.72,
+                        }
+                      : null,
+                  ]}
+                >
+                  <Text
+                    style={{
+                      color:
+                        "rgba(255,255,255,0.70)",
+                      fontSize: 12,
+                      fontWeight: "900",
+                    }}
+                  >
+                    Cancel
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  disabled={
+                    !negotiationText.trim() ||
+                    appointmentBusy ===
+                      "reschedule"
+                  }
+                  onPress={() => {
+                    void submitAppointmentNegotiation();
+                  }}
+                  style={({ pressed }) => [
+                    {
+                      flex: 1.25,
+                      minHeight: 48,
+                      borderRadius: 15,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent:
+                        "center",
+                      gap: 8,
+                      backgroundColor:
+                        "#A78BFA",
+                      borderWidth: 1,
+                      borderColor:
+                        "rgba(221,214,254,0.60)",
+                    },
+                    !negotiationText.trim() ||
+                    appointmentBusy ===
+                      "reschedule"
+                      ? {
+                          opacity: 0.36,
+                        }
+                      : null,
+                    pressed &&
+                    !!negotiationText.trim()
+                      ? {
+                          opacity: 0.82,
+                          transform: [
+                            {
+                              scale: 0.988,
+                            },
+                          ],
+                        }
+                      : null,
+                  ]}
+                >
+                  {appointmentBusy ===
+                  "reschedule" ? (
+                    <ActivityIndicator
+                      size="small"
+                      color="#16121F"
+                    />
+                  ) : (
+                    <Ionicons
+                      name="send"
+                      size={16}
+                      color="#16121F"
+                    />
+                  )}
+
+                  <Text
+                    style={{
+                      color: "#16121F",
+                      fontSize: 12,
+                      fontWeight: "900",
+                    }}
+                  >
+                    {appointmentBusy ===
+                    "reschedule"
+                      ? "Sending..."
+                      : "Send"}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      </>
     );
   }
 
@@ -5785,6 +6271,14 @@ export default function MessageThreadScreen() {
             workflowKind,
             workflowCreatedAt:
               workflow.createdAt,
+            workflowSenderUserId: String(
+              workflow.senderUserId ||
+                (workflow as any).senderId ||
+                (workflow as any).userId ||
+                (workflow.card as any)
+                  ?.senderUserId ||
+                ""
+            ).trim(),
             originalMessage:
               requestCard.message ||
               message.text ||
