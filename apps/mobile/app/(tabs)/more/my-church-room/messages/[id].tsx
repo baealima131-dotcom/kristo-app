@@ -46,7 +46,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
-import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
+import { ensureThread, sendMessage, setThreadMessages, clearThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
 import { HomeLiveScheduleCard, ScheduleClaimAvatarRing } from "@/src/components/HomeLiveScheduleCard";
 import {
@@ -115,7 +115,13 @@ import {
 import { getApiBase } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { markDirectMessageThreadRead } from "@/src/lib/directMessagesApi";
+import {
+  fetchDirectMessageConversationSettings,
+  markDirectMessageThreadRead,
+  reportDirectMessageConversation,
+  updateDirectMessageConversationSetting,
+  type DirectMessageConversationSettings,
+} from "@/src/lib/directMessagesApi";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
 import { createPrivateCallToUser } from "@/src/lib/privateCallService";
 import {
@@ -3916,6 +3922,9 @@ export default function MessageThreadScreen() {
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
   const [attachUploading, setAttachUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dmConversationSettings, setDmConversationSettings] =
+    useState<DirectMessageConversationSettings | null>(null);
+  const [dmSettingsBusy, setDmSettingsBusy] = useState(false);
   const [privateCallStarting, setPrivateCallStarting] = useState(false);
   const [resolvedDmPastorUserId, setResolvedDmPastorUserId] = useState("");
 
@@ -3944,6 +3953,45 @@ export default function MessageThreadScreen() {
 
   useEffect(() => {
   }, [menuOpen, isAssignmentThread, isMinistryThread]);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadDmConversationSettings() {
+      if (!isPersonToPersonDm || !backendRoomId) {
+        if (alive) setDmConversationSettings(null);
+        return;
+      }
+
+      try {
+        const settings =
+          await fetchDirectMessageConversationSettings({
+            roomId: backendRoomId,
+            churchId,
+          });
+
+        if (alive) {
+          setDmConversationSettings(settings);
+        }
+      } catch (error: any) {
+        console.log("KRISTO_DM_SETTINGS_LOAD_FAILED", {
+          roomId: backendRoomId,
+          error: String(error?.message || error),
+        });
+      }
+    }
+
+    void loadDmConversationSettings();
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    isPersonToPersonDm,
+    backendRoomId,
+    churchId,
+    menuOpen,
+  ]);
 
   const [membersOpen, setMembersOpen] = useState(false);
   const [memberBoardTab, setMemberBoardTab] =
@@ -5283,6 +5331,247 @@ const displayHeaderTitle = assignmentDisplayTitle;
     runThreadMenuAction(action);
   }
 
+  async function applyDmConversationSetting(
+    action:
+      | "mute"
+      | "unmute"
+      | "block"
+      | "unblock"
+      | "clear"
+      | "delete"
+  ) {
+    if (!isPersonToPersonDm || !backendRoomId || dmSettingsBusy) {
+      return;
+    }
+
+    setDmSettingsBusy(true);
+
+    try {
+      const settings =
+        await updateDirectMessageConversationSetting({
+          roomId: backendRoomId,
+          churchId,
+          action,
+        });
+
+      setDmConversationSettings(settings);
+
+      console.log("KRISTO_DM_SETTING_APPLIED", {
+        roomId: backendRoomId,
+        action,
+        muted: settings.muted,
+        blocked: settings.blocked,
+      });
+
+      if (action === "clear") {
+        clearThreadMessages(threadId);
+        Alert.alert(
+          "Chat cleared",
+          "Messages were removed from your view."
+        );
+      }
+
+      if (action === "delete") {
+        clearThreadMessages(threadId);
+        router.replace(
+          "/(tabs)/more/my-church-room/messages" as any
+        );
+      }
+    } catch (error: any) {
+      Alert.alert(
+        "Could not update conversation",
+        String(error?.message || "Please try again.")
+      );
+    } finally {
+      setDmSettingsBusy(false);
+    }
+  }
+
+  function searchInsideConversation() {
+    closeThreadMenu();
+
+    const prompt = (Alert as any)?.prompt;
+
+    if (typeof prompt !== "function") {
+      Alert.alert(
+        "Search",
+        "Conversation search requires the search prompt on this device."
+      );
+      return;
+    }
+
+    prompt(
+      "Search in conversation",
+      "Enter a word or phrase.",
+      (value: string) => {
+        const query = String(value || "").trim().toLowerCase();
+        if (!query) return;
+
+        const index = visibleMessages.findIndex((message: any) => {
+          const searchable = [
+            message?.text,
+            message?.displayName,
+            message?.senderName,
+            message?.card?.title,
+            message?.card?.topic,
+          ]
+            .map((item) => String(item || "").toLowerCase())
+            .join(" ");
+
+          return searchable.includes(query);
+        });
+
+        if (index < 0) {
+          Alert.alert(
+            "No results",
+            `No message contains “${value}”.`
+          );
+          return;
+        }
+
+        listRef.current?.scrollToIndex?.({
+          index,
+          animated: true,
+          viewPosition: 0.35,
+        });
+
+        console.log("KRISTO_DM_SEARCH_RESULT_FOUND", {
+          roomId: backendRoomId,
+          query,
+          index,
+        });
+      },
+      "plain-text"
+    );
+  }
+
+  function confirmMuteConversation() {
+    closeThreadMenu();
+
+    const currentlyMuted =
+      dmConversationSettings?.muted === true;
+
+    void applyDmConversationSetting(
+      currentlyMuted ? "unmute" : "mute"
+    );
+  }
+
+  function confirmBlockConversation() {
+    closeThreadMenu();
+
+    const blockedByMe =
+      dmConversationSettings?.blockedByMe === true;
+
+    Alert.alert(
+      blockedByMe ? "Unblock user?" : "Block user?",
+      blockedByMe
+        ? `${headerTitle} will be able to message and call you again.`
+        : `${headerTitle} will not be able to message or call you.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: blockedByMe ? "Unblock" : "Block",
+          style: blockedByMe ? "default" : "destructive",
+          onPress: () => {
+            void applyDmConversationSetting(
+              blockedByMe ? "unblock" : "block"
+            );
+          },
+        },
+      ]
+    );
+  }
+
+  function reportConversationUser() {
+    closeThreadMenu();
+
+    const submitReport = async (reason: string) => {
+      try {
+        await reportDirectMessageConversation({
+          roomId: backendRoomId,
+          churchId,
+          reason,
+        });
+
+        Alert.alert(
+          "Report sent",
+          "Thank you. The report was submitted for review."
+        );
+
+        console.log("KRISTO_DM_REPORT_SUBMITTED", {
+          roomId: backendRoomId,
+          reason,
+        });
+      } catch (error: any) {
+        Alert.alert(
+          "Could not send report",
+          String(error?.message || "Please try again.")
+        );
+      }
+    };
+
+    Alert.alert(
+      `Report ${headerTitle}?`,
+      "Choose the reason for your report.",
+      [
+        {
+          text: "Spam",
+          onPress: () => void submitReport("spam"),
+        },
+        {
+          text: "Harassment",
+          onPress: () => void submitReport("harassment"),
+        },
+        {
+          text: "Fake account",
+          onPress: () => void submitReport("fake_account"),
+        },
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+      ]
+    );
+  }
+
+  function confirmClearConversation() {
+    closeThreadMenu();
+
+    Alert.alert(
+      "Clear chat?",
+      "Messages will be removed from your view only. The other person will still have their messages.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear",
+          style: "destructive",
+          onPress: () => {
+            void applyDmConversationSetting("clear");
+          },
+        },
+      ]
+    );
+  }
+
+  function confirmDeleteConversation() {
+    closeThreadMenu();
+
+    Alert.alert(
+      "Delete conversation?",
+      "This conversation will be removed from your inbox. A new message can make it appear again.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void applyDmConversationSetting("delete");
+          },
+        },
+      ]
+    );
+  }
+
   function runThreadMenuAction(action: string) {
     if (action === "members") {
       closeThreadMenu();
@@ -5351,9 +5640,42 @@ const displayHeaderTitle = assignmentDisplayTitle;
       return;
     }
 
-    if (action === "edit" || action === "pause" || action === "search" || action === "mute" || action === "block" || action === "report" || action === "clear" || action === "delete") {
+    if (action === "search") {
+      searchInsideConversation();
+      return;
+    }
+
+    if (action === "mute") {
+      confirmMuteConversation();
+      return;
+    }
+
+    if (action === "block") {
+      confirmBlockConversation();
+      return;
+    }
+
+    if (action === "report") {
+      reportConversationUser();
+      return;
+    }
+
+    if (action === "clear") {
+      confirmClearConversation();
+      return;
+    }
+
+    if (action === "delete") {
+      confirmDeleteConversation();
+      return;
+    }
+
+    if (action === "edit" || action === "pause") {
       closeThreadMenu();
-      Alert.alert("Coming next", `${action} flow will be connected next.`);
+      Alert.alert(
+        "Coming next",
+        `${action} flow will be connected next.`
+      );
       return;
     }
     closeThreadMenu();
@@ -9689,8 +10011,17 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 <>
                   <MenuRow icon="person-circle-outline" label="View profile" onPress={() => onThreadMenuAction("profile")} />
                   <MenuRow icon="search-outline" label="Search in conversation" onPress={() => onThreadMenuAction("search")} />
-                  <MenuRow icon="notifications-off-outline" label="Mute notifications" onPress={() => onThreadMenuAction("mute")} />
-                  <MenuRow icon="ban-outline" label="Block user" danger onPress={() => onThreadMenuAction("block")} />
+                  <MenuRow
+                    icon={dmConversationSettings?.muted ? "notifications-outline" : "notifications-off-outline"}
+                    label={dmConversationSettings?.muted ? "Unmute notifications" : "Mute notifications"}
+                    onPress={() => onThreadMenuAction("mute")}
+                  />
+                  <MenuRow
+                    icon={dmConversationSettings?.blockedByMe ? "checkmark-circle-outline" : "ban-outline"}
+                    label={dmConversationSettings?.blockedByMe ? "Unblock user" : "Block user"}
+                    danger={!dmConversationSettings?.blockedByMe}
+                    onPress={() => onThreadMenuAction("block")}
+                  />
                   <MenuRow icon="flag-outline" label="Report user" danger onPress={() => onThreadMenuAction("report")} />
                   <MenuRow icon="trash-bin-outline" label="Clear chat" danger onPress={() => onThreadMenuAction("clear")} />
                   <MenuRow icon="close-circle-outline" label="Delete conversation" danger onPress={() => onThreadMenuAction("delete")} />

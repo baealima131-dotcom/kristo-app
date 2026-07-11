@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import {
+  getDirectMessageConversationSettings,
   requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
 import { getProfile } from "@/app/api/auth/_lib/profile";
@@ -303,9 +304,35 @@ export async function GET(req: Request) {
     docKeys: Object.keys(store || {}).slice(0, 30),
   });
 
+  let viewerClearedAt = 0;
+
+  if (isDirectRoomId(roomId)) {
+    const settings =
+      await getDirectMessageConversationSettings({
+        churchId,
+        roomId,
+        userId,
+      });
+
+    viewerClearedAt = Number(settings?.clearedAt || 0);
+  }
+
   const rows = (store[getStoreKey] || []).filter((m: any) => {
-    const deletedFor = Array.isArray(m?.deletedFor) ? m.deletedFor.map(String) : [];
-    return !deletedFor.includes(String(userId));
+    const deletedFor = Array.isArray(m?.deletedFor)
+      ? m.deletedFor.map(String)
+      : [];
+
+    const createdAt = Number(m?.createdAt || 0);
+
+    if (deletedFor.includes(String(userId))) {
+      return false;
+    }
+
+    if (viewerClearedAt > 0 && createdAt <= viewerClearedAt) {
+      return false;
+    }
+
+    return true;
   });
   const sorted = rows.slice().sort((a, b) => b.createdAt - a.createdAt);
   const window = limit > 0 ? sorted.slice(0, limit) : sorted;
