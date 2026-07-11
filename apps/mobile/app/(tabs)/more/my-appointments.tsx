@@ -172,9 +172,11 @@ function AppointmentCard({
     item.address,
   ].filter(Boolean);
 
-  const isIncomingPending =
-    item.status === "pending" &&
-    currentUserId === item.recipientId;
+  const isIncomingAction =
+    item.needsAction &&
+    !!item.workflowSenderUserId &&
+    item.workflowSenderUserId !==
+      currentUserId;
 
   const showCloseAction =
     item.status === "confirmed" ||
@@ -329,7 +331,7 @@ function AppointmentCard({
               onPress={(event) => {
                 event.stopPropagation();
 
-                if (isIncomingPending) {
+                if (isIncomingAction) {
                   onReject();
                 } else {
                   onCancel();
@@ -356,10 +358,10 @@ function AppointmentCard({
                 }}
               >
                 {cancelBusy
-                  ? isIncomingPending
+                  ? isIncomingAction
                     ? "Rejecting..."
                     : "Cancelling..."
-                  : isIncomingPending
+                  : isIncomingAction
                     ? "Reject"
                     : "Cancel"}
               </Text>

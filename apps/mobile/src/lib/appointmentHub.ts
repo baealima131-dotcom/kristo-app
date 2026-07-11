@@ -576,16 +576,44 @@ export function buildAppointmentHubItems(
         ? recipientName
         : requesterName;
 
-    const status =
-      statusOf(merged);
+    const terminalMessage = [
+      ...ordered,
+    ]
+      .reverse()
+      .find((message) => {
+        const messageStatus =
+          statusOf(
+            (message.card || {}) as Record<
+              string,
+              any
+            >
+          );
+
+        return (
+          messageStatus === "cancelled" ||
+          messageStatus === "rejected" ||
+          messageStatus === "deleted"
+        );
+      });
+
+    const statusSourceMessage =
+      terminalMessage || latest;
+
+    const status = terminalMessage
+      ? statusOf(
+          (terminalMessage.card || {}) as Record<
+            string,
+            any
+          >
+        )
+      : statusOf(merged);
 
     const workflowSenderUserId =
       senderUserIdOf(
-        latest,
-        (latest.card || {}) as Record<
-          string,
-          any
-        >
+        statusSourceMessage,
+        (
+          statusSourceMessage.card || {}
+        ) as Record<string, any>
       );
 
     const startsAtMs =
