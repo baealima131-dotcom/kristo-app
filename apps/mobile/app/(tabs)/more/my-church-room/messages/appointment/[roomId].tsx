@@ -126,11 +126,42 @@ function VoiceSlot({
     status.playing,
   ]);
 
+  const confirmDelete = useCallback(() => {
+    if (!note || disabled) return;
+
+    Alert.alert(
+      `Voice ${index + 1}`,
+      "Delete this voice message?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: onDelete,
+        },
+      ]
+    );
+  }, [
+    disabled,
+    index,
+    note,
+    onDelete,
+  ]);
+
   return (
-    <View
-      style={[
+    <Pressable
+      disabled={!note || disabled}
+      delayLongPress={350}
+      onLongPress={confirmDelete}
+      style={({ pressed }) => [
         styles.voiceSlot,
         note ? styles.voiceSlotFilled : null,
+        pressed && note
+          ? styles.voiceSlotLongPressed
+          : null,
       ]}
     >
       {note ? (
@@ -168,22 +199,6 @@ function VoiceSlot({
           <Text style={styles.voiceSlotDuration}>
             {formatDuration(note.durationSec * 1000)}
           </Text>
-
-          <Pressable
-            disabled={disabled}
-            onPress={onDelete}
-            hitSlop={8}
-            style={({ pressed }) => [
-              styles.voiceDeleteButton,
-              pressed ? styles.pressed : null,
-            ]}
-          >
-            <Ionicons
-              name="trash-outline"
-              size={14}
-              color="#FF7D84"
-            />
-          </Pressable>
         </>
       ) : (
         <>
@@ -204,7 +219,7 @@ function VoiceSlot({
           </Text>
         </>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -898,7 +913,7 @@ export default function DirectMessageAppointmentComposer() {
               Voice messages
             </Text>
             <Text style={styles.voiceSubtitle}>
-              Hold the button to record
+              Hold a recorded voice to delete
             </Text>
           </View>
 
@@ -958,25 +973,6 @@ export default function DirectMessageAppointmentComposer() {
               : null,
           ]}
         >
-          <View
-            style={[
-              styles.recordIconRing,
-              isRecording
-                ? styles.recordIconRingActive
-                : null,
-            ]}
-          >
-            {isRecording ? (
-              <View style={styles.stopSquare} />
-            ) : (
-              <Ionicons
-                name="mic"
-                size={26}
-                color={GOLD_BRIGHT}
-              />
-            )}
-          </View>
-
           <View style={styles.recordCopy}>
             <Text
               style={[
@@ -999,22 +995,41 @@ export default function DirectMessageAppointmentComposer() {
                 ? "Release to save • Stops automatically at 60 seconds"
                 : "Maximum 60 seconds per voice"}
             </Text>
+
+            <Text
+              style={[
+                styles.recordTimer,
+                isRecording
+                  ? styles.recordTimerActive
+                  : null,
+              ]}
+            >
+              {isRecording
+                ? formatDuration(
+                    recordedMilliseconds
+                  )
+                : "0:60"}
+            </Text>
           </View>
 
-          <Text
+          <View
             style={[
-              styles.recordTimer,
+              styles.recordIconRing,
               isRecording
-                ? styles.recordTimerActive
+                ? styles.recordIconRingActive
                 : null,
             ]}
           >
-            {isRecording
-              ? formatDuration(
-                  recordedMilliseconds
-                )
-              : "0:60"}
-          </Text>
+            {isRecording ? (
+              <View style={styles.stopSquare} />
+            ) : (
+              <Ionicons
+                name="mic"
+                size={28}
+                color={GOLD_BRIGHT}
+              />
+            )}
+          </View>
         </Pressable>
 
         <Pressable
@@ -1288,17 +1303,11 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
-  voiceDeleteButton: {
-    position: "absolute",
-    top: 5,
-    right: 5,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor:
-      "rgba(255,80,90,0.08)",
+  voiceSlotLongPressed: {
+    opacity: 0.72,
+    transform: [{ scale: 0.97 }],
+    borderColor:
+      "rgba(255,105,115,0.62)",
   },
 
   recordButton: {
@@ -1345,9 +1354,10 @@ const styles = StyleSheet.create({
   },
 
   recordIconRing: {
-    width: 53,
-    height: 53,
-    borderRadius: 27,
+    width: 58,
+    height: 58,
+    marginLeft: 14,
+    borderRadius: 29,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor:
@@ -1374,7 +1384,7 @@ const styles = StyleSheet.create({
   recordCopy: {
     flex: 1,
     minWidth: 0,
-    marginLeft: 12,
+    paddingLeft: 4,
   },
 
   recordTitle: {
@@ -1396,7 +1406,7 @@ const styles = StyleSheet.create({
   },
 
   recordTimer: {
-    marginLeft: 8,
+    marginTop: 8,
     color: "rgba(244,208,111,0.60)",
     fontSize: 11,
     fontWeight: "900",
