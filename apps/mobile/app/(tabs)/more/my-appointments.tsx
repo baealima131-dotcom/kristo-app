@@ -4,6 +4,7 @@ import React, {
   useState,
 } from "react";
 import {
+  FlatList,
   Image,
   Pressable,
   ScrollView,
@@ -31,6 +32,23 @@ import {
 
 const BG = "#090D15";
 const GOLD = "#D9B35F";
+
+
+type AppointmentFilter =
+  | "all"
+  | "accepted"
+  | "pending"
+  | "cancelled"
+  | "rejected";
+
+const FILTERS: AppointmentFilter[] = [
+  "all",
+  "accepted",
+  "pending",
+  "cancelled",
+  "rejected",
+];
+
 
 const SECTION_CONFIG: Array<{
   key: AppointmentHubSection;
@@ -100,6 +118,8 @@ function statusLabel(status: string) {
       return "Rejected";
     case "cancelled":
       return "Cancelled";
+    case "deleted":
+      return "Deleted";
     default:
       return status || "Appointment";
   }
@@ -301,6 +321,8 @@ export default function MyAppointmentsScreen() {
   ).trim();
 
   const [, force] = useState(0);
+  const [selectedFilter, setSelectedFilter] =
+    useState<AppointmentFilter>("all");
 
   useEffect(() => {
     return subscribe(() => {
@@ -325,6 +347,53 @@ export default function MyAppointmentsScreen() {
   const needsActionCount = items.filter(
     (item) => item.needsAction
   ).length;
+
+  const filteredItems = useMemo(() => {
+    switch (selectedFilter) {
+      case "accepted":
+        return items.filter(i => i.status === "confirmed");
+
+      case "pending":
+        return items.filter(i =>
+          [
+            "pending",
+            "accepted",
+            "accepted_awaiting_time",
+            "time_proposed",
+            "reschedule_requested",
+          ].includes(i.status)
+        );
+
+      case "cancelled":
+        return items.filter(i =>
+          i.status === "cancelled" ||
+          i.status === "deleted"
+        );
+
+      case "rejected":
+        return items.filter(i => i.status === "rejected");
+
+      default:
+        return items;
+    }
+  }, [items, selectedFilter]);
+
+  const filterCounts = {
+    all: items.length,
+    accepted: items.filter(i=>i.status==="confirmed").length,
+    pending: items.filter(i=>[
+      "pending",
+      "accepted",
+      "accepted_awaiting_time",
+      "time_proposed",
+      "reschedule_requested",
+    ].includes(i.status)).length,
+    cancelled: items.filter(i =>
+      i.status === "cancelled" ||
+      i.status === "deleted"
+    ).length,
+    rejected: items.filter(i=>i.status==="rejected").length,
+  };
 
   function openAppointment(
     item: AppointmentHubItem
@@ -429,6 +498,45 @@ export default function MyAppointmentsScreen() {
         </View>
       </View>
 
+
+      <FlatList
+        horizontal
+        data={FILTERS}
+        keyExtractor={(i)=>i}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{
+          paddingHorizontal:16,
+          paddingBottom:14,
+        }}
+        renderItem={({item})=>{
+          const active=item===selectedFilter;
+          return(
+            <Pressable
+              onPress={()=>setSelectedFilter(item)}
+              style={{
+                marginRight:10,
+                paddingHorizontal:16,
+                height:38,
+                borderRadius:19,
+                alignItems:"center",
+                justifyContent:"center",
+                backgroundColor:active?GOLD:"#171D29",
+                borderWidth:1,
+                borderColor:active?GOLD:"rgba(255,255,255,.10)",
+              }}>
+              <Text
+                style={{
+                  fontWeight:"900",
+                  color:active?"#111827":"white",
+                  textTransform:"capitalize",
+                }}>
+                {item} ({filterCounts[item]})
+              </Text>
+            </Pressable>
+          );
+        }}
+      />
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
@@ -465,11 +573,47 @@ export default function MyAppointmentsScreen() {
         {SECTION_CONFIG.map(
           (section) => {
             const sectionItems =
-              items.filter(
-                (item) =>
-                  item.section ===
-                  section.key
-              );
+              filteredItems
+                .filter(
+                  (item) =>
+                    item.section ===
+                    section.key
+                )
+                .sort((a, b) => {
+                  if (
+                    section.key === "upcoming" ||
+                    section.key === "negotiation" ||
+                    section.key === "needs_action"
+                  ) {
+                    const aTime =
+                      a.startsAtMs > 0
+                        ? a.startsAtMs
+                        : Number.MAX_SAFE_INTEGER;
+
+                    const bTime =
+                      b.startsAtMs > 0
+                        ? b.startsAtMs
+                        : Number.MAX_SAFE_INTEGER;
+
+                    if (aTime !== bTime) {
+                      return aTime - bTime;
+                    }
+                  }
+
+                  if (section.key === "past") {
+                    const aTime =
+                      a.startsAtMs || 0;
+
+                    const bTime =
+                      b.startsAtMs || 0;
+
+                    if (aTime !== bTime) {
+                      return bTime - aTime;
+                    }
+                  }
+
+                  return b.updatedAt - a.updatedAt;
+                });
 
             if (!sectionItems.length) {
               return null;

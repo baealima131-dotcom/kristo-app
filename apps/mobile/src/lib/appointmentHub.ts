@@ -89,6 +89,132 @@ function isAppointmentMessage(
   );
 }
 
+function parseAppointmentLocalDateTime(
+  rawDate: string,
+  rawTime: string
+) {
+  const date = text(rawDate)
+    .replace(
+      /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+/i,
+      ""
+    )
+    .trim();
+
+  const time = text(rawTime).trim();
+
+  if (!date) return 0;
+
+  const monthNames: Record<string, number> = {
+    january: 0,
+    february: 1,
+    march: 2,
+    april: 3,
+    may: 4,
+    june: 5,
+    july: 6,
+    august: 7,
+    september: 8,
+    october: 9,
+    november: 10,
+    december: 11,
+  };
+
+  let year = 0;
+  let month = -1;
+  let day = 0;
+
+  const namedDate = date.match(
+    /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/
+  );
+
+  const isoDate = date.match(
+    /^(\d{4})-(\d{1,2})-(\d{1,2})$/
+  );
+
+  const slashDate = date.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
+  );
+
+  if (namedDate) {
+    month =
+      monthNames[
+        String(namedDate[1] || "")
+          .toLowerCase()
+      ] ?? -1;
+
+    day = Number(namedDate[2]);
+    year = Number(namedDate[3]);
+  } else if (isoDate) {
+    year = Number(isoDate[1]);
+    month = Number(isoDate[2]) - 1;
+    day = Number(isoDate[3]);
+  } else if (slashDate) {
+    month = Number(slashDate[1]) - 1;
+    day = Number(slashDate[2]);
+    year = Number(slashDate[3]);
+  } else {
+    return 0;
+  }
+
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    year < 1970 ||
+    month < 0 ||
+    month > 11 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return 0;
+  }
+
+  let hour = 0;
+  let minute = 0;
+
+  if (time) {
+    const twelveHour = time.match(
+      /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i
+    );
+
+    const twentyFourHour = time.match(
+      /^(\d{1,2}):(\d{2})$/
+    );
+
+    if (twelveHour) {
+      hour = Number(twelveHour[1]);
+      minute = Number(twelveHour[2]);
+
+      const period = String(
+        twelveHour[3]
+      ).toUpperCase();
+
+      if (hour === 12) {
+        hour = 0;
+      }
+
+      if (period === "PM") {
+        hour += 12;
+      }
+    } else if (twentyFourHour) {
+      hour = Number(twentyFourHour[1]);
+      minute = Number(twentyFourHour[2]);
+    }
+  }
+
+  const value = new Date(
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    0,
+    0
+  ).getTime();
+
+  return Number.isFinite(value) ? value : 0;
+}
+
 function resolveStartsAtMs(
   card: Record<string, any>
 ) {
@@ -99,6 +225,19 @@ function resolveStartsAtMs(
 
   if (direct > 0) return direct;
 
+  const date = text(card.date);
+  const time = text(card.time);
+
+  const localDateTime =
+    parseAppointmentLocalDateTime(
+      date,
+      time
+    );
+
+  if (localDateTime > 0) {
+    return localDateTime;
+  }
+
   const iso = text(
     card.startAt ||
       card.startsAt ||
@@ -108,26 +247,6 @@ function resolveStartsAtMs(
 
   if (iso) {
     const parsed = Date.parse(iso);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  const date = text(card.date);
-  const time = text(card.time);
-
-  if (date && time) {
-    const parsed = Date.parse(
-      `${date} ${time}`
-    );
-
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  if (date) {
-    const parsed = Date.parse(date);
 
     if (Number.isFinite(parsed)) {
       return parsed;
@@ -211,7 +330,8 @@ function sectionFor(input: {
 
   if (
     status === "rejected" ||
-    status === "cancelled"
+    status === "cancelled" ||
+    status === "deleted"
   ) {
     return {
       section: "rejected" as const,
@@ -297,7 +417,8 @@ function actionLabelFor(input: {
 
   if (
     status === "rejected" ||
-    status === "cancelled"
+    status === "cancelled" ||
+    status === "deleted"
   ) {
     return "View details";
   }
@@ -558,16 +679,41 @@ export function buildAppointmentHubItems(
     }
 
     if (
-      a.section === "upcoming" &&
-      b.section === "upcoming"
+      a.section === b.section &&
+      (
+        a.section === "upcoming" ||
+        a.section === "negotiation" ||
+        a.section === "needs_action"
+      )
     ) {
       const aTime =
-        a.startsAtMs || Number.MAX_SAFE_INTEGER;
+        a.startsAtMs > 0
+          ? a.startsAtMs
+          : Number.MAX_SAFE_INTEGER;
 
       const bTime =
-        b.startsAtMs || Number.MAX_SAFE_INTEGER;
+        b.startsAtMs > 0
+          ? b.startsAtMs
+          : Number.MAX_SAFE_INTEGER;
 
-      return aTime - bTime;
+      if (aTime !== bTime) {
+        return aTime - bTime;
+      }
+    }
+
+    if (
+      a.section === "past" &&
+      b.section === "past"
+    ) {
+      const aTime =
+        a.startsAtMs || 0;
+
+      const bTime =
+        b.startsAtMs || 0;
+
+      if (aTime !== bTime) {
+        return bTime - aTime;
+      }
     }
 
     return b.updatedAt - a.updatedAt;
