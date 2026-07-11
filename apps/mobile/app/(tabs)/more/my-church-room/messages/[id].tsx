@@ -117,6 +117,7 @@ import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { markDirectMessageThreadRead } from "@/src/lib/directMessagesApi";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
+import { createPrivateCallToUser } from "@/src/lib/privateCallService";
 import {
   applyPastorAuthorityToMinistryBoard,
   canOpenMinistryTool,
@@ -1470,7 +1471,7 @@ function renderAssignmentCardBody(
                 minute: "2-digit",
               });
 
-            if (!valid || !end) return null;
+            if (!valid || !start || !end) return null;
 
             return (
               <View style={{ alignItems: "flex-end", gap: 6 }}>
@@ -3915,6 +3916,8 @@ export default function MessageThreadScreen() {
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
   const [attachUploading, setAttachUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [privateCallStarting, setPrivateCallStarting] = useState(false);
+  const [resolvedDmPastorUserId, setResolvedDmPastorUserId] = useState("");
 
   const openedMenuFromParamRef = useRef(false);
 
@@ -3981,6 +3984,131 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
   const peerUserIdForPresence = String((params as any)?.peerUserId || "").trim();
   const [peerPresence, setPeerPresence] = useState<{ online: boolean; text: string; lastSeenAt?: number } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function resolveDmPastor() {
+      if (!isPersonToPersonDm || !churchId) {
+        if (alive) setResolvedDmPastorUserId("");
+        return;
+      }
+
+      try {
+        const result = await fetchChurchPastorUserId(
+          String(churchId || "").trim(),
+          getKristoHeaders() as any
+        );
+
+        if (!alive) return;
+
+        setResolvedDmPastorUserId(
+          String(result?.actualChurchPastorUserId || "").trim()
+        );
+      } catch {
+        if (alive) setResolvedDmPastorUserId("");
+      }
+    }
+
+    void resolveDmPastor();
+
+    return () => {
+      alive = false;
+    };
+  }, [isPersonToPersonDm, churchId]);
+
+  const currentDmUserId = String(
+    effectiveAuthUserId ||
+      (kristoSession as any)?.userId ||
+      ""
+  ).trim();
+
+  const currentDmRole = String(
+    (kristoSession as any)?.churchRole ||
+      (kristoSession as any)?.role ||
+      currentRole ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  const currentUserIsPastor =
+    currentDmRole === "pastor" ||
+    (
+      !!resolvedDmPastorUserId &&
+      currentDmUserId === resolvedDmPastorUserId
+    );
+
+  const peerUserIsPastor =
+    !!resolvedDmPastorUserId &&
+    peerUserIdForPresence === resolvedDmPastorUserId;
+
+  const canStartPastoralPrivateCall =
+    isPersonToPersonDm &&
+    !!peerUserIdForPresence &&
+    peerUserIdForPresence !== currentDmUserId &&
+    (currentUserIsPastor || peerUserIsPastor);
+
+  const startPastoralPrivateCall = useCallback(async () => {
+    if (
+      !canStartPastoralPrivateCall ||
+      !peerUserIdForPresence ||
+      privateCallStarting
+    ) {
+      return;
+    }
+
+    setPrivateCallStarting(true);
+
+    try {
+      const result = await createPrivateCallToUser(
+        peerUserIdForPresence
+      );
+
+      if (!result.ok) {
+        Alert.alert(
+          "Could not start call",
+          result.message || "Please try again in a moment."
+        );
+        return;
+      }
+
+      console.log("KRISTO_DM_PRIVATE_CALL_STARTED", {
+        callId: result.session.id,
+        callerUserId: currentDmUserId,
+        receiverUserId: peerUserIdForPresence,
+        currentUserIsPastor,
+        peerUserIsPastor,
+      });
+
+      router.push({
+        pathname: "/(tabs)/more/private-call/[callId]",
+        params: {
+          callId: result.session.id,
+          returnTo:
+            `/(tabs)/more/my-church-room/messages/${encodeURIComponent(
+              String(threadId || "")
+            )}`,
+        },
+      } as any);
+    } catch (error: any) {
+      Alert.alert(
+        "Could not start call",
+        String(error?.message || "Please try again in a moment.")
+      );
+    } finally {
+      setPrivateCallStarting(false);
+    }
+  }, [
+    canStartPastoralPrivateCall,
+    peerUserIdForPresence,
+    privateCallStarting,
+    currentDmUserId,
+    currentUserIsPastor,
+    peerUserIsPastor,
+    router,
+    threadId,
+  ]);
 
   useEffect(() => {
     let alive = true;
@@ -8373,6 +8501,35 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 </Text>
               )}
             </View>
+          ) : null}
+
+          {canStartPastoralPrivateCall ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Start voice call"
+              onPress={startPastoralPrivateCall}
+              disabled={privateCallStarting}
+              style={({ pressed }) => [
+                s.hBtn,
+                s.hBtnGold,
+                ({ marginTop: -2, marginRight: 2 } as ViewStyle),
+                privateCallStarting
+                  ? ({ opacity: 0.52 } as ViewStyle)
+                  : null,
+                pressed && !privateCallStarting
+                  ? ({
+                      opacity: 0.85,
+                      transform: [{ scale: 0.96 }],
+                    } as ViewStyle)
+                  : null,
+              ]}
+            >
+              <Ionicons
+                name="call-outline"
+                size={20}
+                color={GOLD}
+              />
+            </Pressable>
           ) : null}
 
           <Pressable

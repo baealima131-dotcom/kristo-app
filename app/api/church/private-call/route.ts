@@ -164,6 +164,48 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Direct calls are pastoral calls only:
+  // Pastor may call a member, and a member may call the Pastor.
+  // Member-to-member voice calls remain disabled.
+  if (requestedTargetUserId) {
+    const resolvedPastor =
+      await resolveChurchPastorUserId(churchId);
+
+    const actualChurchPastorUserId = String(
+      resolvedPastor.actualChurchPastorUserId || ""
+    ).trim();
+
+    const callerIsPastor =
+      !!actualChurchPastorUserId &&
+      callerUserId === actualChurchPastorUserId;
+
+    const receiverIsPastor =
+      !!actualChurchPastorUserId &&
+      receiverUserId === actualChurchPastorUserId;
+
+    if (
+      !actualChurchPastorUserId ||
+      (!callerIsPastor && !receiverIsPastor)
+    ) {
+      console.log("KRISTO_PRIVATE_CALL_MEMBER_TO_MEMBER_BLOCKED", {
+        churchId,
+        callerUserId,
+        receiverUserId,
+        actualChurchPastorUserId,
+      });
+
+      return json(
+        {
+          ok: false,
+          error: "pastoral_call_only",
+          message:
+            "Voice calls are available only between a Pastor and a church member.",
+        },
+        { status: 403 }
+      );
+    }
+  }
+
   const [
     callerName,
     receiverName,
