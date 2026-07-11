@@ -2359,30 +2359,38 @@ function AppointmentVoiceChip({
     onActivate(index);
 
     try {
-      if (status.playing) {
+      if (
+        active &&
+        status.playing
+      ) {
         player.pause();
         return;
       }
 
-      const finished =
-        completed ||
-        (
-          duration > 0 &&
-          currentTime >= duration - 0.1
-        );
+      /*
+       * Expo Audio players may preserve the previously loaded
+       * source. Explicitly replace it before every new chip play
+       * so Voice 2/3/4/5 cannot reuse Voice 1.
+       */
+      player.replace({
+        uri: source,
+      });
 
-      if (finished) {
-        player.seekTo(0);
-        setCompleted(false);
-      }
-
+      player.seekTo(0);
+      setCompleted(false);
       player.play();
 
       console.log(
         "KRISTO_APPOINTMENT_VOICE_PLAY",
         {
           voiceIndex: index + 1,
-          resumed: !finished,
+          sourceLength:
+            source.length,
+          sourceStart:
+            source.slice(0, 48),
+          sourceEnd:
+            source.slice(-32),
+          replacedSource: true,
         }
       );
     } catch (error: any) {
@@ -2390,8 +2398,14 @@ function AppointmentVoiceChip({
         "KRISTO_APPOINTMENT_VOICE_PLAY_FAILED",
         {
           voiceIndex: index + 1,
+          sourceStart:
+            source.slice(0, 48),
+          sourceEnd:
+            source.slice(-32),
           message: String(
-            error?.message || error || ""
+            error?.message ||
+              error ||
+              ""
           ),
         }
       );
@@ -2618,6 +2632,35 @@ function AppointmentVoicePlaylist({
   const [activeIndex, setActiveIndex] =
     React.useState<number | null>(null);
 
+  React.useEffect(() => {
+    console.log(
+      "KRISTO_APPOINTMENT_VOICE_SOURCES",
+      playableNotes.map(
+        (
+          note: Record<string, any>,
+          index: number
+        ) => {
+          const noteSource = String(
+            note?.source || ""
+          );
+
+          return {
+            voiceIndex: index + 1,
+            id: String(
+              note?.id || ""
+            ),
+            sourceLength:
+              noteSource.length,
+            sourceStart:
+              noteSource.slice(0, 48),
+            sourceEnd:
+              noteSource.slice(-32),
+          };
+        }
+      )
+    );
+  }, [playableNotes]);
+
   if (!playableNotes.length) {
     return null;
   }
@@ -2673,11 +2716,16 @@ function AppointmentVoicePlaylist({
             index: number
           ) => (
             <AppointmentVoiceChip
-              key={String(
-                note?.id ||
-                  note?.source ||
-                  `appointment_voice_${index}`
-              )}
+              key={[
+                "appointment_voice",
+                index,
+                String(
+                  note?.id || ""
+                ),
+                String(
+                  note?.source || ""
+                ),
+              ].join(":")}
               note={note}
               index={index}
               active={

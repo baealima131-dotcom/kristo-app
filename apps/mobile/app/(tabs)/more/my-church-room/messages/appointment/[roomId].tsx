@@ -32,6 +32,7 @@ import {
   useRouter,
 } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as FileSystem from "expo-file-system/legacy";
 
 import { getApiBase } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -102,27 +103,60 @@ function VoiceSlot({
   const status = useAudioPlayerStatus(player);
 
   const togglePlayback = useCallback(() => {
-    if (!note?.uri || disabled) return;
+    const source = String(
+      note?.uri || ""
+    ).trim();
 
-    if (status.playing) {
-      player.pause();
-      return;
-    }
+    if (!source || disabled) return;
 
-    if (
-      Number(status.currentTime || 0) >=
-      Number(status.duration || 0) - 0.1
-    ) {
+    try {
+      if (status.playing) {
+        player.pause();
+        return;
+      }
+
+      /*
+       * Explicitly load this slot's own recording before play.
+       * Without replace(), expo-audio can keep the most recently
+       * recorded source, making Voice 1/2 play Voice 3.
+       */
+      player.replace({
+        uri: source,
+      });
+
       player.seekTo(0);
-    }
+      player.play();
 
-    player.play();
+      console.log(
+        "KRISTO_APPOINTMENT_COMPOSER_VOICE_PLAY",
+        {
+          voiceIndex: index + 1,
+          sourceLength: source.length,
+          sourceStart: source.slice(0, 48),
+          sourceEnd: source.slice(-32),
+          replacedSource: true,
+        }
+      );
+    } catch (error: any) {
+      console.warn(
+        "KRISTO_APPOINTMENT_COMPOSER_VOICE_PLAY_FAILED",
+        {
+          voiceIndex: index + 1,
+          sourceStart: source.slice(0, 48),
+          sourceEnd: source.slice(-32),
+          message: String(
+            error?.message ||
+              error ||
+              "unknown"
+          ),
+        }
+      );
+    }
   }, [
     disabled,
+    index,
     note?.uri,
     player,
-    status.currentTime,
-    status.duration,
     status.playing,
   ]);
 
@@ -355,19 +389,50 @@ export default function DirectMessageAppointmentComposer() {
       try {
         await recorder.stop();
 
-        const uri = String(
+        const recorderUri = String(
           recorder.uri || ""
         ).trim();
 
-        if (!uri) {
+        if (!recorderUri) {
           throw new Error(
             "The recording file could not be created."
           );
         }
 
+        const nextVoiceId = voiceNoteId();
+
+        const directory =
+          FileSystem.cacheDirectory ||
+          FileSystem.documentDirectory;
+
+        if (!directory) {
+          throw new Error(
+            "The recording cache directory could not be found."
+          );
+        }
+
+        const stableUri =
+          `${directory}appointment-voice-${nextVoiceId}.m4a`;
+
+        await FileSystem.copyAsync({
+          from: recorderUri,
+          to: stableUri,
+        });
+
+        const copiedInfo =
+          await FileSystem.getInfoAsync(
+            stableUri
+          );
+
+        if (!copiedInfo.exists) {
+          throw new Error(
+            "The voice recording could not be preserved."
+          );
+        }
+
         const nextNote: LocalVoiceNote = {
-          id: voiceNoteId(),
-          uri,
+          id: nextVoiceId,
+          uri: stableUri,
           durationSec: Math.max(
             1,
             Math.min(
@@ -405,6 +470,11 @@ export default function DirectMessageAppointmentComposer() {
             voiceCount:
               voiceNotes.length + 1,
             hasUri: true,
+            recorderUriEnd:
+              recorderUri.slice(-80),
+            stableUriEnd:
+              stableUri.slice(-80),
+            copiedToUniqueFile: true,
           }
         );
       } catch (error: any) {
@@ -525,12 +595,23 @@ export default function DirectMessageAppointmentComposer() {
   function deleteVoice(index: number) {
     if (sending || isRecording) return;
 
-    setVoiceNotes((current) =>
-      current.filter(
+    setVoiceNotes((current) => {
+      const target = current[index];
+
+      if (target?.uri) {
+        void FileSystem.deleteAsync(
+          target.uri,
+          {
+            idempotent: true,
+          }
+        ).catch(() => {});
+      }
+
+      return current.filter(
         (_, currentIndex) =>
           currentIndex !== index
-      )
-    );
+      );
+    });
   }
 
   async function uploadVoiceNotes(
