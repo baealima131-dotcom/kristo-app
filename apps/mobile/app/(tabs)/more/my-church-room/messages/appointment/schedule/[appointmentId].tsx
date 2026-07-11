@@ -10,6 +10,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import DateTimePicker, {
@@ -28,26 +29,43 @@ import { sendMessage } from "@/src/lib/messagesStore";
 
 const GOLD = "#D9B35F";
 
-const LOCATION_OPTIONS = [
+const DURATION_OPTIONS = [
   {
-    id: "video",
-    label: "Video call",
-    icon: "videocam-outline",
+    label: "30m",
+    value: 30,
   },
+  {
+    label: "45m",
+    value: 45,
+  },
+  {
+    label: "60m",
+    value: 60,
+  },
+  {
+    label: "60m+",
+    value: 61,
+  },
+] as const;
+
+const LOCATION_OPTIONS = [
   {
     id: "phone",
     label: "Phone call",
     icon: "call-outline",
+    needsAddress: false,
   },
   {
     id: "church",
     label: "Church office",
     icon: "business-outline",
+    needsAddress: true,
   },
   {
     id: "in_person",
     label: "In person",
     icon: "location-outline",
+    needsAddress: true,
   },
 ] as const;
 
@@ -137,7 +155,7 @@ export default function AppointmentScheduleScreen() {
   const [locationId, setLocationId] =
     useState<
       (typeof LOCATION_OPTIONS)[number]["id"]
-    >("video");
+    >("phone");
 
   const [
     androidPickerMode,
@@ -145,6 +163,9 @@ export default function AppointmentScheduleScreen() {
   ] = useState<
     "date" | "time" | null
   >(null);
+
+  const [address, setAddress] =
+    useState("");
 
   const [sending, setSending] =
     useState(false);
@@ -165,11 +186,23 @@ export default function AppointmentScheduleScreen() {
     [selectedDateTime]
   );
 
+  const durationLabel =
+    durationMin === 61
+      ? "60m+"
+      : `${durationMin}m`;
+
+    const locationNeedsAddress =
+    selectedLocation.needsAddress;
+
   const canSend =
     !!appointmentId &&
     !!roomId &&
     selectedDateTime.getTime() >
       Date.now() &&
+    (
+      !locationNeedsAddress ||
+      !!address.trim()
+    ) &&
     !sending;
 
   function updateDate(
@@ -289,10 +322,17 @@ export default function AppointmentScheduleScreen() {
           .resolvedOptions()
           .timeZone || "",
       durationMin,
+      durationLabel,
       location:
-        selectedLocation.label,
+        locationNeedsAddress
+          ? `${selectedLocation.label}: ${address.trim()}`
+          : selectedLocation.label,
       locationType:
         selectedLocation.id,
+      address:
+        locationNeedsAddress
+          ? address.trim()
+          : "",
       note: "",
       proposedAt: now,
       createdAt: now,
@@ -384,7 +424,9 @@ export default function AppointmentScheduleScreen() {
             selectedDateTime.getTime(),
           durationMin,
           location:
-            selectedLocation.label,
+            locationNeedsAddress
+              ? `${selectedLocation.label}: ${address.trim()}`
+              : selectedLocation.label,
         }
       );
 
@@ -476,7 +518,7 @@ export default function AppointmentScheduleScreen() {
             <Text style={styles.summaryTime}>
               {timeLabel}
               {"  •  "}
-              {durationMin} min
+              {durationLabel}
             </Text>
           </View>
         </View>
@@ -621,16 +663,19 @@ export default function AppointmentScheduleScreen() {
           </Text>
 
           <View style={styles.durationRow}>
-            {[15, 30, 45, 60].map(
-              (value) => (
+            {DURATION_OPTIONS.map(
+              (option) => (
                 <Pressable
-                  key={value}
+                  key={option.value}
                   onPress={() =>
-                    setDurationMin(value)
+                    setDurationMin(
+                      option.value
+                    )
                   }
                   style={({ pressed }) => [
                     styles.durationButton,
-                    durationMin === value
+                    durationMin ===
+                    option.value
                       ? styles.durationButtonActive
                       : null,
                     pressed
@@ -641,12 +686,13 @@ export default function AppointmentScheduleScreen() {
                   <Text
                     style={[
                       styles.durationText,
-                      durationMin === value
+                      durationMin ===
+                      option.value
                         ? styles.durationTextActive
                         : null,
                     ]}
                   >
-                    {value}m
+                    {option.label}
                   </Text>
                 </Pressable>
               )
@@ -709,6 +755,28 @@ export default function AppointmentScheduleScreen() {
               }
             )}
           </View>
+
+          {locationNeedsAddress ? (
+            <View style={styles.addressWrap}>
+              <Text style={styles.addressLabel}>
+                Address
+              </Text>
+
+              <TextInput
+                value={address}
+                onChangeText={setAddress}
+                placeholder={
+                  locationId === "church"
+                    ? "Enter church office address"
+                    : "Enter meeting address"
+                }
+                placeholderTextColor="rgba(255,255,255,0.34)"
+                autoCapitalize="words"
+                returnKeyType="done"
+                style={styles.addressInput}
+              />
+            </View>
+          ) : null}
         </View>
 
         <Pressable
@@ -1005,6 +1073,31 @@ const styles = StyleSheet.create({
 
   locationTextActive: {
     color: GOLD,
+  },
+
+  addressWrap: {
+    marginTop: 16,
+  },
+
+  addressLabel: {
+    marginBottom: 8,
+    color: "rgba(255,255,255,0.86)",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+
+  addressInput: {
+    minHeight: 50,
+    paddingHorizontal: 14,
+    borderRadius: 15,
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "700",
+    backgroundColor:
+      "rgba(5,8,14,0.78)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.10)",
   },
 
   sendButton: {

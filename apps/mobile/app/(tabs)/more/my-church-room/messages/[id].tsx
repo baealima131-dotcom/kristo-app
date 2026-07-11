@@ -2709,6 +2709,7 @@ function AppointmentRequestVipCard({
   onAccept,
   onReply,
   onReject,
+  onSchedule,
 }: {
   message: MsgItem;
   appointment: Record<string, any>;
@@ -2724,6 +2725,7 @@ function AppointmentRequestVipCard({
   onAccept: () => void;
   onReply: () => void;
   onReject: () => void;
+  onSchedule: () => void;
 }) {
   const [expanded, setExpanded] =
     React.useState(false);
@@ -2784,6 +2786,10 @@ function AppointmentRequestVipCard({
   const canRespondToProposal =
     isProposed &&
     currentUserId === requesterId;
+
+  const canScheduleAccepted =
+    isAccepted &&
+    currentUserId === recipientId;
 
   const title = isRejected
     ? "Appointment rejected"
@@ -3128,42 +3134,102 @@ function AppointmentRequestVipCard({
           ) : null}
 
           {isAccepted ? (
-            <View
-              style={{
-                marginTop: 16,
-                padding: 14,
-                borderRadius: 17,
-                backgroundColor:
-                  "rgba(34,197,94,0.10)",
-                borderWidth: 1,
-                borderColor:
-                  "rgba(34,197,94,0.28)",
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 10,
-              }}
+            <Pressable
+              disabled={!canScheduleAccepted}
+              onPress={onSchedule}
+              style={({ pressed }) => [
+                {
+                  marginTop: 16,
+                  padding: 14,
+                  borderRadius: 17,
+                  backgroundColor:
+                    canScheduleAccepted
+                      ? "rgba(34,197,94,0.15)"
+                      : "rgba(34,197,94,0.10)",
+                  borderWidth: 1,
+                  borderColor:
+                    canScheduleAccepted
+                      ? "rgba(74,222,128,0.48)"
+                      : "rgba(34,197,94,0.28)",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 10,
+                },
+                pressed &&
+                canScheduleAccepted
+                  ? {
+                      opacity: 0.76,
+                      transform: [
+                        {
+                          scale: 0.988,
+                        },
+                      ],
+                    }
+                  : null,
+              ]}
             >
-              <Ionicons
-                name="calendar-outline"
-                size={19}
-                color="#86EFAC"
-              />
-
-              <Text
+              <View
                 style={{
-                  flex: 1,
-                  color:
-                    "rgba(255,255,255,0.76)",
-                  fontSize: 12,
-                  lineHeight: 18,
-                  fontWeight: "800",
+                  width: 38,
+                  height: 38,
+                  borderRadius: 19,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor:
+                    "rgba(74,222,128,0.13)",
+                  borderWidth: 1,
+                  borderColor:
+                    "rgba(74,222,128,0.34)",
                 }}
               >
-                The request was accepted.
-                Waiting for the recipient to
-                choose a date and time.
-              </Text>
-            </View>
+                <Ionicons
+                  name="calendar-outline"
+                  size={19}
+                  color="#86EFAC"
+                />
+              </View>
+
+              <View
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#86EFAC",
+                    fontSize: 12,
+                    lineHeight: 18,
+                    fontWeight: "900",
+                  }}
+                >
+                  The request was accepted.
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 2,
+                    color:
+                      "rgba(255,255,255,0.74)",
+                    fontSize: 11,
+                    lineHeight: 17,
+                    fontWeight: "800",
+                  }}
+                >
+                  {canScheduleAccepted
+                    ? "Tap here to choose a date and time."
+                    : "Waiting for the recipient to choose a date and time."}
+                </Text>
+              </View>
+
+              {canScheduleAccepted ? (
+                <Ionicons
+                  name="chevron-forward"
+                  size={19}
+                  color="#86EFAC"
+                />
+              ) : null}
+            </Pressable>
           ) : null}
 
           {isRejected ? (
@@ -4077,6 +4143,34 @@ function Bubble({
             appointment
           )
         }
+        onSchedule={() => {
+          appointmentRouter.push({
+            pathname:
+              "/(tabs)/more/my-church-room/messages/appointment/schedule/[appointmentId]" as any,
+            params: {
+              appointmentId: String(
+                appointment?.appointmentId ||
+                  ""
+              ),
+              roomId: String(
+                m.threadId || ""
+              ),
+              requesterId: String(
+                appointment?.requesterId ||
+                  ""
+              ),
+              recipientId: String(
+                appointment?.recipientId ||
+                  ""
+              ),
+              requesterName: String(
+                appointment?.requesterName ||
+                  m.displayName ||
+                  "Member"
+              ),
+            },
+          });
+        }}
       />
     );
   }
