@@ -49,6 +49,68 @@ const APPOINTMENT_KINDS = new Set([
   "appointment_confirmed",
 ]);
 
+const APPOINTMENT_DAY_MS =
+  24 * 60 * 60 * 1000;
+
+const APPOINTMENT_CLOSED_RETENTION_MS =
+  3 * APPOINTMENT_DAY_MS;
+
+const APPOINTMENT_PENDING_RETENTION_MS =
+  7 * APPOINTMENT_DAY_MS;
+
+function shouldHideExpiredAppointment(
+  item: AppointmentHubItem,
+  nowMs: number
+) {
+  const status = String(
+    item.status || ""
+  ).toLowerCase();
+
+  const referenceMs =
+    Number(item.updatedAt || 0);
+
+  if (
+    status === "cancelled" ||
+    status === "rejected" ||
+    status === "deleted"
+  ) {
+    return (
+      referenceMs > 0 &&
+      nowMs - referenceMs >=
+        APPOINTMENT_CLOSED_RETENTION_MS
+    );
+  }
+
+  if (status === "pending") {
+    return (
+      referenceMs > 0 &&
+      nowMs - referenceMs >=
+        APPOINTMENT_PENDING_RETENTION_MS
+    );
+  }
+
+  if (
+    status === "confirmed" &&
+    Number(item.startsAtMs || 0) > 0
+  ) {
+    const durationMs =
+      Math.max(
+        1,
+        Number(item.durationMin || 30)
+      ) *
+      60 *
+      1000;
+
+    const appointmentEndMs =
+      Number(item.startsAtMs) +
+      durationMs;
+
+    return nowMs >= appointmentEndMs;
+  }
+
+  return false;
+}
+
 function text(value: unknown) {
   return String(value || "").trim();
 }
@@ -691,7 +753,15 @@ export function buildAppointmentHubItems(
     });
   }
 
-  return items.sort((a, b) => {
+  const visibleItems = items.filter(
+    (item) =>
+      !shouldHideExpiredAppointment(
+        item,
+        nowMs
+      )
+  );
+
+  return visibleItems.sort((a, b) => {
     if (
       a.section === "needs_action" &&
       b.section !== "needs_action"

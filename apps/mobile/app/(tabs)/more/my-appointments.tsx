@@ -399,7 +399,8 @@ export default function MyAppointmentsScreen() {
     session?.userId || ""
   ).trim();
 
-  const [, force] = useState(0);
+  const [refreshVersion, force] =
+    useState(0);
   const [selectedFilter, setSelectedFilter] =
     useState<AppointmentFilter>("all");
 
@@ -409,9 +410,21 @@ export default function MyAppointmentsScreen() {
   ] = useState<string | null>(null);
 
   useEffect(() => {
-    return subscribe(() => {
+    const unsubscribe = subscribe(() => {
       force((value) => value + 1);
     });
+
+    const expiryTimer = setInterval(
+      () => {
+        force((value) => value + 1);
+      },
+      60 * 1000
+    );
+
+    return () => {
+      unsubscribe();
+      clearInterval(expiryTimer);
+    };
   }, []);
 
   const snapshot = getSnapshot();
@@ -425,6 +438,7 @@ export default function MyAppointmentsScreen() {
     [
       snapshot,
       currentUserId,
+      refreshVersion,
     ]
   );
 
