@@ -114,7 +114,7 @@ function installPrivateCallRingingSubscriptionBridge(
     );
   };
 
-  const reconcilePublication = (
+  const observePublication = (
     publication: any,
     participant: any,
     reason: string
@@ -128,58 +128,39 @@ function installPrivateCallRingingSubscriptionBridge(
 
     if (!trackSid) return;
 
-    if (publication?.isSubscribed && publication?.track) {
-      console.log(
-        "KRISTO_PRIVATE_CALL_RINGING_SUBSCRIPTION_ALREADY_READY",
-        {
-          ...meta,
-          identity: String(participant?.identity || ""),
-          trackSid,
-          reason,
-          ts: Date.now(),
-        }
-      );
-      return;
-    }
-
     if (requestedTrackSids.has(trackSid)) return;
-    if (typeof publication?.setSubscribed !== "function") return;
-
     requestedTrackSids.add(trackSid);
 
-    console.log("KRISTO_PRIVATE_CALL_RINGING_SUBSCRIBE_REQUEST", {
-      ...meta,
-      identity: String(participant?.identity || ""),
-      participantSid: String(participant?.sid || ""),
-      trackSid,
-      reason,
-      isDesired: publication?.isDesired !== false,
-      isSubscribed: !!publication?.isSubscribed,
-      hasTrack: !!publication?.track,
-      ts: Date.now(),
-    });
-
-    try {
-      publication.setSubscribed(true);
-    } catch (error: any) {
-      requestedTrackSids.delete(trackSid);
-
-      console.log("KRISTO_PRIVATE_CALL_RINGING_SUBSCRIPTION_ERROR", {
+    console.log(
+      "KRISTO_PRIVATE_CALL_RINGING_AUTO_SUBSCRIBE_OBSERVED",
+      {
         ...meta,
+        roomInstanceId:
+          getPrivateCallRoomInstanceId(room),
         identity: String(participant?.identity || ""),
+        participantSid: String(participant?.sid || ""),
         trackSid,
         reason,
-        error: String(error?.message || error),
+        isDesired: publication?.isDesired !== false,
+        isSubscribed: !!publication?.isSubscribed,
+        hasTrack: !!publication?.track,
+        subscriptionStatus: String(
+          publication?.subscriptionStatus || ""
+        ),
         ts: Date.now(),
-      });
-    }
+      }
+    );
   };
 
   const primeParticipant = (participant: any, reason: string) => {
     if (!participant || participant.isLocal) return;
 
     participant.trackPublications?.forEach?.((publication: any) => {
-      reconcilePublication(publication, participant, reason);
+      observePublication(
+        publication,
+        participant,
+        reason
+      );
     });
   };
 
@@ -190,7 +171,7 @@ function installPrivateCallRingingSubscriptionBridge(
   };
 
   const onTrackPublished = (publication: any, participant: any) => {
-    reconcilePublication(
+    observePublication(
       publication,
       participant,
       "ringing-track-published"
@@ -837,7 +818,32 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
 
     return () => {
       connectSessionRef.current++;
-      void room.disconnect(true);
+
+      // The call exit path may already have disconnected this Room.
+      // Avoid starting a second overlapping LiveKit disconnect/negotiation.
+      const roomState = String((room as any)?.state || "");
+
+      console.log("KRISTO_PRIVATE_CALL_ROOM_SHELL_CLEANUP", {
+        callId: binding.callId,
+        roomName: binding.roomName,
+        roomState,
+        ts: Date.now(),
+      });
+
+      if (
+        roomState !== "disconnected" &&
+        roomState !== "disconnecting"
+      ) {
+        void room.disconnect(true).catch((error: any) => {
+          console.log("KRISTO_PRIVATE_CALL_ROOM_DISCONNECT_CLEANUP_ERROR", {
+            callId: binding.callId,
+            roomName: binding.roomName,
+            error: String(error?.message || error),
+            ts: Date.now(),
+          });
+        });
+      }
+
       setOwnedRoom(null);
     };
   }, [
@@ -1008,11 +1014,16 @@ export default function PrivateCallScreen() {
       }
       exitHandledRef.current = true;
 
-      try {
-        roomDisconnectRef.current?.();
-      } catch {
-        // Best-effort LiveKit disconnect before leaving the screen.
-      }
+      // Do not disconnect the Room here.
+      // Navigation unmounts PrivateCallLiveKitShell, whose cleanup is the
+      // single final owner of room.disconnect(). Calling disconnect here
+      // and again during Shell unmount creates a teardown negotiation race.
+      console.log("KRISTO_PRIVATE_CALL_ROOM_DISCONNECT_DEFERRED_TO_SHELL", {
+        callId,
+        currentUserId,
+        source,
+        ts: Date.now(),
+      });
 
       console.log("KRISTO_PRIVATE_CALL_BOTH_SIDES_EXIT", {
         callId,
