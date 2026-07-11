@@ -4,6 +4,7 @@ import React, {
   useState,
 } from "react";
 import {
+  Alert,
   FlatList,
   Image,
   Pressable,
@@ -18,9 +19,12 @@ import {
 } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { getApiBase } from "@/src/lib/kristoApi";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 import {
   getSnapshot,
+  sendMessage,
   subscribe,
 } from "@/src/lib/messagesStore";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -138,10 +142,14 @@ function AppointmentCard({
   item,
   accent,
   onPress,
+  onCancel,
+  cancelBusy,
 }: {
   item: AppointmentHubItem;
   accent: string;
   onPress: () => void;
+  onCancel: () => void;
+  cancelBusy: boolean;
 }) {
   const meta = [
     item.date,
@@ -290,16 +298,63 @@ function AppointmentCard({
       ) : null}
 
       <View style={styles.cardFooter}>
-        <Text
-          style={[
-            styles.actionText,
-            {
-              color: accent,
-            },
-          ]}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+          }}
         >
-          {item.actionLabel}
-        </Text>
+          {(item.status === "confirmed" ||
+            item.status === "accepted" ||
+            item.status === "accepted_awaiting_time" ||
+            item.status === "pending" ||
+            item.status === "time_proposed" ||
+            item.status === "reschedule_requested") ? (
+            <Pressable
+              disabled={cancelBusy}
+              onPress={(event) => {
+                event.stopPropagation();
+                onCancel();
+              }}
+              style={{
+                borderWidth: 1,
+                borderColor: cancelBusy
+                  ? "rgba(239,68,68,0.40)"
+                  : "#EF4444",
+                borderRadius: 10,
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                opacity: cancelBusy ? 0.58 : 1,
+              }}
+            >
+              <Text
+                style={{
+                  color: cancelBusy
+                    ? "rgba(239,68,68,0.68)"
+                    : "#EF4444",
+                  fontWeight: "800",
+                  fontSize: 13,
+                }}
+              >
+                {cancelBusy
+                  ? "Cancelling..."
+                  : "Cancel"}
+              </Text>
+            </Pressable>
+          ) : null}
+
+          <Text
+            style={[
+              styles.actionText,
+              {
+                color: accent,
+              },
+            ]}
+          >
+            {item.actionLabel}
+          </Text>
+        </View>
 
         <Ionicons
           name="chevron-forward"
@@ -323,6 +378,11 @@ export default function MyAppointmentsScreen() {
   const [, force] = useState(0);
   const [selectedFilter, setSelectedFilter] =
     useState<AppointmentFilter>("all");
+
+  const [
+    cancellingAppointmentId,
+    setCancellingAppointmentId,
+  ] = useState<string | null>(null);
 
   useEffect(() => {
     return subscribe(() => {
@@ -394,6 +454,230 @@ export default function MyAppointmentsScreen() {
     ).length,
     rejected: items.filter(i=>i.status==="rejected").length,
   };
+
+  async function submitAppointmentCancellation(
+    item: AppointmentHubItem
+  ) {
+    if (
+      !item.appointmentId ||
+      !item.threadId ||
+      cancellingAppointmentId
+    ) {
+      return;
+    }
+
+    setCancellingAppointmentId(
+      item.appointmentId
+    );
+
+    const now = Date.now();
+
+    const clientId = [
+      "appointment_cancelled",
+      item.appointmentId,
+      now,
+      Math.random()
+        .toString(36)
+        .slice(2, 9),
+    ].join("_");
+
+    try {
+      const headers: Record<string, string> = {
+        ...(getKristoHeaders() as Record<
+          string,
+          string
+        >),
+        "Content-Type": "application/json",
+      };
+
+      const actorUserId =
+        currentUserId ||
+        String(
+          headers["x-kristo-user-id"] ||
+            ""
+        ).trim();
+
+      const cancellationCard = {
+        type: "appointment_response",
+        appointmentId:
+          item.appointmentId,
+        status: "cancelled",
+        requesterId:
+          item.requesterId,
+        recipientId:
+          item.recipientId,
+        requesterName:
+          item.requesterName,
+        recipientName:
+          item.recipientName,
+        message:
+          "Appointment cancelled.",
+        cancelledByUserId:
+          actorUserId,
+        cancelledAt: now,
+        createdAt: now,
+      };
+
+      const response = await fetch(
+        `${String(
+          getApiBase() || ""
+        ).replace(
+          /\/+$/,
+          ""
+        )}/api/church/room-messages`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            roomId: item.threadId,
+            roomKind: "direct",
+            kind:
+              "appointment_response",
+            text:
+              "Appointment cancelled.",
+            attachments: [],
+            clientId,
+            card:
+              cancellationCard,
+          }),
+        }
+      );
+
+      const payload =
+        await response
+          .json()
+          .catch(() => null);
+
+      if (
+        !response.ok ||
+        payload?.ok === false
+      ) {
+        throw new Error(
+          String(
+            payload?.message ||
+              payload?.error ||
+              "The appointment could not be cancelled."
+          )
+        );
+      }
+
+      sendMessage(
+        item.threadId,
+        {
+          id: String(
+            payload?.data?.id ||
+              `local_${clientId}`
+          ),
+          clientId,
+          text:
+            "Appointment cancelled.",
+          attachments: [],
+          createdAt: Number(
+            payload?.data?.createdAt ||
+              now
+          ),
+          pending: false,
+          senderUserId:
+            actorUserId,
+          displayName: String(
+            headers[
+              "x-kristo-user-name"
+            ] ||
+              headers[
+                "x-kristo-display-name"
+              ] ||
+              "Me"
+          ),
+          senderRole: String(
+            headers[
+              "x-kristo-role"
+            ] || ""
+          ),
+          kind:
+            "appointment_response",
+          card:
+            cancellationCard,
+        },
+        {
+          disableAutoReply: true,
+        }
+      );
+
+      console.log(
+        "KRISTO_MY_APPOINTMENT_CANCELLED",
+        {
+          appointmentId:
+            item.appointmentId,
+          threadId:
+            item.threadId,
+          previousStatus:
+            item.status,
+          userId:
+            actorUserId,
+        }
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Cancellation failed",
+        String(
+          error?.message ||
+            "Please try again."
+        )
+      );
+
+      console.log(
+        "KRISTO_MY_APPOINTMENT_CANCEL_FAILED",
+        {
+          appointmentId:
+            item.appointmentId,
+          threadId:
+            item.threadId,
+          error: String(
+            error?.message ||
+              error ||
+              "unknown"
+          ),
+        }
+      );
+    } finally {
+      setCancellingAppointmentId(
+        null
+      );
+    }
+  }
+
+  function confirmAppointmentCancellation(
+    item: AppointmentHubItem
+  ) {
+    const confirmed =
+      item.status === "confirmed";
+
+    Alert.alert(
+      confirmed
+        ? "Cancel appointment?"
+        : "Cancel appointment request?",
+      confirmed
+        ? "This confirmed appointment will be cancelled for both people."
+        : "This request will be cancelled for both people.",
+      [
+        {
+          text: "Keep",
+          style: "cancel",
+        },
+        {
+          text: confirmed
+            ? "Cancel appointment"
+            : "Cancel request",
+          style: "destructive",
+          onPress: () => {
+            void submitAppointmentCancellation(
+              item
+            );
+          },
+        },
+      ]
+    );
+  }
 
   function openAppointment(
     item: AppointmentHubItem
@@ -706,6 +990,15 @@ export default function MyAppointmentsScreen() {
                             item
                           )
                         }
+                  onCancel={() =>
+                    confirmAppointmentCancellation(
+                      item
+                    )
+                  }
+                  cancelBusy={
+                    cancellingAppointmentId ===
+                    item.appointmentId
+                  }
                       />
                     )
                   )}
