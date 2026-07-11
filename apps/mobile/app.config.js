@@ -28,6 +28,9 @@ module.exports = {
     },
     plugins: [
       ...(expo.plugins || []),
+      "@react-native-community/datetimepicker",
+      "expo-asset",
+      "expo-audio",
       [
         "expo-dev-client",
         {
