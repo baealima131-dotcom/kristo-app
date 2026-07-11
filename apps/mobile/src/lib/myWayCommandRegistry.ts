@@ -44,6 +44,14 @@ const KINGDOM_BOX_CODES: Array<{ id: string; title: string; desc: string; code: 
 
 const BUILTIN_MY_WAY_COMMANDS: MyWayCommandResolution[] = [
   {
+    code: "X",
+    title: "My Appointments",
+    description: "Open all of your appointment requests, schedules, and confirmations.",
+    action: "navigate",
+    route: "/more/my-appointments",
+    source: "builtin",
+  },
+  {
     code: "NOTIFY",
     title: "Notifications",
     description: "Open your Kristo notifications inbox.",

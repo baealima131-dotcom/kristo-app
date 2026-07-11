@@ -27,6 +27,13 @@ import {
   resolveMyWayCommand,
 } from "@/src/lib/myWayCommands";
 import { startMyWayPastorPrivateCall } from "@/src/lib/privateCallService";
+import {
+  getSnapshot as getMessagesSnapshot,
+  subscribe as subscribeMessages,
+} from "@/src/lib/messagesStore";
+import {
+  countAppointmentActions,
+} from "@/src/lib/appointmentHub";
 
 const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
@@ -296,6 +303,28 @@ export default function TLMCScreen() {
   const currentUserId = useMemo(() => {
     return String(session?.userId || "guest-user").trim() || "guest-user";
   }, [session?.userId]);
+
+  const [
+    appointmentActionCount,
+    setAppointmentActionCount,
+  ] = useState(0);
+
+  useEffect(() => {
+    const refreshAppointmentCount = () => {
+      setAppointmentActionCount(
+        countAppointmentActions(
+          getMessagesSnapshot(),
+          currentUserId
+        )
+      );
+    };
+
+    refreshAppointmentCount();
+
+    return subscribeMessages(
+      refreshAppointmentCount
+    );
+  }, [currentUserId]);
 
   const isOwner = !!security.ownerUserId && security.ownerUserId === currentUserId;
   const pendingAttempt = security.pendingAttempt;
@@ -1040,7 +1069,70 @@ Vibration.vibrate(120);
                             {tone === "topRight" ? <View pointerEvents="none" style={s.cornerGlowTopRight} /> : null}
                             {tone === "bottomLeft" ? <View pointerEvents="none" style={s.cornerGlowBottomLeft} /> : null}
                             {tone === "bottomRight" ? <View pointerEvents="none" style={s.cornerGlowBottomRight} /> : null}
-                            <Text style={[t.padKeyText, cross ? t.padKeyCrossText : null]}>{k}</Text>
+                            <View
+                              style={{
+                                position: "relative",
+                                alignItems: "center",
+                                justifyContent: "center",
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  t.padKeyText,
+                                  cross
+                                    ? t.padKeyCrossText
+                                    : null,
+                                ]}
+                              >
+                                {k}
+                              </Text>
+
+                              {k === "X" &&
+                              appointmentActionCount >
+                                0 ? (
+                                <View
+                                  pointerEvents="none"
+                                  style={{
+                                    position: "absolute",
+                                    top: -13,
+                                    right: -18,
+                                    minWidth: 21,
+                                    height: 21,
+                                    paddingHorizontal: 5,
+                                    borderRadius: 11,
+                                    alignItems: "center",
+                                    justifyContent:
+                                      "center",
+                                    backgroundColor:
+                                      "#FF5964",
+                                    borderWidth: 1.5,
+                                    borderColor:
+                                      "#FFE0E2",
+                                    shadowColor:
+                                      "#FF4654",
+                                    shadowOpacity: 0.45,
+                                    shadowRadius: 8,
+                                    shadowOffset: {
+                                      width: 0,
+                                      height: 3,
+                                    },
+                                  }}
+                                >
+                                  <Text
+                                    style={{
+                                      color: "#26080C",
+                                      fontSize: 9,
+                                      fontWeight: "900",
+                                    }}
+                                  >
+                                    {appointmentActionCount >
+                                    9
+                                      ? "9+"
+                                      : appointmentActionCount}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
                           </Pressable>
                         </Animated.View>
                       );
