@@ -143,13 +143,17 @@ function AppointmentCard({
   accent,
   onPress,
   onCancel,
+  onReject,
   cancelBusy,
+  currentUserId,
 }: {
   item: AppointmentHubItem;
   accent: string;
   onPress: () => void;
   onCancel: () => void;
+  onReject: () => void;
   cancelBusy: boolean;
+  currentUserId: string;
 }) {
   const meta = [
     item.date,
@@ -167,6 +171,20 @@ function AppointmentCard({
     item.location,
     item.address,
   ].filter(Boolean);
+
+  const isIncomingPending =
+    item.status === "pending" &&
+    currentUserId === item.recipientId;
+
+  const showCloseAction =
+    item.status === "confirmed" ||
+    item.status === "accepted" ||
+    item.status ===
+      "accepted_awaiting_time" ||
+    item.status === "pending" ||
+    item.status === "time_proposed" ||
+    item.status ===
+      "reschedule_requested";
 
   return (
     <Pressable
@@ -305,17 +323,17 @@ function AppointmentCard({
             gap: 10,
           }}
         >
-          {(item.status === "confirmed" ||
-            item.status === "accepted" ||
-            item.status === "accepted_awaiting_time" ||
-            item.status === "pending" ||
-            item.status === "time_proposed" ||
-            item.status === "reschedule_requested") ? (
+          {showCloseAction ? (
             <Pressable
               disabled={cancelBusy}
               onPress={(event) => {
                 event.stopPropagation();
-                onCancel();
+
+                if (isIncomingPending) {
+                  onReject();
+                } else {
+                  onCancel();
+                }
               }}
               style={{
                 borderWidth: 1,
@@ -338,8 +356,12 @@ function AppointmentCard({
                 }}
               >
                 {cancelBusy
-                  ? "Cancelling..."
-                  : "Cancel"}
+                  ? isIncomingPending
+                    ? "Rejecting..."
+                    : "Cancelling..."
+                  : isIncomingPending
+                    ? "Reject"
+                    : "Cancel"}
               </Text>
             </Pressable>
           ) : null}
@@ -454,6 +476,204 @@ export default function MyAppointmentsScreen() {
     ).length,
     rejected: items.filter(i=>i.status==="rejected").length,
   };
+
+  async function submitAppointmentRejection(
+    item: AppointmentHubItem
+  ) {
+    if (
+      !item.appointmentId ||
+      !item.threadId ||
+      cancellingAppointmentId
+    ) {
+      return;
+    }
+
+    setCancellingAppointmentId(
+      item.appointmentId
+    );
+
+    const now = Date.now();
+
+    const clientId = [
+      "appointment_rejected",
+      item.appointmentId,
+      now,
+      Math.random()
+        .toString(36)
+        .slice(2, 9),
+    ].join("_");
+
+    try {
+      const headers: Record<string, string> = {
+        ...(getKristoHeaders() as Record<
+          string,
+          string
+        >),
+        "Content-Type": "application/json",
+      };
+
+      const actorUserId =
+        currentUserId ||
+        String(
+          headers["x-kristo-user-id"] ||
+            ""
+        ).trim();
+
+      const rejectionCard = {
+        type: "appointment_response",
+        appointmentId:
+          item.appointmentId,
+        status: "rejected",
+        requesterId:
+          item.requesterId,
+        recipientId:
+          item.recipientId,
+        requesterName:
+          item.requesterName,
+        recipientName:
+          item.recipientName,
+        message:
+          "Appointment rejected.",
+        rejectedByUserId:
+          actorUserId,
+        rejectedAt: now,
+        createdAt: now,
+      };
+
+      const response = await fetch(
+        `${String(
+          getApiBase() || ""
+        ).replace(
+          /\/+$/,
+          ""
+        )}/api/church/room-messages`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            roomId: item.threadId,
+            roomKind: "direct",
+            kind:
+              "appointment_response",
+            text:
+              "Appointment rejected.",
+            attachments: [],
+            clientId,
+            card:
+              rejectionCard,
+          }),
+        }
+      );
+
+      const payload =
+        await response
+          .json()
+          .catch(() => null);
+
+      if (
+        !response.ok ||
+        payload?.ok === false
+      ) {
+        throw new Error(
+          String(
+            payload?.message ||
+              payload?.error ||
+              "The appointment could not be rejected."
+          )
+        );
+      }
+
+      sendMessage(
+        item.threadId,
+        {
+          id: String(
+            payload?.data?.id ||
+              `local_${clientId}`
+          ),
+          clientId,
+          text:
+            "Appointment rejected.",
+          attachments: [],
+          createdAt: Number(
+            payload?.data?.createdAt ||
+              now
+          ),
+          pending: false,
+          senderUserId:
+            actorUserId,
+          displayName: String(
+            headers[
+              "x-kristo-user-name"
+            ] ||
+              headers[
+                "x-kristo-display-name"
+              ] ||
+              "Me"
+          ),
+          senderRole: String(
+            headers[
+              "x-kristo-role"
+            ] || ""
+          ),
+          kind:
+            "appointment_response",
+          card:
+            rejectionCard,
+        },
+        {
+          disableAutoReply: true,
+        }
+      );
+
+      console.log(
+        "KRISTO_MY_APPOINTMENT_REJECTED",
+        {
+          appointmentId:
+            item.appointmentId,
+          threadId:
+            item.threadId,
+          userId:
+            actorUserId,
+        }
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Rejection failed",
+        String(
+          error?.message ||
+            "Please try again."
+        )
+      );
+    } finally {
+      setCancellingAppointmentId(
+        null
+      );
+    }
+  }
+
+  function confirmAppointmentRejection(
+    item: AppointmentHubItem
+  ) {
+    Alert.alert(
+      "Reject appointment?",
+      "This appointment request will be rejected.",
+      [
+        {
+          text: "Keep",
+          style: "cancel",
+        },
+        {
+          text: "Reject",
+          style: "destructive",
+          onPress: () => {
+            void submitAppointmentRejection(
+              item
+            );
+          },
+        },
+      ]
+    );
+  }
 
   async function submitAppointmentCancellation(
     item: AppointmentHubItem
@@ -995,9 +1215,17 @@ export default function MyAppointmentsScreen() {
                       item
                     )
                   }
+                  onReject={() =>
+                    confirmAppointmentRejection(
+                      item
+                    )
+                  }
                   cancelBusy={
                     cancellingAppointmentId ===
                     item.appointmentId
+                  }
+                  currentUserId={
+                    currentUserId
                   }
                       />
                     )
