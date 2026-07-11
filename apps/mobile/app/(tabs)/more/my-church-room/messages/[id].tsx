@@ -2744,6 +2744,9 @@ function AppointmentRequestVipCard({
   const isRejected =
     status === "rejected";
 
+  const isCancelled =
+    status === "cancelled";
+
   const isProposed =
     status === "time_proposed";
 
@@ -2808,11 +2811,13 @@ function AppointmentRequestVipCard({
     isAccepted &&
     currentUserId === recipientId;
 
-  const title = isRejected
-    ? "Appointment rejected"
-    : isConfirmed
-      ? "Appointment confirmed"
-      : isProposed
+  const title = isCancelled
+    ? "Appointment cancelled"
+    : isRejected
+      ? "Appointment rejected"
+      : isConfirmed
+        ? "Appointment confirmed"
+        : isProposed
         ? "Appointment time proposed"
         : isAccepted
           ? "Appointment accepted"
@@ -2820,34 +2825,44 @@ function AppointmentRequestVipCard({
             ? "New time requested"
             : "Appointment request";
 
-  const accent = isRejected
+  const accent = isCancelled
     ? "#FF6B72"
-    : isConfirmed || isAccepted
-      ? "#4ADE80"
+    : isRejected
+      ? "#FF6B72"
+      : isConfirmed || isAccepted
+        ? "#4ADE80"
       : isProposed || isReschedule
         ? "#A78BFA"
         : "#F5BE41";
 
   const shadowColor = accent;
 
-  const borderColor = isRejected
-    ? "rgba(239,68,68,0.52)"
-    : isConfirmed || isAccepted
-      ? "rgba(34,197,94,0.52)"
+  const borderColor = isCancelled
+    ? "rgba(239,68,68,0.62)"
+    : isRejected
+      ? "rgba(239,68,68,0.52)"
+      : isConfirmed || isAccepted
+        ? "rgba(34,197,94,0.52)"
       : isProposed || isReschedule
         ? "rgba(167,139,250,0.48)"
         : mine
           ? "rgba(217,179,95,0.48)"
           : "rgba(157,138,255,0.30)";
 
-  const gradientColors = isRejected
+  const gradientColors = isCancelled
     ? [
-        "rgba(76,18,29,0.97)",
-        "rgba(38,17,26,0.99)",
+        "rgba(92,22,32,0.98)",
+        "rgba(46,19,28,0.99)",
         "rgba(18,16,24,0.99)",
       ]
-    : isConfirmed || isAccepted
+    : isRejected
       ? [
+          "rgba(76,18,29,0.97)",
+          "rgba(38,17,26,0.99)",
+          "rgba(18,16,24,0.99)",
+        ]
+      : isConfirmed || isAccepted
+        ? [
           "rgba(18,68,45,0.96)",
           "rgba(16,39,32,0.99)",
           "rgba(13,20,25,0.99)",
@@ -2870,10 +2885,12 @@ function AppointmentRequestVipCard({
               "rgba(13,16,27,0.99)",
             ];
 
-  const footerLabel = isRejected
-    ? "Request declined"
-    : isConfirmed
-      ? "Appointment ready"
+  const footerLabel = isCancelled
+    ? "Appointment cancelled"
+    : isRejected
+      ? "Request declined"
+      : isConfirmed
+        ? "Appointment ready"
       : isProposed
         ? canRespondToProposal
           ? "Review the proposed time"
@@ -3061,7 +3078,13 @@ function AppointmentRequestVipCard({
                 },
               }}
             >
-              {isRejected ? (
+              {isCancelled ? (
+                <Ionicons
+                  name="close-circle"
+                  size={18}
+                  color={accent}
+                />
+              ) : isRejected ? (
                 <Ionicons
                   name="close"
                   size={17}
@@ -3249,6 +3272,64 @@ function AppointmentRequestVipCard({
                 />
               ) : null}
             </Pressable>
+          ) : null}
+
+          {isCancelled ? (
+            <View
+              style={{
+                marginTop: 16,
+                padding: 14,
+                borderRadius: 17,
+                backgroundColor:
+                  "rgba(239,68,68,0.12)",
+                borderWidth: 1,
+                borderColor:
+                  "rgba(239,68,68,0.34)",
+              }}
+            >
+              <Text
+                style={{
+                  color: "#FF9A9F",
+                  fontSize: 11,
+                  fontWeight: "900",
+                  textTransform:
+                    "uppercase",
+                  letterSpacing: 0.7,
+                }}
+              >
+                Appointment cancelled
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 7,
+                  color:
+                    "rgba(255,255,255,0.80)",
+                  fontSize: 12,
+                  lineHeight: 18,
+                  fontWeight: "700",
+                }}
+              >
+                This appointment has been cancelled and is no longer active.
+              </Text>
+
+              {workflowMessage &&
+              workflowMessage !==
+                "Appointment cancelled." ? (
+                <Text
+                  style={{
+                    marginTop: 7,
+                    color:
+                      "rgba(255,255,255,0.68)",
+                    fontSize: 11,
+                    lineHeight: 17,
+                    fontWeight: "700",
+                  }}
+                >
+                  {workflowMessage}
+                </Text>
+              ) : null}
+            </View>
           ) : null}
 
           {isRejected ? (
