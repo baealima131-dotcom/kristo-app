@@ -1710,6 +1710,7 @@ export default function ConversationMediaStorageScreen() {
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
+              style={styles.cleanupFilterScroll}
               contentContainerStyle={
                 styles.cleanupFilters
               }
@@ -2423,10 +2424,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
+  cleanupFilterScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+    height: 68,
+    maxHeight: 68,
+  },
   cleanupFilters: {
     gap: 8,
-    paddingVertical: 15,
+    paddingTop: 15,
+    paddingBottom: 15,
     paddingRight: 16,
+    alignItems: "center",
   },
   cleanupFilter: {
     height: 38,
