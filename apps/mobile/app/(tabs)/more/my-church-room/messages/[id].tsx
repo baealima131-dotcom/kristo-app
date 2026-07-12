@@ -2280,11 +2280,17 @@ function appointmentVoiceCacheName(
     extensionMatch?.[1]?.toLowerCase() ||
     "m4a";
 
-  const identity =
-    cleanId ||
-    `source_${appointmentVoiceCacheHash(source)}`;
+  /*
+   * The remote URL is the permanent identity of the uploaded
+   * voice. A message/note ID may change after hydration, but
+   * the uploaded source URL remains stable.
+   */
+  const sourceIdentity =
+    `source_${appointmentVoiceCacheHash(
+      source
+    )}`;
 
-  return `${identity}.${extension}`;
+  return `${sourceIdentity}.${extension}`;
 }
 
 async function resolvePersistentAppointmentVoiceSource(
@@ -2318,20 +2324,117 @@ async function resolvePersistentAppointmentVoiceSource(
 
   if (
     existing?.exists &&
-    Number(
-      (existing as any)?.size || 0
-    ) > 0
+    !(existing as any)?.isDirectory
   ) {
     console.log(
       "KRISTO_APPOINTMENT_VOICE_CACHE_HIT",
       {
         noteId,
+        bytes:
+          Number(
+            (existing as any)?.size || 0
+          ) || null,
         localUriEnd:
           destination.slice(-80),
+        validation:
+          "exists-not-directory",
       }
     );
 
     return destination;
+  }
+
+  /*
+   * Compatibility with cache files created before the
+   * source-hash filename was introduced.
+   */
+  const cleanLegacyId = String(
+    noteId || ""
+  )
+    .trim()
+    .replace(
+      /[^a-zA-Z0-9_-]+/g,
+      "_"
+    )
+    .slice(0, 90);
+
+  const extensionMatch =
+    source.match(
+      /\.(m4a|mp4|aac|mp3|wav|caf)(?:$|\?)/i
+    );
+
+  const extension =
+    extensionMatch?.[1]?.toLowerCase() ||
+    "m4a";
+
+  const legacyDestination =
+    cleanLegacyId
+      ? `${APPOINTMENT_VOICE_CACHE_DIRECTORY}${cleanLegacyId}.${extension}`
+      : "";
+
+  if (
+    legacyDestination &&
+    legacyDestination !== destination
+  ) {
+    const legacyExisting =
+      await FileSystem.getInfoAsync(
+        legacyDestination
+      ).catch(() => null);
+
+    if (
+      legacyExisting?.exists &&
+      !(legacyExisting as any)?.isDirectory
+    ) {
+      await FileSystem.copyAsync({
+        from: legacyDestination,
+        to: destination,
+      }).catch(() => {});
+
+      const migrated =
+        await FileSystem.getInfoAsync(
+          destination
+        ).catch(() => null);
+
+      if (
+        migrated?.exists &&
+        !(migrated as any)?.isDirectory
+      ) {
+        await FileSystem.deleteAsync(
+          legacyDestination,
+          {
+            idempotent: true,
+          }
+        ).catch(() => {});
+
+        console.log(
+          "KRISTO_APPOINTMENT_VOICE_CACHE_MIGRATED",
+          {
+            noteId,
+            fromEnd:
+              legacyDestination.slice(-80),
+            toEnd:
+              destination.slice(-80),
+          }
+        );
+
+        return destination;
+      }
+
+      /*
+       * Even if migration failed, the legacy local file is
+       * still valid and should be played without downloading.
+       */
+      console.log(
+        "KRISTO_APPOINTMENT_VOICE_CACHE_LEGACY_HIT",
+        {
+          noteId,
+          localUriEnd:
+            legacyDestination.slice(-80),
+        }
+      );
+
+      return legacyDestination;
+    }
   }
 
   const currentJob =
@@ -2382,12 +2485,10 @@ async function resolvePersistentAppointmentVoiceSource(
 
         if (
           !downloaded.exists ||
-          Number(
-            (downloaded as any)?.size || 0
-          ) <= 0
+          (downloaded as any)?.isDirectory
         ) {
           throw new Error(
-            "Downloaded voice cache file is empty."
+            "Downloaded voice cache file was not created."
           );
         }
 
