@@ -48,6 +48,7 @@ import {
 } from "@/src/lib/liveRealtime";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
@@ -2234,6 +2235,212 @@ function MessageAttachmentsBlock({
 }
 
 
+
+const APPOINTMENT_VOICE_CACHE_DIRECTORY =
+  FileSystem.documentDirectory
+    ? `${FileSystem.documentDirectory}appointment-voice-cache/`
+    : "";
+
+const appointmentVoiceCacheJobs =
+  new Map<string, Promise<string>>();
+
+function appointmentVoiceCacheHash(
+  value: string
+) {
+  let hash = 2166136261;
+
+  for (
+    let index = 0;
+    index < value.length;
+    index += 1
+  ) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return Math.abs(hash >>> 0)
+    .toString(16);
+}
+
+function appointmentVoiceCacheName(
+  noteId: string,
+  source: string
+) {
+  const cleanId = String(noteId || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .slice(0, 90);
+
+  const extensionMatch =
+    source.match(
+      /\.(m4a|mp4|aac|mp3|wav|caf)(?:$|\?)/i
+    );
+
+  const extension =
+    extensionMatch?.[1]?.toLowerCase() ||
+    "m4a";
+
+  const identity =
+    cleanId ||
+    `source_${appointmentVoiceCacheHash(source)}`;
+
+  return `${identity}.${extension}`;
+}
+
+async function resolvePersistentAppointmentVoiceSource(
+  noteId: string,
+  remoteSource: string
+) {
+  const source = String(
+    remoteSource || ""
+  ).trim();
+
+  if (
+    !source ||
+    !/^https?:\/\//i.test(source) ||
+    !APPOINTMENT_VOICE_CACHE_DIRECTORY
+  ) {
+    return source;
+  }
+
+  const destination =
+    `${APPOINTMENT_VOICE_CACHE_DIRECTORY}${
+      appointmentVoiceCacheName(
+        noteId,
+        source
+      )
+    }`;
+
+  const existing =
+    await FileSystem.getInfoAsync(
+      destination
+    ).catch(() => null);
+
+  if (
+    existing?.exists &&
+    Number(
+      (existing as any)?.size || 0
+    ) > 0
+  ) {
+    console.log(
+      "KRISTO_APPOINTMENT_VOICE_CACHE_HIT",
+      {
+        noteId,
+        localUriEnd:
+          destination.slice(-80),
+      }
+    );
+
+    return destination;
+  }
+
+  const currentJob =
+    appointmentVoiceCacheJobs.get(
+      destination
+    );
+
+  if (currentJob) {
+    return currentJob;
+  }
+
+  const job = (
+    async () => {
+      try {
+        await FileSystem.makeDirectoryAsync(
+          APPOINTMENT_VOICE_CACHE_DIRECTORY,
+          {
+            intermediates: true,
+          }
+        );
+
+        await FileSystem.deleteAsync(
+          destination,
+          {
+            idempotent: true,
+          }
+        ).catch(() => {});
+
+        console.log(
+          "KRISTO_APPOINTMENT_VOICE_CACHE_DOWNLOAD_START",
+          {
+            noteId,
+            remoteSourceEnd:
+              source.slice(-80),
+          }
+        );
+
+        const result =
+          await FileSystem.downloadAsync(
+            source,
+            destination
+          );
+
+        const downloaded =
+          await FileSystem.getInfoAsync(
+            result.uri
+          );
+
+        if (
+          !downloaded.exists ||
+          Number(
+            (downloaded as any)?.size || 0
+          ) <= 0
+        ) {
+          throw new Error(
+            "Downloaded voice cache file is empty."
+          );
+        }
+
+        console.log(
+          "KRISTO_APPOINTMENT_VOICE_CACHE_SAVED",
+          {
+            noteId,
+            bytes: Number(
+              (downloaded as any)?.size || 0
+            ),
+            localUriEnd:
+              result.uri.slice(-80),
+          }
+        );
+
+        return result.uri;
+      } catch (error: any) {
+        await FileSystem.deleteAsync(
+          destination,
+          {
+            idempotent: true,
+          }
+        ).catch(() => {});
+
+        console.warn(
+          "KRISTO_APPOINTMENT_VOICE_CACHE_FAILED",
+          {
+            noteId,
+            message: String(
+              error?.message ||
+                error ||
+                "unknown"
+            ),
+          }
+        );
+
+        return source;
+      } finally {
+        appointmentVoiceCacheJobs.delete(
+          destination
+        );
+      }
+    }
+  )();
+
+  appointmentVoiceCacheJobs.set(
+    destination,
+    job
+  );
+
+  return job;
+}
+
 function formatAppointmentVoiceDuration(seconds: unknown) {
   const total = Math.max(0, Math.round(Number(seconds || 0)));
   const minutes = Math.floor(total / 60);
@@ -2274,6 +2481,17 @@ function AppointmentVoiceChip({
   const [completed, setCompleted] =
     React.useState(false);
 
+  const [cacheBusy, setCacheBusy] =
+    React.useState(false);
+
+  const boundSourceRef =
+    React.useRef(source);
+
+  const delayedPlayTimerRef =
+    React.useRef<
+      ReturnType<typeof setTimeout> | null
+    >(null);
+
   const mountedRef = React.useRef(true);
 
   React.useEffect(() => {
@@ -2281,6 +2499,17 @@ function AppointmentVoiceChip({
 
     return () => {
       mountedRef.current = false;
+
+      if (
+        delayedPlayTimerRef.current
+      ) {
+        clearTimeout(
+          delayedPlayTimerRef.current
+        );
+
+        delayedPlayTimerRef.current =
+          null;
+      }
 
       try {
         player.pause();
@@ -2346,6 +2575,7 @@ function AppointmentVoiceChip({
   const loading =
     active &&
     (
+      cacheBusy ||
       status.isBuffering ||
       !status.isLoaded
     );
@@ -2353,33 +2583,140 @@ function AppointmentVoiceChip({
   const playing =
     active && status.playing;
 
-  function toggleVoice() {
-    if (!source) return;
+  async function toggleVoice() {
+    if (!source || cacheBusy) return;
+
+    if (
+      active &&
+      status.playing
+    ) {
+      try {
+        player.pause();
+      } catch {}
+
+      return;
+    }
+
+    onActivate(index);
+    setCacheBusy(true);
+
+    const noteId = String(
+      note?.id ||
+        `appointment_voice_${index}`
+    ).trim();
 
     try {
+      const playbackSource =
+        await resolvePersistentAppointmentVoiceSource(
+          noteId,
+          source
+        );
+
       if (
-        active &&
-        status.playing
+        !mountedRef.current ||
+        !playbackSource
       ) {
-        player.pause();
         return;
       }
 
-      onActivate(index);
+      const sourceChanged =
+        boundSourceRef.current !==
+        playbackSource;
+
+      if (sourceChanged) {
+        try {
+          player.pause();
+        } catch {}
+
+        boundSourceRef.current =
+          playbackSource;
+
+        player.replace({
+          uri: playbackSource,
+        });
+
+        setCompleted(false);
+
+        /*
+         * replace() loads the source natively.
+         * Give the local file a short load window before play,
+         * avoiding the old replace-and-play race.
+         */
+        if (
+          delayedPlayTimerRef.current
+        ) {
+          clearTimeout(
+            delayedPlayTimerRef.current
+          );
+        }
+
+        delayedPlayTimerRef.current =
+          setTimeout(
+            () => {
+              if (!mountedRef.current) {
+                return;
+              }
+
+              try {
+                player.seekTo(0);
+                player.play();
+
+                console.log(
+                  "KRISTO_APPOINTMENT_VOICE_LOCAL_PLAY",
+                  {
+                    voiceIndex:
+                      index + 1,
+                    noteId,
+                    sourceType:
+                      playbackSource.startsWith(
+                        "file://"
+                      )
+                        ? "persistent-local"
+                        : "remote-fallback",
+                    sourceEnd:
+                      playbackSource.slice(
+                        -80
+                      ),
+                  }
+                );
+              } catch (
+                error: any
+              ) {
+                console.warn(
+                  "KRISTO_APPOINTMENT_VOICE_LOCAL_PLAY_FAILED",
+                  {
+                    voiceIndex:
+                      index + 1,
+                    noteId,
+                    message: String(
+                      error?.message ||
+                        error ||
+                        "unknown"
+                    ),
+                  }
+                );
+              }
+            },
+            180
+          );
+
+        return;
+      }
+
+      const durationValue =
+        Number(status.duration || 0);
+
+      const currentValue =
+        Number(status.currentTime || 0);
 
       const finished =
         completed ||
         (
-          Number(status.duration || 0) > 0 &&
-          Number(status.currentTime || 0) >=
-            Number(status.duration || 0) - 0.1
+          durationValue > 0 &&
+          currentValue >=
+            durationValue - 0.1
         );
 
-      /*
-       * This chip owns a player created with this exact source.
-       * Do not call replace() here: replacing and immediately
-       * playing can race the native source-loading operation.
-       */
       if (finished) {
         player.seekTo(0);
       }
@@ -2391,18 +2728,18 @@ function AppointmentVoiceChip({
         "KRISTO_APPOINTMENT_VOICE_PLAY",
         {
           voiceIndex: index + 1,
-          noteId: String(
-            note?.id || ""
-          ),
-          sourceLength:
-            source.length,
-          sourceStart:
-            source.slice(0, 48),
+          noteId,
+          sourceType:
+            playbackSource.startsWith(
+              "file://"
+            )
+              ? "persistent-local"
+              : "remote",
           sourceEnd:
-            source.slice(-32),
-          sourceBoundAtPlayerCreation: true,
-          restarted:
-            finished,
+            playbackSource.slice(-80),
+          cacheReused:
+            playbackSource !== source,
+          restarted: finished,
         }
       );
     } catch (error: any) {
@@ -2413,17 +2750,17 @@ function AppointmentVoiceChip({
           noteId: String(
             note?.id || ""
           ),
-          sourceStart:
-            source.slice(0, 48),
-          sourceEnd:
-            source.slice(-32),
           message: String(
             error?.message ||
               error ||
-              ""
+              "unknown"
           ),
         }
       );
+    } finally {
+      if (mountedRef.current) {
+        setCacheBusy(false);
+      }
     }
   }
 
