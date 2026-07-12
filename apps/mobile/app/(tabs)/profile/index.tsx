@@ -643,6 +643,19 @@ export default function MeScreen() {
           session?.churchId || ""
         ).trim();
 
+
+  const externalProfileMatchesTarget =
+    !isExternalUserProfile ||
+    String(
+      profile?.userId || ""
+    ).trim() === externalTargetUserId;
+
+  const targetExternalProfile =
+    isExternalUserProfile &&
+    externalProfileMatchesTarget
+      ? profile
+      : null;
+
   React.useEffect(() => {
     console.log(
       "KRISTO_PROFILE_TARGET_RESOLVED",
@@ -786,6 +799,56 @@ export default function MeScreen() {
   }, [canShowMediaTab, contentMode]);
 
 
+  useEffect(() => {
+    if (
+      !isExternalUserProfile ||
+      !externalTargetUserId
+    ) {
+      return;
+    }
+
+    const cachedTargetProfile =
+      peekProfileScreenCache(
+        externalTargetUserId
+      )?.profile as AuthProfile | null;
+
+    const cachedTargetUserId =
+      String(
+        cachedTargetProfile?.userId ||
+          ""
+      ).trim();
+
+    const cacheMatchesTarget =
+      Boolean(cachedTargetProfile) &&
+      cachedTargetUserId ===
+        externalTargetUserId;
+
+    setProfile(
+      cacheMatchesTarget
+        ? cachedTargetProfile
+        : null
+    );
+
+    console.log(
+      "KRISTO_EXTERNAL_PROFILE_TARGET_RESET",
+      {
+        targetUserId:
+          externalTargetUserId,
+        usedMatchingCache:
+          cacheMatchesTarget,
+        rejectedCachedUserId:
+          cachedTargetProfile &&
+          !cacheMatchesTarget
+            ? cachedTargetUserId ||
+              "missing"
+            : null,
+      }
+    );
+  }, [
+    externalTargetUserId,
+    isExternalUserProfile,
+  ]);
+
   /*
    * External profiles must be hydrated from the target user's
    * public-profile API. Route params are only temporary preview
@@ -848,6 +911,27 @@ export default function MeScreen() {
 
         const nextProfile =
           response.profile;
+
+        const responseUserId =
+          String(
+            nextProfile.userId || ""
+          ).trim();
+
+        if (
+          responseUserId &&
+          responseUserId !==
+            externalTargetUserId
+        ) {
+          console.warn(
+            "KRISTO_EXTERNAL_PROFILE_RESPONSE_REJECTED",
+            {
+              targetUserId:
+                externalTargetUserId,
+              responseUserId,
+            }
+          );
+          return;
+        }
 
         setProfile(nextProfile);
 
@@ -946,8 +1030,8 @@ export default function MeScreen() {
   }, [refreshProfileDraft]);
   const role = prettyRole(
     isExternalUserProfile
-      ? profile?.role ||
-        profile?.churchRole ||
+      ? targetExternalProfile?.role ||
+        targetExternalProfile?.churchRole ||
         viewedProfileParams.role
       : session?.role
   );
@@ -993,7 +1077,7 @@ export default function MeScreen() {
   const church = useMemo(() => {
     if (isExternalUserProfile) {
       const externalChurch = String(
-        profile?.churchName ||
+        targetExternalProfile?.churchName ||
           viewedProfileParams.churchName ||
           ""
       ).trim();
@@ -1035,7 +1119,7 @@ export default function MeScreen() {
   const baseName =
     isExternalUserProfile
       ? String(
-          profile?.fullName ||
+          targetExternalProfile?.fullName ||
             viewedProfileParams.name ||
             "Member"
         ).trim()
@@ -1050,18 +1134,11 @@ export default function MeScreen() {
 
   const baseAvatar =
     isExternalUserProfile
-      ? (
-          toBackendImageUrl(
-            String(
-              profile?.avatarUrl || ""
-            ).trim()
-          ) ||
-          avatarForProfile(
-            userId,
-            profile?.role ||
-              viewedProfileParams.role,
-            church
-          )
+      ? toBackendImageUrl(
+          String(
+            targetExternalProfile?.avatarUrl ||
+              ""
+          ).trim()
         )
       : (
           toBackendImageUrl(
@@ -2023,17 +2100,84 @@ const resolvedName = useMemo(() => {
  }, [profile?.fullName, baseName]);
 
   const resolvedAvatar = useMemo(() => {
-    const fromApi = toBackendImageUrl(String(profile?.avatarUrl || "").trim());
+    if (isExternalUserProfile) {
+      const externalAvatar =
+        toBackendImageUrl(
+          String(
+            targetExternalProfile?.avatarUrl ||
+              ""
+          ).trim()
+        );
+
+      if (!externalAvatar) {
+        return "";
+      }
+
+      return avatarCacheBust(
+        externalAvatar,
+        Number(
+          (targetExternalProfile as any)
+            ?.avatarUpdatedAt ||
+            (targetExternalProfile as any)
+              ?.updatedAt ||
+            0
+        )
+      );
+    }
+
+    const fromApi =
+      toBackendImageUrl(
+        String(
+          profile?.avatarUrl || ""
+        ).trim()
+      );
+
     const fromSession =
-      toBackendImageUrl(String((session as any)?.avatarUrl || "").trim()) ||
-      toBackendImageUrl(String((session as any)?.avatarUri || "").trim());
-    const fromDraft = toBackendImageUrl(String(profileDraft?.avatarUri || "").trim());
+      toBackendImageUrl(
+        String(
+          (session as any)?.avatarUrl ||
+            ""
+        ).trim()
+      ) ||
+      toBackendImageUrl(
+        String(
+          (session as any)?.avatarUri ||
+            ""
+        ).trim()
+      );
 
-    const raw = fromApi || fromSession || fromDraft || "";
-    return avatarCacheBust(raw, profileDraft?.avatarUpdatedAt);
- }, [profile?.avatarUrl, session, profileDraft?.avatarUri, profileDraft?.avatarUpdatedAt]);
+    const fromDraft =
+      toBackendImageUrl(
+        String(
+          profileDraft?.avatarUri ||
+            ""
+        ).trim()
+      );
 
-  const user = {
+    const raw =
+      fromApi ||
+      fromSession ||
+      fromDraft ||
+      "";
+
+    return avatarCacheBust(
+      raw,
+      profileDraft?.avatarUpdatedAt
+    );
+  }, [
+    isExternalUserProfile,
+    targetExternalProfile?.avatarUrl,
+    (targetExternalProfile as any)
+      ?.avatarUpdatedAt,
+    (targetExternalProfile as any)
+      ?.updatedAt,
+    profile?.avatarUrl,
+    session,
+    profileDraft?.avatarUri,
+    profileDraft?.avatarUpdatedAt,
+  ]);
+
+const user = {
     userId: publicKristoId || String((profile as any)?.kristoId || (profile as any)?.publicKristoId || ""),
     backendUserId: String(
       profile?.userId ||
@@ -2134,13 +2278,75 @@ const resolvedName = useMemo(() => {
             <View style={s.heroSheen} />
 
             <View style={s.heroIdentityRow}>
-              <View style={s.avatarShell}>
+              <View
+                key={
+                  isExternalUserProfile
+                    ? `external-avatar-${externalTargetUserId}`
+                    : `own-avatar-${String(
+                        session?.userId || userId
+                      )}`
+                }
+                style={s.avatarShell}
+              >
                 <View style={s.avatarRingGlow} />
-                {user.avatar ? (
-                  <Image source={{ uri: user.avatar }} style={s.avatar} />
+
+                {resolvedAvatar ? (
+                  <Image
+                    key={`profile-avatar-image-${
+                      isExternalUserProfile
+                        ? externalTargetUserId
+                        : String(
+                            session?.userId ||
+                              userId
+                          )
+                    }-${resolvedAvatar}`}
+                    source={{
+                      uri: resolvedAvatar,
+                    }}
+                    style={s.avatar}
+                    onError={(event) => {
+                      console.warn(
+                        "KRISTO_PROFILE_AVATAR_IMAGE_ERROR",
+                        {
+                          targetUserId:
+                            isExternalUserProfile
+                              ? externalTargetUserId
+                              : String(
+                                  session?.userId ||
+                                    userId
+                                ),
+                          isExternalUserProfile,
+                          uri:
+                            resolvedAvatar ||
+                            null,
+                          message:
+                            event.nativeEvent
+                              ?.error ||
+                            "unknown",
+                        }
+                      );
+                    }}
+                  />
                 ) : (
-                  <View style={[s.avatar, s.avatarFallback]}>
-                    <Ionicons name="person-outline" size={34} color="#F4D06F" />
+                  <View
+                    key={`profile-avatar-fallback-${
+                      isExternalUserProfile
+                        ? externalTargetUserId
+                        : String(
+                            session?.userId ||
+                              userId
+                          )
+                    }`}
+                    style={[
+                      s.avatar,
+                      s.avatarFallback,
+                    ]}
+                  >
+                    <Ionicons
+                      name="person-outline"
+                      size={34}
+                      color="#F4D06F"
+                    />
                   </View>
                 )}
               </View>
