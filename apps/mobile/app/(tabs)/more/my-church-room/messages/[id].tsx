@@ -578,7 +578,53 @@ function profileFacts(threadId: string, headerTitle: string) {
   return [];
 }
 
-function profileRouteParams(threadId: string, headerTitle: string, currentFact?: any, presence?: { online: boolean; text: string }) {
+function directRoomPeerUserId(
+  roomIdValue: unknown,
+  viewerUserIdValue: unknown
+) {
+  const roomId = String(
+    roomIdValue || ""
+  ).trim();
+
+  const viewerUserId = String(
+    viewerUserIdValue || ""
+  ).trim();
+
+  if (!roomId.startsWith("dm:")) {
+    return "";
+  }
+
+  const participants = roomId
+    .slice(3)
+    .split("::")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return (
+    participants.find(
+      (value) => value !== viewerUserId
+    ) ||
+    participants[0] ||
+    ""
+  );
+}
+
+function profileRouteParams(
+  threadId: string,
+  headerTitle: string,
+  currentFact?: any,
+  presence?: {
+    online: boolean;
+    text: string;
+  },
+  viewerUserId = ""
+) {
+  const peerUserId =
+    directRoomPeerUserId(
+      threadId,
+      viewerUserId
+    );
+
   const fallbackChurchName =
     threadId === "g1" ? "Pan Africa Church" :
     threadId === "g3" ? "TLMC Central" :
@@ -610,13 +656,21 @@ function profileRouteParams(threadId: string, headerTitle: string, currentFact?:
     String(presence?.text || "Active");
 
   return {
-    userId: threadId || headerTitle.toLowerCase().replace(/\s+/g, "-"),
+    userId:
+      peerUserId ||
+      threadId ||
+      headerTitle
+        .toLowerCase()
+        .replace(/\s+/g, "-"),
     churchId: "",
     churchName: factChurch,
     name: headerTitle || "Member",
     role: factRole,
     status,
     note,
+    profileMode: "external",
+    source: "direct-message-profile",
+    peerUserId,
   };
 }
 
@@ -8731,9 +8785,60 @@ const displayHeaderTitle = assignmentDisplayTitle;
   }
 
   function openProfileFromThread() {
+    const viewerUserId = String(
+      effectiveAuthUserId || ""
+    ).trim();
+
+    const messagePeerUserId = String(
+      messages.find((message: any) => {
+        const senderUserId = String(
+          message?.senderUserId || ""
+        ).trim();
+
+        return (
+          senderUserId &&
+          senderUserId !== viewerUserId
+        );
+      })?.senderUserId || ""
+    ).trim();
+
+    const paramsForProfile =
+      profileRouteParams(
+        threadId,
+        headerTitle,
+        currentFact,
+        presence,
+        viewerUserId
+      );
+
+    const targetUserId =
+      messagePeerUserId ||
+      String(
+        paramsForProfile.peerUserId ||
+          paramsForProfile.userId ||
+          ""
+      ).trim();
+
+    console.log(
+      "KRISTO_EXTERNAL_PROFILE_NAVIGATE",
+      {
+        threadId,
+        viewerUserId,
+        messagePeerUserId:
+          messagePeerUserId || null,
+        targetUserId:
+          targetUserId || null,
+        headerTitle,
+      }
+    );
+
     router.push({
-      pathname: "/poster-profile" as any,
-      params: profileRouteParams(threadId, headerTitle, currentFact, presence) as any,
+      pathname: "/(tabs)/profile" as any,
+      params: {
+        ...paramsForProfile,
+        userId: targetUserId,
+        peerUserId: targetUserId,
+      } as any,
     });
   }
 

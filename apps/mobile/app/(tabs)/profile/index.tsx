@@ -1,4 +1,6 @@
-import { useRouter } from "expo-router";
+import { useRouter,
+  useLocalSearchParams
+} from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useMemo, useState, useEffect } from "react";
 import { AppState, ActivityIndicator,
@@ -504,6 +506,48 @@ function toTime(v?: string | number) {
 }
 
 export default function MeScreen() {
+
+  const viewedProfileParams =
+    useLocalSearchParams<{
+      profileMode?: string;
+      source?: string;
+      userId?: string;
+      peerUserId?: string;
+      name?: string;
+      churchId?: string;
+      churchName?: string;
+      role?: string;
+      status?: string;
+      note?: string;
+    }>();
+
+  const isExternalUserProfile =
+    String(
+      viewedProfileParams.profileMode || ""
+    )
+      .trim()
+      .toLowerCase() === "external" ||
+    String(
+      viewedProfileParams.source || ""
+    )
+      .trim()
+      .toLowerCase() ===
+      "direct-message-profile";
+
+  const viewedProfileName = String(
+    viewedProfileParams.name || "Member"
+  ).trim();
+
+  const viewedProfileFirstName =
+    viewedProfileName
+      .split(/\s+/)
+      .filter(Boolean)[0] || "Member";
+
+  const profilePageTitle =
+    isExternalUserProfile
+      ? `${viewedProfileFirstName.toUpperCase()}'S PROFILE`
+      : "My Profile";
+
   const router = useRouter();
   const [inviteCount, setInviteCount] = useState(0);
   const [inviteItems, setInviteItems] = useState<any[]>([]);
@@ -516,9 +560,58 @@ export default function MeScreen() {
   const [claimedFeedTick, setClaimedFeedTick] = useState(0);
   const [communicationInboxCount, setCommunicationInboxCount] = useState(0);
   const insets = useSafeAreaInsets();
-  const { session, setSession } = useKristoSession();
-  const userId = String(session?.userId || "").trim();
-  const churchId = String(session?.churchId || "").trim();
+  const { session, setSession } =
+    useKristoSession();
+
+  const sessionUserId = String(
+    session?.userId || ""
+  ).trim();
+
+  const externalTargetUserId = String(
+    viewedProfileParams.peerUserId ||
+      viewedProfileParams.userId ||
+      ""
+  ).trim();
+
+  const userId =
+    isExternalUserProfile
+      ? externalTargetUserId
+      : sessionUserId;
+
+  const routeChurchId = String(
+    viewedProfileParams.churchId || ""
+  ).trim();
+
+  const churchId =
+    isExternalUserProfile
+      ? routeChurchId
+      : String(
+          session?.churchId || ""
+        ).trim();
+
+  React.useEffect(() => {
+    console.log(
+      "KRISTO_PROFILE_TARGET_RESOLVED",
+      {
+        isExternalUserProfile,
+        sessionUserId:
+          sessionUserId || null,
+        externalTargetUserId:
+          externalTargetUserId || null,
+        effectiveProfileUserId:
+          userId || null,
+        routeName:
+          viewedProfileParams.name ||
+          null,
+      }
+    );
+  }, [
+    externalTargetUserId,
+    isExternalUserProfile,
+    sessionUserId,
+    userId,
+    viewedProfileParams.name,
+  ]);
 
   useEffect(() => {
     if (!userId) return;
@@ -646,22 +739,39 @@ export default function MeScreen() {
   }, []);
   const [profileDraft, setProfileDraft] = React.useState<ProfileDraft | null>(null);
   const publicKristoId = String(
-    (session as any)?.kristoId ||
-    (session as any)?.publicKristoId ||
-    (profileDraft as any)?.kristoId ||
-    (profileDraft as any)?.publicKristoId ||
-    ""
+    isExternalUserProfile
+      ? ""
+      : (session as any)?.kristoId ||
+        (session as any)?.publicKristoId ||
+        (profileDraft as any)?.kristoId ||
+        (profileDraft as any)?.publicKristoId ||
+        ""
   ).trim();
 
-  const refreshProfileDraft = useCallback(async () => {
-    const saved = await loadProfileDraft(userId);
-    setProfileDraft(saved);
-  }, [userId]);
+  const refreshProfileDraft =
+    useCallback(async () => {
+      if (isExternalUserProfile) {
+        setProfileDraft(null);
+        return;
+      }
+
+      const saved =
+        await loadProfileDraft(userId);
+
+      setProfileDraft(saved);
+    }, [
+      isExternalUserProfile,
+      userId,
+    ]);
 
   React.useEffect(() => {
     refreshProfileDraft();
   }, [refreshProfileDraft]);
-  const role = prettyRole(session?.role);
+  const role = prettyRole(
+    isExternalUserProfile
+      ? viewedProfileParams.role
+      : session?.role
+  );
   const [churchDisplayName, setChurchDisplayName] = useState(
     String((session as any)?.churchName || "").trim()
   );
@@ -702,24 +812,91 @@ export default function MeScreen() {
   }, [session, setSession]);
 
   const church = useMemo(() => {
-    const fromSession = String((session as any)?.churchName || churchDisplayName || "").trim();
+    if (isExternalUserProfile) {
+      const externalChurch = String(
+        viewedProfileParams.churchName || ""
+      ).trim();
+
+      if (externalChurch) {
+        return externalChurch;
+      }
+
+      if (!churchId) {
+        return "No Church Yet";
+      }
+
+      return churchLabelFromChurchId(
+        churchId
+      );
+    }
+
+    const fromSession = String(
+      (session as any)?.churchName ||
+        churchDisplayName ||
+        ""
+    ).trim();
+
     if (fromSession) return fromSession;
     if (!churchId) return "No Church Yet";
-    return churchLabelFromChurchId(churchId);
-  }, [session, churchDisplayName, churchId]);
 
-  const baseName = displayNameFromSession({
-    fullName: (session as any)?.fullName,
-    displayName: (session as any)?.displayName,
-    name: (session as any)?.name,
-    userId,
-  });
+    return churchLabelFromChurchId(
+      churchId
+    );
+  }, [
+    churchDisplayName,
+    churchId,
+    isExternalUserProfile,
+    session,
+    viewedProfileParams.churchName,
+  ]);
+
+  const baseName =
+    isExternalUserProfile
+      ? String(
+          viewedProfileParams.name ||
+            "Member"
+        ).trim()
+      : displayNameFromSession({
+          fullName:
+            (session as any)?.fullName,
+          displayName:
+            (session as any)?.displayName,
+          name: (session as any)?.name,
+          userId,
+        });
 
   const baseAvatar =
-    toBackendImageUrl(String((session as any)?.avatarUrl || "").trim()) ||
-    toBackendImageUrl(String((session as any)?.avatarUri || "").trim()) ||
-    toBackendImageUrl(String(profileDraft?.avatarUri || "").trim()) ||
-    avatarForProfile(userId, session?.role, church);
+    isExternalUserProfile
+      ? avatarForProfile(
+          userId,
+          viewedProfileParams.role,
+          church
+        )
+      : (
+          toBackendImageUrl(
+            String(
+              (session as any)?.avatarUrl ||
+                ""
+            ).trim()
+          ) ||
+          toBackendImageUrl(
+            String(
+              (session as any)?.avatarUri ||
+                ""
+            ).trim()
+          ) ||
+          toBackendImageUrl(
+            String(
+              profileDraft?.avatarUri ||
+                ""
+            ).trim()
+          ) ||
+          avatarForProfile(
+            userId,
+            session?.role,
+            church
+          )
+        );
 
   const [bootLoading, setBootLoading] = useState(!profileCachePeek);
   const [profile, setProfile] = useState<AuthProfile | null>((profileCachePeek?.profile as AuthProfile | null) || null);
@@ -980,6 +1157,21 @@ export default function MeScreen() {
         return next;
       });
 
+      if (isExternalUserProfile) {
+        setProfileDraft(null);
+
+        if (silent) {
+          console.log(
+            "KRISTO_EXTERNAL_PROFILE_APPLIED",
+            {
+              targetUserId: userId,
+            }
+          );
+        }
+
+        return;
+      }
+
       const backendName = String(profileRes.profile.fullName || "").trim();
       const backendAvatarRaw = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
       const draftBefore = session?.userId ? await loadProfileDraft(session.userId) : null;
@@ -1069,7 +1261,13 @@ export default function MeScreen() {
         });
       }
     },
-    [session, setSession, userId, setChurchDisplayName]
+    [
+      isExternalUserProfile,
+      session,
+      setSession,
+      userId,
+      setChurchDisplayName,
+    ]
   );
 
   const loadProfileLight = useCallback(
@@ -1084,8 +1282,16 @@ export default function MeScreen() {
         clearResponseCacheForRequest("GET", "/api/auth/profile", session.userId);
       }
 
-      const profileRes = await apiGet<AuthProfileRes>(
-        "/api/auth/profile",
+      const profileEndpoint =
+        isExternalUserProfile
+          ? `/api/users/${encodeURIComponent(
+              userId
+            )}/profile`
+          : "/api/auth/profile";
+
+      const profileRes =
+        await apiGet<AuthProfileRes>(
+        profileEndpoint,
         {
           headers: getKristoHeaders({
             userId: session?.userId,
@@ -1122,7 +1328,11 @@ export default function MeScreen() {
 
       const [profileRes, postsRes, announcementsRes, feedRes, overviewRes] = await Promise.all([
         apiGet<AuthProfileRes>(
-          "/api/auth/profile",
+          isExternalUserProfile
+            ? `/api/users/${encodeURIComponent(
+                userId
+              )}/profile`
+            : "/api/auth/profile",
           { headers: getKristoHeaders() },
           { screen: "Profile", throttleMs: 30000 }
         ),
@@ -1265,10 +1475,29 @@ export default function MeScreen() {
    }
  }, [churchId, userId, session, setSession, applyProfileResponse, applyProfileCachePayload]);
 
-  const profileBootedRef = React.useRef(false);
+  const profileBootedUserIdRef =
+    React.useRef("");
+
   React.useEffect(() => {
-    if (!userId || profileBootedRef.current) return;
-    profileBootedRef.current = true;
+    if (!userId) return;
+
+    if (
+      profileBootedUserIdRef.current ===
+      userId
+    ) {
+      return;
+    }
+
+    profileBootedUserIdRef.current =
+      userId;
+
+    setProfile(null);
+    setProfileDraft(null);
+    setPostsCount(0);
+    setFollowersCount(0);
+    setFollowingCount(0);
+    setProfileFeedItems([]);
+
     void load({ silent: true });
   }, [userId, load]);
 
@@ -1278,12 +1507,29 @@ export default function MeScreen() {
       void refreshCommunicationInbox();
 
       void (async () => {
-        const draft = userId ? await loadProfileDraft(userId) : null;
+        const draft =
+          !isExternalUserProfile &&
+          userId
+            ? await loadProfileDraft(userId)
+            : null;
+
         if (draft) {
-          logTrafficCache("Profile", "profile-draft", true);
+          logTrafficCache(
+            "Profile",
+            "profile-draft",
+            true
+          );
           setProfileDraft(draft);
         } else {
-          logTrafficCache("Profile", "profile-draft", false);
+          logTrafficCache(
+            "Profile",
+            "profile-draft",
+            false
+          );
+
+          if (isExternalUserProfile) {
+            setProfileDraft(null);
+          }
         }
       })();
 
@@ -1598,8 +1844,23 @@ const resolvedName = useMemo(() => {
 
   const user = {
     userId: publicKristoId || String((profile as any)?.kristoId || (profile as any)?.publicKristoId || ""),
-    backendUserId: String(profile?.userId || session?.userId || ""),
-    name: String(profile?.fullName || resolvedName || session?.displayName || session?.name || profileDraft?.displayName || "").trim(),
+    backendUserId: String(
+      profile?.userId ||
+        userId ||
+        ""
+    ),
+    name: String(
+      profile?.fullName ||
+        (
+          isExternalUserProfile
+            ? viewedProfileParams.name
+            : resolvedName ||
+              session?.displayName ||
+              session?.name ||
+              profileDraft?.displayName
+        ) ||
+        ""
+    ).trim(),
     username: usernameFromUserId(publicKristoId || userId),
     church,
     churchId,
@@ -1639,7 +1900,8 @@ const resolvedName = useMemo(() => {
       setClaimedFeedTick((v) => v + 1);
     },
     2500,
-    Boolean(session?.userId)
+    Boolean(session?.userId) &&
+      !isExternalUserProfile
   );
 
   return (
@@ -1653,15 +1915,27 @@ const resolvedName = useMemo(() => {
       >
         <View style={s.container}>
           <View style={s.headerRow}>
-            <Text style={s.title}>My Profile</Text>
+            <Text style={s.title}>
+              {profilePageTitle}
+            </Text>
 
-            <Pressable
-              style={s.settingsIconBtn}
-              onPress={() => router.push("/(tabs)/profile/settings" as any)}
-              accessibilityLabel="Settings"
-            >
-              <Ionicons name="settings-outline" size={20} color="#F4D06F" />
-            </Pressable>
+            {!isExternalUserProfile ? (
+              <Pressable
+                style={s.settingsIconBtn}
+                onPress={() =>
+                  router.push(
+                    "/(tabs)/profile/settings" as any
+                  )
+                }
+                accessibilityLabel="Settings"
+              >
+                <Ionicons
+                  name="settings-outline"
+                  size={20}
+                  color="#F4D06F"
+                />
+              </Pressable>
+            ) : null}
           </View>
                       <View style={s.heroCard}>
             <View style={s.heroGlowA} />
@@ -1873,13 +2147,15 @@ const resolvedName = useMemo(() => {
 
 
             <View style={s.compactActionsRow}>
-              <Pressable
+              {!isExternalUserProfile ? (
+<Pressable
                 style={s.compactPrimaryBtn}
                 onPress={() => router.push("/(tabs)/profile/edit" as any)}
               >
                 <Ionicons name="create-outline" size={15} color="#07111F" />
                 <Text style={s.compactPrimaryBtnText}>{showMediaContent ? "Edit Media Profile" : user.profileStatus === "Incomplete" ? "Edit Profile" : "Edit Profile"}</Text>
               </Pressable>
+            ) : null}
             </View>
 
             {canShowMediaTab && showMediaCreatorTools ? (
