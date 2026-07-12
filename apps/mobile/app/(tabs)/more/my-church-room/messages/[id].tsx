@@ -2750,6 +2750,70 @@ function AppointmentVoiceChip({
   const boundSourceRef =
     React.useRef(source);
 
+  /*
+   * Bind the player to the persistent local file immediately
+   * after the chip mounts. This prevents a remote player from
+   * showing loading again when the voice is already cached.
+   */
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const noteId = String(
+      note?.id ||
+        `appointment_voice_${index}`
+    ).trim();
+
+    void resolvePersistentAppointmentVoiceSource(
+      noteId,
+      source
+    ).then((resolvedSource) => {
+      if (
+        cancelled ||
+        !resolvedSource ||
+        boundSourceRef.current ===
+          resolvedSource
+      ) {
+        return;
+      }
+
+      try {
+        player.pause();
+      } catch {}
+
+      boundSourceRef.current =
+        resolvedSource;
+
+      player.replace({
+        uri: resolvedSource,
+      });
+
+      console.log(
+        "KRISTO_APPOINTMENT_VOICE_PLAYER_PREBOUND",
+        {
+          voiceIndex: index + 1,
+          noteId,
+          sourceType:
+            resolvedSource.startsWith(
+              "file://"
+            )
+              ? "persistent-local"
+              : "remote-fallback",
+          sourceEnd:
+            resolvedSource.slice(-80),
+        }
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    index,
+    note?.id,
+    player,
+    source,
+  ]);
+
   const delayedPlayTimerRef =
     React.useRef<
       ReturnType<typeof setTimeout> | null
@@ -2839,8 +2903,7 @@ function AppointmentVoiceChip({
     active &&
     (
       cacheBusy ||
-      status.isBuffering ||
-      !status.isLoaded
+      status.isBuffering
     );
 
   const playing =
