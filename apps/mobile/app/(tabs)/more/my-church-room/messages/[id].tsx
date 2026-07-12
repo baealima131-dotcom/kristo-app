@@ -2704,6 +2704,69 @@ function scheduleAppointmentVoicePrecache(
   drainAppointmentVoicePrecacheQueue();
 }
 
+type ActiveAppointmentVoicePlayback = {
+  key: string;
+  stop: () => void;
+};
+
+let activeAppointmentVoicePlayback:
+  ActiveAppointmentVoicePlayback | null =
+    null;
+
+function claimAppointmentVoicePlayback(
+  key: string,
+  stop: () => void
+) {
+  const previous =
+    activeAppointmentVoicePlayback;
+
+  if (
+    previous &&
+    previous.key !== key
+  ) {
+    try {
+      previous.stop();
+    } catch {}
+  }
+
+  activeAppointmentVoicePlayback = {
+    key,
+    stop,
+  };
+
+  console.log(
+    "KRISTO_APPOINTMENT_VOICE_GLOBAL_CLAIM",
+    {
+      key,
+      stoppedPrevious:
+        !!previous &&
+        previous.key !== key,
+      previousKey:
+        previous?.key || "",
+    }
+  );
+}
+
+function releaseAppointmentVoicePlayback(
+  key: string
+) {
+  if (
+    activeAppointmentVoicePlayback?.key !==
+    key
+  ) {
+    return;
+  }
+
+  activeAppointmentVoicePlayback = null;
+
+  console.log(
+    "KRISTO_APPOINTMENT_VOICE_GLOBAL_RELEASE",
+    {
+      key,
+    }
+  );
+}
+
 function formatAppointmentVoiceDuration(seconds: unknown) {
   const total = Math.max(0, Math.round(Number(seconds || 0)));
   const minutes = Math.floor(total / 60);
@@ -2731,6 +2794,12 @@ function AppointmentVoiceChip({
       note?.fileUrl ||
       ""
   ).trim();
+
+  const playbackKey = [
+    "appointment-voice",
+    String(note?.id || ""),
+    appointmentVoiceCacheHash(source),
+  ].join(":");
 
   const player = useAudioPlayer(
     source ? { uri: source } : null,
@@ -2841,8 +2910,15 @@ function AppointmentVoiceChip({
       try {
         player.pause();
       } catch {}
+
+      releaseAppointmentVoicePlayback(
+        playbackKey
+      );
     };
-  }, [player]);
+  }, [
+    playbackKey,
+    player,
+  ]);
 
   React.useEffect(() => {
     if (active || !status.playing) return;
@@ -2861,6 +2937,10 @@ function AppointmentVoiceChip({
 
     setCompleted(true);
 
+    releaseAppointmentVoicePlayback(
+      playbackKey
+    );
+
     console.log(
       "KRISTO_APPOINTMENT_VOICE_COMPLETED",
       {
@@ -2869,6 +2949,7 @@ function AppointmentVoiceChip({
     );
   }, [
     index,
+    playbackKey,
     status.didJustFinish,
   ]);
 
@@ -2919,6 +3000,10 @@ function AppointmentVoiceChip({
       try {
         player.pause();
       } catch {}
+
+      releaseAppointmentVoicePlayback(
+        playbackKey
+      );
 
       return;
     }
@@ -2984,6 +3069,15 @@ function AppointmentVoiceChip({
               }
 
               try {
+                claimAppointmentVoicePlayback(
+                  playbackKey,
+                  () => {
+                    try {
+                      player.pause();
+                    } catch {}
+                  }
+                );
+
                 player.seekTo(0);
                 player.play();
 
@@ -3048,6 +3142,16 @@ function AppointmentVoiceChip({
       }
 
       setCompleted(false);
+
+      claimAppointmentVoicePlayback(
+        playbackKey,
+        () => {
+          try {
+            player.pause();
+          } catch {}
+        }
+      );
+
       player.play();
 
       console.log(
