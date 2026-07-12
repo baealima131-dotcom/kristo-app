@@ -72,7 +72,7 @@ function useModalEntrance(visible: boolean) {
   return { scale, fade, lift };
 }
 
-function PowerCardChrome({ children }: { children: React.ReactNode }) {
+function PowerCardChrome({ children }: { children?: React.ReactNode }) {
   return (
     <>
       <LinearGradient
