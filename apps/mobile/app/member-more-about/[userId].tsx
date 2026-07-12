@@ -59,12 +59,22 @@ type PublicMemberProfile = {
   churchesJoinedCount?: number;
   churchCount?: number;
   churchHistory?: Array<{
+    membershipId?: string;
+    kristoUserId?: string;
+    churchId?: string;
     churchName?: string;
+    role?: string;
+    status?: string;
     joinedAt?: string | number;
     leftAt?: string | number;
     exitType?: string;
     exitReasonPublic?: string;
   }>;
+
+  journeyIdentity?: {
+    userId?: string;
+    kristoId?: string;
+  };
 
   publicVisibility?: {
     showGender?: boolean;
@@ -632,19 +642,40 @@ export default function MoreAboutMemberScreen() {
                               item?.leftAt
                             );
 
-                          const exit =
+                          const role =
                             text(
-                              item?.exitReasonPublic ||
-                                item?.exitType
+                              item?.role
+                            ) ||
+                            "Member";
+
+                          const status =
+                            text(
+                              item?.status
                             );
 
-                          const detail = [
+                          const exit =
+                            text(
+                              item?.exitReasonPublic
+                            );
+
+                          const period =
                             joined
-                              ? `Joined ${joined}`
-                              : "",
-                            left
-                              ? `Left ${left}`
-                              : "",
+                              ? (
+                                  left
+                                    ? `${joined} – ${left}`
+                                    : status === "Active"
+                                      ? `${joined} – Present`
+                                      : joined
+                                )
+                              : (
+                                  status === "Active"
+                                    ? "Present"
+                                    : ""
+                                );
+
+                          const detail = [
+                            role,
+                            period,
                             exit,
                           ]
                             .filter(Boolean)
@@ -653,6 +684,10 @@ export default function MoreAboutMemberScreen() {
                           return (
                             <View
                               key={
+                                text(
+                                  item
+                                    ?.membershipId
+                                ) ||
                                 `${
                                   churchName
                                 }-${index}`

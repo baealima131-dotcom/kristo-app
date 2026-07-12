@@ -6,7 +6,10 @@ import {
   getProfileByUserCode,
 } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
-import { getActiveMembership } from "@/app/api/_lib/memberships";
+import {
+  getActiveMembership,
+  getMembershipsForUser,
+} from "@/app/api/_lib/memberships";
 import { getChurchById } from "@/app/api/_lib/churches";
 import { normalizePrivacy } from "@/app/api/auth/_lib/profile";
 
@@ -143,10 +146,18 @@ export async function GET(
   const source: any = profile || {};
   const user: any = account || {};
 
-  const activeMembership =
-    await getActiveMembership(
+  const [
+    activeMembership,
+    membershipHistory,
+  ] = await Promise.all([
+    getActiveMembership(
       canonicalTargetUserId
-    ).catch(() => null);
+    ).catch(() => null),
+
+    getMembershipsForUser(
+      canonicalTargetUserId
+    ).catch(() => []),
+  ]);
 
   const membershipChurch =
     activeMembership?.churchId
@@ -315,44 +326,136 @@ export async function GET(
         )
       : [];
 
-  const rawChurchHistory =
-    Array.isArray(source.churchHistory)
-      ? source.churchHistory
-      : Array.isArray(user.churchHistory)
-        ? user.churchHistory
-        : [];
+  const verifiedMembershipHistory =
+    (
+      await Promise.all(
+        (
+          Array.isArray(membershipHistory)
+            ? membershipHistory
+            : []
+        )
+          .filter((membership: any) => {
+            const status = text(
+              membership?.status
+            );
+
+            return (
+              status === "Active" ||
+              status === "Left" ||
+              status === "Banned"
+            );
+          })
+          .map(async (membership: any) => {
+            const historyChurchId = text(
+              membership?.churchId
+            );
+
+            const historyChurch =
+              historyChurchId
+                ? await getChurchById(
+                    historyChurchId
+                  ).catch(() => null)
+                : null;
+
+            const status = text(
+              membership?.status
+            );
+
+            const joinedAt =
+              membership?.decidedAt ||
+              membership?.approvedAt ||
+              membership?.joinedAt ||
+              membership?.createdAt ||
+              "";
+
+            const leftAt =
+              status === "Active"
+                ? ""
+                : (
+                    membership?.leftAt ||
+                    membership?.endedAt ||
+                    membership?.updatedAt ||
+                    membership?.decidedAt ||
+                    ""
+                  );
+
+            const role = text(
+              membership?.churchRole ||
+              membership?.role ||
+              "Member"
+            );
+
+            return {
+              membershipId: text(
+                membership?.id
+              ),
+
+              kristoUserId:
+                canonicalTargetUserId,
+
+              churchId:
+                historyChurchId,
+
+              churchName: text(
+                historyChurch?.name ||
+                membership?.churchName ||
+                historyChurchId
+              ),
+
+              role,
+
+              joinedAt,
+
+              leftAt,
+
+              status,
+
+              exitType:
+                status === "Left"
+                  ? "Left"
+                  : status === "Banned"
+                    ? "Removed"
+                    : "Active",
+
+              exitReasonPublic: text(
+                membership
+                  ?.exitReasonPublic
+              ),
+            };
+          })
+      )
+    )
+      .filter(
+        (item: any) =>
+          Boolean(
+            item.churchId ||
+            item.churchName
+          )
+      )
+      .sort(
+        (a: any, b: any) => {
+          const aTime = new Date(
+            a.joinedAt || 0
+          ).getTime();
+
+          const bTime = new Date(
+            b.joinedAt || 0
+          ).getTime();
+
+          return (
+            (Number.isFinite(bTime)
+              ? bTime
+              : 0) -
+            (Number.isFinite(aTime)
+              ? aTime
+              : 0)
+          );
+        }
+      );
 
   const publicChurchHistory =
     privacy.showChurchHistory
-      ? rawChurchHistory
-          .map((item: any) => ({
-            churchName: text(
-              item?.churchName ||
-                item?.name
-            ),
-            joinedAt:
-              item?.joinedAt ||
-              item?.startedAt ||
-              "",
-            leftAt:
-              item?.leftAt ||
-              item?.endedAt ||
-              "",
-            exitType: text(
-              item?.exitType
-            ),
-            exitReasonPublic: text(
-              item?.exitReasonPublic
-            ),
-          }))
-          .filter(
-            (item: any) =>
-              Boolean(
-                item.churchName ||
-                  item.joinedAt ||
-                  item.leftAt
-              )
-          )
+      ? verifiedMembershipHistory
       : [];
 
   const publicMemberSince =
@@ -443,6 +546,14 @@ export async function GET(
         publicLanguages.length,
       returnedHistoryCount:
         publicChurchHistory.length,
+      journeySource:
+        "kristo-membership-history",
+      journeyKristoUserId:
+        canonicalTargetUserId,
+      totalMembershipRecords:
+        Array.isArray(membershipHistory)
+          ? membershipHistory.length
+          : 0,
     }
   );
 
@@ -451,6 +562,16 @@ export async function GET(
     profile: {
       userId:
         canonicalTargetUserId,
+
+      journeyIdentity: {
+        userId:
+          canonicalTargetUserId,
+        kristoId: text(
+          source.userCode ||
+          source.kristoId ||
+          source.publicKristoId
+        ),
+      },
 
       fullName,
       avatarUrl,
