@@ -45,6 +45,9 @@ type Body = {
   avatarData?: string;
   bio?: string;
 
+  languages?: string[] | string;
+  profileFact?: string;
+
   privacy?: {
     publicProfile?: boolean;
     showFollowers?: boolean;
@@ -55,6 +58,16 @@ type Body = {
     showAddress?: boolean;
     showChurchId?: boolean;
     showKristoId?: boolean;
+
+    showGender?: boolean;
+    showCountry?: boolean;
+    showCity?: boolean;
+    showMaritalStatus?: boolean;
+    showLanguages?: boolean;
+    showProfileFact?: boolean;
+    showMemberSince?: boolean;
+    showChurchHistory?: boolean;
+
     privateMode?: boolean;
   };
 
@@ -67,6 +80,16 @@ type Body = {
   showAddress?: boolean;
   showChurchId?: boolean;
   showKristoId?: boolean;
+
+  showGender?: boolean;
+  showCountry?: boolean;
+  showCity?: boolean;
+  showMaritalStatus?: boolean;
+  showLanguages?: boolean;
+  showProfileFact?: boolean;
+  showMemberSince?: boolean;
+  showChurchHistory?: boolean;
+
   privateMode?: boolean;
 };
 
@@ -257,6 +280,24 @@ export async function POST(req: Request) {
     ...(typeof body.showAddress === "boolean" ? { showAddress: body.showAddress } : {}),
     ...(typeof body.showChurchId === "boolean" ? { showChurchId: body.showChurchId } : {}),
     ...(typeof body.showKristoId === "boolean" ? { showKristoId: body.showKristoId } : {}),
+
+    ...(typeof body.showGender === "boolean" ? { showGender: body.showGender } : {}),
+    ...(typeof body.showCountry === "boolean" ? { showCountry: body.showCountry } : {}),
+    ...(typeof body.showCity === "boolean" ? { showCity: body.showCity } : {}),
+    ...(typeof body.showMaritalStatus === "boolean"
+      ? { showMaritalStatus: body.showMaritalStatus }
+      : {}),
+    ...(typeof body.showLanguages === "boolean" ? { showLanguages: body.showLanguages } : {}),
+    ...(typeof body.showProfileFact === "boolean"
+      ? { showProfileFact: body.showProfileFact }
+      : {}),
+    ...(typeof body.showMemberSince === "boolean"
+      ? { showMemberSince: body.showMemberSince }
+      : {}),
+    ...(typeof body.showChurchHistory === "boolean"
+      ? { showChurchHistory: body.showChurchHistory }
+      : {}),
+
     ...(typeof body.privateMode === "boolean" ? { privateMode: body.privateMode } : {}),
   };
 
@@ -303,7 +344,33 @@ export async function POST(req: Request) {
       (current as any).userCode ||
       (isKristoUserCode(u.id) ? String(u.id).toUpperCase() : undefined),
 
-    bio: typeof body.bio === "string" ? body.bio : (current as any).bio,
+    bio:
+      typeof body.bio === "string"
+        ? body.bio
+        : (current as any).bio,
+
+    languages:
+      body.languages !== undefined
+        ? (
+            Array.isArray(body.languages)
+              ? body.languages
+              : String(body.languages || "").split(",")
+          )
+            .map((value) =>
+              String(value || "").trim()
+            )
+            .filter(Boolean)
+            .slice(0, 8)
+        : Array.isArray((current as any).languages)
+          ? (current as any).languages
+          : [],
+
+    profileFact:
+      typeof body.profileFact === "string"
+        ? body.profileFact.trim().slice(0, 160)
+        : String(
+            (current as any).profileFact || ""
+          ),
 
     dobVisibility: body.dobVisibility || current.dobVisibility,
     maritalStatus: body.maritalStatus || current.maritalStatus,

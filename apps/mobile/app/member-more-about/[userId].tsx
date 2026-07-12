@@ -45,6 +45,7 @@ type PublicMemberProfile = {
   city?: string;
   gender?: string;
   age?: number | string;
+  dob?: string;
   maritalStatus?: string;
   languages?: string[] | string;
 
@@ -64,6 +65,18 @@ type PublicMemberProfile = {
     exitType?: string;
     exitReasonPublic?: string;
   }>;
+
+  publicVisibility?: {
+    showGender?: boolean;
+    showAge?: boolean;
+    showCountry?: boolean;
+    showCity?: boolean;
+    showMaritalStatus?: boolean;
+    showLanguages?: boolean;
+    showProfileFact?: boolean;
+    showMemberSince?: boolean;
+    showChurchHistory?: boolean;
+  };
 };
 
 function text(value: unknown) {
@@ -261,6 +274,64 @@ export default function MoreAboutMemberScreen() {
       profile?.appRole
   );
 
+  const publicAge = useMemo(() => {
+    const directAge = Number(
+      profile?.age || 0
+    );
+
+    if (
+      Number.isFinite(directAge) &&
+      directAge > 0
+    ) {
+      return String(
+        Math.floor(directAge)
+      );
+    }
+
+    const dob = text(profile?.dob);
+
+    if (!dob) return "";
+
+    const birthDate = new Date(
+      `${dob}T12:00:00`
+    );
+
+    if (
+      !Number.isFinite(
+        birthDate.getTime()
+      )
+    ) {
+      return "";
+    }
+
+    const today = new Date();
+
+    let age =
+      today.getFullYear() -
+      birthDate.getFullYear();
+
+    const birthdayPassed =
+      today.getMonth() >
+        birthDate.getMonth() ||
+      (
+        today.getMonth() ===
+          birthDate.getMonth() &&
+        today.getDate() >=
+          birthDate.getDate()
+      );
+
+    if (!birthdayPassed) {
+      age -= 1;
+    }
+
+    return age >= 0
+      ? String(age)
+      : "";
+  }, [
+    profile?.age,
+    profile?.dob,
+  ]);
+
   const joinedDate = formatDate(
     profile?.memberSince ||
       profile?.joinedAt ||
@@ -289,7 +360,7 @@ export default function MoreAboutMemberScreen() {
 
   const publicRows = [
     text(profile?.gender),
-    text(profile?.age),
+    publicAge,
     text(profile?.maritalStatus),
     text(profile?.country),
     text(profile?.city),
@@ -464,9 +535,7 @@ export default function MoreAboutMemberScreen() {
                 <InfoRow
                   icon="hourglass-outline"
                   label="Age"
-                  value={
-                    text(profile?.age)
-                  }
+                  value={publicAge}
                 />
 
                 <InfoRow
@@ -628,7 +697,12 @@ export default function MoreAboutMemberScreen() {
                         <Text
                           style={styles.emptyPublicText}
                         >
-                          Church history is not publicly shared.
+                          {
+                        profile?.publicVisibility
+                          ?.showChurchHistory === true
+                          ? "No verified church history is available yet."
+                          : "Church history is not publicly shared."
+                      }
                         </Text>
                       </View>
                     )

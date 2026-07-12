@@ -28,6 +28,16 @@ export type UserProfilePrivacy = {
   showAddress?: boolean;
   showChurchId?: boolean;
   showKristoId?: boolean;
+
+  showGender?: boolean;
+  showCountry?: boolean;
+  showCity?: boolean;
+  showMaritalStatus?: boolean;
+  showLanguages?: boolean;
+  showProfileFact?: boolean;
+  showMemberSince?: boolean;
+  showChurchHistory?: boolean;
+
   privateMode?: boolean;
 };
 
@@ -48,6 +58,9 @@ export type UserProfile = {
   city?: string;
   avatarUrl?: string;
   bio?: string;
+
+  languages?: string[];
+  profileFact?: string;
 
   dobVisibility: DobVisibility;
   maritalStatus: MaritalStatus;
@@ -148,6 +161,16 @@ export function defaultPrivacy(): UserProfilePrivacy {
     showAddress: false,
     showChurchId: true,
     showKristoId: true,
+
+    showGender: false,
+    showCountry: true,
+    showCity: false,
+    showMaritalStatus: false,
+    showLanguages: true,
+    showProfileFact: true,
+    showMemberSince: true,
+    showChurchHistory: false,
+
     privateMode: false,
   };
 }
@@ -172,7 +195,51 @@ export function normalizePrivacy(input?: Partial<UserProfilePrivacy> | null): Us
       "showKristoId" in src
         ? Boolean((src as any).showKristoId)
         : base.showKristoId,
-    privateMode: "privateMode" in src ? Boolean((src as any).privateMode) : base.privateMode,
+
+    showGender:
+      "showGender" in src
+        ? Boolean((src as any).showGender)
+        : base.showGender,
+
+    showCountry:
+      "showCountry" in src
+        ? Boolean((src as any).showCountry)
+        : base.showCountry,
+
+    showCity:
+      "showCity" in src
+        ? Boolean((src as any).showCity)
+        : base.showCity,
+
+    showMaritalStatus:
+      "showMaritalStatus" in src
+        ? Boolean((src as any).showMaritalStatus)
+        : base.showMaritalStatus,
+
+    showLanguages:
+      "showLanguages" in src
+        ? Boolean((src as any).showLanguages)
+        : base.showLanguages,
+
+    showProfileFact:
+      "showProfileFact" in src
+        ? Boolean((src as any).showProfileFact)
+        : base.showProfileFact,
+
+    showMemberSince:
+      "showMemberSince" in src
+        ? Boolean((src as any).showMemberSince)
+        : base.showMemberSince,
+
+    showChurchHistory:
+      "showChurchHistory" in src
+        ? Boolean((src as any).showChurchHistory)
+        : base.showChurchHistory,
+
+    privateMode:
+      "privateMode" in src
+        ? Boolean((src as any).privateMode)
+        : base.privateMode,
   };
 }
 
@@ -209,6 +276,8 @@ export async function ensureProfileDraft(params: {
     city: params.city,
     avatarUrl: params.avatarUrl || "",
     bio: params.bio || "",
+    languages: [],
+    profileFact: "",
     dobVisibility: "Private",
     maritalStatus: "SINGLE",
     maritalVisibility: "CorePastor",
