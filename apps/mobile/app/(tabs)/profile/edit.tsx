@@ -49,6 +49,8 @@ export default function EditProfileScreen() {
   const [phonePublic, setPhonePublic] = useState(false);
   const [addressPublic, setAddressPublic] = useState(false);
   const [churchPublic, setChurchPublic] = useState(true);
+  const [churchIdPublic, setChurchIdPublic] = useState(true);
+  const [kristoIdPublic, setKristoIdPublic] = useState(true);
   const [phoneValue, setPhoneValue] = useState("");
   const [addressValue, setAddressValue] = useState("");
 
@@ -91,7 +93,33 @@ export default function EditProfileScreen() {
 
       setPhonePublic(Boolean((saved as any)?.phonePublic ?? (session as any)?.phonePublic ?? false));
       setAddressPublic(Boolean((saved as any)?.addressPublic ?? (session as any)?.addressPublic ?? false));
-      setChurchPublic(Boolean((saved as any)?.churchPublic ?? (session as any)?.churchPublic ?? true));
+      setChurchPublic(
+        Boolean(
+          (apiProfile as any)?.privacy?.showChurch ??
+            (saved as any)?.churchPublic ??
+            (session as any)?.churchPublic ??
+            true
+        )
+      );
+
+      setChurchIdPublic(
+        Boolean(
+          (apiProfile as any)?.privacy?.showChurchId ??
+            (saved as any)?.churchIdPublic ??
+            (session as any)?.churchIdPublic ??
+            true
+        )
+      );
+
+      setKristoIdPublic(
+        Boolean(
+          (apiProfile as any)?.privacy?.showKristoId ??
+            (saved as any)?.kristoIdPublic ??
+            (session as any)?.kristoIdPublic ??
+            true
+        )
+      );
+
       setLoading(false);
     })();
 
@@ -187,6 +215,8 @@ export default function EditProfileScreen() {
       phonePublic,
       addressPublic,
       churchPublic,
+      churchIdPublic,
+      kristoIdPublic,
     } as any);
 
     if (__DEV__) {
@@ -242,6 +272,8 @@ export default function EditProfileScreen() {
               showPhone: phonePublic,
               showChurch: churchPublic,
               showAddress: addressPublic,
+              showChurchId: churchIdPublic,
+              showKristoId: kristoIdPublic,
             },
           },
           { headers: getKristoHeaders() }
@@ -280,6 +312,8 @@ export default function EditProfileScreen() {
           city: String(serverProfile?.city || nextProfile.city || ""),
           country: String(serverProfile?.country || nextProfile.country || ""),
           avatarUpdatedAt,
+          churchIdPublic,
+          kristoIdPublic,
         } as any;
 
         await saveProfileDraft(syncedProfile, session.userId);
@@ -307,6 +341,8 @@ export default function EditProfileScreen() {
           phonePublic,
           addressPublic,
           churchPublic,
+          churchIdPublic,
+          kristoIdPublic,
         } as any);
 
         emitUserProfileUpdated({
@@ -426,25 +462,151 @@ export default function EditProfileScreen() {
               <Text style={s.heroTitle} numberOfLines={1}>
                 {displayName || signupName || "Your name"}
               </Text>
-              <Text style={s.heroSub}>Kristo ID protected</Text>
+              <Text style={s.heroSub}>
+                Tap an ID below to change privacy
+              </Text>
             </View>
           </View>
 
-          <Text style={[s.h, { marginTop: 10 }]}>Kristo ID / Username</Text>
-          <View style={s.lockedV2Box}>
-            <View style={s.lockedV2Icon}>
-              <Ionicons name="lock-closed-outline" size={18} color={GOLD} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.lockedV2Title}>Username in V2</Text>
-              <Text style={s.lockedV2Sub}>Kristo ID remains unchanged.</Text>
-            </View>
+          <Text style={[s.h, { marginTop: 12 }]}>
+            Identity privacy
+          </Text>
+
+          <View style={s.identityPrivacyRow}>
+            <Pressable
+              onPress={() =>
+                setChurchIdPublic((value) => !value)
+              }
+              style={[
+                s.identityPrivacyCard,
+                churchIdPublic &&
+                  s.identityPrivacyCardPublic,
+              ]}
+            >
+              <View style={s.identityPrivacyTitleRow}>
+                <Text style={s.identityPrivacyLabel}>
+                  Church ID
+                </Text>
+
+                <View
+                  style={[
+                    s.identityPrivacyBadge,
+                    churchIdPublic &&
+                      s.identityPrivacyBadgePublic,
+                  ]}
+                >
+                  <Ionicons
+                    name={
+                      churchIdPublic
+                        ? "lock-open-outline"
+                        : "lock-closed-outline"
+                    }
+                    size={42}
+                    color={
+                      churchIdPublic
+                        ? GOLD
+                        : "rgba(255,255,255,0.58)"
+                    }
+                  />
+
+                  <Text
+                    style={[
+                      s.identityPrivacyBadgeText,
+                      churchIdPublic &&
+                        s.identityPrivacyBadgeTextPublic,
+                    ]}
+                  >
+                    {churchIdPublic
+                      ? "PUBLIC"
+                      : "PRIVATE"}
+                  </Text>
+                </View>
+              </View>
+
+              <Text
+                style={s.identityPrivacyValue}
+                numberOfLines={1}
+              >
+                {String(
+                  session?.churchId ||
+                    (session as any)?.activeChurchId ||
+                    "No ID yet"
+                )}
+              </Text>
+
+
+            </Pressable>
+
+            <Pressable
+              onPress={() =>
+                setKristoIdPublic((value) => !value)
+              }
+              style={[
+                s.identityPrivacyCard,
+                kristoIdPublic &&
+                  s.identityPrivacyCardPublic,
+              ]}
+            >
+              <View style={s.identityPrivacyTitleRow}>
+                <Text style={s.identityPrivacyLabel}>
+                  Kristo ID
+                </Text>
+
+                <View
+                  style={[
+                    s.identityPrivacyBadge,
+                    kristoIdPublic &&
+                      s.identityPrivacyBadgePublic,
+                  ]}
+                >
+                  <Ionicons
+                    name={
+                      kristoIdPublic
+                        ? "lock-open-outline"
+                        : "lock-closed-outline"
+                    }
+                    size={42}
+                    color={
+                      kristoIdPublic
+                        ? GOLD
+                        : "rgba(255,255,255,0.58)"
+                    }
+                  />
+
+                  <Text
+                    style={[
+                      s.identityPrivacyBadgeText,
+                      kristoIdPublic &&
+                        s.identityPrivacyBadgeTextPublic,
+                    ]}
+                  >
+                    {kristoIdPublic
+                      ? "PUBLIC"
+                      : "PRIVATE"}
+                  </Text>
+                </View>
+              </View>
+
+              <Text
+                style={s.identityPrivacyValue}
+                numberOfLines={1}
+              >
+                {String(
+                  (session as any)?.kristoId ||
+                    (session as any)?.publicKristoId ||
+                    session?.userId ||
+                    "No ID yet"
+                )}
+              </Text>
+
+
+            </Pressable>
           </View>
 
           <View style={s.heroInfoBox}>
             {infoRows.map((row) => (
               <View key={row.label} style={s.heroInfoRow}>
-                <Ionicons name={row.icon as any} size={18} color={GOLD} />
+                <Ionicons name={row.icon as any} size={34} color={GOLD} />
                 <View style={s.heroInfoText}>
                   <Text style={s.heroInfoLabel}>{row.label}</Text>
                   <Text style={s.heroInfoValue} numberOfLines={1}>{row.value}</Text>
@@ -505,7 +667,7 @@ export default function EditProfileScreen() {
               </View>
 
               <Pressable onPress={() => setBioOpen(false)} style={s.bioCloseBtn}>
-                <Ionicons name="close" size={18} color="white" />
+                <Ionicons name="close" size={34} color="white" />
               </Pressable>
             </View>
 
@@ -642,6 +804,128 @@ const s: any = StyleSheet.create({
   heroTextWrap: {
     flex: 1,
     minWidth: 0,
+  },
+
+  identityPrivacyRow: {
+    width: "100%",
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  identityPrivacyCard: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 82,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(0,0,0,0.22)",
+    borderRadius: 15,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  identityPrivacyCardPublic: {
+    borderColor: "rgba(244,208,111,0.38)",
+    backgroundColor: "rgba(244,208,111,0.08)",
+  },
+  identityPrivacyIcon: {
+    width: 27,
+    height: 27,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(244,208,111,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(244,208,111,0.25)",
+    marginBottom: 5,
+  },
+    identityPrivacyTitleRow: {
+    width: "100%",
+    minHeight: 74,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    columnGap: 10,
+    marginBottom: 8,
+  },
+
+  identityPrivacyBadge: {
+    width: 70,
+    minHeight: 76,
+    paddingTop: 8,
+    paddingBottom: 7,
+    borderRadius: 24,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(255,255,255,0.045)",
+    alignItems: "center",
+    justifyContent: "center",
+    rowGap: 3,
+    flexShrink: 0,
+
+    shadowColor: "#000000",
+    shadowOpacity: 0.30,
+    shadowRadius: 10,
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
+    elevation: 4,
+  },
+
+  identityPrivacyBadgePublic: {
+    borderColor: "rgba(244,208,111,0.72)",
+    backgroundColor: "rgba(244,208,111,0.13)",
+
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.30,
+    shadowRadius: 14,
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
+    elevation: 6,
+  },
+
+  identityPrivacyBadgeText: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 8,
+    lineHeight: 11,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+    textAlign: "center",
+  },
+
+  identityPrivacyBadgeTextPublic: {
+    color: "#F4D06F",
+  },
+
+  identityPrivacyLabel: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "900",
+    letterSpacing: -0.25,
+    flexShrink: 1,
+  },
+
+  identityPrivacyValue: {
+    color: "rgba(255,255,255,0.66)",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+
+  identityPrivacyStatus: {
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 9,
+    fontWeight: "800",
+    marginTop: 5,
+    letterSpacing: 0.4,
+  },
+
+  identityPrivacyStatusPublic: {
+    color: GOLD,
   },
 
   heroInfoBox: {
