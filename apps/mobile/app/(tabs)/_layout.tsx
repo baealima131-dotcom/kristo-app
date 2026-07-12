@@ -1,4 +1,6 @@
-import { Tabs, useGlobalSearchParams, useSegments, useRouter } from "expo-router";
+import { Tabs, useGlobalSearchParams, useSegments, useRouter,
+  useLocalSearchParams
+} from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -260,6 +262,31 @@ function ProfileAvatarIcon({
 }
 
 export default function TabLayout() {
+
+  const profileRouteParams =
+    useLocalSearchParams<{
+      profileMode?: string;
+      source?: string;
+    }>();
+
+  const isViewingExternalProfile =
+    String(
+      profileRouteParams.profileMode || ""
+    )
+      .trim()
+      .toLowerCase() === "external" ||
+    String(
+      profileRouteParams.source || ""
+    )
+      .trim()
+      .toLowerCase() ===
+      "direct-message-profile";
+
+  const profileTabLabel =
+    isViewingExternalProfile
+      ? "Profile"
+      : "Me";
+
   const segments = useSegments() as string[];
   const params = useGlobalSearchParams<{ profileMode?: string }>();
   const router = useRouter();
@@ -1235,7 +1262,14 @@ export default function TabLayout() {
         }}
       />
 
-      <Tabs.Screen name="profile" options={profileTabScreenOptions} />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          ...profileTabScreenOptions,
+          title: profileTabLabel,
+          tabBarLabel: profileTabLabel,
+        }}
+      />
 
       <Tabs.Screen name="_ministry_hidden/index" options={{ href: null }} />
     </Tabs>
