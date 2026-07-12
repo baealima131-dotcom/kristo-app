@@ -9997,6 +9997,50 @@ const displayHeaderTitle = assignmentDisplayTitle;
       return;
     }
 
+    if (action === "more-about") {
+      closeThreadMenu();
+
+      const moreAboutUserId = String(
+        peerUserIdForPresence || ""
+      ).trim();
+
+      if (!moreAboutUserId) {
+        Alert.alert(
+          "More About",
+          "This member could not be identified."
+        );
+        return;
+      }
+
+      router.push({
+        pathname:
+          "/member-more-about/[userId]" as any,
+        params: {
+          userId: moreAboutUserId,
+          name: String(
+            headerTitle || "Member"
+          ),
+          avatarUrl: String(
+            effectiveHeaderAvatar ||
+              routeAvatar ||
+              ""
+          ).trim(),
+        },
+      });
+
+      console.log(
+        "KRISTO_DM_MORE_ABOUT_OPEN",
+        {
+          targetUserId:
+            moreAboutUserId,
+          source:
+            "conversation-settings",
+        }
+      );
+
+      return;
+    }
+
     if (action === "mute") {
       confirmMuteConversation();
       return;
@@ -14382,7 +14426,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   </View>
 
                   <View style={s.menuSectionBlock}>
-                    <Text style={t.menuSection}>Notifications</Text>
+                    <Text style={t.menuSection}>Member</Text>
 
                     <View style={s.menuTileGrid}>
                       <MenuTile
@@ -14392,17 +14436,13 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                       />
 
                       <MenuTile
-                        icon={
-                          dmConversationSettings?.muted
-                            ? "notifications-outline"
-                            : "notifications-off-outline"
+                        icon="information-circle-outline"
+                        label="More About"
+                        onPress={() =>
+                          onThreadMenuAction(
+                            "more-about"
+                          )
                         }
-                        label={
-                          dmConversationSettings?.muted
-                            ? "Unmute notifications"
-                            : "Mute notifications"
-                        }
-                        onPress={() => onThreadMenuAction("mute")}
                       />
                     </View>
                   </View>
