@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   ActivityIndicator,
   Alert,
@@ -2775,6 +2776,107 @@ function formatAppointmentVoiceDuration(seconds: unknown) {
   return `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
 
+const CONVERSATION_MEDIA_HIDDEN_PREFIX =
+  "kristo_conversation_media_hidden_v1";
+
+function conversationMediaHiddenKey(
+  threadId: string
+) {
+  return `${CONVERSATION_MEDIA_HIDDEN_PREFIX}:${threadId}`;
+}
+
+function appointmentVoiceStorageItemId(
+  messageIdValue: unknown,
+  noteIdValue: unknown,
+  index: number
+) {
+  return [
+    "appointment-audio",
+    String(messageIdValue || "").trim(),
+    String(noteIdValue || index).trim(),
+  ].join(":");
+}
+
+function AppointmentDeletedVoiceChip({
+  index,
+}: {
+  index: number;
+}) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        minWidth: 0,
+        minHeight: 82,
+        paddingHorizontal: 2,
+        paddingVertical: 7,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor:
+          "rgba(255,107,114,0.055)",
+        borderWidth: 1,
+        borderColor:
+          "rgba(255,107,114,0.20)",
+        opacity: 0.82,
+      }}
+    >
+      <Text
+        style={{
+          marginBottom: 4,
+          color: "rgba(255,146,152,0.72)",
+          fontSize: 9,
+          fontWeight: "900",
+        }}
+      >
+        {index + 1}
+      </Text>
+
+      <View
+        style={{
+          width: 44,
+          height: 44,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <View
+          style={{
+            width: 31,
+            height: 31,
+            borderRadius: 16,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor:
+              "rgba(255,107,114,0.10)",
+            borderWidth: 1,
+            borderColor:
+              "rgba(255,107,114,0.24)",
+          }}
+        >
+          <Ionicons
+            name="trash-outline"
+            size={15}
+            color="#FF9298"
+          />
+        </View>
+      </View>
+
+      <Text
+        numberOfLines={1}
+        style={{
+          marginTop: 4,
+          color: "rgba(255,146,152,0.76)",
+          fontSize: 8,
+          fontWeight: "900",
+        }}
+      >
+        Deleted
+      </Text>
+    </View>
+  );
+}
+
 function AppointmentVoiceChip({
   note,
   index,
@@ -3369,10 +3471,16 @@ function AppointmentVoiceChip({
 
 function AppointmentVoicePlaylist({
   voiceNotes,
+  threadId,
+  messageId,
 }: {
   voiceNotes: Array<Record<string, any>>;
+  threadId: string;
+  messageId: string;
 }) {
-  const playableNotes = React.useMemo<
+  const isFocused = useIsFocused();
+
+  const notes = React.useMemo<
     Array<Record<string, any>>
   >(
     () =>
@@ -3388,7 +3496,8 @@ function AppointmentVoicePlaylist({
             index: number
           ) => {
             const source = String(
-              rawNote?.url ||
+              rawNote?.source ||
+                rawNote?.url ||
                 rawNote?.uri ||
                 rawNote?.audioUrl ||
                 rawNote?.fileUrl ||
@@ -3399,6 +3508,12 @@ function AppointmentVoicePlaylist({
               ...rawNote,
               voiceIndex: index,
               source,
+              storageItemId:
+                appointmentVoiceStorageItemId(
+                  messageId,
+                  rawNote?.id,
+                  index
+                ),
             };
           }
         )
@@ -3408,29 +3523,146 @@ function AppointmentVoicePlaylist({
               note?.source || ""
             ).trim()
         ),
-    [voiceNotes]
+    [messageId, voiceNotes]
   );
+
+  const [
+    hiddenAppointmentVoiceIds,
+    setHiddenAppointmentVoiceIds,
+  ] = React.useState<Set<string>>(
+    new Set()
+  );
+
+  React.useEffect(() => {
+    let alive = true;
+
+    const normalizedThreadId = String(
+      threadId || ""
+    ).trim();
+
+    if (!normalizedThreadId) {
+      setHiddenAppointmentVoiceIds(
+        new Set()
+      );
+      return () => {
+        alive = false;
+      };
+    }
+
+    void AsyncStorage.getItem(
+      conversationMediaHiddenKey(
+        normalizedThreadId
+      )
+    )
+      .then((raw) => {
+        if (!alive) return;
+
+        if (!raw) {
+          setHiddenAppointmentVoiceIds(
+            new Set()
+          );
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(raw);
+
+          setHiddenAppointmentVoiceIds(
+            new Set(
+              Array.isArray(parsed)
+                ? parsed.map(String)
+                : []
+            )
+          );
+        } catch {
+          setHiddenAppointmentVoiceIds(
+            new Set()
+          );
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setHiddenAppointmentVoiceIds(
+            new Set()
+          );
+        }
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    isFocused,
+    messageId,
+    threadId,
+  ]);
+
+  const visibleNotes = React.useMemo(
+    () =>
+      notes.filter(
+        (note: Record<string, any>) =>
+          !hiddenAppointmentVoiceIds.has(
+            String(
+              note?.storageItemId || ""
+            )
+          )
+      ),
+    [
+      hiddenAppointmentVoiceIds,
+      notes,
+    ]
+  );
+
+  const deletedCount =
+    notes.length - visibleNotes.length;
 
   const [activeIndex, setActiveIndex] =
     React.useState<number | null>(null);
 
   React.useEffect(() => {
+    if (activeIndex === null) return;
+
+    const activeStillVisible =
+      visibleNotes.some(
+        (note: Record<string, any>) =>
+          Number(note?.voiceIndex) ===
+          activeIndex
+      );
+
+    if (!activeStillVisible) {
+      setActiveIndex(null);
+    }
+  }, [
+    activeIndex,
+    visibleNotes,
+  ]);
+
+  React.useEffect(() => {
     console.log(
       "KRISTO_APPOINTMENT_VOICE_SOURCES",
-      playableNotes.map(
-        (
-          note: Record<string, any>,
-          index: number
-        ) => {
+      notes.map(
+        (note: Record<string, any>) => {
           const noteSource = String(
             note?.source || ""
           );
 
           return {
-            voiceIndex: index + 1,
+            voiceIndex:
+              Number(
+                note?.voiceIndex || 0
+              ) + 1,
             id: String(
               note?.id || ""
             ),
+            storageItemId: String(
+              note?.storageItemId || ""
+            ),
+            hidden:
+              hiddenAppointmentVoiceIds.has(
+                String(
+                  note?.storageItemId || ""
+                )
+              ),
             sourceLength:
               noteSource.length,
             sourceStart:
@@ -3441,31 +3673,33 @@ function AppointmentVoicePlaylist({
         }
       )
     );
-  }, [playableNotes]);
+  }, [
+    hiddenAppointmentVoiceIds,
+    notes,
+  ]);
 
   React.useEffect(() => {
-    if (!playableNotes.length) {
+    if (!visibleNotes.length) {
       return;
     }
 
-    /*
-     * Allow the message card to finish rendering first,
-     * then quietly cache its voices in a bounded queue.
-     */
     const timer = setTimeout(
       () => {
-        playableNotes.forEach(
+        visibleNotes.forEach(
           (
-            note: Record<string, any>,
-            index: number
+            note: Record<string, any>
           ) => {
             const noteSource = String(
               note?.source || ""
             ).trim();
 
+            const originalIndex = Number(
+              note?.voiceIndex || 0
+            );
+
             const noteId = String(
               note?.id ||
-                `appointment_voice_${index}`
+                `appointment_voice_${originalIndex}`
             ).trim();
 
             scheduleAppointmentVoicePrecache(
@@ -3481,9 +3715,9 @@ function AppointmentVoicePlaylist({
     return () => {
       clearTimeout(timer);
     };
-  }, [playableNotes]);
+  }, [visibleNotes]);
 
-  if (!playableNotes.length) {
+  if (!notes.length) {
     return null;
   }
 
@@ -3521,7 +3755,8 @@ function AppointmentVoicePlaylist({
             fontWeight: "900",
           }}
         >
-          {playableNotes.length} / 5
+          {visibleNotes.length} /{" "}
+          {notes.length}
         </Text>
       </View>
 
@@ -3532,34 +3767,92 @@ function AppointmentVoicePlaylist({
           gap: 6,
         }}
       >
-        {playableNotes.map(
-          (
-            note: Record<string, any>,
-            index: number
-          ) => (
-            <AppointmentVoiceChip
-              key={[
-                "appointment_voice",
-                index,
+        {notes.map(
+          (note: Record<string, any>) => {
+            const originalIndex = Number(
+              note?.voiceIndex || 0
+            );
+
+            const hidden =
+              hiddenAppointmentVoiceIds.has(
                 String(
-                  note?.id || ""
-                ),
-                String(
-                  note?.source || ""
-                ),
-              ].join(":")}
-              note={note}
-              index={index}
-              active={
-                activeIndex === index
-              }
-              onActivate={
-                setActiveIndex
-              }
-            />
-          )
+                  note?.storageItemId || ""
+                )
+              );
+
+            if (hidden) {
+              return (
+                <AppointmentDeletedVoiceChip
+                  key={[
+                    "appointment_voice_deleted",
+                    String(
+                      note?.storageItemId ||
+                        ""
+                    ),
+                  ].join(":")}
+                  index={originalIndex}
+                />
+              );
+            }
+
+            return (
+              <AppointmentVoiceChip
+                key={[
+                  "appointment_voice",
+                  originalIndex,
+                  String(
+                    note?.id || ""
+                  ),
+                  String(
+                    note?.source || ""
+                  ),
+                ].join(":")}
+                note={note}
+                index={originalIndex}
+                active={
+                  activeIndex ===
+                  originalIndex
+                }
+                onActivate={
+                  setActiveIndex
+                }
+              />
+            );
+          }
         )}
       </View>
+
+      {deletedCount > 0 ? (
+        <View
+          style={{
+            marginTop: 8,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 5,
+          }}
+        >
+          <Ionicons
+            name="trash-outline"
+            size={11}
+            color="rgba(255,146,152,0.72)"
+          />
+
+          <Text
+            style={{
+              color:
+                "rgba(255,255,255,0.46)",
+              fontSize: 9,
+              fontWeight: "700",
+            }}
+          >
+            {deletedCount} recording
+            {deletedCount === 1
+              ? ""
+              : "s"}{" "}
+            removed from your storage
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -4042,6 +4335,12 @@ function AppointmentRequestVipCard({
           {voiceNotes.length ? (
             <AppointmentVoicePlaylist
               voiceNotes={voiceNotes}
+              threadId={String(
+                message.threadId || ""
+              )}
+              messageId={String(
+                message.id || ""
+              )}
             />
           ) : null}
 
