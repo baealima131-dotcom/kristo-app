@@ -22,13 +22,10 @@ import {
   useRouter,
 } from "expo-router";
 import {
-  deleteMessage,
   useThread,
   type MsgAttachment,
   type MsgItem,
 } from "@/src/lib/messagesStore";
-import { apiPatch } from "@/src/lib/kristoApi";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   formatAttachmentMimeLabel,
   formatAttachmentSize,
@@ -531,8 +528,10 @@ export default function ConversationMediaStorageScreen() {
     useState<Set<string>>(new Set());
   const [resolvedSizes, setResolvedSizes] =
     useState<Record<string, number>>({});
-  const [deleteBusyId, setDeleteBusyId] =
-    useState("");
+  const [
+    selectedCleanupItemIds,
+    setSelectedCleanupItemIds,
+  ] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let alive = true;
@@ -845,6 +844,84 @@ export default function ConversationMediaStorageScreen() {
     [cleanupItems, resolvedSizes]
   );
 
+  const cleanupSelectionActive =
+    selectedCleanupItemIds.size > 0;
+
+  const selectedCleanupItems = useMemo(
+    () =>
+      cleanupItems.filter((item) =>
+        selectedCleanupItemIds.has(item.id)
+      ),
+    [cleanupItems, selectedCleanupItemIds]
+  );
+
+  const selectedCleanupBytes = useMemo(
+    () =>
+      selectedCleanupItems.reduce(
+        (sum, item) =>
+          sum +
+          Math.max(
+            0,
+            Number(
+              item.size ||
+                resolvedSizes[item.id] ||
+                0
+            )
+          ),
+        0
+      ),
+    [resolvedSizes, selectedCleanupItems]
+  );
+
+  const clearCleanupSelection =
+    useCallback(() => {
+      setSelectedCleanupItemIds(new Set());
+    }, []);
+
+  const toggleCleanupSelection =
+    useCallback((item: StorageItem) => {
+      setSelectedCleanupItemIds((current) => {
+        const next = new Set(current);
+
+        if (next.has(item.id)) {
+          next.delete(item.id);
+        } else {
+          next.add(item.id);
+        }
+
+        return next;
+      });
+    }, []);
+
+  const selectAllCleanupItems =
+    useCallback(() => {
+      setSelectedCleanupItemIds(
+        new Set(
+          cleanupItems.map((item) => item.id)
+        )
+      );
+    }, [cleanupItems]);
+
+  const beginCleanupSelection =
+    useCallback(
+      (item: StorageItem) => {
+        setCleanupFilter("all");
+        setCleanupOpen(true);
+        setSelectedCleanupItemIds(
+          new Set([item.id])
+        );
+
+        console.log(
+          "KRISTO_MEDIA_STORAGE_SELECTION_STARTED",
+          {
+            threadId,
+            itemId: item.id,
+          }
+        );
+      },
+      [threadId]
+    );
+
   const activeItems = useMemo(() => {
     const source = visibleIndex[tab];
     const normalizedQuery = query
@@ -938,151 +1015,70 @@ export default function ConversationMediaStorageScreen() {
     [hiddenItemIds, threadId]
   );
 
-  const deleteMessageForEveryone =
-    useCallback(
-      async (item: StorageItem) => {
-        if (
-          !item.messageId ||
-          item.sender !== "me" ||
-          deleteBusyId
-        ) {
-          return;
-        }
-
-        try {
-          setDeleteBusyId(item.id);
-
-          const result: any = await apiPatch(
-            "/api/church/room-messages",
-            {
-              roomId:
-                singleParam(params.roomId) ||
-                threadId,
-              messageId: item.messageId,
-              action: "delete",
-              scope: "everyone",
-            },
-            {
-              headers:
-                getKristoHeaders() as Record<
-                  string,
-                  string
-                >,
-            }
-          );
-
-          if (!result || result.ok === false) {
-            throw new Error(
-              String(
-                result?.error ||
-                  "Delete was not completed."
-              )
-            );
-          }
-
-          deleteMessage(
-            threadId,
-            item.messageId
-          );
-
-          console.log(
-            "KRISTO_MEDIA_STORAGE_DELETE_EVERYONE",
-            {
-              threadId,
-              itemId: item.id,
-              messageId: item.messageId,
-              sourceKind: item.sourceKind,
-            }
-          );
-        } catch (error: any) {
-          Alert.alert(
-            "Could not delete",
-            String(
-              error?.message ||
-                "Please try again."
-            )
-          );
-        } finally {
-          setDeleteBusyId("");
-        }
-      },
-      [
-        deleteBusyId,
-        params.roomId,
-        threadId,
-      ]
-    );
-
-  const showItemActions = useCallback(
-    (item: StorageItem) => {
-      const actions: Array<{
-        text: string;
-        style?: "default" | "cancel" | "destructive";
-        onPress?: () => void;
-      }> = [
-        {
-          text: "Delete from my storage",
-          style: "destructive",
-          onPress: () => {
-            void hideStorageItem(item);
-          },
-        },
-      ];
-
-      if (
-        item.sender === "me" &&
-        item.messageId
-      ) {
-        actions.push({
-          text:
-            item.sourceKind ===
-            "appointment-audio"
-              ? "Delete appointment message for everyone"
-              : "Delete message for everyone",
-          style: "destructive",
-          onPress: () => {
-            Alert.alert(
-              "Delete for everyone?",
-              item.sourceKind ===
-              "appointment-audio"
-                ? "This will remove the appointment message containing this recording for everyone."
-                : "This will remove the message containing this item for everyone.",
-              [
-                {
-                  text: "Cancel",
-                  style: "cancel",
-                },
-                {
-                  text: "Delete",
-                  style: "destructive",
-                  onPress: () => {
-                    void deleteMessageForEveryone(
-                      item
-                    );
-                  },
-                },
-              ]
-            );
-          },
-        });
-      }
-
-      actions.push({
-        text: "Cancel",
-        style: "cancel",
-      });
+  const deleteSelectedCleanupItems =
+    useCallback(() => {
+      if (!selectedCleanupItems.length) return;
 
       Alert.alert(
-        item.title || "Storage item",
-        "Choose an action.",
-        actions
+        `Delete ${selectedCleanupItems.length} selected ${
+          selectedCleanupItems.length === 1
+            ? "item"
+            : "items"
+        }?`,
+        `${formatStorageBytes(
+          selectedCleanupBytes
+        )} will be removed from your Media Storage. The original chat messages will remain in the conversation.`,
+        [
+          {
+            text: "Cancel",
+            style: "cancel",
+          },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => {
+              void (async () => {
+                const next = new Set(
+                  hiddenItemIds
+                );
+
+                for (
+                  const item of
+                  selectedCleanupItems
+                ) {
+                  next.add(item.id);
+                }
+
+                setHiddenItemIds(next);
+                clearCleanupSelection();
+
+                await AsyncStorage.setItem(
+                  storageHiddenKey(threadId),
+                  JSON.stringify([...next])
+                ).catch(() => {});
+
+                console.log(
+                  "KRISTO_MEDIA_STORAGE_SELECTED_DELETED_LOCAL",
+                  {
+                    threadId,
+                    count:
+                      selectedCleanupItems.length,
+                    bytes:
+                      selectedCleanupBytes,
+                  }
+                );
+              })();
+            },
+          },
+        ]
       );
-    },
-    [
-      deleteMessageForEveryone,
-      hideStorageItem,
-    ]
-  );
+    }, [
+      clearCleanupSelection,
+      hiddenItemIds,
+      selectedCleanupBytes,
+      selectedCleanupItems,
+      threadId,
+    ]);
 
   const hideAllCleanupItems = useCallback(
     () => {
@@ -1210,9 +1206,10 @@ export default function ConversationMediaStorageScreen() {
   }: ListRenderItemInfo<StorageItem>) => (
     <Pressable
       onPress={() => void openItem(item)}
-      onLongPress={() => showItemActions(item)}
-      delayLongPress={280}
-      disabled={deleteBusyId === item.id}
+      onLongPress={() =>
+        beginCleanupSelection(item)
+      }
+      delayLongPress={220}
       style={({ pressed }) => [
         styles.mediaTile,
         pressed && styles.pressed,
@@ -1267,10 +1264,9 @@ export default function ConversationMediaStorageScreen() {
           void openItem(item)
         }
         onLongPress={() =>
-          showItemActions(item)
+          beginCleanupSelection(item)
         }
-        delayLongPress={280}
-        disabled={deleteBusyId === item.id}
+        delayLongPress={220}
         style={({ pressed }) => [
           styles.listCard,
           pressed && styles.pressed,
@@ -1376,6 +1372,7 @@ export default function ConversationMediaStorageScreen() {
             accessibilityRole="button"
             accessibilityLabel="Open storage cleanup"
             onPress={() => {
+              clearCleanupSelection();
               setCleanupFilter("largest");
               setCleanupOpen(true);
             }}
@@ -1510,7 +1507,7 @@ export default function ConversationMediaStorageScreen() {
         </View>
 
           <Text style={styles.storageDeleteHint}>
-            Press and hold an item to delete it.
+            Press and hold an item to select it.
           </Text>
         </View>
       ) : null}
@@ -1660,16 +1657,18 @@ export default function ConversationMediaStorageScreen() {
         visible={cleanupOpen}
         transparent
         animationType="slide"
-        onRequestClose={() =>
-          setCleanupOpen(false)
-        }
+        onRequestClose={() => {
+          clearCleanupSelection();
+          setCleanupOpen(false);
+        }}
       >
         <View style={styles.cleanupOverlay}>
           <Pressable
             style={styles.cleanupBackdrop}
-            onPress={() =>
-              setCleanupOpen(false)
-            }
+            onPress={() => {
+              clearCleanupSelection();
+              setCleanupOpen(false);
+            }}
           />
 
           <View style={styles.cleanupSheet}>
@@ -1694,9 +1693,10 @@ export default function ConversationMediaStorageScreen() {
               </View>
 
               <Pressable
-                onPress={() =>
-                  setCleanupOpen(false)
-                }
+                onPress={() => {
+                  clearCleanupSelection();
+                  setCleanupOpen(false);
+                }}
                 style={styles.cleanupClose}
               >
                 <Ionicons
@@ -1753,11 +1753,12 @@ export default function ConversationMediaStorageScreen() {
                 return (
                   <Pressable
                     key={filter.key}
-                    onPress={() =>
+                    onPress={() => {
+                      clearCleanupSelection();
                       setCleanupFilter(
                         filter.key as CleanupFilter
-                      )
-                    }
+                      );
+                    }}
                     style={[
                       styles.cleanupFilter,
                       active
@@ -1789,46 +1790,99 @@ export default function ConversationMediaStorageScreen() {
             </ScrollView>
 
             <View style={styles.cleanupSummary}>
-              <View>
+              <View style={styles.cleanupSummaryText}>
                 <Text style={styles.cleanupSummaryCount}>
-                  {cleanupItems.length} item
-                  {cleanupItems.length === 1
-                    ? ""
-                    : "s"}
+                  {cleanupSelectionActive
+                    ? `${selectedCleanupItemIds.size} selected`
+                    : `${cleanupItems.length} ${
+                        cleanupItems.length === 1
+                          ? "item"
+                          : "items"
+                      }`}
                 </Text>
 
                 <Text style={styles.cleanupSummaryBytes}>
                   {formatStorageBytes(
-                    cleanupShownBytes
+                    cleanupSelectionActive
+                      ? selectedCleanupBytes
+                      : cleanupShownBytes
                   )}{" "}
-                  shown
+                  {cleanupSelectionActive
+                    ? "selected"
+                    : "shown"}
                 </Text>
               </View>
 
               {cleanupItems.length > 0 ? (
-                <Pressable
-                  onPress={hideAllCleanupItems}
-                  style={({ pressed }) => [
-                    styles.cleanupRemoveAll,
-                    pressed
-                      ? styles.pressed
-                      : null,
-                  ]}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={15}
-                    color="#FF8A98"
-                  />
-
-                  <Text
-                    style={
-                      styles.cleanupRemoveAllText
+                <View style={styles.cleanupSelectionActions}>
+                  <Pressable
+                    onPress={
+                      cleanupSelectionActive &&
+                      selectedCleanupItemIds.size ===
+                        cleanupItems.length
+                        ? clearCleanupSelection
+                        : selectAllCleanupItems
                     }
+                    style={({ pressed }) => [
+                      styles.cleanupSelectAll,
+                      pressed
+                        ? styles.pressed
+                        : null,
+                    ]}
                   >
-                    Remove shown
-                  </Text>
-                </Pressable>
+                    <Ionicons
+                      name={
+                        cleanupSelectionActive &&
+                        selectedCleanupItemIds.size ===
+                          cleanupItems.length
+                          ? "close-circle-outline"
+                          : "checkmark-circle-outline"
+                      }
+                      size={15}
+                      color={GOLD}
+                    />
+
+                    <Text
+                      style={
+                        styles.cleanupSelectAllText
+                      }
+                    >
+                      {cleanupSelectionActive &&
+                      selectedCleanupItemIds.size ===
+                        cleanupItems.length
+                        ? "Clear"
+                        : "Select all"}
+                    </Text>
+                  </Pressable>
+
+                  {cleanupSelectionActive ? (
+                    <Pressable
+                      onPress={
+                        deleteSelectedCleanupItems
+                      }
+                      style={({ pressed }) => [
+                        styles.cleanupRemoveAll,
+                        pressed
+                          ? styles.pressed
+                          : null,
+                      ]}
+                    >
+                      <Ionicons
+                        name="trash-outline"
+                        size={15}
+                        color="#FF8A98"
+                      />
+
+                      <Text
+                        style={
+                          styles.cleanupRemoveAllText
+                        }
+                      >
+                        Delete
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               ) : null}
             </View>
 
@@ -1865,11 +1919,25 @@ export default function ConversationMediaStorageScreen() {
 
                 return (
                   <Pressable
-                    onPress={() =>
-                      showItemActions(item)
+                    onLongPress={() =>
+                      toggleCleanupSelection(item)
                     }
+                    delayLongPress={220}
+                    onPress={() => {
+                      if (cleanupSelectionActive) {
+                        toggleCleanupSelection(item);
+                        return;
+                      }
+
+                      void openItem(item);
+                    }}
                     style={({ pressed }) => [
                       styles.cleanupRow,
+                      selectedCleanupItemIds.has(
+                        item.id
+                      )
+                        ? styles.cleanupRowSelected
+                        : null,
                       pressed
                         ? styles.pressed
                         : null,
@@ -1936,11 +2004,34 @@ export default function ConversationMediaStorageScreen() {
                         )}
                       </Text>
 
-                      <Ionicons
-                        name="chevron-forward"
-                        size={17}
-                        color="rgba(255,255,255,0.30)"
-                      />
+                      {cleanupSelectionActive ? (
+                        <View
+                          style={[
+                            styles.cleanupCheck,
+                            selectedCleanupItemIds.has(
+                              item.id
+                            )
+                              ? styles.cleanupCheckSelected
+                              : null,
+                          ]}
+                        >
+                          {selectedCleanupItemIds.has(
+                            item.id
+                          ) ? (
+                            <Ionicons
+                              name="checkmark"
+                              size={14}
+                              color="#0B0F17"
+                            />
+                          ) : null}
+                        </View>
+                      ) : (
+                        <Ionicons
+                          name="chevron-forward"
+                          size={17}
+                          color="rgba(255,255,255,0.30)"
+                        />
+                      )}
                     </View>
                   </Pressable>
                 );
@@ -2476,6 +2567,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
+  cleanupSummaryText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  cleanupSelectionActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
   cleanupSummaryCount: {
     color: TEXT,
     fontSize: 13,
@@ -2486,6 +2586,24 @@ const styles = StyleSheet.create({
     color: SUB,
     fontSize: 10,
     fontWeight: "700",
+  },
+  cleanupSelectAll: {
+    height: 36,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor:
+      "rgba(217,179,95,0.10)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(217,179,95,0.28)",
+  },
+  cleanupSelectAllText: {
+    color: GOLD,
+    fontSize: 10,
+    fontWeight: "900",
   },
   cleanupRemoveAll: {
     height: 36,
@@ -2529,6 +2647,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
+  cleanupRowSelected: {
+    backgroundColor:
+      "rgba(217,179,95,0.11)",
+    borderColor:
+      "rgba(217,179,95,0.58)",
+  },
   cleanupRowIcon: {
     width: 44,
     height: 44,
@@ -2564,6 +2688,22 @@ const styles = StyleSheet.create({
     color: GOLD,
     fontSize: 11,
     fontWeight: "900",
+  },
+  cleanupCheck: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.30)",
+    backgroundColor:
+      "rgba(255,255,255,0.03)",
+  },
+  cleanupCheckSelected: {
+    borderColor: GOLD,
+    backgroundColor: GOLD,
   },
   cleanupEmpty: {
     flex: 1,
