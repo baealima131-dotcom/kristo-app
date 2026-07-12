@@ -1,7 +1,10 @@
-import { Tabs, useGlobalSearchParams, useSegments, useRouter,
-  useLocalSearchParams
-} from "expo-router";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Tabs, useGlobalSearchParams, useSegments, useRouter} from "expo-router";
+import {
+  getExternalProfileTabActive,
+  subscribeExternalProfileTab,
+} from "@/src/lib/externalProfileTabState";
+
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -263,29 +266,18 @@ function ProfileAvatarIcon({
 
 export default function TabLayout() {
 
-  const profileRouteParams =
-    useLocalSearchParams<{
-      profileMode?: string;
-      source?: string;
-    }>();
-
-  const isViewingExternalProfile =
-    String(
-      profileRouteParams.profileMode || ""
-    )
-      .trim()
-      .toLowerCase() === "external" ||
-    String(
-      profileRouteParams.source || ""
-    )
-      .trim()
-      .toLowerCase() ===
-      "direct-message-profile";
+  const externalProfileTabActive =
+    useSyncExternalStore(
+      subscribeExternalProfileTab,
+      getExternalProfileTabActive,
+      getExternalProfileTabActive
+    );
 
   const profileTabLabel =
-    isViewingExternalProfile
+    externalProfileTabActive
       ? "Profile"
       : "Me";
+
 
   const segments = useSegments() as string[];
   const params = useGlobalSearchParams<{ profileMode?: string }>();

@@ -16,6 +16,10 @@ import { AppState, ActivityIndicator,
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
+import {
+  setExternalProfileTabActive,
+} from "@/src/lib/externalProfileTabState";
+
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExitFlags";
 import { loadProfileDraft, saveProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
@@ -543,6 +547,28 @@ export default function MeScreen() {
       .trim()
       .toLowerCase() ===
       "direct-message-profile";
+
+  useFocusEffect(
+    useCallback(() => {
+      setExternalProfileTabActive(
+        isExternalUserProfile
+      );
+
+      console.log(
+        "KRISTO_EXTERNAL_PROFILE_TAB_FOCUS",
+        {
+          isExternalUserProfile,
+          label: isExternalUserProfile
+            ? "Profile"
+            : "Me",
+        }
+      );
+
+      return () => {
+        setExternalProfileTabActive(false);
+      };
+    }, [isExternalUserProfile])
+  );
 
   const viewedProfileName = String(
     viewedProfileParams.name || "Member"
