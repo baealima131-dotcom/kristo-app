@@ -2441,6 +2441,168 @@ async function resolvePersistentAppointmentVoiceSource(
   return job;
 }
 
+type AppointmentVoicePrecacheTask = {
+  key: string;
+  noteId: string;
+  source: string;
+};
+
+const APPOINTMENT_VOICE_PRECACHE_CONCURRENCY =
+  2;
+
+const appointmentVoicePrecacheQueue:
+  AppointmentVoicePrecacheTask[] = [];
+
+const appointmentVoicePrecacheKnown =
+  new Set<string>();
+
+let appointmentVoicePrecacheActive = 0;
+
+function drainAppointmentVoicePrecacheQueue() {
+  while (
+    appointmentVoicePrecacheActive <
+      APPOINTMENT_VOICE_PRECACHE_CONCURRENCY &&
+    appointmentVoicePrecacheQueue.length > 0
+  ) {
+    const task =
+      appointmentVoicePrecacheQueue.shift();
+
+    if (!task) {
+      return;
+    }
+
+    appointmentVoicePrecacheActive += 1;
+
+    void resolvePersistentAppointmentVoiceSource(
+      task.noteId,
+      task.source
+    )
+      .then((resolvedSource) => {
+        const cached =
+          !!resolvedSource &&
+          resolvedSource !== task.source &&
+          resolvedSource.startsWith(
+            "file://"
+          );
+
+        console.log(
+          cached
+            ? "KRISTO_APPOINTMENT_VOICE_PRECACHE_READY"
+            : "KRISTO_APPOINTMENT_VOICE_PRECACHE_REMOTE_FALLBACK",
+          {
+            noteId: task.noteId,
+            sourceType: cached
+              ? "persistent-local"
+              : "remote",
+            sourceEnd:
+              String(
+                resolvedSource ||
+                  task.source
+              ).slice(-80),
+          }
+        );
+
+        /*
+         * A remote fallback normally means the background
+         * download failed. Allow a later retry.
+         */
+        if (!cached) {
+          appointmentVoicePrecacheKnown.delete(
+            task.key
+          );
+        }
+      })
+      .catch((error: any) => {
+        appointmentVoicePrecacheKnown.delete(
+          task.key
+        );
+
+        console.warn(
+          "KRISTO_APPOINTMENT_VOICE_PRECACHE_FAILED",
+          {
+            noteId: task.noteId,
+            message: String(
+              error?.message ||
+                error ||
+                "unknown"
+            ),
+          }
+        );
+      })
+      .finally(() => {
+        appointmentVoicePrecacheActive =
+          Math.max(
+            0,
+            appointmentVoicePrecacheActive - 1
+          );
+
+        drainAppointmentVoicePrecacheQueue();
+      });
+  }
+}
+
+function scheduleAppointmentVoicePrecache(
+  noteIdValue: unknown,
+  sourceValue: unknown
+) {
+  const noteId = String(
+    noteIdValue || ""
+  ).trim();
+
+  const source = String(
+    sourceValue || ""
+  ).trim();
+
+  if (
+    !source ||
+    !/^https?:\/\//i.test(source)
+  ) {
+    return;
+  }
+
+  const key = [
+    noteId ||
+      appointmentVoiceCacheHash(source),
+    source,
+  ].join("::");
+
+  if (
+    appointmentVoicePrecacheKnown.has(key)
+  ) {
+    return;
+  }
+
+  appointmentVoicePrecacheKnown.add(key);
+
+  appointmentVoicePrecacheQueue.push({
+    key,
+    noteId:
+      noteId ||
+      `voice_${appointmentVoiceCacheHash(
+        source
+      )}`,
+    source,
+  });
+
+  console.log(
+    "KRISTO_APPOINTMENT_VOICE_PRECACHE_QUEUED",
+    {
+      noteId:
+        noteId ||
+        `voice_${appointmentVoiceCacheHash(
+          source
+        )}`,
+      queueLength:
+        appointmentVoicePrecacheQueue.length,
+      active:
+        appointmentVoicePrecacheActive,
+      sourceEnd: source.slice(-80),
+    }
+  );
+
+  drainAppointmentVoicePrecacheQueue();
+}
+
 function formatAppointmentVoiceDuration(seconds: unknown) {
   const total = Math.max(0, Math.round(Number(seconds || 0)));
   const minutes = Math.floor(total / 60);
@@ -3011,6 +3173,46 @@ function AppointmentVoicePlaylist({
         }
       )
     );
+  }, [playableNotes]);
+
+  React.useEffect(() => {
+    if (!playableNotes.length) {
+      return;
+    }
+
+    /*
+     * Allow the message card to finish rendering first,
+     * then quietly cache its voices in a bounded queue.
+     */
+    const timer = setTimeout(
+      () => {
+        playableNotes.forEach(
+          (
+            note: Record<string, any>,
+            index: number
+          ) => {
+            const noteSource = String(
+              note?.source || ""
+            ).trim();
+
+            const noteId = String(
+              note?.id ||
+                `appointment_voice_${index}`
+            ).trim();
+
+            scheduleAppointmentVoicePrecache(
+              noteId,
+              noteSource
+            );
+          }
+        );
+      },
+      350
+    );
+
+    return () => {
+      clearTimeout(timer);
+    };
   }, [playableNotes]);
 
   if (!playableNotes.length) {
