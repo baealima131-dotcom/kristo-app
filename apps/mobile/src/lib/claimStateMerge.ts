@@ -23,6 +23,8 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleFeedPredicates";
 import { isMediaSlotEndedOrStale, resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import { logClaimOverwriteBlocked } from "@/src/lib/scheduleSlotClaimRequest";
+import type { ScheduleRingAlert } from "@/src/lib/liveScheduleRing";
+
 import {
   baseFeedId,
   collectScheduleAliasIds,
@@ -625,12 +627,8 @@ export function rehydrateClaimStoresFromFeedRows(items: any[], viewerUserId: str
   return count;
 }
 
-type PersonalScheduleAlert = {
-  match?: string;
-  feedId?: string;
-  slot?: any;
-  item?: any;
-};
+type PersonalScheduleAlert =
+  ScheduleRingAlert;
 
 export async function prefetchCrossChurchClaimSchedules(input: {
   viewerUserId: string;
