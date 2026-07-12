@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { getProfile } from "@/app/api/auth/_lib/profile";
+import {
+  getProfile,
+  getProfileByUserCode,
+} from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
+import { getActiveMembership } from "@/app/api/_lib/memberships";
+import { getChurchById } from "@/app/api/_lib/churches";
+import { normalizePrivacy } from "@/app/api/auth/_lib/profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,14 +55,38 @@ export async function GET(
     );
   }
 
+  const directProfile =
+    await getProfile(targetUserId).catch(
+      () => null
+    );
+
+  const codeProfile =
+    directProfile
+      ? null
+      : await getProfileByUserCode(
+          targetUserId
+        ).catch(() => null);
+
+  const initialProfile =
+    directProfile || codeProfile;
+
+  const canonicalTargetUserId = text(
+    (initialProfile as any)?.userId ||
+      (initialProfile as any)?.id ||
+      targetUserId
+  );
+
   const [profile, account] =
     await Promise.all([
-      getProfile(targetUserId).catch(
-        () => null
-      ),
-      getUserById(targetUserId).catch(
-        () => null
-      ),
+      initialProfile
+        ? Promise.resolve(initialProfile)
+        : getProfile(
+            canonicalTargetUserId
+          ).catch(() => null),
+
+      getUserById(
+        canonicalTargetUserId
+      ).catch(() => null),
     ]);
 
   if (!profile && !account) {
@@ -71,6 +101,65 @@ export async function GET(
 
   const source: any = profile || {};
   const user: any = account || {};
+
+  const activeMembership =
+    await getActiveMembership(
+      canonicalTargetUserId
+    ).catch(() => null);
+
+  const membershipChurch =
+    activeMembership?.churchId
+      ? await getChurchById(
+          activeMembership.churchId
+        ).catch(() => null)
+      : null;
+
+  const privacy = normalizePrivacy({
+    ...(source.privacy &&
+    typeof source.privacy === "object"
+      ? source.privacy
+      : {}),
+
+    ...(
+      typeof source.showChurchId ===
+      "boolean"
+        ? {
+            showChurchId:
+              source.showChurchId,
+          }
+        : {}
+    ),
+
+    ...(
+      typeof source.showKristoId ===
+      "boolean"
+        ? {
+            showKristoId:
+              source.showKristoId,
+          }
+        : {}
+    ),
+
+    ...(
+      typeof source.churchIdPublic ===
+      "boolean"
+        ? {
+            showChurchId:
+              source.churchIdPublic,
+          }
+        : {}
+    ),
+
+    ...(
+      typeof source.kristoIdPublic ===
+      "boolean"
+        ? {
+            showKristoId:
+              source.kristoIdPublic,
+          }
+        : {}
+    ),
+  });
 
   const fullName = text(
     source.fullName ||
@@ -94,42 +183,75 @@ export async function GET(
       user.image
   );
 
-  const churchId = text(
-    source.churchId ||
+  const rawChurchId = text(
+    activeMembership?.churchId ||
+      source.churchId ||
       source.activeChurchId ||
       user.churchId ||
       user.activeChurchId
   );
 
+  const churchId =
+    privacy.showChurchId
+      ? rawChurchId
+      : "";
+
   const churchName = text(
-    source.churchName ||
+    membershipChurch?.name ||
+      source.churchName ||
       source.activeChurchName ||
       user.churchName ||
       user.activeChurchName
   );
 
   const role = text(
-    source.role ||
+    activeMembership?.churchRole ||
+      source.role ||
       source.churchRole ||
       user.role ||
       user.churchRole ||
       "Member"
   );
 
+  const kristoId = privacy.showKristoId
+    ? text(
+        source.userCode ||
+          source.kristoId ||
+          source.publicKristoId
+      )
+    : "";
+
   console.log(
     "KRISTO_PUBLIC_USER_PROFILE_RETURNED",
     {
       viewerUserId,
-      targetUserId,
+      requestedTargetUserId:
+        targetUserId,
+      canonicalTargetUserId,
       hasProfile: Boolean(profile),
       hasAccount: Boolean(account),
+      membershipChurchId:
+        activeMembership?.churchId ||
+        null,
+      membershipChurchName:
+        membershipChurch?.name ||
+        null,
+      showChurchId:
+        privacy.showChurchId === true,
+      showKristoId:
+        privacy.showKristoId === true,
+      returnedChurchId:
+        churchId || null,
+      returnedKristoId:
+        kristoId || null,
     }
   );
 
   return NextResponse.json({
     ok: true,
     profile: {
-      userId: targetUserId,
+      userId:
+        canonicalTargetUserId,
       fullName,
       avatarUrl,
       bio: text(source.bio),
@@ -139,14 +261,12 @@ export async function GET(
       profileStatus:
         source.profileStatus ||
         "Complete",
-      kristoId: text(
-        source.kristoId ||
-          source.publicKristoId
-      ),
-      publicKristoId: text(
-        source.publicKristoId ||
-          source.kristoId
-      ),
+      kristoId,
+      publicKristoId: kristoId,
+      churchIdPublic:
+        Boolean(privacy.showChurchId),
+      kristoIdPublic:
+        Boolean(privacy.showKristoId),
       churchId,
       activeChurchId: churchId,
       churchName,

@@ -52,7 +52,9 @@ type Body = {
     allowMessages?: boolean;
     showPhone?: boolean;
     showChurch?: boolean;
-  showAddress?: boolean;
+    showAddress?: boolean;
+    showChurchId?: boolean;
+    showKristoId?: boolean;
     privateMode?: boolean;
   };
 
@@ -63,6 +65,8 @@ type Body = {
   showPhone?: boolean;
   showChurch?: boolean;
   showAddress?: boolean;
+  showChurchId?: boolean;
+  showKristoId?: boolean;
   privateMode?: boolean;
 };
 
@@ -251,6 +255,8 @@ export async function POST(req: Request) {
     ...(typeof body.showPhone === "boolean" ? { showPhone: body.showPhone } : {}),
     ...(typeof body.showChurch === "boolean" ? { showChurch: body.showChurch } : {}),
     ...(typeof body.showAddress === "boolean" ? { showAddress: body.showAddress } : {}),
+    ...(typeof body.showChurchId === "boolean" ? { showChurchId: body.showChurchId } : {}),
+    ...(typeof body.showKristoId === "boolean" ? { showKristoId: body.showKristoId } : {}),
     ...(typeof body.privateMode === "boolean" ? { privateMode: body.privateMode } : {}),
   };
 

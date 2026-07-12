@@ -16,6 +16,8 @@ export type ProfileDraft = {
   age?: number;
   updatedAt?: number;
   avatarUpdatedAt?: number;
+  churchIdPublic?: boolean;
+  kristoIdPublic?: boolean;
 };
 
 const KEY = "kristo_profile_v1";

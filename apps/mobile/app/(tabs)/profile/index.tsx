@@ -87,6 +87,16 @@ type AuthProfile = {
   country?: string;
   city?: string;
   avatarUrl?: string;
+  bio?: string;
+  kristoId?: string;
+  publicKristoId?: string;
+  churchId?: string;
+  activeChurchId?: string;
+  churchName?: string;
+  role?: string;
+  churchRole?: string;
+  churchIdPublic?: boolean;
+  kristoIdPublic?: boolean;
   profileStatus?: "Incomplete" | "Complete" | "Locked";
 };
 
@@ -578,13 +588,31 @@ export default function MeScreen() {
       ? externalTargetUserId
       : sessionUserId;
 
+  const profileCachePeek =
+    userId
+      ? peekProfileScreenCache(userId)
+      : null;
+
+  const [profile, setProfile] =
+    useState<AuthProfile | null>(
+      (
+        profileCachePeek?.profile as
+          AuthProfile | null
+      ) || null
+    );
+
   const routeChurchId = String(
     viewedProfileParams.churchId || ""
   ).trim();
 
   const churchId =
     isExternalUserProfile
-      ? routeChurchId
+      ? String(
+          profile?.churchId ||
+            profile?.activeChurchId ||
+            routeChurchId ||
+            ""
+        ).trim()
       : String(
           session?.churchId || ""
         ).trim();
@@ -732,7 +760,128 @@ export default function MeScreen() {
   }, [canShowMediaTab, contentMode]);
 
 
-  const profileCachePeek = userId ? peekProfileScreenCache(userId) : null;
+  /*
+   * External profiles must be hydrated from the target user's
+   * public-profile API. Route params are only temporary preview
+   * values and must never become the source of truth for church
+   * identity or ID privacy.
+   */
+  useEffect(() => {
+    if (
+      !isExternalUserProfile ||
+      !externalTargetUserId ||
+      !sessionUserId
+    ) {
+      return;
+    }
+
+    let alive = true;
+
+    const loadExternalUserProfile = async () => {
+      try {
+        const response: AuthProfileRes =
+          await apiGet(
+            `/api/users/${encodeURIComponent(
+              externalTargetUserId
+            )}/profile`,
+            {
+              headers: getKristoHeaders({
+                userId: sessionUserId,
+                role: session?.role,
+                churchId:
+                  String(
+                    session?.churchId || ""
+                  ).trim(),
+              }),
+            },
+            {
+              screen: "ExternalUserProfile",
+              throttleMs: 0,
+            }
+          );
+
+        if (!alive) return;
+
+        if (
+          !response?.ok ||
+          !response?.profile
+        ) {
+          console.warn(
+            "KRISTO_EXTERNAL_PROFILE_HYDRATE_FAILED",
+            {
+              targetUserId:
+                externalTargetUserId,
+              ok: Boolean(response?.ok),
+              hasProfile: Boolean(
+                response?.profile
+              ),
+            }
+          );
+          return;
+        }
+
+        const nextProfile =
+          response.profile;
+
+        setProfile(nextProfile);
+
+        // External profile cache write intentionally skipped:
+        // this endpoint is owner-privacy-sensitive and must stay fresh.
+
+        console.log(
+          "KRISTO_EXTERNAL_PROFILE_HYDRATED",
+          {
+            targetUserId:
+              externalTargetUserId,
+            churchName:
+              nextProfile.churchName ||
+              null,
+            churchIdPublic:
+              nextProfile.churchIdPublic ===
+              true,
+            kristoIdPublic:
+              nextProfile.kristoIdPublic ===
+              true,
+            hasChurchId: Boolean(
+              nextProfile.churchId ||
+                nextProfile.activeChurchId
+            ),
+            hasKristoId: Boolean(
+              nextProfile.kristoId ||
+                nextProfile.publicKristoId
+            ),
+          }
+        );
+      } catch (error: any) {
+        if (!alive) return;
+
+        console.warn(
+          "KRISTO_EXTERNAL_PROFILE_HYDRATE_ERROR",
+          {
+            targetUserId:
+              externalTargetUserId,
+            error: String(
+              error?.message ||
+                error ||
+                "Unknown error"
+            ),
+          }
+        );
+      }
+    };
+
+    void loadExternalUserProfile();
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    externalTargetUserId,
+    isExternalUserProfile,
+    session?.churchId,
+    session?.role,
+    sessionUserId,
+  ]);
 
   React.useEffect(() => {
     void hydrateMediaPosterCache();
@@ -740,7 +889,9 @@ export default function MeScreen() {
   const [profileDraft, setProfileDraft] = React.useState<ProfileDraft | null>(null);
   const publicKristoId = String(
     isExternalUserProfile
-      ? ""
+      ? profile?.kristoId ||
+        profile?.publicKristoId ||
+        ""
       : (session as any)?.kristoId ||
         (session as any)?.publicKristoId ||
         (profileDraft as any)?.kristoId ||
@@ -769,7 +920,9 @@ export default function MeScreen() {
   }, [refreshProfileDraft]);
   const role = prettyRole(
     isExternalUserProfile
-      ? viewedProfileParams.role
+      ? profile?.role ||
+        profile?.churchRole ||
+        viewedProfileParams.role
       : session?.role
   );
   const [churchDisplayName, setChurchDisplayName] = useState(
@@ -814,7 +967,9 @@ export default function MeScreen() {
   const church = useMemo(() => {
     if (isExternalUserProfile) {
       const externalChurch = String(
-        viewedProfileParams.churchName || ""
+        profile?.churchName ||
+          viewedProfileParams.churchName ||
+          ""
       ).trim();
 
       if (externalChurch) {
@@ -848,12 +1003,14 @@ export default function MeScreen() {
     isExternalUserProfile,
     session,
     viewedProfileParams.churchName,
+    profile?.churchName,
   ]);
 
   const baseName =
     isExternalUserProfile
       ? String(
-          viewedProfileParams.name ||
+          profile?.fullName ||
+            viewedProfileParams.name ||
             "Member"
         ).trim()
       : displayNameFromSession({
@@ -867,10 +1024,18 @@ export default function MeScreen() {
 
   const baseAvatar =
     isExternalUserProfile
-      ? avatarForProfile(
-          userId,
-          viewedProfileParams.role,
-          church
+      ? (
+          toBackendImageUrl(
+            String(
+              profile?.avatarUrl || ""
+            ).trim()
+          ) ||
+          avatarForProfile(
+            userId,
+            profile?.role ||
+              viewedProfileParams.role,
+            church
+          )
         )
       : (
           toBackendImageUrl(
@@ -899,7 +1064,7 @@ export default function MeScreen() {
         );
 
   const [bootLoading, setBootLoading] = useState(!profileCachePeek);
-  const [profile, setProfile] = useState<AuthProfile | null>((profileCachePeek?.profile as AuthProfile | null) || null);
+
   const [postsCount, setPostsCount] = useState(profileCachePeek?.postsCount || 0);
   const [followersCount, setFollowersCount] = useState(profileCachePeek?.followersCount || 0);
   const [followingCount, setFollowingCount] = useState(profileCachePeek?.followingCount || 0);
@@ -2015,10 +2180,64 @@ const resolvedName = useMemo(() => {
 
                 <View style={s.identityCommandRow}>
                   {[
-                    ["Kristo ID", user.userId || "No ID found", true],
-                    ["Phone", user.phone || "Private / not added", Boolean((profileDraft as any)?.phonePublic ?? (session as any)?.phonePublic ?? false)],
-                    ["Church", user.churchId || "No Church ID yet", Boolean((profileDraft as any)?.churchPublic ?? (session as any)?.churchPublic ?? true)],
-                    ["Address", user.address || [user.city, user.country].filter(Boolean).join(", ") || "Private / not added", Boolean((profileDraft as any)?.addressPublic ?? (session as any)?.addressPublic ?? false)],
+                    [
+                      "Church ID",
+                      profile?.churchId ||
+                        profile?.activeChurchId ||
+                        user.churchId ||
+                        "No Church ID yet",
+                      isExternalUserProfile
+                        ? Boolean(
+                            profile?.churchIdPublic &&
+                              (
+                                profile?.churchId ||
+                                profile?.activeChurchId
+                              )
+                          )
+                        : Boolean(
+                            (profileDraft as any)?.churchIdPublic ??
+                              (session as any)?.churchIdPublic ??
+                              true
+                          ),
+                    ],
+                    [
+                      "Kristo ID",
+                      publicKristoId ||
+                        "No Kristo ID yet",
+                      isExternalUserProfile
+                        ? Boolean(
+                            profile?.kristoIdPublic &&
+                              publicKristoId
+                          )
+                        : Boolean(
+                            (profileDraft as any)?.kristoIdPublic ??
+                              (session as any)?.kristoIdPublic ??
+                              true
+                          ),
+                    ],
+                    [
+                      "Phone",
+                      user.phone ||
+                        "Private / not added",
+                      Boolean(
+                        (profileDraft as any)?.phonePublic ??
+                          (session as any)?.phonePublic ??
+                          false
+                      ),
+                    ],
+                    [
+                      "Address",
+                      user.address ||
+                        [user.city, user.country]
+                          .filter(Boolean)
+                          .join(", ") ||
+                        "Private / not added",
+                      Boolean(
+                        (profileDraft as any)?.addressPublic ??
+                          (session as any)?.addressPublic ??
+                          false
+                      ),
+                    ],
                   ].map(([label, value, canOpen]) => (
                     <Pressable
                       key={String(label)}
@@ -2091,7 +2310,75 @@ const resolvedName = useMemo(() => {
               </View>
             ) : (
               <View style={s.profileQuickCardsRow}>
+                {isExternalUserProfile ? (
                 <Pressable
+                  style={[
+                    s.profileQuickCard,
+                    s.profileQuickCardInbox,
+                    {
+                      flex: 1,
+                      width: "100%",
+                    },
+                  ]}
+                  onPress={() => {
+                    console.log(
+                      "PROFILE_EXTERNAL_MESSAGE_ONLY",
+                      {
+                        targetUserId:
+                          user.backendUserId ||
+                          userId,
+                      }
+                    );
+
+                    router.back();
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Message ${user.name}`}
+                >
+                  <View
+                    style={
+                      s.profileCommsIconWrap
+                    }
+                  >
+                    <Ionicons
+                      name="chatbubble-ellipses"
+                      size={44}
+                      color="#F4D06F"
+                    />
+
+                    <View
+                      style={
+                        s.profileCommsCallGlyph
+                      }
+                      pointerEvents="none"
+                    >
+                      <Ionicons
+                        name="arrow-back"
+                        size={16}
+                        color="#FFFFFF"
+                      />
+                    </View>
+                  </View>
+
+                  <Text
+                    style={
+                      s.profileQuickTitle
+                    }
+                  >
+                    Message
+                  </Text>
+
+                  <Text
+                    style={
+                      s.profileQuickSub
+                    }
+                  >
+                    Open conversation
+                  </Text>
+                </Pressable>
+              ) : (
+                <>
+<Pressable
                   style={s.profileQuickCard}
                   onPress={() => {
                     if (!inviteItems.length) {
@@ -2142,6 +2429,8 @@ const resolvedName = useMemo(() => {
                     ) : null}
                   </View>
                 </Pressable>
+                </>
+              )}
               </View>
             )}
 

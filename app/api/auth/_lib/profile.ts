@@ -26,6 +26,8 @@ export type UserProfilePrivacy = {
   showPhone?: boolean;
   showChurch?: boolean;
   showAddress?: boolean;
+  showChurchId?: boolean;
+  showKristoId?: boolean;
   privateMode?: boolean;
 };
 
@@ -144,6 +146,8 @@ export function defaultPrivacy(): UserProfilePrivacy {
     showPhone: false,
     showChurch: true,
     showAddress: false,
+    showChurchId: true,
+    showKristoId: true,
     privateMode: false,
   };
 }
@@ -160,6 +164,14 @@ export function normalizePrivacy(input?: Partial<UserProfilePrivacy> | null): Us
     showPhone: "showPhone" in src ? Boolean((src as any).showPhone) : base.showPhone,
     showChurch: "showChurch" in src ? Boolean((src as any).showChurch) : base.showChurch,
     showAddress: "showAddress" in src ? Boolean((src as any).showAddress) : base.showAddress,
+    showChurchId:
+      "showChurchId" in src
+        ? Boolean((src as any).showChurchId)
+        : base.showChurchId,
+    showKristoId:
+      "showKristoId" in src
+        ? Boolean((src as any).showKristoId)
+        : base.showKristoId,
     privateMode: "privateMode" in src ? Boolean((src as any).privateMode) : base.privateMode,
   };
 }
