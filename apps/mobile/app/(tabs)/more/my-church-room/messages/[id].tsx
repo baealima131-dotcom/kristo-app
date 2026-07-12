@@ -9599,8 +9599,38 @@ const displayHeaderTitle = assignmentDisplayTitle;
       return;
     }
 
-    if (action === "search") {
-      searchInsideConversation();
+    if (action === "media-storage") {
+      closeThreadMenu();
+
+      const mediaStorageThreadId = String(
+        threadId || backendRoomId || ""
+      ).trim();
+
+      if (!mediaStorageThreadId) {
+        Alert.alert(
+          "Media storage",
+          "This conversation could not be identified."
+        );
+        return;
+      }
+
+      router.push({
+        pathname:
+          "/(tabs)/more/my-church-room/messages/media-storage/[threadId]" as any,
+        params: {
+          threadId: mediaStorageThreadId,
+          roomId: String(backendRoomId || mediaStorageThreadId),
+          churchId: String(churchId || ""),
+          title: String(headerTitle || "Conversation"),
+        },
+      });
+
+      console.log("KRISTO_MEDIA_STORAGE_OPEN", {
+        threadId: mediaStorageThreadId,
+        roomId: String(backendRoomId || ""),
+        source: "conversation-settings",
+      });
+
       return;
     }
 
@@ -13979,9 +14009,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                       />
 
                       <MenuTile
-                        icon="search-outline"
-                        label="Search chat"
-                        onPress={() => onThreadMenuAction("search")}
+                        icon="folder-open-outline"
+                        label="Media storage"
+                        onPress={() =>
+                          onThreadMenuAction("media-storage")
+                        }
                       />
                     </View>
                   </View>
