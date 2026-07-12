@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
@@ -32,7 +33,10 @@ import {
   type DeleteAccountChoiceOption,
   type DeleteAccountFinalConfirmVariant,
 } from "@/src/components/account/DeleteAccountSubscriptionModals";
-import { apiPost } from "@/src/lib/kristoApi";
+import {
+  apiGet,
+  apiPost,
+} from "@/src/lib/kristoApi";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 const BG = "#050914";
@@ -41,10 +45,182 @@ const MUTED = "rgba(255,255,255,0.66)";
 const BORDER = "rgba(244,208,111,0.24)";
 const DANGER = "#FF5A5F";
 
+type PersonalPrivacy = {
+  showGender: boolean;
+  showCountry: boolean;
+  showCity: boolean;
+  showMaritalStatus: boolean;
+  showLanguages: boolean;
+  showProfileFact: boolean;
+  showMemberSince: boolean;
+  showChurchHistory: boolean;
+};
+
+type PersonalProfileForm = {
+  gender: "" | "MALE" | "FEMALE";
+  dob: string;
+  maritalStatus:
+    | "SINGLE"
+    | "MARRIED"
+    | "DIVORCED"
+    | "WIDOWED";
+  country: string;
+  city: string;
+  languages: string;
+  profileFact: string;
+};
+
+const DEFAULT_PERSONAL_PRIVACY: PersonalPrivacy = {
+  showGender: false,
+  showCountry: true,
+  showCity: false,
+  showMaritalStatus: false,
+  showLanguages: true,
+  showProfileFact: true,
+  showMemberSince: true,
+  showChurchHistory: false,
+};
+
+const EMPTY_PERSONAL_FORM: PersonalProfileForm = {
+  gender: "",
+  dob: "",
+  maritalStatus: "SINGLE",
+  country: "",
+  city: "",
+  languages: "",
+  profileFact: "",
+};
+
+const GENDER_OPTIONS = [
+  {
+    value: "MALE",
+    label: "Male",
+    icon: "male-outline",
+  },
+  {
+    value: "FEMALE",
+    label: "Female",
+    icon: "female-outline",
+  },
+] as const;
+
+const MARITAL_OPTIONS = [
+  {
+    value: "SINGLE",
+    label: "Single",
+  },
+  {
+    value: "MARRIED",
+    label: "Married",
+  },
+  {
+    value: "DIVORCED",
+    label: "Divorced",
+  },
+  {
+    value: "WIDOWED",
+    label: "Widowed",
+  },
+] as const;
+
+function PrivacySettingRow({
+  icon,
+  title,
+  subtitle,
+  value,
+  onChange,
+}: {
+  icon: React.ComponentProps<
+    typeof Ionicons
+  >["name"];
+  title: string;
+  subtitle: string;
+  value: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <Pressable
+      onPress={() => onChange(!value)}
+      accessibilityRole="switch"
+      accessibilityState={{
+        checked: value,
+      }}
+      style={({ pressed }) => [
+        s.privacyRow,
+        pressed && s.pressed,
+      ]}
+    >
+      <View
+        style={[
+          s.privacyRowIcon,
+          value &&
+            s.privacyRowIconActive,
+        ]}
+      >
+        <Ionicons
+          name={icon}
+          size={19}
+          color={
+            value
+              ? GOLD
+              : "rgba(255,255,255,0.56)"
+          }
+        />
+      </View>
+
+      <View style={s.privacyRowCopy}>
+        <Text style={s.privacyRowTitle}>
+          {title}
+        </Text>
+
+        <Text style={s.privacyRowSub}>
+          {subtitle}
+        </Text>
+      </View>
+
+      <View
+        style={[
+          s.toggleTrack,
+          value && s.toggleTrackActive,
+        ]}
+      >
+        <View
+          style={[
+            s.toggleKnob,
+            value && s.toggleKnobActive,
+          ]}
+        />
+      </View>
+    </Pressable>
+  );
+}
+
 export default function ProfileSettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { session, exitSessionFast } = useKristoSession();
+
+  const [personalForm, setPersonalForm] =
+    useState<PersonalProfileForm>(
+      EMPTY_PERSONAL_FORM
+    );
+
+  const [personalPrivacy, setPersonalPrivacy] =
+    useState<PersonalPrivacy>(
+      DEFAULT_PERSONAL_PRIVACY
+    );
+
+  const [dobPublic, setDobPublic] =
+    useState(false);
+
+  const [loadingPersonalInfo, setLoadingPersonalInfo] =
+    useState(true);
+
+  const [savingPersonalInfo, setSavingPersonalInfo] =
+    useState(false);
+
+  const [personalInfoLoaded, setPersonalInfoLoaded] =
+    useState(false);
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [choiceModalOpen, setChoiceModalOpen] = useState(false);
@@ -79,6 +255,380 @@ export default function ProfileSettingsScreen() {
     checkingSubscription ||
     Boolean(processingOption) ||
     managingLockHolderSubscription;
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadPersonalInformation() {
+      const userId = String(
+        session?.userId ||
+          getKristoAuth().userId ||
+          ""
+      ).trim();
+
+      if (!userId) {
+        if (alive) {
+          setLoadingPersonalInfo(false);
+        }
+        return;
+      }
+
+      try {
+        setLoadingPersonalInfo(true);
+
+        const response: any =
+          await apiGet(
+            "/api/auth/profile",
+            {
+              headers: getKristoHeaders({
+                userId,
+                role:
+                  (session?.role ||
+                    session?.churchRole ||
+                    "Member") as any,
+                churchId: String(
+                  session?.churchId || ""
+                ).trim(),
+              }),
+            },
+            {
+              screen:
+                "ProfilePersonalSettings",
+              throttleMs: 0,
+            }
+          );
+
+        if (
+          !alive ||
+          !response?.ok ||
+          !response?.profile
+        ) {
+          return;
+        }
+
+        const profile = response.profile;
+        const privacy =
+          profile.privacy &&
+          typeof profile.privacy === "object"
+            ? profile.privacy
+            : {};
+
+        setPersonalForm({
+          gender:
+            profile.gender === "MALE" ||
+            profile.gender === "FEMALE"
+              ? profile.gender
+              : "",
+
+          dob: String(
+            profile.dob || ""
+          ).trim(),
+
+          maritalStatus:
+            profile.maritalStatus ===
+              "MARRIED" ||
+            profile.maritalStatus ===
+              "DIVORCED" ||
+            profile.maritalStatus ===
+              "WIDOWED"
+              ? profile.maritalStatus
+              : "SINGLE",
+
+          country: String(
+            profile.country || ""
+          ).trim(),
+
+          city: String(
+            profile.city || ""
+          ).trim(),
+
+          languages: Array.isArray(
+            profile.languages
+          )
+            ? profile.languages
+                .map((value: unknown) =>
+                  String(value || "").trim()
+                )
+                .filter(Boolean)
+                .join(", ")
+            : String(
+                profile.languages || ""
+              ).trim(),
+
+          profileFact: String(
+            profile.profileFact ||
+              profile.bio ||
+              ""
+          )
+            .trim()
+            .slice(0, 160),
+        });
+
+        setDobPublic(
+          profile.dobVisibility ===
+            "Public"
+        );
+
+        setPersonalPrivacy({
+          showGender:
+            privacy.showGender === true,
+
+          showCountry:
+            "showCountry" in privacy
+              ? privacy.showCountry === true
+              : true,
+
+          showCity:
+            privacy.showCity === true,
+
+          showMaritalStatus:
+            privacy.showMaritalStatus ===
+            true,
+
+          showLanguages:
+            "showLanguages" in privacy
+              ? privacy.showLanguages === true
+              : true,
+
+          showProfileFact:
+            "showProfileFact" in privacy
+              ? privacy.showProfileFact === true
+              : true,
+
+          showMemberSince:
+            "showMemberSince" in privacy
+              ? privacy.showMemberSince === true
+              : true,
+
+          showChurchHistory:
+            privacy.showChurchHistory ===
+            true,
+        });
+
+        setPersonalInfoLoaded(true);
+
+        console.log(
+          "KRISTO_PERSONAL_SETTINGS_HYDRATED",
+          {
+            userId,
+            hasGender: Boolean(
+              profile.gender
+            ),
+            hasDob: Boolean(profile.dob),
+            hasCountry: Boolean(
+              profile.country
+            ),
+            hasLanguages:
+              Array.isArray(
+                profile.languages
+              ) &&
+              profile.languages.length > 0,
+          }
+        );
+      } catch (error: any) {
+        console.warn(
+          "KRISTO_PERSONAL_SETTINGS_LOAD_FAILED",
+          {
+            message: String(
+              error?.message ||
+                error ||
+                "unknown"
+            ),
+          }
+        );
+      } finally {
+        if (alive) {
+          setLoadingPersonalInfo(false);
+        }
+      }
+    }
+
+    void loadPersonalInformation();
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    session?.churchId,
+    session?.churchRole,
+    session?.role,
+    session?.userId,
+  ]);
+
+  function updatePersonalField<
+    K extends keyof PersonalProfileForm
+  >(
+    key: K,
+    value: PersonalProfileForm[K]
+  ) {
+    setPersonalForm((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
+
+  function updatePersonalPrivacy(
+    key: keyof PersonalPrivacy,
+    value: boolean
+  ) {
+    setPersonalPrivacy((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
+
+  async function savePersonalInformation() {
+    if (
+      savingPersonalInfo ||
+      loadingPersonalInfo
+    ) {
+      return;
+    }
+
+    const userId = String(
+      session?.userId ||
+        getKristoAuth().userId ||
+        ""
+    ).trim();
+
+    if (!userId) {
+      Alert.alert(
+        "Save failed",
+        "Your account could not be identified."
+      );
+      return;
+    }
+
+    const dob =
+      personalForm.dob.trim();
+
+    if (
+      dob &&
+      !/^\d{4}-\d{2}-\d{2}$/.test(dob)
+    ) {
+      Alert.alert(
+        "Date of birth",
+        "Enter the date using YYYY-MM-DD, for example 1995-08-24."
+      );
+      return;
+    }
+
+    const languages =
+      personalForm.languages
+        .split(",")
+        .map((value) =>
+          value.trim()
+        )
+        .filter(Boolean)
+        .slice(0, 8);
+
+    setSavingPersonalInfo(true);
+
+    try {
+      const response: any =
+        await apiPost(
+          "/api/auth/profile",
+          {
+            gender:
+              personalForm.gender ||
+              undefined,
+
+            dob,
+
+            dobVisibility:
+              dobPublic
+                ? "Public"
+                : "Private",
+
+            maritalStatus:
+              personalForm.maritalStatus,
+
+            maritalVisibility:
+              personalPrivacy
+                .showMaritalStatus
+                ? "Public"
+                : "Private",
+
+            country:
+              personalForm.country
+                .trim()
+                .slice(0, 80),
+
+            city:
+              personalForm.city
+                .trim()
+                .slice(0, 80),
+
+            languages,
+
+            profileFact:
+              personalForm.profileFact
+                .trim()
+                .slice(0, 160),
+
+            privacy: {
+              ...personalPrivacy,
+            },
+          },
+          getKristoHeaders({
+            userId,
+            role:
+              (session?.role ||
+                session?.churchRole ||
+                "Member") as any,
+            churchId: String(
+              session?.churchId || ""
+            ).trim(),
+          })
+        );
+
+      if (!response?.ok) {
+        Alert.alert(
+          "Save failed",
+          String(
+            response?.error ||
+              "Could not save your information."
+          )
+        );
+        return;
+      }
+
+      setPersonalInfoLoaded(true);
+
+      console.log(
+        "KRISTO_PERSONAL_SETTINGS_SAVED",
+        {
+          userId,
+          showGender:
+            personalPrivacy.showGender,
+          showCountry:
+            personalPrivacy.showCountry,
+          showAge: dobPublic,
+          showMaritalStatus:
+            personalPrivacy
+              .showMaritalStatus,
+          showChurchHistory:
+            personalPrivacy
+              .showChurchHistory,
+        }
+      );
+
+      Alert.alert(
+        "Saved",
+        "Your personal information and public privacy settings were updated."
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Save failed",
+        String(
+          error?.message ||
+            "Could not save your information."
+        )
+      );
+    } finally {
+      setSavingPersonalInfo(false);
+    }
+  }
 
   function onChangePassword() {
     Alert.alert(
@@ -471,6 +1021,449 @@ export default function ProfileSettingsScreen() {
           <View style={s.backBtnSpacer} />
         </View>
 
+        <Text style={s.sectionLabel}>
+          Personal Information
+        </Text>
+
+        <View style={s.personalCard}>
+          {loadingPersonalInfo &&
+          !personalInfoLoaded ? (
+            <View style={s.personalLoading}>
+              <ActivityIndicator
+                size="small"
+                color={GOLD}
+              />
+
+              <Text style={s.personalLoadingText}>
+                Loading your information…
+              </Text>
+            </View>
+          ) : (
+            <>
+              <Text style={s.fieldLabel}>
+                Gender
+              </Text>
+
+              <View style={s.optionRow}>
+                {GENDER_OPTIONS.map(
+                  (option) => {
+                    const active =
+                      personalForm.gender ===
+                      option.value;
+
+                    return (
+                      <Pressable
+                        key={option.value}
+                        onPress={() =>
+                          updatePersonalField(
+                            "gender",
+                            option.value
+                          )
+                        }
+                        style={({ pressed }) => [
+                          s.optionChip,
+                          active &&
+                            s.optionChipActive,
+                          pressed && s.pressed,
+                        ]}
+                      >
+                        <Ionicons
+                          name={option.icon}
+                          size={17}
+                          color={
+                            active
+                              ? GOLD
+                              : MUTED
+                          }
+                        />
+
+                        <Text
+                          style={[
+                            s.optionChipText,
+                            active &&
+                              s.optionChipTextActive,
+                          ]}
+                        >
+                          {option.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  }
+                )}
+              </View>
+
+              <Text style={s.fieldLabel}>
+                Date of birth
+              </Text>
+
+              <TextInput
+                value={personalForm.dob}
+                onChangeText={(value) =>
+                  updatePersonalField(
+                    "dob",
+                    value
+                      .replace(
+                        /[^0-9-]/g,
+                        ""
+                      )
+                      .slice(0, 10)
+                  )
+                }
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor="rgba(255,255,255,0.32)"
+                keyboardType="numbers-and-punctuation"
+                style={s.personalInput}
+              />
+
+              <Text style={s.fieldHint}>
+                Your birthday is saved privately. Public viewers see your age only when you allow it below.
+              </Text>
+
+              <Text style={s.fieldLabel}>
+                Marital status
+              </Text>
+
+              <View style={s.wrapOptions}>
+                {MARITAL_OPTIONS.map(
+                  (option) => {
+                    const active =
+                      personalForm
+                        .maritalStatus ===
+                      option.value;
+
+                    return (
+                      <Pressable
+                        key={option.value}
+                        onPress={() =>
+                          updatePersonalField(
+                            "maritalStatus",
+                            option.value
+                          )
+                        }
+                        style={({ pressed }) => [
+                          s.smallOptionChip,
+                          active &&
+                            s.optionChipActive,
+                          pressed && s.pressed,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            s.optionChipText,
+                            active &&
+                              s.optionChipTextActive,
+                          ]}
+                        >
+                          {option.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  }
+                )}
+              </View>
+
+              <View style={s.twoColumnRow}>
+                <View style={s.twoColumnField}>
+                  <Text style={s.fieldLabel}>
+                    Country
+                  </Text>
+
+                  <TextInput
+                    value={
+                      personalForm.country
+                    }
+                    onChangeText={(value) =>
+                      updatePersonalField(
+                        "country",
+                        value.slice(0, 80)
+                      )
+                    }
+                    placeholder="Country"
+                    placeholderTextColor="rgba(255,255,255,0.32)"
+                    autoCapitalize="words"
+                    style={s.personalInput}
+                  />
+                </View>
+
+                <View style={s.twoColumnField}>
+                  <Text style={s.fieldLabel}>
+                    City
+                  </Text>
+
+                  <TextInput
+                    value={personalForm.city}
+                    onChangeText={(value) =>
+                      updatePersonalField(
+                        "city",
+                        value.slice(0, 80)
+                      )
+                    }
+                    placeholder="City"
+                    placeholderTextColor="rgba(255,255,255,0.32)"
+                    autoCapitalize="words"
+                    style={s.personalInput}
+                  />
+                </View>
+              </View>
+
+              <Text style={s.fieldLabel}>
+                Languages
+              </Text>
+
+              <TextInput
+                value={
+                  personalForm.languages
+                }
+                onChangeText={(value) =>
+                  updatePersonalField(
+                    "languages",
+                    value.slice(0, 160)
+                  )
+                }
+                placeholder="Swahili, English, Kirundi"
+                placeholderTextColor="rgba(255,255,255,0.32)"
+                autoCapitalize="words"
+                style={s.personalInput}
+              />
+
+              <Text style={s.fieldHint}>
+                Separate languages with commas. Maximum 8 languages.
+              </Text>
+
+              <Text style={s.fieldLabel}>
+                Profile Fact
+              </Text>
+
+              <TextInput
+                value={
+                  personalForm.profileFact
+                }
+                onChangeText={(value) =>
+                  updatePersonalField(
+                    "profileFact",
+                    value.slice(0, 160)
+                  )
+                }
+                placeholder="Share one meaningful fact about yourself."
+                placeholderTextColor="rgba(255,255,255,0.32)"
+                multiline
+                maxLength={160}
+                textAlignVertical="top"
+                style={[
+                  s.personalInput,
+                  s.profileFactInput,
+                ]}
+              />
+
+              <Text style={s.characterCount}>
+                {
+                  personalForm
+                    .profileFact.length
+                }/160
+              </Text>
+            </>
+          )}
+        </View>
+
+        <Text style={s.sectionLabel}>
+          Privacy & Public Profile
+        </Text>
+
+        <View style={s.privacyCard}>
+          <View style={s.privacyIntro}>
+            <View style={s.privacyIntroIcon}>
+              <Ionicons
+                name="shield-checkmark-outline"
+                size={22}
+                color={GOLD}
+              />
+            </View>
+
+            <View style={s.privacyIntroText}>
+              <Text style={s.privacyIntroTitle}>
+                Control More About
+              </Text>
+
+              <Text style={s.privacyIntroSub}>
+                Only information you enable here will appear to other members.
+              </Text>
+            </View>
+          </View>
+
+          <PrivacySettingRow
+            icon="male-female-outline"
+            title="Show gender"
+            subtitle="Allow members to see your gender."
+            value={
+              personalPrivacy.showGender
+            }
+            onChange={(value) =>
+              updatePersonalPrivacy(
+                "showGender",
+                value
+              )
+            }
+          />
+
+          <PrivacySettingRow
+            icon="hourglass-outline"
+            title="Show age"
+            subtitle="Your birthday stays private; only your calculated age is shown."
+            value={dobPublic}
+            onChange={setDobPublic}
+          />
+
+          <PrivacySettingRow
+            icon="earth-outline"
+            title="Show country"
+            subtitle="Display your country in More About."
+            value={
+              personalPrivacy.showCountry
+            }
+            onChange={(value) =>
+              updatePersonalPrivacy(
+                "showCountry",
+                value
+              )
+            }
+          />
+
+          <PrivacySettingRow
+            icon="location-outline"
+            title="Show city"
+            subtitle="Display your city in More About."
+            value={
+              personalPrivacy.showCity
+            }
+            onChange={(value) =>
+              updatePersonalPrivacy(
+                "showCity",
+                value
+              )
+            }
+          />
+
+          <PrivacySettingRow
+            icon="heart-outline"
+            title="Show marital status"
+            subtitle="Allow members to see your marital status."
+            value={
+              personalPrivacy
+                .showMaritalStatus
+            }
+            onChange={(value) =>
+              updatePersonalPrivacy(
+                "showMaritalStatus",
+                value
+              )
+            }
+          />
+
+          <PrivacySettingRow
+            icon="language-outline"
+            title="Show languages"
+            subtitle="Display the languages you speak."
+            value={
+              personalPrivacy
+                .showLanguages
+            }
+            onChange={(value) =>
+              updatePersonalPrivacy(
+                "showLanguages",
+                value
+              )
+            }
+          />
+
+          <PrivacySettingRow
+            icon="sparkles-outline"
+            title="Show Profile Fact"
+            subtitle="Display your public Profile Fact."
+            value={
+              personalPrivacy
+                .showProfileFact
+            }
+            onChange={(value) =>
+              updatePersonalPrivacy(
+                "showProfileFact",
+                value
+              )
+            }
+          />
+
+          <PrivacySettingRow
+            icon="calendar-outline"
+            title="Show Kristo member since"
+            subtitle="Display when you joined Kristo App."
+            value={
+              personalPrivacy
+                .showMemberSince
+            }
+            onChange={(value) =>
+              updatePersonalPrivacy(
+                "showMemberSince",
+                value
+              )
+            }
+          />
+
+          <PrivacySettingRow
+            icon="trail-sign-outline"
+            title="Show church journey"
+            subtitle="Allow verified church history when the system record becomes available."
+            value={
+              personalPrivacy
+                .showChurchHistory
+            }
+            onChange={(value) =>
+              updatePersonalPrivacy(
+                "showChurchHistory",
+                value
+              )
+            }
+          />
+        </View>
+
+        <Pressable
+          onPress={() =>
+            void savePersonalInformation()
+          }
+          disabled={
+            loadingPersonalInfo ||
+            savingPersonalInfo
+          }
+          style={({ pressed }) => [
+            s.savePersonalButton,
+            pressed &&
+              !savingPersonalInfo &&
+              s.pressed,
+            (
+              loadingPersonalInfo ||
+              savingPersonalInfo
+            ) &&
+              s.savePersonalButtonDisabled,
+          ]}
+        >
+          {savingPersonalInfo ? (
+            <ActivityIndicator
+              size="small"
+              color="#07111F"
+            />
+          ) : (
+            <Ionicons
+              name="checkmark-circle-outline"
+              size={21}
+              color="#07111F"
+            />
+          )}
+
+          <Text style={s.savePersonalText}>
+            {savingPersonalInfo
+              ? "Saving…"
+              : "Save Personal Information"}
+          </Text>
+        </Pressable>
+
         <Text style={s.sectionLabel}>Account</Text>
         <View style={s.sectionCard}>
           <Pressable onPress={onChangePassword} style={({ pressed }) => [s.rowBtn, pressed && s.pressed]}>
@@ -623,7 +1616,7 @@ export default function ProfileSettingsScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = StyleSheet.create<any>({
   screen: { flex: 1, backgroundColor: BG },
   headerRow: {
     flexDirection: "row",
@@ -716,4 +1709,288 @@ const s = StyleSheet.create({
   },
   modalDeleteText: { color: "#fff", fontWeight: "900" },
   modalDeleteLoading: { flexDirection: "row", alignItems: "center", gap: 8 },
+
+  personalCard: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 22,
+    backgroundColor:
+      "rgba(255,255,255,0.035)",
+    padding: 15,
+    marginBottom: 22,
+  },
+
+  personalLoading: {
+    minHeight: 110,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+
+  personalLoadingText: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  fieldLabel: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+    textTransform: "uppercase",
+    marginTop: 12,
+    marginBottom: 7,
+  },
+
+  fieldHint: {
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 10.5,
+    lineHeight: 15,
+    fontWeight: "700",
+    marginTop: 6,
+  },
+
+  personalInput: {
+    minHeight: 48,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,208,111,0.18)",
+    backgroundColor:
+      "rgba(0,0,0,0.20)",
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "700",
+    paddingHorizontal: 13,
+  },
+
+  profileFactInput: {
+    minHeight: 94,
+    paddingTop: 13,
+    paddingBottom: 13,
+  },
+
+  characterCount: {
+    color: "rgba(255,255,255,0.40)",
+    fontSize: 10,
+    fontWeight: "800",
+    textAlign: "right",
+    marginTop: 5,
+  },
+
+  optionRow: {
+    flexDirection: "row",
+    gap: 9,
+  },
+
+  wrapOptions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+
+  optionChip: {
+    flex: 1,
+    minHeight: 45,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.10)",
+    backgroundColor:
+      "rgba(255,255,255,0.035)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingHorizontal: 11,
+  },
+
+  smallOptionChip: {
+    minHeight: 40,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.10)",
+    backgroundColor:
+      "rgba(255,255,255,0.035)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 13,
+  },
+
+  optionChipActive: {
+    borderColor:
+      "rgba(244,208,111,0.62)",
+    backgroundColor:
+      "rgba(244,208,111,0.11)",
+  },
+
+  optionChipText: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  optionChipTextActive: {
+    color: GOLD,
+  },
+
+  twoColumnRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  twoColumnField: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  privacyCard: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 22,
+    backgroundColor:
+      "rgba(255,255,255,0.035)",
+    overflow: "hidden",
+  },
+
+  privacyIntro: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 15,
+    backgroundColor:
+      "rgba(244,208,111,0.055)",
+    borderBottomWidth: 1,
+    borderBottomColor:
+      "rgba(255,255,255,0.07)",
+  },
+
+  privacyIntroIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(244,208,111,0.11)",
+  },
+
+  privacyIntroText: {
+    flex: 1,
+    marginLeft: 11,
+  },
+
+  privacyIntroTitle: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  privacyIntroSub: {
+    color: MUTED,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+    marginTop: 3,
+  },
+
+  privacyRow: {
+    minHeight: 72,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomWidth:
+      StyleSheet.hairlineWidth,
+    borderBottomColor:
+      "rgba(255,255,255,0.08)",
+  },
+
+  privacyRowIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(255,255,255,0.045)",
+  },
+
+  privacyRowIconActive: {
+    backgroundColor:
+      "rgba(244,208,111,0.10)",
+  },
+
+  privacyRowCopy: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 11,
+    marginRight: 10,
+  },
+
+  privacyRowTitle: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  privacyRowSub: {
+    color: "rgba(255,255,255,0.47)",
+    fontSize: 10.5,
+    lineHeight: 15,
+    fontWeight: "700",
+    marginTop: 3,
+  },
+
+  toggleTrack: {
+    width: 45,
+    height: 27,
+    borderRadius: 14,
+    padding: 3,
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(255,255,255,0.12)",
+  },
+
+  toggleTrackActive: {
+    backgroundColor:
+      "rgba(244,208,111,0.78)",
+  },
+
+  toggleKnob: {
+    width: 21,
+    height: 21,
+    borderRadius: 11,
+    backgroundColor: "#FFFFFF",
+  },
+
+  toggleKnobActive: {
+    alignSelf: "flex-end",
+    backgroundColor: "#07111F",
+  },
+
+  savePersonalButton: {
+    minHeight: 54,
+    marginTop: 14,
+    marginBottom: 25,
+    borderRadius: 17,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+    backgroundColor: GOLD,
+  },
+
+  savePersonalButtonDisabled: {
+    opacity: 0.55,
+  },
+
+  savePersonalText: {
+    color: "#07111F",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
 });
