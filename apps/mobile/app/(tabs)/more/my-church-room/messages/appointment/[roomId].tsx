@@ -115,26 +115,43 @@ function VoiceSlot({
         return;
       }
 
-      /*
-       * Explicitly load this slot's own recording before play.
-       * Without replace(), expo-audio can keep the most recently
-       * recorded source, making Voice 1/2 play Voice 3.
-       */
-      player.replace({
-        uri: source,
-      });
+      const duration =
+        Number(status.duration || 0);
 
-      player.seekTo(0);
+      const currentTime =
+        Number(status.currentTime || 0);
+
+      const finished =
+        duration > 0 &&
+        currentTime >= duration - 0.1;
+
+      /*
+       * VoiceSlot is keyed by note.id and its player is created
+       * with note.uri. Play that bound source directly instead
+       * of replacing it immediately before playback.
+       */
+      if (finished) {
+        player.seekTo(0);
+      }
+
       player.play();
 
       console.log(
         "KRISTO_APPOINTMENT_COMPOSER_VOICE_PLAY",
         {
           voiceIndex: index + 1,
-          sourceLength: source.length,
-          sourceStart: source.slice(0, 48),
-          sourceEnd: source.slice(-32),
-          replacedSource: true,
+          noteId: String(
+            note?.id || ""
+          ),
+          sourceLength:
+            source.length,
+          sourceStart:
+            source.slice(0, 48),
+          sourceEnd:
+            source.slice(-32),
+          sourceBoundAtPlayerCreation: true,
+          restarted:
+            finished,
         }
       );
     } catch (error: any) {
@@ -142,8 +159,13 @@ function VoiceSlot({
         "KRISTO_APPOINTMENT_COMPOSER_VOICE_PLAY_FAILED",
         {
           voiceIndex: index + 1,
-          sourceStart: source.slice(0, 48),
-          sourceEnd: source.slice(-32),
+          noteId: String(
+            note?.id || ""
+          ),
+          sourceStart:
+            source.slice(0, 48),
+          sourceEnd:
+            source.slice(-32),
           message: String(
             error?.message ||
               error ||
@@ -155,8 +177,11 @@ function VoiceSlot({
   }, [
     disabled,
     index,
+    note?.id,
     note?.uri,
     player,
+    status.currentTime,
+    status.duration,
     status.playing,
   ]);
 

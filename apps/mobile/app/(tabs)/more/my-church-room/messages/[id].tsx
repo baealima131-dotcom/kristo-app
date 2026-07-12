@@ -2356,8 +2356,6 @@ function AppointmentVoiceChip({
   function toggleVoice() {
     if (!source) return;
 
-    onActivate(index);
-
     try {
       if (
         active &&
@@ -2367,16 +2365,25 @@ function AppointmentVoiceChip({
         return;
       }
 
-      /*
-       * Expo Audio players may preserve the previously loaded
-       * source. Explicitly replace it before every new chip play
-       * so Voice 2/3/4/5 cannot reuse Voice 1.
-       */
-      player.replace({
-        uri: source,
-      });
+      onActivate(index);
 
-      player.seekTo(0);
+      const finished =
+        completed ||
+        (
+          Number(status.duration || 0) > 0 &&
+          Number(status.currentTime || 0) >=
+            Number(status.duration || 0) - 0.1
+        );
+
+      /*
+       * This chip owns a player created with this exact source.
+       * Do not call replace() here: replacing and immediately
+       * playing can race the native source-loading operation.
+       */
+      if (finished) {
+        player.seekTo(0);
+      }
+
       setCompleted(false);
       player.play();
 
@@ -2384,13 +2391,18 @@ function AppointmentVoiceChip({
         "KRISTO_APPOINTMENT_VOICE_PLAY",
         {
           voiceIndex: index + 1,
+          noteId: String(
+            note?.id || ""
+          ),
           sourceLength:
             source.length,
           sourceStart:
             source.slice(0, 48),
           sourceEnd:
             source.slice(-32),
-          replacedSource: true,
+          sourceBoundAtPlayerCreation: true,
+          restarted:
+            finished,
         }
       );
     } catch (error: any) {
@@ -2398,6 +2410,9 @@ function AppointmentVoiceChip({
         "KRISTO_APPOINTMENT_VOICE_PLAY_FAILED",
         {
           voiceIndex: index + 1,
+          noteId: String(
+            note?.id || ""
+          ),
           sourceStart:
             source.slice(0, 48),
           sourceEnd:
