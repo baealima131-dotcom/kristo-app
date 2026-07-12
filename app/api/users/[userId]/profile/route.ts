@@ -17,6 +17,47 @@ function text(value: unknown) {
   return String(value || "").trim();
 }
 
+function normalizePublicLanguages(
+  value: unknown
+): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => text(item))
+      .filter(Boolean)
+      .slice(0, 8);
+  }
+
+  const raw = text(value);
+
+  if (!raw) {
+    return [];
+  }
+
+  if (
+    raw.startsWith("[") &&
+    raw.endsWith("]")
+  ) {
+    try {
+      const parsed = JSON.parse(raw);
+
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item) => text(item))
+          .filter(Boolean)
+          .slice(0, 8);
+      }
+    } catch {
+      // Fall through to comma-separated parsing.
+    }
+  }
+
+  return raw
+    .split(",")
+    .map((item) => text(item))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 export async function GET(
   req: NextRequest,
   context: {
@@ -268,14 +309,10 @@ export async function GET(
   }
 
   const publicLanguages =
-    privacy.showLanguages &&
-    Array.isArray(source.languages)
-      ? source.languages
-          .map((value: unknown) =>
-            text(value)
-          )
-          .filter(Boolean)
-          .slice(0, 8)
+    privacy.showLanguages
+      ? normalizePublicLanguages(
+          source.languages
+        )
       : [];
 
   const rawChurchHistory =

@@ -569,6 +569,32 @@ export default function ProfileSettingsScreen() {
             privacy: {
               ...personalPrivacy,
             },
+
+            showGender:
+              personalPrivacy.showGender,
+
+            showCountry:
+              personalPrivacy.showCountry,
+
+            showCity:
+              personalPrivacy.showCity,
+
+            showMaritalStatus:
+              personalPrivacy
+                .showMaritalStatus,
+
+            showLanguages:
+              personalPrivacy.showLanguages,
+
+            showProfileFact:
+              personalPrivacy.showProfileFact,
+
+            showMemberSince:
+              personalPrivacy.showMemberSince,
+
+            showChurchHistory:
+              personalPrivacy
+                .showChurchHistory,
           },
           getKristoHeaders({
             userId,

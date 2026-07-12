@@ -697,13 +697,15 @@ export default function MoreAboutMemberScreen() {
                         <Text
                           style={styles.emptyPublicText}
                         >
-                          {
-                        profile?.publicVisibility
-                          ?.showChurchHistory === true
+                      {
+                        profile
+                          ?.publicVisibility
+                          ?.showChurchHistory ===
+                        true
                           ? "No verified church history is available yet."
                           : "Church history is not publicly shared."
                       }
-                        </Text>
+                    </Text>
                       </View>
                     )
                 }
