@@ -15,6 +15,35 @@ export type MsgAttachment = {
   url?: string;
 };
 
+export type AppointmentRequestStatus =
+  | "pending"
+  | "accepted_awaiting_time"
+  | "rejected"
+  | "time_proposed"
+  | "confirmed"
+  | "cancelled";
+
+export type AppointmentVoiceNote = {
+  id: string;
+  uri: string;
+  durationSec: number;
+  mime?: string;
+  name?: string;
+};
+
+export type AppointmentRequestPayload = {
+  type: "appointment_request";
+  appointmentId: string;
+  status: AppointmentRequestStatus;
+  requesterId: string;
+  recipientId: string;
+  requesterName?: string;
+  recipientName?: string;
+  message: string;
+  voiceNotes?: AppointmentVoiceNote[];
+  createdAt: number;
+};
+
 export type AssignmentCardStatus = "open" | "taken" | "done";
 
 export type AssignmentCardPayload = {
@@ -83,8 +112,19 @@ export type MsgItem = {
   text?: string;
   attachments?: MsgAttachment[];
   createdAt: number;
-  kind?: "text" | "assignment_card" | "shared_content";
-  card?: AssignmentCardPayload;
+  kind?:
+    | "text"
+    | "assignment_card"
+    | "shared_content"
+    | "appointment_request"
+    | "appointment_response"
+    | "appointment_time_proposed"
+    | "appointment_confirmed";
+  /**
+   * Room messages support multiple rich-card schemas.
+   * Narrow by `kind` / `card.type` before rendering or mutating.
+   */
+  card?: any;
   sharedContent?: SharedContentPayload;
   pending?: boolean;
   senderUserId?: string;
@@ -92,6 +132,7 @@ export type MsgItem = {
   role?: string;
   churchRole?: string;
   senderAvatar?: string;
+  viewerDeletedStorageItemIds?: string[];
 };
 
 export type ThreadMeta = {
@@ -368,9 +409,16 @@ export function sendMessage(
     churchRole?: string;
     avatarUri?: string;
     senderAvatar?: string;
-    kind?: "text" | "assignment_card" | "shared_content";
+    kind?:
+      | "text"
+      | "assignment_card"
+      | "shared_content"
+      | "appointment_request"
+    | "appointment_response"
+    | "appointment_time_proposed"
+    | "appointment_confirmed";
     sharedContent?: SharedContentPayload;
-    card?: AssignmentCardPayload;
+    card?: any;
   },
   opts?: { seedOther?: boolean; name?: string; disableAutoReply?: boolean }
 ) {

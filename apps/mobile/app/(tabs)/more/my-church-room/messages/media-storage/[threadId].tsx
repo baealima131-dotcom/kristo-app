@@ -32,6 +32,12 @@ import {
   normalizeMsgAttachment,
   resolveMessageAttachmentUrl,
 } from "@/src/lib/messageAttachmentUpload";
+import {
+  apiPatch,
+} from "@/src/lib/kristoApi";
+import {
+  getKristoHeaders,
+} from "@/src/lib/kristoHeaders";
 
 const BG = "#0B0F17";
 const CARD = "rgba(255,255,255,0.055)";
@@ -514,6 +520,24 @@ export default function ConversationMediaStorageScreen() {
     [messages]
   );
 
+  const backendHiddenItemIds =
+    useMemo(
+      () =>
+        new Set(
+          messages.flatMap((message) =>
+            Array.isArray(
+              message
+                .viewerDeletedStorageItemIds
+            )
+              ? message
+                  .viewerDeletedStorageItemIds
+                  .map(String)
+              : []
+          )
+        ),
+      [messages]
+    );
+
   const [tab, setTab] =
     useState<StorageTab>("media");
 
@@ -534,23 +558,132 @@ export default function ConversationMediaStorageScreen() {
   ] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    let alive = true;
+    setHiddenItemIds(
+      new Set(backendHiddenItemIds)
+    );
+  }, [backendHiddenItemIds]);
+
+  /*
+   * One-time migration from old local-only
+   * tombstones to durable backend tombstones.
+   */
+  useEffect(() => {
+    let cancelled = false;
 
     void AsyncStorage.getItem(
       storageHiddenKey(threadId)
     )
-      .then((raw) => {
-        if (!alive || !raw) return;
+      .then(async (raw) => {
+        if (cancelled || !raw) return;
 
-        const parsed = JSON.parse(raw);
+        let legacyIds: string[] = [];
 
-        if (Array.isArray(parsed)) {
-          setHiddenItemIds(
-            new Set(parsed.map(String))
+        try {
+          const parsed = JSON.parse(raw);
+          legacyIds = Array.isArray(parsed)
+            ? parsed.map(String)
+            : [];
+        } catch {
+          legacyIds = [];
+        }
+
+        const missingIds =
+          legacyIds.filter(
+            (id) =>
+              !backendHiddenItemIds.has(id)
+          );
+
+        if (!missingIds.length) {
+          await AsyncStorage.removeItem(
+            storageHiddenKey(threadId)
+          ).catch(() => {});
+          return;
+        }
+
+        const byMessage =
+          new Map<string, string[]>();
+
+        for (const itemId of missingIds) {
+          const item = [
+            ...index.media,
+            ...index.documents,
+            ...index.audio,
+            ...index.links,
+          ].find(
+            (candidate) =>
+              candidate.id === itemId
+          );
+
+          if (!item?.messageId) continue;
+
+          const current =
+            byMessage.get(
+              item.messageId
+            ) || [];
+
+          current.push(itemId);
+          byMessage.set(
+            item.messageId,
+            current
           );
         }
+
+        for (
+          const [
+            messageId,
+            itemIds,
+          ] of byMessage
+        ) {
+          await apiPatch(
+            "/api/church/room-messages",
+            {
+              roomId: threadId,
+              messageId,
+              action:
+                "delete_storage_items",
+              itemIds,
+            },
+            {
+              headers:
+                getKristoHeaders() as any,
+            }
+          );
+        }
+
+        if (!cancelled) {
+          setHiddenItemIds(
+            new Set([
+              ...backendHiddenItemIds,
+              ...missingIds,
+            ])
+          );
+        }
+
+        await AsyncStorage.removeItem(
+          storageHiddenKey(threadId)
+        ).catch(() => {});
+
+        console.log(
+          "KRISTO_MEDIA_STORAGE_LEGACY_DELETIONS_MIGRATED",
+          {
+            threadId,
+            count: missingIds.length,
+          }
+        );
       })
       .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    backendHiddenItemIds,
+    index,
+    threadId,
+  ]);
+
+  useEffect(() => {
+    let alive = true;
 
     void AsyncStorage.getItem(
       storageSizeKey(threadId)
@@ -990,44 +1123,149 @@ export default function ConversationMediaStorageScreen() {
     );
   }, [index, messages.length, threadId]);
 
+  const deleteStorageItemsForMe =
+    useCallback(
+      async (items: StorageItem[]) => {
+        if (!items.length) return;
+
+        const byMessage =
+          new Map<string, StorageItem[]>();
+
+        for (const item of items) {
+          const current =
+            byMessage.get(
+              item.messageId
+            ) || [];
+
+          current.push(item);
+          byMessage.set(
+            item.messageId,
+            current
+          );
+        }
+
+        for (
+          const [
+            messageId,
+            messageItems,
+          ] of byMessage
+        ) {
+          const response: any =
+            await apiPatch(
+              "/api/church/room-messages",
+              {
+                roomId: threadId,
+                messageId,
+                action:
+                  "delete_storage_items",
+                itemIds:
+                  messageItems.map(
+                    (item) => item.id
+                  ),
+              },
+              {
+                headers:
+                  getKristoHeaders() as any,
+              }
+            );
+
+          if (
+            !response ||
+            response.ok === false
+          ) {
+            throw new Error(
+              String(
+                response?.error ||
+                  "Storage item could not be deleted."
+              )
+            );
+          }
+        }
+
+        const nextHidden = new Set(
+          hiddenItemIds
+        );
+
+        const nextSizes = {
+          ...resolvedSizes,
+        };
+
+        for (const item of items) {
+          nextHidden.add(item.id);
+          delete nextSizes[item.id];
+        }
+
+        setHiddenItemIds(nextHidden);
+        setResolvedSizes(nextSizes);
+
+        await AsyncStorage.setItem(
+          storageSizeKey(threadId),
+          JSON.stringify(nextSizes)
+        ).catch(() => {});
+
+        /*
+         * Old hidden key is no longer source of
+         * truth. Remove it after backend success.
+         */
+        await AsyncStorage.removeItem(
+          storageHiddenKey(threadId)
+        ).catch(() => {});
+
+        console.log(
+          "KRISTO_MEDIA_STORAGE_DELETE_FOR_ME_DURABLE",
+          {
+            threadId,
+            count: items.length,
+            itemIds: items.map(
+              (item) => item.id
+            ),
+          }
+        );
+      },
+      [
+        hiddenItemIds,
+        resolvedSizes,
+        threadId,
+      ]
+    );
+
   const hideStorageItem = useCallback(
     async (item: StorageItem) => {
-      const next = new Set(hiddenItemIds);
-      next.add(item.id);
-
-      setHiddenItemIds(next);
-
-      await AsyncStorage.setItem(
-        storageHiddenKey(threadId),
-        JSON.stringify([...next])
-      ).catch(() => {});
-
-      console.log(
-        "KRISTO_MEDIA_STORAGE_ITEM_HIDDEN",
-        {
-          threadId,
-          itemId: item.id,
-          messageId: item.messageId,
-          sourceKind: item.sourceKind,
-        }
-      );
+      try {
+        await deleteStorageItemsForMe(
+          [item]
+        );
+      } catch (error: any) {
+        Alert.alert(
+          "Delete failed",
+          String(
+            error?.message ||
+              "Please try again."
+          )
+        );
+      }
     },
-    [hiddenItemIds, threadId]
+    [deleteStorageItemsForMe]
   );
 
   const deleteSelectedCleanupItems =
     useCallback(() => {
-      if (!selectedCleanupItems.length) return;
+      if (!selectedCleanupItems.length) {
+        return;
+      }
 
       Alert.alert(
-        `Delete ${selectedCleanupItems.length} selected ${
-          selectedCleanupItems.length === 1
+        `Delete ${
+          selectedCleanupItems.length
+        } selected ${
+          selectedCleanupItems.length ===
+          1
             ? "item"
             : "items"
         }?`,
         `${formatStorageBytes(
           selectedCleanupBytes
-        )} will be removed from your Media Storage. The original chat messages will remain in the conversation.`,
+        )} will be removed from your storage. Other people in the conversation will keep their copies.`,
         [
           {
             text: "Cancel",
@@ -1038,35 +1276,21 @@ export default function ConversationMediaStorageScreen() {
             style: "destructive",
             onPress: () => {
               void (async () => {
-                const next = new Set(
-                  hiddenItemIds
-                );
+                try {
+                  await deleteStorageItemsForMe(
+                    selectedCleanupItems
+                  );
 
-                for (
-                  const item of
-                  selectedCleanupItems
-                ) {
-                  next.add(item.id);
+                  clearCleanupSelection();
+                } catch (error: any) {
+                  Alert.alert(
+                    "Delete failed",
+                    String(
+                      error?.message ||
+                        "Please try again."
+                    )
+                  );
                 }
-
-                setHiddenItemIds(next);
-                clearCleanupSelection();
-
-                await AsyncStorage.setItem(
-                  storageHiddenKey(threadId),
-                  JSON.stringify([...next])
-                ).catch(() => {});
-
-                console.log(
-                  "KRISTO_MEDIA_STORAGE_SELECTED_DELETED_LOCAL",
-                  {
-                    threadId,
-                    count:
-                      selectedCleanupItems.length,
-                    bytes:
-                      selectedCleanupBytes,
-                  }
-                );
               })();
             },
           },
@@ -1074,71 +1298,57 @@ export default function ConversationMediaStorageScreen() {
       );
     }, [
       clearCleanupSelection,
-      hiddenItemIds,
+      deleteStorageItemsForMe,
       selectedCleanupBytes,
       selectedCleanupItems,
-      threadId,
     ]);
 
-  const hideAllCleanupItems = useCallback(
-    () => {
+  const hideAllCleanupItems =
+    useCallback(() => {
       if (!cleanupItems.length) return;
 
       Alert.alert(
-        "Remove shown items?",
-        `Remove ${cleanupItems.length} item${
+        "Delete shown items?",
+        `Delete ${
+          cleanupItems.length
+        } item${
           cleanupItems.length === 1
             ? ""
             : "s"
-        } from your Media Storage view? This will not delete the original messages from the conversation.`,
+        } from your storage? Other conversation participants will not be affected.`,
         [
           {
             text: "Cancel",
             style: "cancel",
           },
           {
-            text: "Remove",
+            text: "Delete",
             style: "destructive",
             onPress: () => {
               void (async () => {
-                const next = new Set(
-                  hiddenItemIds
-                );
+                try {
+                  await deleteStorageItemsForMe(
+                    cleanupItems
+                  );
 
-                for (const item of cleanupItems) {
-                  next.add(item.id);
+                  setCleanupOpen(false);
+                } catch (error: any) {
+                  Alert.alert(
+                    "Delete failed",
+                    String(
+                      error?.message ||
+                        "Please try again."
+                    )
+                  );
                 }
-
-                setHiddenItemIds(next);
-
-                await AsyncStorage.setItem(
-                  storageHiddenKey(threadId),
-                  JSON.stringify([...next])
-                ).catch(() => {});
-
-                setCleanupOpen(false);
-
-                console.log(
-                  "KRISTO_MEDIA_STORAGE_BULK_HIDDEN",
-                  {
-                    threadId,
-                    count: cleanupItems.length,
-                    bytes: cleanupShownBytes,
-                    filter: cleanupFilter,
-                  }
-                );
               })();
             },
           },
         ]
       );
-    },
-    [
-      cleanupFilter,
+    }, [
       cleanupItems,
-      cleanupShownBytes,
-      hiddenItemIds,
-      threadId,
+      deleteStorageItemsForMe,
     ]
   );
 

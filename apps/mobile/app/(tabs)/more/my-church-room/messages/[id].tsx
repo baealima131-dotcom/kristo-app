@@ -1966,6 +1966,14 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, _api
     kind,
     sharedContent,
     card: x.card || undefined,
+    viewerDeletedStorageItemIds:
+      Array.isArray(
+        x.viewerDeletedStorageItemIds
+      )
+        ? x.viewerDeletedStorageItemIds.map(
+            String
+          )
+        : [],
   };
 }
 
@@ -3473,10 +3481,12 @@ function AppointmentVoicePlaylist({
   voiceNotes,
   threadId,
   messageId,
+  deletedStorageItemIds,
 }: {
   voiceNotes: Array<Record<string, any>>;
   threadId: string;
   messageId: string;
+  deletedStorageItemIds?: string[];
 }) {
   const isFocused = useIsFocused();
 
@@ -3526,76 +3536,20 @@ function AppointmentVoicePlaylist({
     [messageId, voiceNotes]
   );
 
-  const [
-    hiddenAppointmentVoiceIds,
-    setHiddenAppointmentVoiceIds,
-  ] = React.useState<Set<string>>(
-    new Set()
-  );
-
-  React.useEffect(() => {
-    let alive = true;
-
-    const normalizedThreadId = String(
-      threadId || ""
-    ).trim();
-
-    if (!normalizedThreadId) {
-      setHiddenAppointmentVoiceIds(
-        new Set()
-      );
-      return () => {
-        alive = false;
-      };
-    }
-
-    void AsyncStorage.getItem(
-      conversationMediaHiddenKey(
-        normalizedThreadId
-      )
-    )
-      .then((raw) => {
-        if (!alive) return;
-
-        if (!raw) {
-          setHiddenAppointmentVoiceIds(
-            new Set()
-          );
-          return;
-        }
-
-        try {
-          const parsed = JSON.parse(raw);
-
-          setHiddenAppointmentVoiceIds(
-            new Set(
-              Array.isArray(parsed)
-                ? parsed.map(String)
-                : []
-            )
-          );
-        } catch {
-          setHiddenAppointmentVoiceIds(
-            new Set()
-          );
-        }
-      })
-      .catch(() => {
-        if (alive) {
-          setHiddenAppointmentVoiceIds(
-            new Set()
-          );
-        }
-      });
-
-    return () => {
-      alive = false;
-    };
-  }, [
-    isFocused,
-    messageId,
-    threadId,
-  ]);
+  const hiddenAppointmentVoiceIds =
+    React.useMemo(
+      () =>
+        new Set(
+          Array.isArray(
+            deletedStorageItemIds
+          )
+            ? deletedStorageItemIds.map(
+                String
+              )
+            : []
+        ),
+      [deletedStorageItemIds]
+    );
 
   const visibleNotes = React.useMemo(
     () =>
@@ -4341,6 +4295,11 @@ function AppointmentRequestVipCard({
               messageId={String(
                 message.id || ""
               )}
+              deletedStorageItemIds={
+                message
+                  .viewerDeletedStorageItemIds ||
+                []
+              }
             />
           ) : null}
 

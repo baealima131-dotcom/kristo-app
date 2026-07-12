@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import {
-  getDirectMessageConversationSettings,
   requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
 import { getProfile } from "@/app/api/auth/_lib/profile";
@@ -13,6 +12,7 @@ import {
 } from "@/app/api/_lib/store/roomMessageDb";
 import { purgeFeedSchedulesForDeletedRoomCards } from "@/app/api/_lib/reconcileMediaScheduleFeed";
 import {
+  getDirectMessageConversationSettings,
   isDirectMessageBlocked,
   isDirectRoomId,
   isParticipantInDirectRoom,
@@ -79,6 +79,10 @@ type RoomMessage = {
   sharedContent?: any;
   createdAt: number;
   deletedFor?: string[];
+  storageDeletedFor?: Record<
+    string,
+    string[]
+  >;
 };
 
 /**
@@ -339,15 +343,52 @@ export async function GET(req: Request) {
 
   const enriched = await Promise.all(
     window.map(async (m: any) => {
-      const profile = await senderProfileFor(churchId, String(m.senderUserId || ""));
+      const profile = await senderProfileFor(
+        churchId,
+        String(m.senderUserId || "")
+      );
 
-      // Spread the full stored row first so attachments / card / payload /
-      // schedule / slot / metadata are never stripped on the way out.
+      const storageDeletedFor =
+        m?.storageDeletedFor &&
+        typeof m.storageDeletedFor === "object" &&
+        !Array.isArray(m.storageDeletedFor)
+          ? m.storageDeletedFor
+          : {};
+
+      const viewerDeletedStorageItemIds =
+        Object.entries(storageDeletedFor)
+          .filter(([, deletedUsers]) =>
+            Array.isArray(deletedUsers) &&
+            deletedUsers
+              .map(String)
+              .includes(String(userId))
+          )
+          .map(([itemId]) => String(itemId));
+
+      /*
+       * Never expose the complete per-user deletion map.
+       * The viewer only receives their own deleted item ids.
+       */
+      const {
+        storageDeletedFor: _privateStorageDeletedFor,
+        ...publicMessage
+      } = m;
+
       return {
-        ...m,
-        senderName: profile.name || m.senderName || "Member",
-        senderAvatar: profile.avatar || m.senderAvatar || "",
-        senderRole: profile.role || m.senderRole || "",
+        ...publicMessage,
+        viewerDeletedStorageItemIds,
+        senderName:
+          profile.name ||
+          m.senderName ||
+          "Member",
+        senderAvatar:
+          profile.avatar ||
+          m.senderAvatar ||
+          "",
+        senderRole:
+          profile.role ||
+          m.senderRole ||
+          "",
       };
     })
   );
@@ -397,6 +438,188 @@ export async function POST(req: Request) {
   const normalizedRoomKind = String(roomKind || "").trim().toLowerCase();
   const isDirectRoom =
     V1_DIRECT_ROOM_KINDS.has(normalizedRoomKind) || isDirectRoomId(roomId);
+
+  if (kind === "appointment_request") {
+    const appointmentMessage = String(
+      card?.message || text || ""
+    ).trim();
+
+    if (!isDirectRoom) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Appointment requests are only supported in direct conversations.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (
+      !card ||
+      String(card?.type || "") !== "appointment_request"
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Invalid appointment request payload.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!appointmentMessage) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Write a message before sending the appointment request.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (appointmentMessage.length > 500) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Appointment request messages cannot exceed 500 characters.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (
+      String(card?.requesterId || "").trim() !==
+      String(userId || "").trim()
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Invalid appointment requester.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (
+      Array.isArray(card?.voiceNotes) &&
+      card.voiceNotes.length > 0
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Voice appointment requests are not enabled yet.",
+        },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (
+    kind === "appointment_response" ||
+    kind === "appointment_time_proposed" ||
+    kind === "appointment_confirmed"
+  ) {
+    if (!isDirectRoom) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Appointment workflow messages require a direct conversation.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!card || !String(card?.appointmentId || "").trim()) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Invalid appointment workflow payload.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const requesterId = String(card?.requesterId || "").trim();
+    const recipientId = String(card?.recipientId || "").trim();
+    const actorId = String(userId || "").trim();
+    const status = String(card?.status || "").trim();
+
+    if (
+      actorId !== requesterId &&
+      actorId !== recipientId
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "You are not part of this appointment.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (
+      kind === "appointment_response" &&
+      (
+        status === "accepted_awaiting_time" ||
+        status === "rejected"
+      ) &&
+      actorId !== recipientId
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Only the appointment recipient can accept or reject the request.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (
+      kind === "appointment_time_proposed" &&
+      actorId !== recipientId
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Only the appointment recipient can propose the meeting time.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (
+      kind === "appointment_confirmed" &&
+      actorId !== requesterId
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Only the requester can confirm the proposed time.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (
+      String(card?.message || text || "").length > 500
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Appointment messages cannot exceed 500 characters.",
+        },
+        { status: 400 }
+      );
+    }
+  }
 
   if (isDirectRoom) {
     if (!isDirectRoomId(roomId)) {
@@ -609,6 +832,130 @@ export async function PATCH(req: Request) {
   const patch = body?.patch && typeof body.patch === "object" ? body.patch : {};
   const action = String(body?.action || "").trim().toLowerCase();
   const scope = String(body?.scope || "local").trim().toLowerCase();
+
+  if (action === "delete_storage_items") {
+    if (!roomId || !messageId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Missing roomId or messageId",
+        },
+        { status: 400 }
+      );
+    }
+
+    const itemIds: string[] =
+      Array.isArray(body?.itemIds)
+        ? Array.from(
+            new Set<string>(
+              body.itemIds
+                .map((value: unknown) =>
+                  String(value || "").trim()
+                )
+                .filter(
+                  (
+                    value: string
+                  ): value is string =>
+                    value.length > 0
+                )
+            )
+          ).slice(0, 100)
+        : [];
+
+    if (!itemIds.length) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "No storage item ids supplied",
+        },
+        { status: 400 }
+      );
+    }
+
+    const store = await readStore();
+    const key = keyOf(churchId, roomId);
+    const rows = store[key] || [];
+
+    const index = rows.findIndex(
+      (message: any) =>
+        String(message?.id || "") ===
+        messageId
+    );
+
+    if (index < 0) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Message not found",
+        },
+        { status: 404 }
+      );
+    }
+
+    const message: any = rows[index];
+
+    const storageDeletedFor:
+      Record<string, string[]> =
+      message?.storageDeletedFor &&
+      typeof message.storageDeletedFor ===
+        "object" &&
+      !Array.isArray(
+        message.storageDeletedFor
+      )
+        ? {
+            ...message.storageDeletedFor,
+          }
+        : {};
+
+    for (const itemId of itemIds) {
+      const deletedUsers = Array.isArray(
+        storageDeletedFor[itemId]
+      )
+        ? storageDeletedFor[itemId].map(
+            String
+          )
+        : [];
+
+      if (
+        !deletedUsers.includes(
+          String(userId)
+        )
+      ) {
+        deletedUsers.push(String(userId));
+      }
+
+      storageDeletedFor[itemId] =
+        deletedUsers;
+    }
+
+    rows[index] = {
+      ...message,
+      storageDeletedFor,
+    };
+
+    store[key] = rows;
+    await writeStore(store);
+
+    console.log(
+      "KRISTO_MEDIA_STORAGE_DELETE_FOR_ME_BACKEND",
+      {
+        churchId,
+        roomId,
+        messageId,
+        userId,
+        itemCount: itemIds.length,
+      }
+    );
+
+    return NextResponse.json({
+      ok: true,
+      deleted: "storage-for-me",
+      messageId,
+      itemIds,
+    });
+  }
 
   if (action === "delete") {
     if (!roomId || !messageId) {
