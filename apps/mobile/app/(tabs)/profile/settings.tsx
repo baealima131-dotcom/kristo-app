@@ -104,6 +104,52 @@ const GENDER_OPTIONS = [
   },
 ] as const;
 
+function formatSavedBirthday(
+  value: unknown
+) {
+  const raw = String(value || "")
+    .trim();
+
+  const match = raw.match(
+    /^(\d{4})-(\d{2})-(\d{2})$/
+  );
+
+  if (!match) {
+    return "Not available";
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+
+  const date = new Date(
+    year,
+    month - 1,
+    day,
+    12,
+    0,
+    0,
+    0
+  );
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return "Not available";
+  }
+
+  return date.toLocaleDateString(
+    undefined,
+    {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }
+  );
+}
+
 const MARITAL_OPTIONS = [
   {
     value: "SINGLE",
@@ -309,6 +355,10 @@ export default function ProfileSettingsScreen() {
             ? profile.privacy
             : {};
 
+        const hydratedDob = String(
+          profile.dob || ""
+        ).trim();
+
         setPersonalForm({
           gender:
             profile.gender === "MALE" ||
@@ -316,9 +366,7 @@ export default function ProfileSettingsScreen() {
               ? profile.gender
               : "",
 
-          dob: String(
-            profile.dob || ""
-          ).trim(),
+          dob: hydratedDob,
 
           maritalStatus:
             profile.maritalStatus ===
@@ -500,11 +548,13 @@ export default function ProfileSettingsScreen() {
 
     if (
       dob &&
-      !/^\d{4}-\d{2}-\d{2}$/.test(dob)
+      !/^\d{4}-\d{2}-\d{2}$/.test(
+        dob
+      )
     ) {
       Alert.alert(
-        "Date of birth",
-        "Enter the date using YYYY-MM-DD, for example 1995-08-24."
+        "Birthday unavailable",
+        "Your saved birthday could not be read."
       );
       return;
     }
@@ -1115,31 +1165,48 @@ export default function ProfileSettingsScreen() {
               </View>
 
               <Text style={s.fieldLabel}>
-                Date of birth
+                Birthday
               </Text>
 
-              <TextInput
-                value={personalForm.dob}
-                onChangeText={(value) =>
-                  updatePersonalField(
-                    "dob",
-                    value
-                      .replace(
-                        /[^0-9-]/g,
-                        ""
-                      )
-                      .slice(0, 10)
-                  )
+              <View
+                style={
+                  s.readOnlyBirthday
                 }
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor="rgba(255,255,255,0.32)"
-                keyboardType="numbers-and-punctuation"
-                style={s.personalInput}
-              />
+              >
+                <View
+                  style={
+                    s.readOnlyBirthdayIcon
+                  }
+                >
+                  <Ionicons
+                    name="calendar-outline"
+                    size={18}
+                    color={GOLD}
+                  />
+                </View>
 
-              <Text style={s.fieldHint}>
-                Your birthday is saved privately. Public viewers see your age only when you allow it below.
-              </Text>
+                <Text
+                  style={
+                    s.readOnlyBirthdayText
+                  }
+                >
+                  {formatSavedBirthday(
+                    personalForm.dob
+                  )}
+                </Text>
+
+                <View
+                  style={
+                    s.readOnlyBirthdayLock
+                  }
+                >
+                  <Ionicons
+                    name="lock-closed-outline"
+                    size={14}
+                    color="rgba(255,255,255,0.44)"
+                  />
+                </View>
+              </View>
 
               <Text style={s.fieldLabel}>
                 Marital status
@@ -1795,6 +1862,60 @@ const s = StyleSheet.create<any>({
     fontWeight: "700",
     marginTop: 6,
     display: "none",
+  },
+
+  readOnlyBirthday: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,208,111,0.24)",
+    backgroundColor:
+      "rgba(1,5,14,0.78)",
+    paddingHorizontal: 12,
+    shadowColor: "#000000",
+    shadowOpacity: 0.24,
+    shadowRadius: 10,
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
+    elevation: 2,
+  },
+
+  readOnlyBirthdayIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(244,208,111,0.10)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,208,111,0.20)",
+  },
+
+  readOnlyBirthdayText: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 11,
+    color: "#FFFFFF",
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "800",
+  },
+
+  readOnlyBirthdayLock: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(255,255,255,0.035)",
   },
 
   personalInput: {
