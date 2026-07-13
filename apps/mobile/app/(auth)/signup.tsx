@@ -19,13 +19,122 @@ const BORDER = "rgba(255,255,255,0.10)";
 
 const MIN_AGE = 14;
 const MAX_AGE = 100;
-const AGE_OPTIONS = Array.from({ length: MAX_AGE - MIN_AGE + 1 }, (_, i) => i + MIN_AGE);
 
-function dobFromAge(ageValue: number | string | null | undefined) {
-  const n = Number(ageValue);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  const year = new Date().getFullYear() - Math.floor(n);
-  return `${year}-01-01`;
+const BIRTH_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+const BIRTH_YEARS = Array.from(
+  { length: MAX_AGE + 1 },
+  (_, index) =>
+    new Date().getFullYear() - index
+);
+
+function getBirthMonthDays(
+  year: number | null,
+  month: number | null
+) {
+  if (!year || !month) {
+    return 31;
+  }
+
+  return new Date(
+    year,
+    month,
+    0
+  ).getDate();
+}
+
+function buildSignupDob(
+  year: number | null,
+  month: number | null,
+  day: number | null
+) {
+  if (!year || !month || !day) {
+    return "";
+  }
+
+  const candidate = new Date(
+    year,
+    month - 1,
+    day,
+    12,
+    0,
+    0,
+    0
+  );
+
+  if (
+    candidate.getFullYear() !== year ||
+    candidate.getMonth() !==
+      month - 1 ||
+    candidate.getDate() !== day
+  ) {
+    return "";
+  }
+
+  return `${String(year).padStart(
+    4,
+    "0"
+  )}-${String(month).padStart(
+    2,
+    "0"
+  )}-${String(day).padStart(
+    2,
+    "0"
+  )}`;
+}
+
+function calculateAgeFromDob(
+  dob: string
+): number | null {
+  const match = String(dob || "")
+    .trim()
+    .match(
+      /^(\d{4})-(\d{2})-(\d{2})$/
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+
+  const today = new Date();
+
+  let nextAge =
+    today.getFullYear() - year;
+
+  const birthdayPassed =
+    today.getMonth() >
+      month - 1 ||
+    (
+      today.getMonth() ===
+        month - 1 &&
+      today.getDate() >= day
+    );
+
+  if (!birthdayPassed) {
+    nextAge -= 1;
+  }
+
+  return nextAge >= 0 &&
+    nextAge <= MAX_AGE
+    ? nextAge
+    : null;
 }
 
 function formatVerifyError(data: any) {
@@ -113,8 +222,26 @@ export default function SignupScreen() {
   const { setSession } = useKristoSession();
 
   const [fullName, setFullName] = useState("");
-  const [age, setAge] = useState<number | null>(null);
-  const [ageOpen, setAgeOpen] = useState(false);
+  const [age, setAge] =
+    useState<number | null>(null);
+
+  const [ageOpen, setAgeOpen] =
+    useState(false);
+
+  const [
+    birthMonth,
+    setBirthMonth,
+  ] = useState<number | null>(null);
+
+  const [
+    birthDay,
+    setBirthDay,
+  ] = useState<number | null>(null);
+
+  const [
+    birthYear,
+    setBirthYear,
+  ] = useState<number | null>(null);
   const [country, setCountry] = useState<KristoCountry>(DEFAULT_KRISTO_COUNTRY);
   const [countryOpen, setCountryOpen] = useState(false);
   const [countrySearch, setCountrySearch] = useState("");
@@ -149,6 +276,82 @@ export default function SignupScreen() {
     () => filterKristoCountries(countrySearch),
     [countrySearch]
   );
+
+  const signupDob = useMemo(
+    () =>
+      buildSignupDob(
+        birthYear,
+        birthMonth,
+        birthDay
+      ),
+    [
+      birthYear,
+      birthMonth,
+      birthDay,
+    ]
+  );
+
+  const calculatedBirthdayAge =
+    useMemo(
+      () =>
+        signupDob
+          ? calculateAgeFromDob(
+              signupDob
+            )
+          : null,
+      [signupDob]
+    );
+
+  const birthDayOptions = useMemo(
+    () =>
+      Array.from(
+        {
+          length:
+            getBirthMonthDays(
+              birthYear,
+              birthMonth
+            ),
+        },
+        (_, index) => index + 1
+      ),
+    [birthYear, birthMonth]
+  );
+
+  function chooseBirthMonth(
+    value: number
+  ) {
+    setBirthMonth(value);
+
+    if (
+      birthDay &&
+      birthYear &&
+      birthDay >
+        getBirthMonthDays(
+          birthYear,
+          value
+        )
+    ) {
+      setBirthDay(null);
+    }
+  }
+
+  function chooseBirthYear(
+    value: number
+  ) {
+    setBirthYear(value);
+
+    if (
+      birthDay &&
+      birthMonth &&
+      birthDay >
+        getBirthMonthDays(
+          value,
+          birthMonth
+        )
+    ) {
+      setBirthDay(null);
+    }
+  }
 
   function closeCountryPicker() {
     setCountryOpen(false);
@@ -249,7 +452,7 @@ export default function SignupScreen() {
       fullName: finalName,
       email: email.trim(),
       country: country.name,
-      dob: age ? dobFromAge(age) : undefined,
+      dob: signupDob || undefined,
     };
     if (phoneValue) profilePayload.phone = phoneValue;
     if (genderValue) profilePayload.gender = genderValue;
@@ -359,8 +562,19 @@ export default function SignupScreen() {
   }
 
   async function sendVerification() {
+    if (!signupDob) {
+      setErr(
+        "Select your complete birthday."
+      );
+      setAgeOpen(true);
+      return;
+    }
+
     if (!age || age < MIN_AGE) {
-      setErr("Kristo requires age 14+");
+      setErr(
+        "Kristo requires age 14+"
+      );
+      setAgeOpen(true);
       return;
     }
     if (!countryReady) {
@@ -395,7 +609,7 @@ export default function SignupScreen() {
         password,
         fullName: fullName.trim(),
         age,
-        dob: dobFromAge(age),
+        dob: signupDob,
         country: country.name,
       };
       if (phoneValue) signUpPayload.phone = phoneValue;
@@ -798,41 +1012,302 @@ export default function SignupScreen() {
         </View>
       </Modal>
 
-      <Modal visible={ageOpen} transparent animationType="fade" onRequestClose={() => setAgeOpen(false)}>
+      <Modal
+        visible={ageOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() =>
+          setAgeOpen(false)
+        }
+      >
         <View style={s.ageModalWrap}>
-          <Pressable style={s.ageBackdrop} onPress={() => setAgeOpen(false)} />
+          <Pressable
+            style={s.ageBackdrop}
+            onPress={() =>
+              setAgeOpen(false)
+            }
+          />
+
           <View style={s.ageSheet}>
             <View style={s.ageSheetGlow} />
-            <Text style={s.ageSheetTitle}>Select age</Text>
-            <Text style={s.ageSheetSub}>Kristo is for ages 14 and up</Text>
 
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              style={s.ageScroll}
-              contentContainerStyle={s.ageScrollContent}
+            <Text style={s.ageSheetTitle}>
+              Select birthday
+            </Text>
+
+            <Text style={s.ageSheetSub}>
+              You must be 14 or older
+            </Text>
+
+            <View
+              style={
+                s.birthPickerLabels
+              }
             >
-              {AGE_OPTIONS.map((value) => {
-                const active = age === value;
-                return (
-                  <Pressable
-                    key={value}
-                    onPress={() => {
-                      setAge(value);
-                      setAgeOpen(false);
-                      if (value < MIN_AGE) {
-                        setErr("Kristo requires age 14+");
-                      } else {
-                        setErr(null);
-                      }
-                    }}
-                    style={[s.ageOption, active && s.ageOptionOn]}
-                  >
-                    <Text style={[s.ageOptionText, active && s.ageOptionTextOn]}>{value}</Text>
-                    {active ? <Text style={s.ageOptionBadge}>Selected</Text> : null}
-                  </Pressable>
+              <Text
+                style={
+                  s.birthPickerLabel
+                }
+              >
+                Month
+              </Text>
+
+              <Text
+                style={
+                  s.birthPickerLabel
+                }
+              >
+                Day
+              </Text>
+
+              <Text
+                style={
+                  s.birthPickerLabel
+                }
+              >
+                Year
+              </Text>
+            </View>
+
+            <View style={s.birthPickerRow}>
+              <ScrollView
+                style={
+                  s.birthPickerColumn
+                }
+                showsVerticalScrollIndicator={
+                  false
+                }
+                contentContainerStyle={
+                  s.birthPickerContent
+                }
+              >
+                {BIRTH_MONTHS.map(
+                  (month, index) => {
+                    const value =
+                      index + 1;
+
+                    const active =
+                      birthMonth === value;
+
+                    return (
+                      <Pressable
+                        key={month}
+                        onPress={() =>
+                          chooseBirthMonth(
+                            value
+                          )
+                        }
+                        style={[
+                          s.birthPickerOption,
+                          active &&
+                            s.birthPickerOptionOn,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            s.birthPickerText,
+                            active &&
+                              s.birthPickerTextOn,
+                          ]}
+                        >
+                          {month.slice(0, 3)}
+                        </Text>
+                      </Pressable>
+                    );
+                  }
+                )}
+              </ScrollView>
+
+              <ScrollView
+                style={
+                  s.birthPickerColumn
+                }
+                showsVerticalScrollIndicator={
+                  false
+                }
+                contentContainerStyle={
+                  s.birthPickerContent
+                }
+              >
+                {birthDayOptions.map(
+                  (value) => {
+                    const active =
+                      birthDay === value;
+
+                    return (
+                      <Pressable
+                        key={value}
+                        onPress={() =>
+                          setBirthDay(value)
+                        }
+                        style={[
+                          s.birthPickerOption,
+                          active &&
+                            s.birthPickerOptionOn,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            s.birthPickerText,
+                            active &&
+                              s.birthPickerTextOn,
+                          ]}
+                        >
+                          {value}
+                        </Text>
+                      </Pressable>
+                    );
+                  }
+                )}
+              </ScrollView>
+
+              <ScrollView
+                style={
+                  s.birthPickerColumn
+                }
+                showsVerticalScrollIndicator={
+                  false
+                }
+                contentContainerStyle={
+                  s.birthPickerContent
+                }
+              >
+                {BIRTH_YEARS.map(
+                  (value) => {
+                    const active =
+                      birthYear === value;
+
+                    return (
+                      <Pressable
+                        key={value}
+                        onPress={() =>
+                          chooseBirthYear(
+                            value
+                          )
+                        }
+                        style={[
+                          s.birthPickerOption,
+                          active &&
+                            s.birthPickerOptionOn,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            s.birthPickerText,
+                            active &&
+                              s.birthPickerTextOn,
+                          ]}
+                        >
+                          {value}
+                        </Text>
+                      </Pressable>
+                    );
+                  }
+                )}
+              </ScrollView>
+            </View>
+
+            <View
+              style={
+                s.birthPickerSummary
+              }
+            >
+              <Text
+                style={
+                  s.birthPickerSummaryText
+                }
+              >
+                {signupDob
+                  ? `${BIRTH_MONTHS[
+                      Number(
+                        signupDob.slice(
+                          5,
+                          7
+                        )
+                      ) - 1
+                    ]} ${Number(
+                      signupDob.slice(
+                        8,
+                        10
+                      )
+                    )}, ${signupDob.slice(
+                      0,
+                      4
+                    )}`
+                  : "Choose month, day and year"}
+              </Text>
+
+              {calculatedBirthdayAge !==
+              null ? (
+                <Text
+                  style={
+                    s.birthPickerAge
+                  }
+                >
+                  Age{" "}
+                  {
+                    calculatedBirthdayAge
+                  }
+                </Text>
+              ) : null}
+            </View>
+
+            <Pressable
+              disabled={
+                !signupDob ||
+                calculatedBirthdayAge ===
+                  null ||
+                calculatedBirthdayAge <
+                  MIN_AGE
+              }
+              onPress={() => {
+                if (
+                  !signupDob ||
+                  calculatedBirthdayAge ===
+                    null
+                ) {
+                  setErr(
+                    "Select your complete birthday."
+                  );
+                  return;
+                }
+
+                if (
+                  calculatedBirthdayAge <
+                  MIN_AGE
+                ) {
+                  setErr(
+                    "Kristo requires age 14+"
+                  );
+                  return;
+                }
+
+                setAge(
+                  calculatedBirthdayAge
                 );
-              })}
-            </ScrollView>
+                setErr(null);
+                setAgeOpen(false);
+              }}
+              style={[
+                s.birthPickerDone,
+                (
+                  !signupDob ||
+                  calculatedBirthdayAge ===
+                    null ||
+                  calculatedBirthdayAge <
+                    MIN_AGE
+                ) &&
+                  s.birthPickerDoneDisabled,
+              ]}
+            >
+              <Text
+                style={
+                  s.birthPickerDoneText
+                }
+              >
+                Confirm birthday
+              </Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -1241,11 +1716,131 @@ const s = StyleSheet.create({
     letterSpacing: 0.2,
     textAlign: "center",
   },
+  birthPickerLabels: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 2,
+    marginBottom: 7,
+  },
+
+  birthPickerLabel: {
+    flex: 1,
+    color:
+      "rgba(255,255,255,0.48)",
+    fontSize: 10,
+    fontWeight: "900",
+    textAlign: "center",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+
+  birthPickerRow: {
+    height: 258,
+    flexDirection: "row",
+    gap: 8,
+  },
+
+  birthPickerColumn: {
+    flex: 1,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.08)",
+    backgroundColor:
+      "rgba(255,255,255,0.025)",
+  },
+
+  birthPickerContent: {
+    padding: 6,
+    paddingBottom: 12,
+  },
+
+  birthPickerOption: {
+    minHeight: 42,
+    marginBottom: 5,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  birthPickerOptionOn: {
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,201,93,0.62)",
+    backgroundColor:
+      "rgba(244,201,93,0.17)",
+  },
+
+  birthPickerText: {
+    color:
+      "rgba(255,255,255,0.67)",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+
+  birthPickerTextOn: {
+    color: "#F4C95D",
+  },
+
+  birthPickerSummary: {
+    minHeight: 54,
+    marginTop: 10,
+    paddingHorizontal: 13,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,201,93,0.28)",
+    backgroundColor:
+      "rgba(244,201,93,0.075)",
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  birthPickerSummaryText: {
+    flex: 1,
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+
+  birthPickerAge: {
+    color: "#F4C95D",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+
+  birthPickerDone: {
+    minHeight: 50,
+    marginTop: 10,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F4C95D",
+    shadowColor: "#F4C95D",
+    shadowOpacity: 0.27,
+    shadowRadius: 15,
+    shadowOffset: {
+      width: 0,
+      height: 7,
+    },
+  },
+
+  birthPickerDoneDisabled: {
+    opacity: 0.38,
+  },
+
+  birthPickerDoneText: {
+    color: "#07101B",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
   ageModalWrap: { flex: 1, justifyContent: "center", alignItems: "center" },
   ageBackdrop: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.72)" },
   ageSheet: {
-    width: "78%",
-    maxHeight: "58%",
+    width: "92%",
+    maxWidth: 520,
+    maxHeight: "80%",
     borderRadius: 26,
     padding: 14,
     backgroundColor: "rgba(8,12,20,0.98)",
