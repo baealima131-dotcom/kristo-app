@@ -10005,19 +10005,41 @@ const displayHeaderTitle = assignmentDisplayTitle;
   function confirmDeleteConversation() {
     closeThreadMenu();
 
-    Alert.alert(
-      "Delete conversation?",
-      "This conversation will be removed from your inbox. A new message can make it appear again.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => {
-            void applyDmConversationSetting("delete");
-          },
-        },
-      ]
+    const deleteThreadId = String(
+      threadId || backendRoomId || ""
+    ).trim();
+
+    const deleteRoomId = String(
+      backendRoomId || deleteThreadId
+    ).trim();
+
+    if (!deleteThreadId || !deleteRoomId) {
+      Alert.alert(
+        "Delete conversation",
+        "This conversation could not be identified."
+      );
+      return;
+    }
+
+    router.push({
+      pathname:
+        "/(tabs)/more/my-church-room/messages/media-storage/[threadId]" as any,
+      params: {
+        threadId: deleteThreadId,
+        roomId: deleteRoomId,
+        churchId: String(churchId || ""),
+        title: String(headerTitle || "Conversation"),
+        mode: "delete-conversation",
+      },
+    });
+
+    console.log(
+      "KRISTO_DM_DELETE_DATA_SCREEN_OPENED",
+      {
+        threadId: deleteThreadId,
+        roomId: deleteRoomId,
+        source: "conversation-settings",
+      }
     );
   }
 

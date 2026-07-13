@@ -22,6 +22,7 @@ import {
   useRouter,
 } from "expo-router";
 import {
+  clearThreadMessages,
   useThread,
   type MsgAttachment,
   type MsgItem,
@@ -38,6 +39,9 @@ import {
 import {
   getKristoHeaders,
 } from "@/src/lib/kristoHeaders";
+import {
+  updateDirectMessageConversationSetting,
+} from "@/src/lib/directMessagesApi";
 
 const BG = "#0B0F17";
 const CARD = "rgba(255,255,255,0.055)";
@@ -478,6 +482,7 @@ export default function ConversationMediaStorageScreen() {
     roomId?: string | string[];
     churchId?: string | string[];
     title?: string | string[];
+    mode?: string | string[];
   }>();
 
   const threadId = singleParam(
@@ -487,6 +492,17 @@ export default function ConversationMediaStorageScreen() {
   const conversationTitle =
     singleParam(params.title) ||
     "Conversation";
+
+  const backendRoomId =
+    singleParam(params.roomId) ||
+    threadId;
+
+  const churchId =
+    singleParam(params.churchId);
+
+  const deleteConversationMode =
+    singleParam(params.mode) ===
+    "delete-conversation";
 
   const threadState = useThread(
     threadId
@@ -556,6 +572,16 @@ export default function ConversationMediaStorageScreen() {
     selectedCleanupItemIds,
     setSelectedCleanupItemIds,
   ] = useState<Set<string>>(new Set());
+
+  const [
+    selectedDeleteCategories,
+    setSelectedDeleteCategories,
+  ] = useState<Set<string>>(new Set());
+
+  const [
+    deleteConversationBusy,
+    setDeleteConversationBusy,
+  ] = useState(false);
 
   useEffect(() => {
     setHiddenItemIds(
@@ -1523,6 +1549,684 @@ export default function ConversationMediaStorageScreen() {
       </Pressable>
     );
   };
+
+  const availableDeleteStorageItems =
+    useMemo(
+      () => ({
+        media: index.media.filter(
+          (item) => !hiddenItemIds.has(item.id)
+        ),
+        documents: index.documents.filter(
+          (item) => !hiddenItemIds.has(item.id)
+        ),
+        audio: index.audio.filter(
+          (item) => !hiddenItemIds.has(item.id)
+        ),
+        links: index.links.filter(
+          (item) => !hiddenItemIds.has(item.id)
+        ),
+      }),
+      [index, hiddenItemIds]
+    );
+
+  const textMessageCount = useMemo(
+    () =>
+      messages.filter(
+        (message) =>
+          String(message?.text || "").trim().length > 0
+      ).length,
+    [messages]
+  );
+
+  const deleteCategoryRows: Array<{
+    key:
+      | "media"
+      | "documents"
+      | "audio"
+      | "links"
+      | "text"
+      | "conversation";
+    label: string;
+    description: string;
+    icon: string;
+    count: number;
+    danger?: boolean;
+  }> = [
+    {
+      key: "media",
+      label: "Photos & Videos",
+      description:
+        "Remove shared photos and videos from your media storage.",
+      icon: "images-outline",
+      count:
+        availableDeleteStorageItems.media.length,
+    },
+    {
+      key: "documents",
+      label: "Documents",
+      description:
+        "Remove shared files and documents.",
+      icon: "document-text-outline",
+      count:
+        availableDeleteStorageItems.documents
+          .length,
+    },
+    {
+      key: "audio",
+      label: "Audio",
+      description:
+        "Remove voice notes and shared audio.",
+      icon: "mic-outline",
+      count:
+        availableDeleteStorageItems.audio.length,
+    },
+    {
+      key: "links",
+      label: "Links",
+      description:
+        "Remove links from your media storage.",
+      icon: "link-outline",
+      count:
+        availableDeleteStorageItems.links.length,
+    },
+    {
+      key: "text",
+      label: "Text messages",
+      description:
+        "Clear the message history from your view.",
+      icon: "chatbubble-ellipses-outline",
+      count: textMessageCount,
+    },
+    {
+      key: "conversation",
+      label: "Entire conversation",
+      description:
+        "Remove this conversation from your inbox.",
+      icon: "close-circle-outline",
+      count: 1,
+      danger: true,
+    },
+  ];
+
+  const allDeleteCategoryKeys =
+    deleteCategoryRows.map((row) => row.key);
+
+  const allDeleteCategoriesSelected =
+    allDeleteCategoryKeys.every((key) =>
+      selectedDeleteCategories.has(key)
+    );
+
+  function toggleDeleteCategory(
+    category: string
+  ) {
+    if (deleteConversationBusy) return;
+
+    setSelectedDeleteCategories(
+      (current) => {
+        const next = new Set(current);
+
+        if (next.has(category)) {
+          next.delete(category);
+        } else {
+          next.add(category);
+        }
+
+        return next;
+      }
+    );
+  }
+
+  function toggleAllDeleteCategories() {
+    if (deleteConversationBusy) return;
+
+    setSelectedDeleteCategories(
+      allDeleteCategoriesSelected
+        ? new Set()
+        : new Set(allDeleteCategoryKeys)
+    );
+  }
+
+  async function executeSelectedConversationDeletion() {
+    if (
+      !selectedDeleteCategories.size ||
+      deleteConversationBusy
+    ) {
+      return;
+    }
+
+    setDeleteConversationBusy(true);
+
+    try {
+      const selectedStorageItems: StorageItem[] =
+        [];
+
+      if (
+        selectedDeleteCategories.has("media")
+      ) {
+        selectedStorageItems.push(
+          ...availableDeleteStorageItems.media
+        );
+      }
+
+      if (
+        selectedDeleteCategories.has(
+          "documents"
+        )
+      ) {
+        selectedStorageItems.push(
+          ...availableDeleteStorageItems.documents
+        );
+      }
+
+      if (
+        selectedDeleteCategories.has("audio")
+      ) {
+        selectedStorageItems.push(
+          ...availableDeleteStorageItems.audio
+        );
+      }
+
+      if (
+        selectedDeleteCategories.has("links")
+      ) {
+        selectedStorageItems.push(
+          ...availableDeleteStorageItems.links
+        );
+      }
+
+      if (selectedStorageItems.length) {
+        await deleteStorageItemsForMe(
+          selectedStorageItems
+        );
+      }
+
+      const shouldClearText =
+        selectedDeleteCategories.has("text");
+
+      const shouldDeleteConversation =
+        selectedDeleteCategories.has(
+          "conversation"
+        );
+
+      if (shouldClearText) {
+        await updateDirectMessageConversationSetting(
+          {
+            roomId: backendRoomId,
+            churchId,
+            action: "clear",
+          }
+        );
+
+        clearThreadMessages(threadId);
+      }
+
+      if (shouldDeleteConversation) {
+        await updateDirectMessageConversationSetting(
+          {
+            roomId: backendRoomId,
+            churchId,
+            action: "delete",
+          }
+        );
+
+        clearThreadMessages(threadId);
+
+        console.log(
+          "KRISTO_DM_CONVERSATION_DATA_DELETED",
+          {
+            threadId,
+            roomId: backendRoomId,
+            categories: Array.from(
+              selectedDeleteCategories
+            ),
+            storageItemCount:
+              selectedStorageItems.length,
+            removedFromInbox: true,
+          }
+        );
+
+        router.replace(
+          "/(tabs)/more/my-church-room/messages" as any
+        );
+
+        return;
+      }
+
+      console.log(
+        "KRISTO_DM_CONVERSATION_DATA_DELETED",
+        {
+          threadId,
+          roomId: backendRoomId,
+          categories: Array.from(
+            selectedDeleteCategories
+          ),
+          storageItemCount:
+            selectedStorageItems.length,
+          removedFromInbox: false,
+        }
+      );
+
+      Alert.alert(
+        "Conversation data deleted",
+        "The selected items were removed from your view.",
+        [
+          {
+            text: "Done",
+            onPress: () => router.back(),
+          },
+        ]
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Could not delete conversation data",
+        String(
+          error?.message || "Please try again."
+        )
+      );
+    } finally {
+      setDeleteConversationBusy(false);
+    }
+  }
+
+  function confirmSelectedConversationDeletion() {
+    if (!selectedDeleteCategories.size) {
+      Alert.alert(
+        "Choose what to delete",
+        "Select at least one category."
+      );
+      return;
+    }
+
+    const includesConversation =
+      selectedDeleteCategories.has(
+        "conversation"
+      );
+
+    Alert.alert(
+      includesConversation
+        ? "Delete selected data and conversation?"
+        : "Delete selected data?",
+      includesConversation
+        ? "The selected data will be removed from your view and this conversation will be removed from your inbox. The other person will keep their copy."
+        : "The selected data will be removed from your view only. The other person will keep their copy.",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void executeSelectedConversationDeletion();
+          },
+        },
+      ]
+    );
+  }
+
+  if (deleteConversationMode) {
+    return (
+      <SafeAreaView style={styles.root}>
+        <Stack.Screen
+          options={{ headerShown: false }}
+        />
+
+        <View style={styles.header}>
+          <Pressable
+            onPress={() => router.back()}
+            disabled={deleteConversationBusy}
+            style={({ pressed }) => [
+              styles.headerButton,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Ionicons
+              name="chevron-back"
+              size={23}
+              color={TEXT}
+            />
+          </Pressable>
+
+          <View style={styles.headerText}>
+            <Text style={styles.headerTitle}>
+              Delete conversation data
+            </Text>
+
+            <Text
+              style={styles.headerSubtitle}
+              numberOfLines={1}
+            >
+              {conversationTitle}
+            </Text>
+          </View>
+
+          <View style={{ width: 42 }} />
+        </View>
+
+        <ScrollView
+          contentContainerStyle={{
+            padding: 14,
+            paddingBottom: 150,
+          }}
+          showsVerticalScrollIndicator={false}
+        >
+          <View
+            style={{
+              padding: 16,
+              marginBottom: 14,
+              borderRadius: 20,
+              borderWidth: 1,
+              borderColor:
+                "rgba(217,179,95,0.24)",
+              backgroundColor:
+                "rgba(217,179,95,0.07)",
+            }}
+          >
+            <Text
+              style={{
+                color: TEXT,
+                fontSize: 16,
+                fontWeight: "900",
+              }}
+            >
+              Select what you want to remove
+            </Text>
+
+            <Text
+              style={{
+                marginTop: 6,
+                color: SUB,
+                fontSize: 12,
+                lineHeight: 18,
+                fontWeight: "600",
+              }}
+            >
+              These changes apply only to your
+              account. The other person will keep
+              their messages and files.
+            </Text>
+          </View>
+
+          <View
+            style={{
+              overflow: "hidden",
+              borderRadius: 22,
+              borderWidth: 1,
+              borderColor: BORDER,
+              backgroundColor: CARD,
+            }}
+          >
+            {deleteCategoryRows.map(
+              (row, rowIndex) => {
+                const selected =
+                  selectedDeleteCategories.has(
+                    row.key
+                  );
+
+                return (
+                  <Pressable
+                    key={row.key}
+                    disabled={
+                      deleteConversationBusy
+                    }
+                    onPress={() =>
+                      toggleDeleteCategory(
+                        row.key
+                      )
+                    }
+                    style={({ pressed }) => ({
+                      minHeight: 82,
+                      paddingHorizontal: 15,
+                      paddingVertical: 13,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 13,
+                      borderTopWidth:
+                        rowIndex === 0 ? 0 : 1,
+                      borderTopColor:
+                        "rgba(255,255,255,0.07)",
+                      backgroundColor: selected
+                        ? row.danger
+                          ? "rgba(255,82,110,0.09)"
+                          : "rgba(217,179,95,0.08)"
+                        : pressed
+                          ? "rgba(255,255,255,0.04)"
+                          : "transparent",
+                    })}
+                  >
+                    <View
+                      style={{
+                        width: 44,
+                        height: 44,
+                        borderRadius: 15,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: row.danger
+                          ? "rgba(255,82,110,0.10)"
+                          : "rgba(217,179,95,0.10)",
+                      }}
+                    >
+                      <Ionicons
+                        name={row.icon as any}
+                        size={21}
+                        color={
+                          row.danger
+                            ? "#FF7285"
+                            : GOLD
+                        }
+                      />
+                    </View>
+
+                    <View
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: row.danger
+                            ? "#FF8092"
+                            : TEXT,
+                          fontSize: 14,
+                          fontWeight: "900",
+                        }}
+                      >
+                        {row.label}
+                      </Text>
+
+                      <Text
+                        style={{
+                          marginTop: 4,
+                          color: SUB,
+                          fontSize: 11,
+                          lineHeight: 16,
+                          fontWeight: "600",
+                        }}
+                      >
+                        {row.description}
+                      </Text>
+                    </View>
+
+                    <View
+                      style={{
+                        alignItems: "flex-end",
+                        gap: 8,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color:
+                            "rgba(255,255,255,0.42)",
+                          fontSize: 11,
+                          fontWeight: "800",
+                        }}
+                      >
+                        {row.count}
+                      </Text>
+
+                      <View
+                        style={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: 8,
+                          alignItems: "center",
+                          justifyContent:
+                            "center",
+                          borderWidth: 1,
+                          borderColor: selected
+                            ? row.danger
+                              ? "#FF7285"
+                              : GOLD
+                            : "rgba(255,255,255,0.22)",
+                          backgroundColor: selected
+                            ? row.danger
+                              ? "rgba(255,82,110,0.18)"
+                              : "rgba(217,179,95,0.18)"
+                            : "transparent",
+                        }}
+                      >
+                        {selected ? (
+                          <Ionicons
+                            name="checkmark"
+                            size={16}
+                            color={
+                              row.danger
+                                ? "#FF8092"
+                                : GOLD
+                            }
+                          />
+                        ) : null}
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              }
+            )}
+          </View>
+
+          <Pressable
+            disabled={deleteConversationBusy}
+            onPress={toggleAllDeleteCategories}
+            style={({ pressed }) => ({
+              marginTop: 14,
+              minHeight: 58,
+              paddingHorizontal: 15,
+              borderRadius: 18,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+              borderWidth: 1,
+              borderColor:
+                allDeleteCategoriesSelected
+                  ? "rgba(217,179,95,0.54)"
+                  : BORDER,
+              backgroundColor:
+                allDeleteCategoriesSelected
+                  ? "rgba(217,179,95,0.11)"
+                  : CARD,
+              opacity: pressed ? 0.78 : 1,
+            })}
+          >
+            <Ionicons
+              name={
+                allDeleteCategoriesSelected
+                  ? "checkbox"
+                  : "square-outline"
+              }
+              size={24}
+              color={GOLD}
+            />
+
+            <View style={{ flex: 1 }}>
+              <Text
+                style={{
+                  color: TEXT,
+                  fontSize: 14,
+                  fontWeight: "900",
+                }}
+              >
+                Select everything
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 3,
+                  color: SUB,
+                  fontSize: 11,
+                  fontWeight: "600",
+                }}
+              >
+                Select all media, messages and the
+                conversation.
+              </Text>
+            </View>
+          </Pressable>
+        </ScrollView>
+
+        <View
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            paddingHorizontal: 14,
+            paddingTop: 12,
+            paddingBottom: 18,
+            borderTopWidth: 1,
+            borderTopColor:
+              "rgba(255,255,255,0.08)",
+            backgroundColor:
+              "rgba(11,15,23,0.97)",
+          }}
+        >
+          <Pressable
+            disabled={
+              deleteConversationBusy ||
+              selectedDeleteCategories.size === 0
+            }
+            onPress={
+              confirmSelectedConversationDeletion
+            }
+            style={({ pressed }) => ({
+              minHeight: 54,
+              borderRadius: 18,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor:
+                selectedDeleteCategories.size > 0
+                  ? "#D9485F"
+                  : "rgba(255,255,255,0.08)",
+              opacity:
+                deleteConversationBusy
+                  ? 0.58
+                  : pressed
+                    ? 0.82
+                    : 1,
+            })}
+          >
+            <Text
+              style={{
+                color:
+                  selectedDeleteCategories.size > 0
+                    ? "#FFFFFF"
+                    : "rgba(255,255,255,0.34)",
+                fontSize: 15,
+                fontWeight: "900",
+              }}
+            >
+              {deleteConversationBusy
+                ? "Deleting..."
+                : selectedDeleteCategories.size > 0
+                  ? `Delete selected (${selectedDeleteCategories.size})`
+                  : "Select items to delete"}
+            </Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   const emptyIcon =
     tab === "media"
