@@ -119,7 +119,7 @@ const MARITAL_OPTIONS = [
   },
   {
     value: "WIDOWED",
-    label: "Widowed",
+    label: "Widow",
   },
 ] as const;
 
@@ -171,10 +171,6 @@ function PrivacySettingRow({
       <View style={s.privacyRowCopy}>
         <Text style={s.privacyRowTitle}>
           {title}
-        </Text>
-
-        <Text style={s.privacyRowSub}>
-          {subtitle}
         </Text>
       </View>
 
@@ -1149,7 +1145,7 @@ export default function ProfileSettingsScreen() {
                 Marital status
               </Text>
 
-              <View style={s.wrapOptions}>
+              <View style={s.maritalSegmentRow}>
                 {MARITAL_OPTIONS.map(
                   (option) => {
                     const active =
@@ -1167,17 +1163,17 @@ export default function ProfileSettingsScreen() {
                           )
                         }
                         style={({ pressed }) => [
-                          s.smallOptionChip,
+                          s.maritalSegmentItem,
                           active &&
-                            s.optionChipActive,
+                            s.maritalSegmentItemActive,
                           pressed && s.pressed,
                         ]}
                       >
                         <Text
                           style={[
-                            s.optionChipText,
+                            s.maritalSegmentText,
                             active &&
-                              s.optionChipTextActive,
+                              s.maritalSegmentTextActive,
                           ]}
                         >
                           {option.label}
@@ -1270,7 +1266,7 @@ export default function ProfileSettingsScreen() {
                     value.slice(0, 160)
                   )
                 }
-                placeholder="Share one meaningful fact about yourself."
+                placeholder="Tell members something about you..."
                 placeholderTextColor="rgba(255,255,255,0.32)"
                 multiline
                 maxLength={160}
@@ -1292,7 +1288,7 @@ export default function ProfileSettingsScreen() {
         </View>
 
         <Text style={s.sectionLabel}>
-          Privacy & Public Profile
+          Privacy
         </Text>
 
         <View style={s.privacyCard}>
@@ -1307,18 +1303,18 @@ export default function ProfileSettingsScreen() {
 
             <View style={s.privacyIntroText}>
               <Text style={s.privacyIntroTitle}>
-                Control More About
+                Profile visibility
               </Text>
 
               <Text style={s.privacyIntroSub}>
-                Only information you enable here will appear to other members.
+                Choose what members can see.
               </Text>
             </View>
           </View>
 
           <PrivacySettingRow
             icon="male-female-outline"
-            title="Show gender"
+            title="Gender"
             subtitle="Allow members to see your gender."
             value={
               personalPrivacy.showGender
@@ -1333,7 +1329,7 @@ export default function ProfileSettingsScreen() {
 
           <PrivacySettingRow
             icon="hourglass-outline"
-            title="Show age"
+            title="Age"
             subtitle="Your birthday stays private; only your calculated age is shown."
             value={dobPublic}
             onChange={setDobPublic}
@@ -1341,7 +1337,7 @@ export default function ProfileSettingsScreen() {
 
           <PrivacySettingRow
             icon="earth-outline"
-            title="Show country"
+            title="Country"
             subtitle="Display your country in More About."
             value={
               personalPrivacy.showCountry
@@ -1356,7 +1352,7 @@ export default function ProfileSettingsScreen() {
 
           <PrivacySettingRow
             icon="location-outline"
-            title="Show city"
+            title="City"
             subtitle="Display your city in More About."
             value={
               personalPrivacy.showCity
@@ -1371,7 +1367,7 @@ export default function ProfileSettingsScreen() {
 
           <PrivacySettingRow
             icon="heart-outline"
-            title="Show marital status"
+            title="Relationship"
             subtitle="Allow members to see your marital status."
             value={
               personalPrivacy
@@ -1387,7 +1383,7 @@ export default function ProfileSettingsScreen() {
 
           <PrivacySettingRow
             icon="language-outline"
-            title="Show languages"
+            title="Languages"
             subtitle="Display the languages you speak."
             value={
               personalPrivacy
@@ -1403,7 +1399,7 @@ export default function ProfileSettingsScreen() {
 
           <PrivacySettingRow
             icon="sparkles-outline"
-            title="Show Profile Fact"
+            title="About you"
             subtitle="Display your public Profile Fact."
             value={
               personalPrivacy
@@ -1419,7 +1415,7 @@ export default function ProfileSettingsScreen() {
 
           <PrivacySettingRow
             icon="calendar-outline"
-            title="Show Kristo member since"
+            title="Member since"
             subtitle="Display when you joined Kristo App."
             value={
               personalPrivacy
@@ -1435,7 +1431,7 @@ export default function ProfileSettingsScreen() {
 
           <PrivacySettingRow
             icon="trail-sign-outline"
-            title="Show church journey"
+            title="Church journey"
             subtitle="Allow verified church history when the system record becomes available."
             value={
               personalPrivacy
@@ -1486,7 +1482,7 @@ export default function ProfileSettingsScreen() {
           <Text style={s.savePersonalText}>
             {savingPersonalInfo
               ? "Saving…"
-              : "Save Personal Information"}
+              : "Save Changes"}
           </Text>
         </Pressable>
 
@@ -1643,32 +1639,50 @@ export default function ProfileSettingsScreen() {
 }
 
 const s = StyleSheet.create<any>({
-  screen: { flex: 1, backgroundColor: BG },
+  screen: {
+    flex: 1,
+    backgroundColor: "#030712",
+  },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 20,
+    marginBottom: 16,
   },
   backBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(12,18,32,0.92)",
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: "rgba(244,208,111,0.46)",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.20,
+    shadowRadius: 15,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
   },
   backBtnSpacer: { width: 42 },
-  title: { color: "#fff", fontSize: 22, fontWeight: "900" },
-  sectionLabel: {
-    color: MUTED,
+  title: {
+    color: "#FFFFFF",
+    fontSize: 28,
     fontWeight: "900",
-    fontSize: 12,
-    letterSpacing: 0.6,
-    marginBottom: 8,
+    textShadowColor: "rgba(244,208,111,0.17)",
+    textShadowRadius: 11,
+    textShadowOffset: { width: 0, height: 2 },
+  },
+  sectionLabel: {
+    color: "#E9CA70",
+    fontWeight: "900",
+    fontSize: 14,
+    letterSpacing: 0.15,
+    marginBottom: 12,
     marginTop: 4,
+    textShadowColor: "rgba(244,208,111,0.14)",
+    textShadowRadius: 8,
+    textShadowOffset: { width: 0, height: 2 },
   },
   sectionCard: {
     borderRadius: 20,
@@ -1738,12 +1752,16 @@ const s = StyleSheet.create<any>({
 
   personalCard: {
     borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 22,
-    backgroundColor:
-      "rgba(255,255,255,0.035)",
-    padding: 15,
-    marginBottom: 22,
+    borderColor: "rgba(244,208,111,0.34)",
+    borderRadius: 28,
+    backgroundColor: "rgba(10,15,28,0.98)",
+    padding: 20,
+    marginBottom: 24,
+    shadowColor: "#000000",
+    shadowOpacity: 0.48,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 16 },
+    elevation: 8,
   },
 
   personalLoading: {
@@ -1760,14 +1778,14 @@ const s = StyleSheet.create<any>({
   },
 
   fieldLabel: {
-    color: "rgba(255,255,255,0.72)",
+    color: "rgba(235,238,247,0.63)",
     fontSize: 11,
     lineHeight: 15,
-    fontWeight: "900",
-    letterSpacing: 0.45,
+    fontWeight: "800",
+    letterSpacing: 1.05,
     textTransform: "uppercase",
-    marginTop: 12,
-    marginBottom: 7,
+    marginTop: 17,
+    marginBottom: 8,
   },
 
   fieldHint: {
@@ -1776,39 +1794,99 @@ const s = StyleSheet.create<any>({
     lineHeight: 15,
     fontWeight: "700",
     marginTop: 6,
+    display: "none",
   },
 
   personalInput: {
-    minHeight: 48,
-    borderRadius: 14,
+    minHeight: 56,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor:
-      "rgba(244,208,111,0.18)",
-    backgroundColor:
-      "rgba(0,0,0,0.20)",
+    borderColor: "rgba(244,208,111,0.23)",
+    backgroundColor: "rgba(1,5,14,0.82)",
     color: "#FFFFFF",
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "700",
-    paddingHorizontal: 13,
+    paddingHorizontal: 16,
+    shadowColor: "#000000",
+    shadowOpacity: 0.26,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
   },
 
   profileFactInput: {
-    minHeight: 94,
-    paddingTop: 13,
-    paddingBottom: 13,
+    minHeight: 104,
+    paddingTop: 15,
+    paddingBottom: 18,
+    borderRadius: 19,
+    backgroundColor: "rgba(1,5,14,0.86)",
   },
 
   characterCount: {
-    color: "rgba(255,255,255,0.40)",
-    fontSize: 10,
-    fontWeight: "800",
+    color: "rgba(255,255,255,0.38)",
+    fontSize: 11,
+    fontWeight: "700",
     textAlign: "right",
     marginTop: 5,
+    display: "none",
+  },
+
+  maritalSegmentRow: {
+    width: "100%",
+    minHeight: 52,
+    flexDirection: "row",
+    flexWrap: "nowrap",
+    alignItems: "stretch",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(244,208,111,0.30)",
+    backgroundColor: "rgba(1,5,14,0.86)",
+    overflow: "hidden",
+    shadowColor: "#000000",
+    shadowOpacity: 0.26,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2,
+  },
+
+  maritalSegmentItem: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 50,
+    paddingHorizontal: 2,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRightWidth: 1,
+    borderRightColor: "rgba(255,255,255,0.055)",
+    backgroundColor: "rgba(255,255,255,0.012)",
+  },
+
+  maritalSegmentItemActive: {
+    backgroundColor: "rgba(244,208,111,0.18)",
+    borderRightColor: "rgba(244,208,111,0.20)",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.26,
+    shadowRadius: 15,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 4,
+  },
+
+  maritalSegmentText: {
+    color: "rgba(241,243,249,0.55)",
+    fontSize: 10.5,
+    lineHeight: 14,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+
+  maritalSegmentTextActive: {
+    color: "#FFE08A",
+    fontWeight: "900",
   },
 
   optionRow: {
     flexDirection: "row",
-    gap: 9,
+    gap: 10,
   },
 
   wrapOptions: {
@@ -1819,13 +1897,11 @@ const s = StyleSheet.create<any>({
 
   optionChip: {
     flex: 1,
-    minHeight: 45,
-    borderRadius: 14,
+    minHeight: 52,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor:
-      "rgba(255,255,255,0.10)",
-    backgroundColor:
-      "rgba(255,255,255,0.035)",
+    borderColor: "rgba(255,255,255,0.11)",
+    backgroundColor: "rgba(255,255,255,0.028)",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -1847,20 +1923,24 @@ const s = StyleSheet.create<any>({
   },
 
   optionChipActive: {
-    borderColor:
-      "rgba(244,208,111,0.62)",
-    backgroundColor:
-      "rgba(244,208,111,0.11)",
+    borderColor: "rgba(244,208,111,0.78)",
+    backgroundColor: "rgba(244,208,111,0.15)",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.22,
+    shadowRadius: 13,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
 
   optionChipText: {
-    color: MUTED,
+    color: "rgba(237,239,247,0.62)",
     fontSize: 12,
     fontWeight: "800",
   },
 
   optionChipTextActive: {
-    color: GOLD,
+    color: "#F7DB80",
+    fontWeight: "900",
   },
 
   twoColumnRow: {
@@ -1875,32 +1955,39 @@ const s = StyleSheet.create<any>({
 
   privacyCard: {
     borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 22,
-    backgroundColor:
-      "rgba(255,255,255,0.035)",
+    borderColor: "rgba(244,208,111,0.24)",
+    borderRadius: 26,
+    backgroundColor: "rgba(8,13,25,0.98)",
     overflow: "hidden",
+    shadowColor: "#000000",
+    shadowOpacity: 0.38,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 7,
   },
 
   privacyIntro: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 15,
-    backgroundColor:
-      "rgba(244,208,111,0.055)",
+    padding: 16,
+    backgroundColor: "rgba(244,208,111,0.045)",
     borderBottomWidth: 1,
-    borderBottomColor:
-      "rgba(255,255,255,0.07)",
+    borderBottomColor: "rgba(244,208,111,0.10)",
+    paddingHorizontal: 15,
+    paddingVertical: 13,
   },
 
   privacyIntroIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor:
-      "rgba(244,208,111,0.11)",
+    backgroundColor: "rgba(244,208,111,0.10)",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.13,
+    shadowRadius: 9,
+    shadowOffset: { width: 0, height: 3 },
   },
 
   privacyIntroText: {
@@ -1910,43 +1997,40 @@ const s = StyleSheet.create<any>({
 
   privacyIntroTitle: {
     color: "#FFFFFF",
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: "900",
+    lineHeight: 20,
   },
 
   privacyIntroSub: {
-    color: MUTED,
+    color: "rgba(255,255,255,0.43)",
     fontSize: 11,
-    lineHeight: 16,
+    lineHeight: 15,
     fontWeight: "700",
-    marginTop: 3,
+    marginTop: 2,
   },
 
   privacyRow: {
-    minHeight: 72,
+    minHeight: 62,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderBottomWidth:
-      StyleSheet.hairlineWidth,
-    borderBottomColor:
-      "rgba(255,255,255,0.08)",
+    paddingVertical: 9,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(255,255,255,0.045)",
   },
 
   privacyRowIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor:
-      "rgba(255,255,255,0.045)",
+    backgroundColor: "rgba(255,255,255,0.028)",
   },
 
   privacyRowIconActive: {
-    backgroundColor:
-      "rgba(244,208,111,0.10)",
+    backgroundColor: "rgba(244,208,111,0.09)",
   },
 
   privacyRowCopy: {
@@ -1954,59 +2038,76 @@ const s = StyleSheet.create<any>({
     minWidth: 0,
     marginLeft: 11,
     marginRight: 10,
+    justifyContent: "center",
   },
 
   privacyRowTitle: {
     color: "#FFFFFF",
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "800",
+    lineHeight: 19,
+    letterSpacing: 0.05,
   },
 
   privacyRowSub: {
-    color: "rgba(255,255,255,0.47)",
-    fontSize: 10.5,
+    color: "rgba(255,255,255,0.41)",
+    fontSize: 11,
     lineHeight: 15,
     fontWeight: "700",
     marginTop: 3,
+    display: "none",
   },
 
   toggleTrack: {
-    width: 45,
-    height: 27,
+    width: 47,
+    height: 28,
     borderRadius: 14,
     padding: 3,
+    overflow: "hidden",
     justifyContent: "center",
-    backgroundColor:
-      "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.13)",
   },
 
   toggleTrackActive: {
-    backgroundColor:
-      "rgba(244,208,111,0.78)",
+    backgroundColor: "rgba(244,208,111,0.88)",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.18,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 2 },
   },
 
   toggleKnob: {
-    width: 21,
-    height: 21,
+    width: 22,
+    height: 22,
     borderRadius: 11,
     backgroundColor: "#FFFFFF",
+    shadowColor: "#000000",
+    shadowOpacity: 0.22,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
   },
 
   toggleKnobActive: {
     alignSelf: "flex-end",
     backgroundColor: "#07111F",
+    transform: [{ translateX: 18 }],
   },
 
   savePersonalButton: {
-    minHeight: 54,
-    marginTop: 14,
-    marginBottom: 25,
-    borderRadius: 17,
+    minHeight: 55,
+    marginTop: 16,
+    marginBottom: 14,
+    borderRadius: 19,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 9,
-    backgroundColor: GOLD,
+    gap: 8,
+    backgroundColor: "#F4D06F",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.20,
+    shadowRadius: 15,
+    shadowOffset: { width: 0, height: 7 },
+    elevation: 5,
   },
 
   savePersonalButtonDisabled: {
