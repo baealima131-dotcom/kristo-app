@@ -8163,6 +8163,97 @@ export default function MessageThreadScreen() {
   const [dmConversationSettings, setDmConversationSettings] =
     useState<DirectMessageConversationSettings | null>(null);
   const [dmSettingsBusy, setDmSettingsBusy] = useState(false);
+
+  const [
+    clearChatModalOpen,
+    setClearChatModalOpen,
+  ] = useState(false);
+
+  const [
+    clearChatAnimationState,
+    setClearChatAnimationState,
+  ] = useState<
+    "idle" | "clearing" | "complete"
+  >("idle");
+
+  const clearChatBroomProgress =
+    useRef(new Animated.Value(0)).current;
+
+  const clearChatBroomLoopRef =
+    useRef<Animated.CompositeAnimation | null>(
+      null
+    );
+
+  const clearChatBroomRotate =
+    clearChatBroomProgress.interpolate({
+      inputRange: [0, 0.5, 1],
+      outputRange: [
+        "-24deg",
+        "24deg",
+        "-24deg",
+      ],
+    });
+
+  const clearChatBroomTranslateX =
+    clearChatBroomProgress.interpolate({
+      inputRange: [0, 0.5, 1],
+      outputRange: [-14, 14, -14],
+    });
+
+  const clearChatDustOpacity =
+    clearChatBroomProgress.interpolate({
+      inputRange: [0, 0.5, 1],
+      outputRange: [0.2, 1, 0.2],
+    });
+
+  function stopClearChatBroomAnimation() {
+    clearChatBroomLoopRef.current?.stop();
+    clearChatBroomLoopRef.current = null;
+    clearChatBroomProgress.stopAnimation();
+    clearChatBroomProgress.setValue(0);
+  }
+
+  function startClearChatBroomAnimation() {
+    stopClearChatBroomAnimation();
+
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(
+          clearChatBroomProgress,
+          {
+            toValue: 0.5,
+            duration: 380,
+            easing: Easing.inOut(
+              Easing.quad
+            ),
+            useNativeDriver: true,
+          }
+        ),
+        Animated.timing(
+          clearChatBroomProgress,
+          {
+            toValue: 1,
+            duration: 380,
+            easing: Easing.inOut(
+              Easing.quad
+            ),
+            useNativeDriver: true,
+          }
+        ),
+      ])
+    );
+
+    clearChatBroomLoopRef.current =
+      animation;
+
+    animation.start();
+  }
+
+  useEffect(() => {
+    return () => {
+      stopClearChatBroomAnimation();
+    };
+  }, []);
   const [privateCallStarting, setPrivateCallStarting] = useState(false);
   const [resolvedDmPastorUserId, setResolvedDmPastorUserId] = useState("");
 
@@ -10020,33 +10111,82 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
   function confirmClearConversation() {
     closeThreadMenu();
-
-    Alert.alert(
-      "Clear this chat?",
-      "This removes text messages from your view only. Photos, videos, audio, documents and links will remain in Media Storage.",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Clear",
-          style: "destructive",
-          onPress: () => {
-            void clearConversationTextForViewer();
-          },
-        },
-      ]
-    );
+    stopClearChatBroomAnimation();
+    setClearChatAnimationState("idle");
+    setClearChatModalOpen(true);
   }
 
-  async function clearConversationTextForViewer() {
+  function closeClearChatModal() {
+    if (
+      clearChatAnimationState ===
+      "clearing"
+    ) {
+      return;
+    }
+
+    stopClearChatBroomAnimation();
+    setClearChatModalOpen(false);
+    setClearChatAnimationState("idle");
+  }
+
+  async function runClearChatAnimation() {
+    if (
+      dmSettingsBusy ||
+      clearChatAnimationState ===
+        "clearing"
+    ) {
+      return;
+    }
+
+    setClearChatAnimationState(
+      "clearing"
+    );
+
+    startClearChatBroomAnimation();
+
+    const clearStartedAt = Date.now();
+
+    const cleared =
+      await clearConversationTextForViewer();
+
+    const elapsed =
+      Date.now() - clearStartedAt;
+
+    if (elapsed < 1100) {
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          1100 - elapsed
+        )
+      );
+    }
+
+    stopClearChatBroomAnimation();
+
+    if (!cleared) {
+      setClearChatAnimationState("idle");
+      return;
+    }
+
+    setClearChatAnimationState(
+      "complete"
+    );
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, 900)
+    );
+
+    setClearChatModalOpen(false);
+    setClearChatAnimationState("idle");
+  }
+
+  async function clearConversationTextForViewer(): Promise<boolean> {
     if (
       !isPersonToPersonDm ||
       !backendRoomId ||
       dmSettingsBusy
     ) {
-      return;
+      return false;
     }
 
     setDmSettingsBusy(true);
@@ -10093,10 +10233,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
         }
       );
 
-      Alert.alert(
-        "Chat cleared",
-        "Text messages were removed from your view. Media and shared files remain available."
-      );
+      return true;
     } catch (error: any) {
       Alert.alert(
         "Could not clear chat",
@@ -10105,6 +10242,8 @@ const displayHeaderTitle = assignmentDisplayTitle;
             "Please try again."
         )
       );
+
+      return false;
     } finally {
       setDmSettingsBusy(false);
     }
@@ -14324,6 +14463,294 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       {(() => {
         return null;
       })()}
+
+      <Modal
+        visible={clearChatModalOpen}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={
+          closeClearChatModal
+        }
+      >
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            paddingHorizontal: 28,
+            backgroundColor:
+              "rgba(0,0,0,0.76)",
+          }}
+        >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={closeClearChatModal}
+            disabled={
+              clearChatAnimationState ===
+              "clearing"
+            }
+          />
+
+          <View
+            style={{
+              overflow: "hidden",
+              borderRadius: 32,
+              borderWidth: 1,
+              borderColor:
+                "rgba(255,255,255,0.17)",
+              backgroundColor:
+                "rgba(18,19,26,0.99)",
+              shadowColor: "#000",
+              shadowOpacity: 0.55,
+              shadowRadius: 30,
+              shadowOffset: {
+                width: 0,
+                height: 18,
+              },
+              elevation: 26,
+            }}
+          >
+            <View
+              style={{
+                position: "absolute",
+                top: -80,
+                alignSelf: "center",
+                width: 250,
+                height: 190,
+                borderRadius: 125,
+                backgroundColor:
+                  clearChatAnimationState ===
+                  "complete"
+                    ? "rgba(75,222,128,0.08)"
+                    : "rgba(217,179,95,0.08)",
+              }}
+            />
+
+            <View
+              style={{
+                paddingHorizontal: 26,
+                paddingTop: 30,
+                paddingBottom: 24,
+              }}
+            >
+              <View
+                style={{
+                  width: 84,
+                  height: 84,
+                  alignSelf: "center",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: 28,
+                  borderWidth: 1,
+                  borderColor:
+                    clearChatAnimationState ===
+                    "complete"
+                      ? "rgba(95,225,141,0.45)"
+                      : "rgba(217,179,95,0.38)",
+                  backgroundColor:
+                    clearChatAnimationState ===
+                    "complete"
+                      ? "rgba(95,225,141,0.12)"
+                      : "rgba(217,179,95,0.10)",
+                }}
+              >
+                {clearChatAnimationState ===
+                "complete" ? (
+                  <Ionicons
+                    name="checkmark"
+                    size={46}
+                    color="#5FE18D"
+                  />
+                ) : (
+                  <>
+                    <Animated.Text
+                      style={{
+                        fontSize: 44,
+                        transform: [
+                          {
+                            translateX:
+                              clearChatBroomTranslateX,
+                          },
+                          {
+                            rotate:
+                              clearChatBroomRotate,
+                          },
+                        ],
+                      }}
+                    >
+                      🧹
+                    </Animated.Text>
+
+                    {clearChatAnimationState ===
+                    "clearing" ? (
+                      <Animated.View
+                        style={{
+                          position: "absolute",
+                          bottom: 10,
+                          width: 44,
+                          height: 6,
+                          borderRadius: 999,
+                          opacity:
+                            clearChatDustOpacity,
+                          backgroundColor:
+                            "rgba(217,179,95,0.28)",
+                        }}
+                      />
+                    ) : null}
+                  </>
+                )}
+              </View>
+
+              <Text
+                style={{
+                  marginTop: 22,
+                  color:
+                    "rgba(255,255,255,0.97)",
+                  textAlign: "center",
+                  fontSize: 25,
+                  lineHeight: 31,
+                  fontWeight: "900",
+                }}
+              >
+                {clearChatAnimationState ===
+                "complete"
+                  ? "Chat cleared"
+                  : clearChatAnimationState ===
+                      "clearing"
+                    ? "Clearing messages..."
+                    : "Clear this chat?"}
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 12,
+                  color:
+                    "rgba(255,255,255,0.61)",
+                  textAlign: "center",
+                  fontSize: 14,
+                  lineHeight: 22,
+                  fontWeight: "600",
+                }}
+              >
+                {clearChatAnimationState ===
+                "complete"
+                  ? "Text messages were removed. Media and shared files are still available."
+                  : clearChatAnimationState ===
+                      "clearing"
+                    ? "Please wait while the text messages are removed from your view."
+                    : "Text messages will be removed from your view only. Photos, videos, audio, documents and links will remain in Media Storage."}
+              </Text>
+            </View>
+
+            {clearChatAnimationState ===
+            "idle" ? (
+              <View
+                style={{
+                  flexDirection: "row",
+                  gap: 12,
+                  paddingHorizontal: 20,
+                  paddingBottom: 22,
+                }}
+              >
+                <Pressable
+                  onPress={closeClearChatModal}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    minHeight: 58,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: 20,
+                    borderWidth: 1,
+                    borderColor:
+                      "rgba(255,255,255,0.10)",
+                    backgroundColor:
+                      pressed
+                        ? "rgba(255,255,255,0.14)"
+                        : "rgba(255,255,255,0.08)",
+                  })}
+                >
+                  <Text
+                    style={{
+                      color:
+                        "rgba(255,255,255,0.93)",
+                      fontSize: 17,
+                      fontWeight: "800",
+                    }}
+                  >
+                    Cancel
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => {
+                    void runClearChatAnimation();
+                  }}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    minHeight: 58,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: 20,
+                    borderWidth: 1,
+                    borderColor:
+                      "rgba(255,92,113,0.42)",
+                    backgroundColor:
+                      pressed
+                        ? "rgba(255,75,99,0.25)"
+                        : "rgba(255,75,99,0.14)",
+                  })}
+                >
+                  <Text
+                    style={{
+                      color: "#FF667B",
+                      fontSize: 17,
+                      fontWeight: "900",
+                    }}
+                  >
+                    Clear
+                  </Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View
+                style={{
+                  marginHorizontal: 24,
+                  marginBottom: 26,
+                }}
+              >
+                <View
+                  style={{
+                    height: 6,
+                    overflow: "hidden",
+                    borderRadius: 999,
+                    backgroundColor:
+                      "rgba(255,255,255,0.08)",
+                  }}
+                >
+                  <Animated.View
+                    style={{
+                      width: "52%",
+                      height: "100%",
+                      borderRadius: 999,
+                      backgroundColor:
+                        clearChatAnimationState ===
+                        "complete"
+                          ? "#5FE18D"
+                          : "#D9B35F",
+                      transform: [
+                        {
+                          translateX:
+                            clearChatBroomTranslateX,
+                        },
+                      ],
+                    }}
+                  />
+                </View>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={menuOpen}
