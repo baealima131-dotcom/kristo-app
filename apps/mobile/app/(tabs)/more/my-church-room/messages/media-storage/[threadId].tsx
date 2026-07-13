@@ -23,6 +23,7 @@ import {
 } from "expo-router";
 import {
   clearThreadMessages,
+  clearThreadTextMessages,
   useThread,
   type MsgAttachment,
   type MsgItem,
@@ -341,7 +342,9 @@ function buildConversationStorageIndex(
     );
 
     const text = String(
-      message.text || ""
+      message.storageText ||
+        message.text ||
+        ""
     );
 
     const matches = text.match(URL_PATTERN) || [];
@@ -1749,15 +1752,33 @@ export default function ConversationMediaStorageScreen() {
         );
 
       if (shouldClearText) {
-        await updateDirectMessageConversationSetting(
-          {
-            roomId: backendRoomId,
-            churchId,
-            action: "clear",
-          }
-        );
+        const clearResponse: any =
+          await apiPatch(
+            "/api/church/room-messages",
+            {
+              roomId: backendRoomId,
+              action:
+                "clear_text_for_viewer",
+            },
+            {
+              headers:
+                getKristoHeaders() as any,
+            }
+          );
 
-        clearThreadMessages(threadId);
+        if (
+          !clearResponse ||
+          clearResponse.ok === false
+        ) {
+          throw new Error(
+            String(
+              clearResponse?.error ||
+                "Text messages could not be cleared."
+            )
+          );
+        }
+
+        clearThreadTextMessages(threadId);
       }
 
       if (shouldDeleteConversation) {

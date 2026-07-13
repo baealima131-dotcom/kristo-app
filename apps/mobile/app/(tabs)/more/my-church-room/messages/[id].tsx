@@ -53,7 +53,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
-import { ensureThread, sendMessage, setThreadMessages, clearThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
+import { ensureThread, sendMessage, setThreadMessages, clearThreadMessages, clearThreadTextMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
 import { HomeLiveScheduleCard, ScheduleClaimAvatarRing } from "@/src/components/HomeLiveScheduleCard";
 import {
@@ -2012,7 +2012,14 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, _api
     churchRole: churchRole || undefined,
     senderAvatar: senderAvatar || undefined,
     avatarUri: senderAvatar || undefined,
-    text: String(x.text || ""),
+    text: x.viewerTextDeleted
+      ? ""
+      : String(x.text || ""),
+    storageText: String(
+      x.storageText || x.text || ""
+    ),
+    viewerTextDeleted:
+      x.viewerTextDeleted === true,
     attachments: Array.isArray(x.attachments)
       ? x.attachments.map((att: any) => normalizeMsgAttachment(att))
       : undefined,
@@ -7466,12 +7473,40 @@ export default function MessageThreadScreen() {
     }
 
     const foldedMessages = messages
-      .filter(
-        (message) =>
-          !workflowKinds.has(
+      .filter((message) => {
+        if (
+          workflowKinds.has(
             String(message.kind || "")
           )
-      )
+        ) {
+          return false;
+        }
+
+        const hasAttachments =
+          Array.isArray(
+            message.attachments
+          ) &&
+          message.attachments.length > 0;
+
+        const hasRichContent =
+          !!message.card ||
+          !!message.sharedContent;
+
+        /*
+         * A cleared text-only row remains in the store
+         * for Media Storage link indexing, but must not
+         * render as an empty conversation bubble.
+         */
+        if (
+          message.viewerTextDeleted === true &&
+          !hasAttachments &&
+          !hasRichContent
+        ) {
+          return false;
+        }
+
+        return true;
+      })
       .map((message) => {
         if (!isAppointmentRequestMessage(message)) {
           return message;
@@ -9987,19 +10022,92 @@ const displayHeaderTitle = assignmentDisplayTitle;
     closeThreadMenu();
 
     Alert.alert(
-      "Clear chat?",
-      "Messages will be removed from your view only. The other person will still have their messages.",
+      "Clear this chat?",
+      "This removes text messages from your view only. Photos, videos, audio, documents and links will remain in Media Storage.",
       [
-        { text: "Cancel", style: "cancel" },
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
         {
           text: "Clear",
           style: "destructive",
           onPress: () => {
-            void applyDmConversationSetting("clear");
+            void clearConversationTextForViewer();
           },
         },
       ]
     );
+  }
+
+  async function clearConversationTextForViewer() {
+    if (
+      !isPersonToPersonDm ||
+      !backendRoomId ||
+      dmSettingsBusy
+    ) {
+      return;
+    }
+
+    setDmSettingsBusy(true);
+
+    try {
+      const response: any =
+        await apiPatch(
+          "/api/church/room-messages",
+          {
+            roomId: backendRoomId,
+            action:
+              "clear_text_for_viewer",
+          },
+          {
+            headers:
+              getKristoHeaders() as any,
+          }
+        );
+
+      if (
+        !response ||
+        response.ok === false
+      ) {
+        throw new Error(
+          String(
+            response?.error ||
+              "Text messages could not be cleared."
+          )
+        );
+      }
+
+      clearThreadTextMessages(threadId);
+
+      console.log(
+        "KRISTO_DM_TEXT_CLEARED_FOR_VIEWER",
+        {
+          roomId: backendRoomId,
+          threadId,
+          clearedCount:
+            Number(
+              response?.clearedCount || 0
+            ),
+          mediaPreserved: true,
+        }
+      );
+
+      Alert.alert(
+        "Chat cleared",
+        "Text messages were removed from your view. Media and shared files remain available."
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Could not clear chat",
+        String(
+          error?.message ||
+            "Please try again."
+        )
+      );
+    } finally {
+      setDmSettingsBusy(false);
+    }
   }
 
   function confirmDeleteConversation() {

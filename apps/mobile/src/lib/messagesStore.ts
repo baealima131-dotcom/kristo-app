@@ -132,6 +132,12 @@ export type MsgItem = {
   role?: string;
   churchRole?: string;
   senderAvatar?: string;
+  /**
+   * Original text retained for Media Storage link indexing.
+   * Do not render this value inside conversation bubbles.
+   */
+  storageText?: string;
+  viewerTextDeleted?: boolean;
   viewerDeletedStorageItemIds?: string[];
 };
 
@@ -746,6 +752,39 @@ export function reconcileMessage(threadId: string, optimisticId: string, backend
 export function clearThreadMessages(threadId: string) {
   if (!threadId) return;
   state.messages[threadId] = [];
+  persist();
+  emit();
+}
+
+export function clearThreadTextMessages(
+  threadId: string
+) {
+  if (!threadId) return;
+
+  const items =
+    state.messages[threadId] || [];
+
+  state.messages[threadId] =
+    items.map((message) => {
+      const text = String(
+        message.text || ""
+      );
+
+      if (!text.trim()) {
+        return message;
+      }
+
+      return {
+        ...message,
+        storageText:
+          String(
+            message.storageText || text
+          ),
+        text: "",
+        viewerTextDeleted: true,
+      };
+    });
+
   persist();
   emit();
 }

@@ -365,17 +365,36 @@ export async function GET(req: Request) {
           )
           .map(([itemId]) => String(itemId));
 
+      const textDeletedFor =
+        m?.textDeletedFor &&
+        typeof m.textDeletedFor === "object" &&
+        !Array.isArray(m.textDeletedFor)
+          ? m.textDeletedFor
+          : {};
+
+      const viewerTextDeleted =
+        textDeletedFor[String(userId)] === true;
+
       /*
-       * Never expose the complete per-user deletion map.
-       * The viewer only receives their own deleted item ids.
+       * Never expose complete per-user deletion maps.
+       * The viewer receives only their own deletion state.
+       *
+       * storageText preserves link indexing in Media Storage
+       * while text remains hidden in the conversation UI.
        */
       const {
         storageDeletedFor: _privateStorageDeletedFor,
+        textDeletedFor: _privateTextDeletedFor,
         ...publicMessage
       } = m;
 
       return {
         ...publicMessage,
+        text: viewerTextDeleted
+          ? ""
+          : String(m?.text || ""),
+        storageText: String(m?.text || ""),
+        viewerTextDeleted,
         viewerDeletedStorageItemIds,
         senderName:
           profile.name ||
@@ -832,6 +851,84 @@ export async function PATCH(req: Request) {
   const patch = body?.patch && typeof body.patch === "object" ? body.patch : {};
   const action = String(body?.action || "").trim().toLowerCase();
   const scope = String(body?.scope || "local").trim().toLowerCase();
+
+  if (action === "clear_text_for_viewer") {
+    if (!roomId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Missing roomId",
+        },
+        { status: 400 }
+      );
+    }
+
+    const store = await readStore();
+    const key = keyOf(churchId, roomId);
+    const rows = store[key] || [];
+
+    let clearedCount = 0;
+
+    const nextRows = rows.map(
+      (message: any) => {
+        const text = String(
+          message?.text || ""
+        ).trim();
+
+        if (!text) return message;
+
+        const textDeletedFor:
+          Record<string, boolean> =
+          message?.textDeletedFor &&
+          typeof message.textDeletedFor ===
+            "object" &&
+          !Array.isArray(
+            message.textDeletedFor
+          )
+            ? {
+                ...message.textDeletedFor,
+              }
+            : {};
+
+        if (
+          textDeletedFor[
+            String(userId)
+          ] !== true
+        ) {
+          clearedCount += 1;
+        }
+
+        textDeletedFor[
+          String(userId)
+        ] = true;
+
+        return {
+          ...message,
+          textDeletedFor,
+        };
+      }
+    );
+
+    store[key] = nextRows;
+    await writeStore(store);
+
+    console.log(
+      "KRISTO_DM_TEXT_CLEARED_FOR_VIEWER_BACKEND",
+      {
+        churchId,
+        roomId,
+        userId,
+        clearedCount,
+      }
+    );
+
+    return NextResponse.json({
+      ok: true,
+      cleared: "text-for-viewer",
+      roomId,
+      clearedCount,
+    });
+  }
 
   if (action === "delete_storage_items") {
     if (!roomId || !messageId) {
