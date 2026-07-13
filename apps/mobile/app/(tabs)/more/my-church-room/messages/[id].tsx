@@ -8772,6 +8772,201 @@ const displayHeaderTitle = assignmentDisplayTitle;
     return facts?.[0] || null;
   }, [threadId, headerTitle]);
 
+  const [
+    dmPeerMembershipProfile,
+    setDmPeerMembershipProfile,
+  ] = useState<any>(null);
+
+  const [
+    dmPeerMembershipLoading,
+    setDmPeerMembershipLoading,
+  ] = useState(false);
+
+  const dmPeerUserId = useMemo(() => {
+    const viewerUserId = String(
+      effectiveAuthUserId || ""
+    ).trim();
+
+    const peerFromMessages = String(
+      messages.find((message: any) => {
+        const senderUserId = String(
+          message?.senderUserId || ""
+        ).trim();
+
+        return (
+          senderUserId &&
+          senderUserId !== viewerUserId
+        );
+      })?.senderUserId || ""
+    ).trim();
+
+    return (
+      peerFromMessages ||
+      String(
+        peerUserIdForPresence ||
+          directRoomPeerUserId(
+            threadId,
+            viewerUserId
+          ) ||
+          ""
+      ).trim()
+    );
+  }, [
+    messages,
+    effectiveAuthUserId,
+    peerUserIdForPresence,
+    threadId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !menuOpen ||
+      isStructuredRoom ||
+      !dmPeerUserId
+    ) {
+      return;
+    }
+
+    let alive = true;
+
+    setDmPeerMembershipLoading(true);
+
+    void apiGet(
+      `/api/users/${encodeURIComponent(
+        dmPeerUserId
+      )}/profile`,
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    )
+      .then((response: any) => {
+        if (!alive) {
+          return;
+        }
+
+        setDmPeerMembershipProfile(
+          response?.ok &&
+            response?.profile
+            ? response.profile
+            : null
+        );
+      })
+      .catch((error: any) => {
+        if (!alive) {
+          return;
+        }
+
+        setDmPeerMembershipProfile(null);
+
+        console.log(
+          "KRISTO_DM_MEMBERSHIP_LOOKUP_FAILED",
+          {
+            peerUserId:
+              dmPeerUserId,
+            error: String(
+              error?.message ||
+                error ||
+                "unknown"
+            ),
+          }
+        );
+      })
+      .finally(() => {
+        if (alive) {
+          setDmPeerMembershipLoading(false);
+        }
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    menuOpen,
+    isStructuredRoom,
+    dmPeerUserId,
+  ]);
+
+  const dmMembershipSummary = useMemo(() => {
+    const profile =
+      dmPeerMembershipProfile &&
+      typeof dmPeerMembershipProfile ===
+        "object"
+        ? dmPeerMembershipProfile
+        : {};
+
+    const viewerChurchId = String(
+      churchId ||
+        getKristoHeaders()[
+          "x-kristo-church-id"
+        ] ||
+        ""
+    ).trim();
+
+    const peerChurchId = String(
+      profile.churchId ||
+        profile.currentChurchId ||
+        profile.activeMembership
+          ?.churchId ||
+        ""
+    ).trim();
+
+    const sameChurch =
+      Boolean(viewerChurchId) &&
+      Boolean(peerChurchId) &&
+      viewerChurchId === peerChurchId;
+
+    const verifiedRole = String(
+      profile.churchRole ||
+        profile.role ||
+        profile.activeMembership
+          ?.churchRole ||
+        profile.activeMembership
+          ?.role ||
+        ""
+    ).trim();
+
+    const name =
+      String(
+        profile.fullName ||
+          profile.name ||
+          headerTitle ||
+          "Member"
+      ).trim() || "Member";
+
+    return {
+      name,
+
+      role:
+        sameChurch
+          ? verifiedRole || "Member"
+          : "Guest",
+
+      status:
+        dmPeerMembershipLoading
+          ? "Checking church membership..."
+          : sameChurch
+            ? "Member of your church"
+            : "Not a member of your church",
+
+      pill:
+        dmPeerMembershipLoading
+          ? "Checking"
+          : sameChurch
+            ? verifiedRole || "Member"
+            : "Guest",
+
+      viewerChurchId,
+      peerChurchId,
+      sameChurch,
+    };
+  }, [
+    dmPeerMembershipProfile,
+    dmPeerMembershipLoading,
+    churchId,
+    headerTitle,
+  ]);
+
   const ministryMembers = useMemo<MinistryPerson[]>(() => {
     return isMinistryThread ? realMemberBoardPeople : [];
   }, [isMinistryThread, realMemberBoardPeople]);
@@ -14184,22 +14379,25 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                         <View
                           style={[
                             s.menuPresencePill,
-                            currentFact?.tone === "blue" ? s.menuPresencePillBlue : null,
-                            currentFact?.tone === "emerald" ? s.menuPresencePillEmerald : null,
-                            currentFact?.tone === "purple" ? s.menuPresencePillPurple : null,
-                            !currentFact?.tone && (presence.online ? s.menuPresencePillOnline : null),
+                            dmMembershipSummary.role ===
+                            "Guest"
+                              ? s.menuPresencePillPurple
+                              : s.menuPresencePillEmerald,
                           ]}
                         >
                           <Text
                             style={[
                               t.menuPresencePillText,
-                              currentFact?.tone === "blue" ? t.menuPresencePillTextBlue : null,
-                              currentFact?.tone === "emerald" ? t.menuPresencePillTextEmerald : null,
-                              currentFact?.tone === "purple" ? t.menuPresencePillTextPurple : null,
-                              !currentFact?.tone && (presence.online ? t.menuPresencePillTextOnline : null),
+                              dmMembershipSummary.role ===
+                              "Guest"
+                                ? t.menuPresencePillTextPurple
+                                : t.menuPresencePillTextEmerald,
                             ]}
                           >
-                            {currentFact?.pill || (presence.online ? "Online" : "Public")}
+                            {
+                              dmMembershipSummary
+                                .pill
+                            }
                           </Text>
                         </View>
                       </View>
@@ -14207,21 +14405,51 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                       <Animated.View
                         style={[
                           s.menuFactCard,
-                          currentFact?.tone === "blue" ? s.menuFactCardBlue : null,
-                          currentFact?.tone === "emerald" ? s.menuFactCardEmerald : null,
-                          currentFact?.tone === "purple" ? s.menuFactCardPurple : null,
+                          dmMembershipSummary.role ===
+                          "Guest"
+                            ? s.menuFactCardPurple
+                            : s.menuFactCardEmerald,
                           {
                             opacity: factCardOpacity,
-                            transform: [{ translateY: factCardTranslate }],
+                            transform: [
+                              {
+                                translateY:
+                                  factCardTranslate,
+                              },
+                            ],
                           },
                         ]}
                       >
-                        <Text style={t.menuFactLabel} numberOfLines={1}>
-                          {currentFact?.label || "PROFILE FACT"}
+                        <Text
+                          style={t.menuFactLabel}
+                          numberOfLines={1}
+                        >
+                          CHURCH MEMBERSHIP
                         </Text>
 
-                        <Text style={t.menuFactValue} numberOfLines={1}>
-                          {currentFact?.value || "—"}
+                        <Text
+                          style={t.menuFactValue}
+                          numberOfLines={1}
+                        >
+                          {
+                            dmMembershipSummary
+                              .name
+                          }
+                        </Text>
+
+                        <Text
+                          style={t.menuPresencePillText}
+                          numberOfLines={1}
+                        >
+                          {
+                            dmMembershipSummary
+                              .status
+                          }
+                          {"  •  Role: "}
+                          {
+                            dmMembershipSummary
+                              .role
+                          }
                         </Text>
                       </Animated.View>
                     </>
