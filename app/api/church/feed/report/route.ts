@@ -87,6 +87,68 @@ export async function POST(req: NextRequest) {
   const details = String(body?.details || "").trim();
   const reporterUserId = String(body?.reporterUserId || ctxOrRes.viewer.userId || "").trim();
 
+  const requestedTargetType =
+    String(
+      body?.targetType || "post"
+    )
+      .trim()
+      .toLowerCase();
+
+  const targetType =
+    requestedTargetType === "comment"
+      ? "comment"
+      : "post";
+
+  const targetId =
+    String(
+      body?.targetId || postId
+    ).trim();
+
+  const targetTitle =
+    String(
+      body?.targetTitle || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 240);
+
+  const targetOwnerName =
+    String(
+      body?.targetOwnerName || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 240);
+
+  const targetPreview =
+    String(
+      body?.targetPreview || details || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 600);
+
+  const targetThumbnailUri =
+    String(
+      body?.targetThumbnailUri || ""
+    )
+      .trim()
+      .slice(0, 4000);
+
+  const targetOwnerUserId =
+    String(
+      body?.targetOwnerUserId || ""
+    )
+      .trim()
+      .slice(0, 240);
+
+  const sourceMessageId =
+    String(
+      body?.sourceMessageId || ""
+    )
+      .trim()
+      .slice(0, 300);
+
   if (!postId) {
     return json({ ok: false, error: "postId required" }, { status: 400 });
   }
@@ -150,8 +212,11 @@ export async function POST(req: NextRequest) {
           reporterUserId,
           sourceType:
             "church_feed",
+
           sourceId:
-            postId,
+            targetType === "comment"
+              ? targetId
+              : postId,
         }
       );
 
@@ -191,28 +256,59 @@ export async function POST(req: NextRequest) {
             "church_feed",
 
           sourceId:
-            postId,
+            targetType === "comment"
+              ? targetId
+              : postId,
 
-          targetType:
-            "post",
+          sourceRoomId:
+            targetType === "comment"
+              ? postId
+              : undefined,
+
+          sourceMessageId:
+            sourceMessageId ||
+            (
+              targetType === "comment"
+                ? targetId
+                : undefined
+            ),
+
+          targetType,
 
           targetId:
-            postId,
+            targetId || postId,
 
           targetTitle:
-            "Reported post",
+            targetTitle ||
+            (
+              targetType === "comment"
+                ? targetOwnerName ||
+                  "Reported comment"
+                : "Reported post"
+            ),
 
           targetSubtitle:
-            "Church feed post",
+            undefined,
 
           targetPreview:
-            String(
-              details || ""
-            )
-              .replace(/\s+/g, " ")
-              .trim()
-              .slice(0, 600) ||
-            `Post reported for ${reason}`,
+            targetPreview ||
+            (
+              targetType === "comment"
+                ? "Reported comment"
+                : `Post reported for ${reason}`
+            ),
+
+          targetOwnerUserId:
+            targetOwnerUserId ||
+            undefined,
+
+          targetOwnerName:
+            targetOwnerName ||
+            undefined,
+
+          targetThumbnailUri:
+            targetThumbnailUri ||
+            undefined,
 
           category:
             reason,

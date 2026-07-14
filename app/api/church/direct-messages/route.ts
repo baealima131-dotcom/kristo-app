@@ -409,6 +409,20 @@ export async function PATCH(req: NextRequest) {
           ).trim() ||
           undefined,
 
+        targetThumbnailUri:
+          String(
+            (reportedProfile as any)
+              ?.avatarUri ||
+            (reportedProfile as any)
+              ?.avatarUrl ||
+            (reportedProfile as any)
+              ?.profileImage ||
+            (reportedProfile as any)
+              ?.photoURL ||
+            ""
+          ).trim() ||
+          undefined,
+
         category: reason,
         reason,
 

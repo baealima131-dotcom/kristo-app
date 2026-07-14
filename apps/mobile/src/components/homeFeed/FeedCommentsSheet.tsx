@@ -1,3 +1,6 @@
+import {
+  submitHomeFeedReport,
+} from "@/src/lib/homeFeedReport";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -356,16 +359,179 @@ function CommentRow({
   );
 }
 
+function findReportedComment(
+  nodes: any[],
+  commentId: string
+): any | null {
+  const targetId =
+    String(commentId || "").trim();
+
+  for (const node of Array.isArray(nodes)
+    ? nodes
+    : []) {
+    if (
+      String(node?.id || "").trim() ===
+      targetId
+    ) {
+      return node;
+    }
+
+    const found =
+      findReportedComment(
+        Array.isArray(node?.replies)
+          ? node.replies
+          : [],
+        targetId
+      );
+
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
+}
+
 function CommentReportModal({
   visible,
-  commentId,
+  postId,
+  comment,
   onClose,
 }: {
   visible: boolean;
-  commentId: string;
+  postId: string;
+  comment: any | null;
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
+
+  const [submitting, setSubmitting] =
+    React.useState(false);
+
+  const commentId =
+    String(comment?.id || "").trim();
+
+  const submitReport =
+    React.useCallback(async () => {
+      if (
+        submitting ||
+        !postId ||
+        !commentId
+      ) {
+        return;
+      }
+
+      setSubmitting(true);
+
+      try {
+        const displayName =
+          String(
+            comment?.displayName ||
+            comment?.authorName ||
+            comment?.userName ||
+            comment?.name ||
+            "Comment author"
+          ).trim();
+
+        const avatarUri =
+          String(
+            comment?.avatarUri ||
+            comment?.avatarUrl ||
+            comment?.profileImage ||
+            comment?.photoURL ||
+            ""
+          ).trim();
+
+        const ownerUserId =
+          String(
+            comment?.userId ||
+            comment?.authorUserId ||
+            comment?.createdByUserId ||
+            ""
+          ).trim();
+
+        const commentText =
+          String(
+            comment?.text ||
+            comment?.body ||
+            ""
+          )
+            .replace(/\s+/g, " ")
+            .trim();
+
+        const result =
+          await submitHomeFeedReport({
+            postId,
+            reason:
+              "Other" as any,
+
+            details:
+              "Reported a feed comment.",
+
+            targetType:
+              "comment",
+
+            targetId:
+              commentId,
+
+            sourceMessageId:
+              commentId,
+
+            targetTitle:
+              displayName,
+
+            targetOwnerName:
+              displayName,
+
+            targetOwnerUserId:
+              ownerUserId,
+
+            targetPreview:
+              commentText,
+
+            targetThumbnailUri:
+              avatarUri,
+          });
+
+        if (!result.ok) {
+          throw new Error(
+            result.error ||
+            "Could not report comment."
+          );
+        }
+
+        onClose();
+
+        Alert.alert(
+          "Comment reported",
+          result.reportCode
+            ? [
+                "Your Report Command Code:",
+                "",
+                result.reportCode,
+                "",
+                "You can follow its status in My Reports.",
+              ].join("\n")
+            : "Your comment report was submitted."
+        );
+      } catch (error: any) {
+        Alert.alert(
+          "Could not report comment",
+          String(
+            error?.message ||
+            "Please try again."
+          )
+        );
+      } finally {
+        setSubmitting(false);
+      }
+    }, [
+      comment,
+      commentId,
+      onClose,
+      postId,
+      submitting,
+    ]);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -382,19 +548,28 @@ function CommentReportModal({
           </Text>
           <View style={styles.reportReadyBox}>
             <Ionicons name="flag-outline" size={20} color={HOME_FEED_GOLD_SOFT} />
-            <Text style={styles.reportReadyText}>Comment ID: {commentId.slice(0, 12)}…</Text>
+            <Text
+              style={styles.reportReadyText}
+              numberOfLines={3}
+            >
+              {String(
+                comment?.text ||
+                "Selected comment"
+              ).trim()}
+            </Text>
           </View>
           <Pressable
             style={styles.submitBtn}
+            disabled={submitting}
             onPress={() => {
-              onClose();
-              Alert.alert(
-                "Report received",
-                "Thank you. Comment moderation tools will process this report soon."
-              );
+              void submitReport();
             }}
           >
-            <Text style={styles.submitBtnText}>Submit report</Text>
+            <Text style={styles.submitBtnText}>
+              {submitting
+                ? "Submitting..."
+                : "Submit report"}
+            </Text>
           </Pressable>
           <Pressable style={styles.cancelBtn} onPress={onClose} hitSlop={10}>
             <Text style={styles.cancelBtnText}>Cancel</Text>
@@ -892,8 +1067,14 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
 
       <CommentReportModal
         visible={Boolean(reportCommentId)}
-        commentId={reportCommentId}
-        onClose={() => setReportCommentId("")}
+        postId={postId}
+        comment={findReportedComment(
+          comments,
+          reportCommentId
+        )}
+        onClose={() =>
+          setReportCommentId("")
+        }
       />
     </>
   );

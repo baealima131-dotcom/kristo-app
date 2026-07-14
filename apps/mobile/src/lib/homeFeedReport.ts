@@ -149,6 +149,18 @@ export async function submitHomeFeedReport(input: {
   postId: string;
   reason: HomeFeedReportReason;
   details?: string;
+
+  targetType?:
+    | "post"
+    | "comment";
+
+  targetId?: string;
+  targetTitle?: string;
+  targetOwnerName?: string;
+  targetPreview?: string;
+  targetThumbnailUri?: string;
+  targetOwnerUserId?: string;
+  sourceMessageId?: string;
 }): Promise<SubmitHomeFeedReportResult> {
   const postId = cleanPostId(input.postId);
   if (!postId) return { ok: false, error: "Missing post id" };
@@ -166,6 +178,45 @@ export async function submitHomeFeedReport(input: {
         reporterUserId: session.userId,
         reason: input.reason,
         details: String(input.details || "").trim(),
+
+        targetType:
+          input.targetType || "post",
+
+        targetId:
+          String(
+            input.targetId || postId
+          ).trim(),
+
+        targetTitle:
+          String(
+            input.targetTitle || ""
+          ).trim(),
+
+        targetOwnerName:
+          String(
+            input.targetOwnerName || ""
+          ).trim(),
+
+        targetPreview:
+          String(
+            input.targetPreview || ""
+          ).trim(),
+
+        targetThumbnailUri:
+          String(
+            input.targetThumbnailUri || ""
+          ).trim(),
+
+        targetOwnerUserId:
+          String(
+            input.targetOwnerUserId || ""
+          ).trim(),
+
+        sourceMessageId:
+          String(
+            input.sourceMessageId || ""
+          ).trim(),
+
         createdAt: new Date().toISOString(),
       },
       {

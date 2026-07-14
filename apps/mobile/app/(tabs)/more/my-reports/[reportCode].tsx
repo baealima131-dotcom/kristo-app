@@ -1,6 +1,7 @@
 import React from "react";
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -200,6 +201,56 @@ export default function MyReportDetailScreen() {
     };
   }, [reportCode]);
 
+  const canOpenReportedItem =
+    Boolean(
+      report &&
+      (
+        report.targetType === "post" ||
+        report.targetType === "comment"
+      ) &&
+      (
+        report.sourceId ||
+        report.targetId
+      )
+    );
+
+  const openReportedItem =
+    React.useCallback(() => {
+      if (
+        !report ||
+        !canOpenReportedItem
+      ) {
+        return;
+      }
+
+      const finalPostId =
+        report.targetType === "comment"
+          ? String(
+              report.sourceRoomId || ""
+            ).trim()
+          : String(
+              report.sourceId ||
+              report.targetId ||
+              ""
+            ).trim();
+
+      if (!finalPostId) {
+        return;
+      }
+
+      router.push({
+        pathname: "/(tabs)",
+        params: {
+          openPostId:
+            finalPostId,
+        },
+      } as any);
+    }, [
+      canOpenReportedItem,
+      report,
+      router,
+    ]);
+
   const timeline = report
     ? [
         {
@@ -329,7 +380,17 @@ export default function MyReportDetailScreen() {
             </View>
           </View>
 
-          <View style={styles.reportedItemCard}>
+          <Pressable
+            disabled={!canOpenReportedItem}
+            onPress={openReportedItem}
+            style={({ pressed }) => [
+              styles.reportedItemCard,
+              pressed &&
+              canOpenReportedItem
+                ? styles.reportedItemCardPressed
+                : null,
+            ]}
+          >
             <View style={styles.reportedItemHeader}>
               <View style={styles.reportedItemIcon}>
                 <Ionicons
@@ -354,6 +415,34 @@ export default function MyReportDetailScreen() {
               </View>
             </View>
 
+            {report.targetThumbnailUri ? (
+              <Image
+                source={{
+                  uri:
+                    report.targetThumbnailUri,
+                }}
+                style={[
+                  styles.reportedItemMedia,
+                  report.targetType ===
+                    "account" ||
+                  report.targetType ===
+                    "comment" ||
+                  report.targetType ===
+                    "message"
+                    ? styles.reportedItemAvatar
+                    : null,
+                ]}
+                resizeMode={
+                  report.targetType ===
+                    "post" ||
+                  report.targetType ===
+                    "live"
+                    ? "cover"
+                    : "cover"
+                }
+              />
+            ) : null}
+
             <Text style={styles.reportedItemTitle}>
               {report.targetTitle ||
                 report.targetOwnerName ||
@@ -369,7 +458,21 @@ export default function MyReportDetailScreen() {
                 {report.targetPreview}
               </Text>
             ) : null}
-          </View>
+
+            {canOpenReportedItem ? (
+              <View style={styles.openOriginalRow}>
+                <Ionicons
+                  name="open-outline"
+                  size={17}
+                  color={GOLD}
+                />
+
+                <Text style={styles.openOriginalText}>
+                  Open original
+                </Text>
+              </View>
+            ) : null}
+          </Pressable>
 
           <View style={styles.details}>
             <Text style={styles.sectionTitle}>
@@ -595,6 +698,44 @@ const styles = StyleSheet.create({
       "rgba(244,208,111,0.22)",
     backgroundColor:
       "rgba(244,208,111,0.055)",
+  },
+
+  reportedItemCardPressed: {
+    opacity: 0.78,
+    transform: [
+      {
+        scale: 0.992,
+      },
+    ],
+  },
+
+  reportedItemMedia: {
+    width: "100%",
+    height: 170,
+    marginTop: 16,
+    borderRadius: 18,
+    backgroundColor:
+      "rgba(255,255,255,0.06)",
+  },
+
+  reportedItemAvatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignSelf: "flex-start",
+  },
+
+  openOriginalRow: {
+    marginTop: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+
+  openOriginalText: {
+    color: GOLD,
+    fontSize: 12,
+    fontWeight: "900",
   },
 
   reportedItemHeader: {
