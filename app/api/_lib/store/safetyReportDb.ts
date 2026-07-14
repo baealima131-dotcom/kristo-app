@@ -33,6 +33,15 @@ export type SafetyReportSourceType =
   | "live"
   | "other";
 
+export type SafetyReportTargetType =
+  | "account"
+  | "post"
+  | "comment"
+  | "message"
+  | "church"
+  | "live"
+  | "other";
+
 export type SafetyReportRecord = {
   id: string;
   reportCode: string;
@@ -49,6 +58,16 @@ export type SafetyReportRecord = {
   sourceId?: string;
   sourceRoomId?: string;
   sourceMessageId?: string;
+
+  targetType: SafetyReportTargetType;
+  targetId?: string;
+  targetTitle?: string;
+  targetSubtitle?: string;
+  targetPreview?: string;
+  targetOwnerUserId?: string;
+  targetOwnerKristoId?: string;
+  targetOwnerName?: string;
+  targetThumbnailUri?: string;
 
   category: string;
   reason: string;
@@ -102,6 +121,15 @@ type SafetyReportRow = {
   source_id: string | null;
   source_room_id: string | null;
   source_message_id: string | null;
+  target_type?: string | null;
+  target_id?: string | null;
+  target_title?: string | null;
+  target_subtitle?: string | null;
+  target_preview?: string | null;
+  target_owner_user_id?: string | null;
+  target_owner_kristo_id?: string | null;
+  target_owner_name?: string | null;
+  target_thumbnail_uri?: string | null;
   category: string;
   reason: string;
   description: string | null;
@@ -226,6 +254,45 @@ function normalizeStatus(
   return "open";
 }
 
+function normalizeTargetType(
+  value: unknown
+): SafetyReportTargetType {
+  const targetType =
+    String(value || "other")
+      .trim()
+      .toLowerCase();
+
+  if (
+    targetType === "account" ||
+    targetType === "post" ||
+    targetType === "comment" ||
+    targetType === "message" ||
+    targetType === "church" ||
+    targetType === "live"
+  ) {
+    return targetType;
+  }
+
+  return "other";
+}
+
+function cleanTargetText(
+  value: unknown,
+  maxLength: number
+): string | undefined {
+  const text =
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (!text) return undefined;
+
+  return text.slice(
+    0,
+    Math.max(1, maxLength)
+  );
+}
+
 function normalizePriority(
   value: unknown
 ): SafetyReportPriority {
@@ -294,6 +361,59 @@ function rowToReport(
       String(
         row.source_message_id || ""
       ).trim() || undefined,
+
+    targetType:
+      normalizeTargetType(
+        row.target_type
+      ),
+
+    targetId:
+      cleanTargetText(
+        row.target_id,
+        300
+      ),
+
+    targetTitle:
+      cleanTargetText(
+        row.target_title,
+        240
+      ),
+
+    targetSubtitle:
+      cleanTargetText(
+        row.target_subtitle,
+        300
+      ),
+
+    targetPreview:
+      cleanTargetText(
+        row.target_preview,
+        600
+      ),
+
+    targetOwnerUserId:
+      cleanTargetText(
+        row.target_owner_user_id,
+        240
+      ),
+
+    targetOwnerKristoId:
+      cleanTargetText(
+        row.target_owner_kristo_id,
+        100
+      )?.toUpperCase(),
+
+    targetOwnerName:
+      cleanTargetText(
+        row.target_owner_name,
+        240
+      ),
+
+    targetThumbnailUri:
+      cleanTargetText(
+        row.target_thumbnail_uri,
+        4000
+      ),
 
     category:
       String(row.category || "other")
@@ -367,6 +487,16 @@ export async function ensureSafetyReportSchema() {
           source_room_id TEXT,
           source_message_id TEXT,
 
+          target_type TEXT NOT NULL DEFAULT 'other',
+          target_id TEXT,
+          target_title TEXT,
+          target_subtitle TEXT,
+          target_preview TEXT,
+          target_owner_user_id TEXT,
+          target_owner_kristo_id TEXT,
+          target_owner_name TEXT,
+          target_thumbnail_uri TEXT,
+
           category TEXT NOT NULL DEFAULT 'other',
           reason TEXT NOT NULL,
           description TEXT,
@@ -404,6 +534,51 @@ export async function ensureSafetyReportSchema() {
               )
             )
         )
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_type TEXT NOT NULL DEFAULT 'other'
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_id TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_title TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_subtitle TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_preview TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_owner_user_id TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_owner_kristo_id TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_owner_name TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_thumbnail_uri TEXT
       `;
 
       await sql`
@@ -513,6 +688,16 @@ export async function dbCreateSafetyReport(
     sourceId?: string;
     sourceRoomId?: string;
     sourceMessageId?: string;
+
+    targetType?: SafetyReportTargetType;
+    targetId?: string;
+    targetTitle?: string;
+    targetSubtitle?: string;
+    targetPreview?: string;
+    targetOwnerUserId?: string;
+    targetOwnerKristoId?: string;
+    targetOwnerName?: string;
+    targetThumbnailUri?: string;
 
     category: string;
     reason: string;
@@ -650,6 +835,68 @@ export async function dbCreateSafetyReport(
             String(
               input.sourceMessageId || ""
             ).trim() || null
+          },
+
+          ${
+            normalizeTargetType(
+              input.targetType
+            )
+          },
+
+          ${
+            cleanTargetText(
+              input.targetId,
+              300
+            ) || null
+          },
+
+          ${
+            cleanTargetText(
+              input.targetTitle,
+              240
+            ) || null
+          },
+
+          ${
+            cleanTargetText(
+              input.targetSubtitle,
+              300
+            ) || null
+          },
+
+          ${
+            cleanTargetText(
+              input.targetPreview,
+              600
+            ) || null
+          },
+
+          ${
+            cleanTargetText(
+              input.targetOwnerUserId,
+              240
+            ) || null
+          },
+
+          ${
+            cleanTargetText(
+              input.targetOwnerKristoId,
+              100
+            )?.toUpperCase() || null
+          },
+
+          ${
+            cleanTargetText(
+              input.targetOwnerName,
+              240
+            ) || null
+          },
+
+          ${
+            cleanTargetText(
+              input.targetThumbnailUri,
+              4000
+            ) || null
           },
 
           ${

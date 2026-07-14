@@ -302,6 +302,46 @@ export async function PATCH(req: NextRequest) {
         sourceId: roomId,
         sourceRoomId: roomId,
 
+        targetType:
+          "account",
+
+        targetId:
+          reportedUserId ||
+          undefined,
+
+        targetTitle:
+          String(
+            reportedProfile?.fullName ||
+            reportedProfile?.userCode ||
+            "Reported account"
+          ).trim(),
+
+        targetSubtitle:
+          String(
+            reportedProfile?.userCode || ""
+          )
+            .trim()
+            .toUpperCase() ||
+          undefined,
+
+        targetOwnerUserId:
+          reportedUserId ||
+          undefined,
+
+        targetOwnerKristoId:
+          String(
+            reportedProfile?.userCode || ""
+          )
+            .trim()
+            .toUpperCase() ||
+          undefined,
+
+        targetOwnerName:
+          String(
+            reportedProfile?.fullName || ""
+          ).trim() ||
+          undefined,
+
         category: reason,
         reason,
 

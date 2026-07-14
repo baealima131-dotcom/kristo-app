@@ -166,6 +166,25 @@ export type SafetyReportSummary = {
   sourceId?: string;
   sourceRoomId?: string;
   sourceMessageId?: string;
+
+  targetType:
+    | "account"
+    | "post"
+    | "comment"
+    | "message"
+    | "church"
+    | "live"
+    | "other";
+
+  targetId?: string;
+  targetTitle?: string;
+  targetSubtitle?: string;
+  targetPreview?: string;
+  targetOwnerUserId?: string;
+  targetOwnerKristoId?: string;
+  targetOwnerName?: string;
+  targetThumbnailUri?: string;
+
   category: string;
   reason: string;
   description?: string;

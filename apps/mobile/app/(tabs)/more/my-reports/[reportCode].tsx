@@ -32,6 +32,82 @@ const TEXT = "#FFFFFF";
 const MUTED =
   "rgba(255,255,255,0.60)";
 
+function targetTypeLabel(
+  targetType:
+    SafetyReportSummary["targetType"]
+) {
+  if (targetType === "account") {
+    return "Account";
+  }
+
+  if (targetType === "post") {
+    return "Post";
+  }
+
+  if (targetType === "comment") {
+    return "Comment";
+  }
+
+  if (targetType === "message") {
+    return "Message";
+  }
+
+  if (targetType === "church") {
+    return "Church";
+  }
+
+  if (targetType === "live") {
+    return "Live broadcast";
+  }
+
+  return "Reported item";
+}
+
+function targetTypeIcon(
+  targetType:
+    SafetyReportSummary["targetType"]
+): keyof typeof Ionicons.glyphMap {
+  if (targetType === "account") {
+    return "person-outline";
+  }
+
+  if (targetType === "post") {
+    return "document-text-outline";
+  }
+
+  if (targetType === "comment") {
+    return "chatbubble-outline";
+  }
+
+  if (targetType === "message") {
+    return "mail-outline";
+  }
+
+  if (targetType === "church") {
+    return "business-outline";
+  }
+
+  if (targetType === "live") {
+    return "radio-outline";
+  }
+
+  return "flag-outline";
+}
+
+function readableCategory(
+  value: string
+) {
+  return String(value || "Other")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(
+      /\b\w/g,
+      (character) =>
+        character.toUpperCase()
+    );
+}
+
 function statusLabel(
   status: SafetyReportSummary["status"]
 ) {

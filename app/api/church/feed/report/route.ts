@@ -193,6 +193,27 @@ export async function POST(req: NextRequest) {
           sourceId:
             postId,
 
+          targetType:
+            "post",
+
+          targetId:
+            postId,
+
+          targetTitle:
+            "Reported post",
+
+          targetSubtitle:
+            "Church feed post",
+
+          targetPreview:
+            String(
+              details || ""
+            )
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 600) ||
+            `Post reported for ${reason}`,
+
           category:
             reason,
 
