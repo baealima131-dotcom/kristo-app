@@ -344,6 +344,15 @@ export default function SystemAdminScreen() {
       icon: "people-circle-outline",
       href: "/more/system-admin/supervisors",
     },
+    {
+      key: "report_center",
+      title: "Report Center",
+      subtitle:
+        "Safety reports, moderation and supervisor assignments.",
+      badge: "OPEN",
+      icon: "shield-checkmark-outline",
+      href: "/more/system-admin/report-center",
+    },
   ];
 
   const toggleChurchExpanded = React.useCallback((churchId: string) => {
@@ -359,12 +368,146 @@ export default function SystemAdminScreen() {
       <BackgroundScene />
 
       <View style={[styles.headerWrap, { paddingTop: insets.top + 12 }]}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
-          <BlurView intensity={42} tint="dark" style={StyleSheet.absoluteFillObject} />
-          <View style={styles.backBtnInner}>
-            <Ionicons name="chevron-back" size={24} color="#FFFFFF" />
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={12}
+            style={styles.backBtn}
+          >
+            <BlurView
+              intensity={42}
+              tint="dark"
+              style={StyleSheet.absoluteFillObject}
+            />
+
+            <View style={styles.backBtnInner}>
+              <Ionicons
+                name="chevron-back"
+                size={24}
+                color="#FFFFFF"
+              />
+            </View>
+          </Pressable>
+
+          <View
+            style={{
+              flex: 1,
+              flexDirection: "row",
+              gap: 8,
+            }}
+          >
+            <View
+              style={{
+                flex: 1,
+                minHeight: 48,
+                overflow: "hidden",
+                borderRadius: 16,
+                borderWidth: 1,
+                borderColor:
+                  "rgba(244,208,111,0.42)",
+                backgroundColor:
+                  "rgba(244,208,111,0.13)",
+              }}
+            >
+              <BlurView
+                intensity={40}
+                tint="dark"
+                style={StyleSheet.absoluteFillObject}
+              />
+
+              <View
+                style={{
+                  flex: 1,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 7,
+                  paddingHorizontal: 10,
+                }}
+              >
+                <Ionicons
+                  name="business-outline"
+                  size={17}
+                  color={GOLD}
+                />
+
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    color: "#F8E7A5",
+                    fontSize: 12,
+                    fontWeight: "800",
+                  }}
+                >
+                  Church Activation
+                </Text>
+              </View>
+            </View>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open Report Center"
+              onPress={() =>
+                router.push(
+                  "/more/system-admin/report-center" as any
+                )
+              }
+              style={({ pressed }) => ({
+                flex: 1,
+                minHeight: 48,
+                overflow: "hidden",
+                borderRadius: 16,
+                borderWidth: 1,
+                borderColor: pressed
+                  ? "rgba(167,139,250,0.72)"
+                  : "rgba(167,139,250,0.42)",
+                backgroundColor: pressed
+                  ? "rgba(139,92,246,0.24)"
+                  : "rgba(139,92,246,0.12)",
+              })}
+            >
+              <BlurView
+                intensity={40}
+                tint="dark"
+                style={StyleSheet.absoluteFillObject}
+              />
+
+              <View
+                style={{
+                  flex: 1,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 7,
+                  paddingHorizontal: 10,
+                }}
+              >
+                <Ionicons
+                  name="shield-checkmark-outline"
+                  size={17}
+                  color="#C4B5FD"
+                />
+
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    color: "#DDD6FE",
+                    fontSize: 12,
+                    fontWeight: "800",
+                  }}
+                >
+                  Report Center
+                </Text>
+              </View>
+            </Pressable>
           </View>
-        </Pressable>
+        </View>
 
         <GlassSurface style={styles.headerGlass} radius={RADIUS} intensity={48} shadowColor={PURPLE}>
           <View style={styles.headerRow}>
