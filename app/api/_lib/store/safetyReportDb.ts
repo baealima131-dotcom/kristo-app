@@ -1,0 +1,1169 @@
+import {
+  neon,
+  neonConfig,
+} from "@neondatabase/serverless";
+
+import {
+  getDatabaseUrl,
+  hasDurableStore,
+  isVercelRuntime,
+} from "@/app/api/_lib/store/authDb";
+
+neonConfig.fetchConnectionCache = true;
+
+export type SafetyReportStatus =
+  | "open"
+  | "assigned"
+  | "in_review"
+  | "resolved"
+  | "escalated"
+  | "dismissed";
+
+export type SafetyReportPriority =
+  | "low"
+  | "normal"
+  | "high"
+  | "critical";
+
+export type SafetyReportSourceType =
+  | "direct_message"
+  | "room_message"
+  | "church_feed"
+  | "profile"
+  | "live"
+  | "other";
+
+export type SafetyReportRecord = {
+  id: string;
+  reportCode: string;
+
+  reporterUserId: string;
+  reporterKristoId: string;
+
+  reportedUserId?: string;
+  reportedKristoId?: string;
+
+  churchId: string;
+
+  sourceType: SafetyReportSourceType;
+  sourceId?: string;
+  sourceRoomId?: string;
+  sourceMessageId?: string;
+
+  category: string;
+  reason: string;
+  description?: string;
+
+  priority: SafetyReportPriority;
+  status: SafetyReportStatus;
+
+  assignedSupervisorUserId?: string;
+  assignedAgentUserId?: string;
+
+  createdAt: string;
+  updatedAt: string;
+  assignedAt?: string;
+  resolvedAt?: string;
+};
+
+export type SafetySupervisorDashboard = {
+  counts: {
+    assigned: number;
+    open: number;
+    inReview: number;
+    resolved: number;
+    highPriority: number;
+    escalated: number;
+    activeAgents: number;
+    pendingAgents: number;
+  };
+  reports: SafetyReportRecord[];
+  agents: Array<{
+    userId: string;
+    kristoId?: string;
+    churchId: string;
+    status: "active" | "pending" | "paused";
+    open: number;
+    inReview: number;
+    resolved: number;
+    totalAssigned: number;
+  }>;
+};
+
+type SafetyReportRow = {
+  id: string;
+  report_code: string;
+  reporter_user_id: string;
+  reporter_kristo_id: string;
+  reported_user_id: string | null;
+  reported_kristo_id: string | null;
+  church_id: string;
+  source_type: string;
+  source_id: string | null;
+  source_room_id: string | null;
+  source_message_id: string | null;
+  category: string;
+  reason: string;
+  description: string | null;
+  priority: string;
+  status: string;
+  assigned_supervisor_user_id: string | null;
+  assigned_agent_user_id: string | null;
+  created_at: string | Date;
+  updated_at: string | Date;
+  assigned_at: string | Date | null;
+  resolved_at: string | Date | null;
+};
+
+type SupervisorAgentRow = {
+  id: string;
+  supervisor_user_id: string;
+  agent_user_id: string;
+  agent_kristo_id: string | null;
+  church_id: string;
+  status: string;
+  created_at: string | Date;
+  updated_at: string | Date;
+};
+
+let sqlClient: ReturnType<typeof neon> | null = null;
+let schemaReady: Promise<void> | null = null;
+
+function getSql() {
+  if (!sqlClient) {
+    const url = getDatabaseUrl();
+
+    if (!url) {
+      throw new Error(
+        "DATABASE_URL not configured"
+      );
+    }
+
+    sqlClient = neon(url);
+  }
+
+  return sqlClient;
+}
+
+function usePostgres() {
+  return hasDurableStore();
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function randomCodeSegment(length = 6) {
+  const chars =
+    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  let output = "";
+
+  for (let index = 0; index < length; index += 1) {
+    output += chars[
+      Math.floor(
+        Math.random() * chars.length
+      )
+    ];
+  }
+
+  return output;
+}
+
+export function createSafetyReportCode(
+  date = new Date()
+) {
+  const year = String(
+    date.getUTCFullYear()
+  ).slice(-2);
+
+  const month = String(
+    date.getUTCMonth() + 1
+  ).padStart(2, "0");
+
+  const day = String(
+    date.getUTCDate()
+  ).padStart(2, "0");
+
+  return (
+    `RPT-${year}${month}${day}-` +
+    randomCodeSegment(6)
+  );
+}
+
+function createSafetyReportId() {
+  return (
+    `srep_${Date.now().toString(36)}_` +
+    Math.random().toString(36).slice(2, 9)
+  );
+}
+
+function createSupervisorAgentId() {
+  return (
+    `sagt_${Date.now().toString(36)}_` +
+    Math.random().toString(36).slice(2, 9)
+  );
+}
+
+function normalizeStatus(
+  value: unknown
+): SafetyReportStatus {
+  const status =
+    String(value || "open")
+      .trim()
+      .toLowerCase();
+
+  if (
+    status === "assigned" ||
+    status === "in_review" ||
+    status === "resolved" ||
+    status === "escalated" ||
+    status === "dismissed"
+  ) {
+    return status;
+  }
+
+  return "open";
+}
+
+function normalizePriority(
+  value: unknown
+): SafetyReportPriority {
+  const priority =
+    String(value || "normal")
+      .trim()
+      .toLowerCase();
+
+  if (
+    priority === "low" ||
+    priority === "high" ||
+    priority === "critical"
+  ) {
+    return priority;
+  }
+
+  return "normal";
+}
+
+function rowToReport(
+  row: SafetyReportRow
+): SafetyReportRecord {
+  return {
+    id: String(row.id || "").trim(),
+    reportCode:
+      String(row.report_code || "")
+        .trim()
+        .toUpperCase(),
+
+    reporterUserId:
+      String(row.reporter_user_id || "")
+        .trim(),
+
+    reporterKristoId:
+      String(row.reporter_kristo_id || "")
+        .trim()
+        .toUpperCase(),
+
+    reportedUserId:
+      String(row.reported_user_id || "")
+        .trim() || undefined,
+
+    reportedKristoId:
+      String(row.reported_kristo_id || "")
+        .trim()
+        .toUpperCase() || undefined,
+
+    churchId:
+      String(row.church_id || "").trim(),
+
+    sourceType:
+      String(
+        row.source_type || "other"
+      ) as SafetyReportSourceType,
+
+    sourceId:
+      String(row.source_id || "").trim() ||
+      undefined,
+
+    sourceRoomId:
+      String(
+        row.source_room_id || ""
+      ).trim() || undefined,
+
+    sourceMessageId:
+      String(
+        row.source_message_id || ""
+      ).trim() || undefined,
+
+    category:
+      String(row.category || "other")
+        .trim(),
+
+    reason:
+      String(row.reason || "").trim(),
+
+    description:
+      String(row.description || "").trim() ||
+      undefined,
+
+    priority:
+      normalizePriority(row.priority),
+
+    status:
+      normalizeStatus(row.status),
+
+    assignedSupervisorUserId:
+      String(
+        row.assigned_supervisor_user_id || ""
+      ).trim() || undefined,
+
+    assignedAgentUserId:
+      String(
+        row.assigned_agent_user_id || ""
+      ).trim() || undefined,
+
+    createdAt:
+      new Date(row.created_at).toISOString(),
+
+    updatedAt:
+      new Date(row.updated_at).toISOString(),
+
+    assignedAt:
+      row.assigned_at
+        ? new Date(
+            row.assigned_at
+          ).toISOString()
+        : undefined,
+
+    resolvedAt:
+      row.resolved_at
+        ? new Date(
+            row.resolved_at
+          ).toISOString()
+        : undefined,
+  };
+}
+
+export async function ensureSafetyReportSchema() {
+  if (!schemaReady) {
+    schemaReady = (async () => {
+      const sql = getSql();
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS kristo_safety_reports (
+          id TEXT PRIMARY KEY,
+          report_code TEXT NOT NULL UNIQUE,
+
+          reporter_user_id TEXT NOT NULL,
+          reporter_kristo_id TEXT NOT NULL,
+
+          reported_user_id TEXT,
+          reported_kristo_id TEXT,
+
+          church_id TEXT NOT NULL,
+
+          source_type TEXT NOT NULL DEFAULT 'other',
+          source_id TEXT,
+          source_room_id TEXT,
+          source_message_id TEXT,
+
+          category TEXT NOT NULL DEFAULT 'other',
+          reason TEXT NOT NULL,
+          description TEXT,
+
+          priority TEXT NOT NULL DEFAULT 'normal',
+          status TEXT NOT NULL DEFAULT 'open',
+
+          assigned_supervisor_user_id TEXT,
+          assigned_agent_user_id TEXT,
+
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          assigned_at TIMESTAMPTZ,
+          resolved_at TIMESTAMPTZ,
+
+          CONSTRAINT kristo_safety_reports_status_check
+            CHECK (
+              status IN (
+                'open',
+                'assigned',
+                'in_review',
+                'resolved',
+                'escalated',
+                'dismissed'
+              )
+            ),
+
+          CONSTRAINT kristo_safety_reports_priority_check
+            CHECK (
+              priority IN (
+                'low',
+                'normal',
+                'high',
+                'critical'
+              )
+            )
+        )
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS kristo_safety_reports_supervisor_idx
+        ON kristo_safety_reports (
+          assigned_supervisor_user_id,
+          status,
+          created_at DESC
+        )
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS kristo_safety_reports_agent_idx
+        ON kristo_safety_reports (
+          assigned_agent_user_id,
+          status,
+          created_at DESC
+        )
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS kristo_safety_reports_reporter_idx
+        ON kristo_safety_reports (
+          reporter_user_id,
+          created_at DESC
+        )
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS kristo_safety_reports_reporter_kristo_idx
+        ON kristo_safety_reports (
+          reporter_kristo_id,
+          created_at DESC
+        )
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS kristo_safety_supervisor_agents (
+          id TEXT PRIMARY KEY,
+          supervisor_user_id TEXT NOT NULL,
+          agent_user_id TEXT NOT NULL,
+          agent_kristo_id TEXT,
+          church_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+          CONSTRAINT kristo_safety_supervisor_agents_status_check
+            CHECK (
+              status IN (
+                'active',
+                'pending',
+                'paused'
+              )
+            )
+        )
+      `;
+
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS kristo_safety_supervisor_agents_unique_idx
+        ON kristo_safety_supervisor_agents (
+          supervisor_user_id,
+          agent_user_id,
+          church_id
+        )
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS kristo_safety_supervisor_agents_supervisor_idx
+        ON kristo_safety_supervisor_agents (
+          supervisor_user_id,
+          status
+        )
+      `;
+    })();
+  }
+
+  await schemaReady;
+}
+
+export async function ensureSafetyReportStoreReady() {
+  if (
+    isVercelRuntime() &&
+    !hasDurableStore()
+  ) {
+    throw new Error(
+      "Safety report database not configured"
+    );
+  }
+
+  if (usePostgres()) {
+    await ensureSafetyReportSchema();
+  }
+}
+
+export async function dbCreateSafetyReport(
+  input: {
+    reporterUserId: string;
+    reporterKristoId: string;
+
+    reportedUserId?: string;
+    reportedKristoId?: string;
+
+    churchId: string;
+
+    sourceType?: SafetyReportSourceType;
+    sourceId?: string;
+    sourceRoomId?: string;
+    sourceMessageId?: string;
+
+    category: string;
+    reason: string;
+    description?: string;
+
+    priority?: SafetyReportPriority;
+  }
+): Promise<SafetyReportRecord> {
+  const reporterUserId =
+    String(
+      input.reporterUserId || ""
+    ).trim();
+
+  const reporterKristoId =
+    String(
+      input.reporterKristoId || ""
+    )
+      .trim()
+      .toUpperCase();
+
+  const churchId =
+    String(input.churchId || "").trim();
+
+  const reason =
+    String(input.reason || "").trim();
+
+  if (!reporterUserId) {
+    throw new Error(
+      "reporterUserId required"
+    );
+  }
+
+  if (!reporterKristoId) {
+    throw new Error(
+      "Reporter KRISTO ID required"
+    );
+  }
+
+  if (!churchId) {
+    throw new Error(
+      "Church ID required"
+    );
+  }
+
+  if (!reason) {
+    throw new Error(
+      "Report reason required"
+    );
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+  const id = createSafetyReportId();
+  const now = nowIso();
+
+  let reportCode =
+    createSafetyReportCode();
+
+  for (
+    let attempt = 0;
+    attempt < 5;
+    attempt += 1
+  ) {
+    try {
+      const rows = (await sql`
+        INSERT INTO kristo_safety_reports (
+          id,
+          report_code,
+
+          reporter_user_id,
+          reporter_kristo_id,
+
+          reported_user_id,
+          reported_kristo_id,
+
+          church_id,
+
+          source_type,
+          source_id,
+          source_room_id,
+          source_message_id,
+
+          category,
+          reason,
+          description,
+
+          priority,
+          status,
+
+          created_at,
+          updated_at
+        ) VALUES (
+          ${id},
+          ${reportCode},
+
+          ${reporterUserId},
+          ${reporterKristoId},
+
+          ${
+            String(
+              input.reportedUserId || ""
+            ).trim() || null
+          },
+
+          ${
+            String(
+              input.reportedKristoId || ""
+            )
+              .trim()
+              .toUpperCase() || null
+          },
+
+          ${churchId},
+
+          ${
+            String(
+              input.sourceType || "other"
+            ).trim()
+          },
+
+          ${
+            String(
+              input.sourceId || ""
+            ).trim() || null
+          },
+
+          ${
+            String(
+              input.sourceRoomId || ""
+            ).trim() || null
+          },
+
+          ${
+            String(
+              input.sourceMessageId || ""
+            ).trim() || null
+          },
+
+          ${
+            String(
+              input.category || "other"
+            ).trim()
+          },
+
+          ${reason},
+
+          ${
+            String(
+              input.description || ""
+            ).trim() || null
+          },
+
+          ${
+            normalizePriority(
+              input.priority
+            )
+          },
+
+          'open',
+
+          ${now},
+          ${now}
+        )
+
+        RETURNING
+          id,
+          report_code,
+          reporter_user_id,
+          reporter_kristo_id,
+          reported_user_id,
+          reported_kristo_id,
+          church_id,
+          source_type,
+          source_id,
+          source_room_id,
+          source_message_id,
+          category,
+          reason,
+          description,
+          priority,
+          status,
+          assigned_supervisor_user_id,
+          assigned_agent_user_id,
+          created_at,
+          updated_at,
+          assigned_at,
+          resolved_at
+      `) as SafetyReportRow[];
+
+      const row = rows[0];
+
+      if (!row) {
+        throw new Error(
+          "Safety report was not created"
+        );
+      }
+
+      return rowToReport(row);
+    } catch (error: any) {
+      const message =
+        String(
+          error?.message || error || ""
+        ).toLowerCase();
+
+      if (
+        message.includes("report_code") ||
+        message.includes("unique")
+      ) {
+        reportCode =
+          createSafetyReportCode();
+
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error(
+    "Could not generate unique report code"
+  );
+}
+
+export async function dbAssignReportToSupervisor(
+  input: {
+    reportId: string;
+    supervisorUserId: string;
+  }
+) {
+  const reportId =
+    String(input.reportId || "").trim();
+
+  const supervisorUserId =
+    String(
+      input.supervisorUserId || ""
+    ).trim();
+
+  if (!reportId || !supervisorUserId) {
+    throw new Error(
+      "Report and supervisor are required"
+    );
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+  const now = nowIso();
+
+  const rows = (await sql`
+    UPDATE kristo_safety_reports
+    SET
+      assigned_supervisor_user_id =
+        ${supervisorUserId},
+      assigned_agent_user_id = NULL,
+      status = 'assigned',
+      assigned_at = ${now},
+      updated_at = ${now}
+    WHERE id = ${reportId}
+    RETURNING
+      id,
+      report_code,
+      reporter_user_id,
+      reporter_kristo_id,
+      reported_user_id,
+      reported_kristo_id,
+      church_id,
+      source_type,
+      source_id,
+      source_room_id,
+      source_message_id,
+      category,
+      reason,
+      description,
+      priority,
+      status,
+      assigned_supervisor_user_id,
+      assigned_agent_user_id,
+      created_at,
+      updated_at,
+      assigned_at,
+      resolved_at
+  `) as SafetyReportRow[];
+
+  if (!rows[0]) {
+    throw new Error("Report not found");
+  }
+
+  return rowToReport(rows[0]);
+}
+
+export async function dbAssignReportToAgent(
+  input: {
+    reportId: string;
+    supervisorUserId: string;
+    agentUserId: string;
+  }
+) {
+  const reportId =
+    String(input.reportId || "").trim();
+
+  const supervisorUserId =
+    String(
+      input.supervisorUserId || ""
+    ).trim();
+
+  const agentUserId =
+    String(
+      input.agentUserId || ""
+    ).trim();
+
+  if (
+    !reportId ||
+    !supervisorUserId ||
+    !agentUserId
+  ) {
+    throw new Error(
+      "Report, supervisor and agent are required"
+    );
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+  const now = nowIso();
+
+  const rows = (await sql`
+    UPDATE kristo_safety_reports
+    SET
+      assigned_agent_user_id =
+        ${agentUserId},
+      status = 'assigned',
+      assigned_at =
+        COALESCE(assigned_at, ${now}),
+      updated_at = ${now}
+    WHERE id = ${reportId}
+      AND assigned_supervisor_user_id =
+        ${supervisorUserId}
+    RETURNING
+      id,
+      report_code,
+      reporter_user_id,
+      reporter_kristo_id,
+      reported_user_id,
+      reported_kristo_id,
+      church_id,
+      source_type,
+      source_id,
+      source_room_id,
+      source_message_id,
+      category,
+      reason,
+      description,
+      priority,
+      status,
+      assigned_supervisor_user_id,
+      assigned_agent_user_id,
+      created_at,
+      updated_at,
+      assigned_at,
+      resolved_at
+  `) as SafetyReportRow[];
+
+  if (!rows[0]) {
+    throw new Error(
+      "Report not found or not assigned to this supervisor"
+    );
+  }
+
+  return rowToReport(rows[0]);
+}
+
+export async function dbCreateSupervisorAgent(
+  input: {
+    supervisorUserId: string;
+    agentUserId: string;
+    agentKristoId?: string;
+    churchId: string;
+    status?: "active" | "pending";
+  }
+) {
+  const supervisorUserId =
+    String(
+      input.supervisorUserId || ""
+    ).trim();
+
+  const agentUserId =
+    String(input.agentUserId || "").trim();
+
+  const churchId =
+    String(input.churchId || "").trim();
+
+  if (
+    !supervisorUserId ||
+    !agentUserId ||
+    !churchId
+  ) {
+    throw new Error(
+      "Supervisor, agent and church are required"
+    );
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+  const id = createSupervisorAgentId();
+  const now = nowIso();
+  const status =
+    input.status === "pending"
+      ? "pending"
+      : "active";
+
+  const rows = (await sql`
+    INSERT INTO kristo_safety_supervisor_agents (
+      id,
+      supervisor_user_id,
+      agent_user_id,
+      agent_kristo_id,
+      church_id,
+      status,
+      created_at,
+      updated_at
+    ) VALUES (
+      ${id},
+      ${supervisorUserId},
+      ${agentUserId},
+      ${
+        String(
+          input.agentKristoId || ""
+        )
+          .trim()
+          .toUpperCase() || null
+      },
+      ${churchId},
+      ${status},
+      ${now},
+      ${now}
+    )
+
+    ON CONFLICT (
+      supervisor_user_id,
+      agent_user_id,
+      church_id
+    ) DO UPDATE SET
+      agent_kristo_id =
+        COALESCE(
+          EXCLUDED.agent_kristo_id,
+          kristo_safety_supervisor_agents.agent_kristo_id
+        ),
+      status = EXCLUDED.status,
+      updated_at = EXCLUDED.updated_at
+
+    RETURNING
+      id,
+      supervisor_user_id,
+      agent_user_id,
+      agent_kristo_id,
+      church_id,
+      status,
+      created_at,
+      updated_at
+  `) as SupervisorAgentRow[];
+
+  return rows[0];
+}
+
+export async function dbGetSafetySupervisorDashboard(
+  supervisorUserId: string
+): Promise<SafetySupervisorDashboard> {
+  const uid =
+    String(supervisorUserId || "").trim();
+
+  if (!uid) {
+    throw new Error(
+      "Supervisor user ID required"
+    );
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+
+  const reports = (await sql`
+    SELECT
+      id,
+      report_code,
+      reporter_user_id,
+      reporter_kristo_id,
+      reported_user_id,
+      reported_kristo_id,
+      church_id,
+      source_type,
+      source_id,
+      source_room_id,
+      source_message_id,
+      category,
+      reason,
+      description,
+      priority,
+      status,
+      assigned_supervisor_user_id,
+      assigned_agent_user_id,
+      created_at,
+      updated_at,
+      assigned_at,
+      resolved_at
+    FROM kristo_safety_reports
+    WHERE assigned_supervisor_user_id =
+      ${uid}
+    ORDER BY
+      CASE priority
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'normal' THEN 3
+        ELSE 4
+      END,
+      created_at DESC
+    LIMIT 300
+  `) as SafetyReportRow[];
+
+  const agentRows = (await sql`
+    SELECT
+      id,
+      supervisor_user_id,
+      agent_user_id,
+      agent_kristo_id,
+      church_id,
+      status,
+      created_at,
+      updated_at
+    FROM kristo_safety_supervisor_agents
+    WHERE supervisor_user_id = ${uid}
+    ORDER BY
+      CASE status
+        WHEN 'active' THEN 1
+        WHEN 'pending' THEN 2
+        ELSE 3
+      END,
+      created_at DESC
+  `) as SupervisorAgentRow[];
+
+  const reportRecords =
+    reports.map(rowToReport);
+
+  const agents = agentRows.map((agent) => {
+    const assigned =
+      reportRecords.filter(
+        (report) =>
+          report.assignedAgentUserId ===
+          agent.agent_user_id
+      );
+
+    return {
+      userId:
+        String(agent.agent_user_id || "")
+          .trim(),
+
+      kristoId:
+        String(
+          agent.agent_kristo_id || ""
+        )
+          .trim()
+          .toUpperCase() || undefined,
+
+      churchId:
+        String(agent.church_id || "")
+          .trim(),
+
+      status:
+        (
+          agent.status === "pending" ||
+          agent.status === "paused"
+            ? agent.status
+            : "active"
+        ) as "active" | "pending" | "paused",
+
+      open:
+        assigned.filter(
+          (report) =>
+            report.status === "open" ||
+            report.status === "assigned"
+        ).length,
+
+      inReview:
+        assigned.filter(
+          (report) =>
+            report.status === "in_review"
+        ).length,
+
+      resolved:
+        assigned.filter(
+          (report) =>
+            report.status === "resolved"
+        ).length,
+
+      totalAssigned:
+        assigned.length,
+    };
+  });
+
+  return {
+    counts: {
+      assigned:
+        reportRecords.length,
+
+      open:
+        reportRecords.filter(
+          (report) =>
+            report.status === "open" ||
+            report.status === "assigned"
+        ).length,
+
+      inReview:
+        reportRecords.filter(
+          (report) =>
+            report.status === "in_review"
+        ).length,
+
+      resolved:
+        reportRecords.filter(
+          (report) =>
+            report.status === "resolved"
+        ).length,
+
+      highPriority:
+        reportRecords.filter(
+          (report) =>
+            report.priority === "high" ||
+            report.priority === "critical"
+        ).length,
+
+      escalated:
+        reportRecords.filter(
+          (report) =>
+            report.status === "escalated"
+        ).length,
+
+      activeAgents:
+        agents.filter(
+          (agent) =>
+            agent.status === "active"
+        ).length,
+
+      pendingAgents:
+        agents.filter(
+          (agent) =>
+            agent.status === "pending"
+        ).length,
+    },
+
+    reports: reportRecords,
+    agents,
+  };
+}

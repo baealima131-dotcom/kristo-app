@@ -152,3 +152,139 @@ export async function fetchSafetyAccess():
       response.isSafetyAgent === true,
   };
 }
+
+
+export type SafetyReportSummary = {
+  id: string;
+  reportCode: string;
+  reporterUserId: string;
+  reporterKristoId: string;
+  reportedUserId?: string;
+  reportedKristoId?: string;
+  churchId: string;
+  sourceType: string;
+  sourceId?: string;
+  sourceRoomId?: string;
+  sourceMessageId?: string;
+  category: string;
+  reason: string;
+  description?: string;
+  priority:
+    | "low"
+    | "normal"
+    | "high"
+    | "critical";
+  status:
+    | "open"
+    | "assigned"
+    | "in_review"
+    | "resolved"
+    | "escalated"
+    | "dismissed";
+  assignedSupervisorUserId?: string;
+  assignedAgentUserId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SafetySupervisorDashboardResponse = {
+  counts: {
+    assigned: number;
+    open: number;
+    inReview: number;
+    resolved: number;
+    highPriority: number;
+    escalated: number;
+    activeAgents: number;
+    pendingAgents: number;
+  };
+  reports: SafetyReportSummary[];
+  agents: Array<{
+    userId: string;
+    kristoId?: string;
+    churchId: string;
+    status:
+      | "active"
+      | "pending"
+      | "paused";
+    open: number;
+    inReview: number;
+    resolved: number;
+    totalAssigned: number;
+  }>;
+};
+
+export async function fetchSafetySupervisorDashboard():
+  Promise<SafetySupervisorDashboardResponse> {
+  const path =
+    "/api/safety/supervisor/dashboard";
+
+  const response: any =
+    await apiGet(path, {
+      headers:
+        getKristoHeaders() as any,
+    });
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not load Safety Supervisor dashboard."
+      )
+    );
+  }
+
+  return {
+    counts: {
+      assigned: Number(
+        response?.dashboard?.counts
+          ?.assigned || 0
+      ),
+      open: Number(
+        response?.dashboard?.counts
+          ?.open || 0
+      ),
+      inReview: Number(
+        response?.dashboard?.counts
+          ?.inReview || 0
+      ),
+      resolved: Number(
+        response?.dashboard?.counts
+          ?.resolved || 0
+      ),
+      highPriority: Number(
+        response?.dashboard?.counts
+          ?.highPriority || 0
+      ),
+      escalated: Number(
+        response?.dashboard?.counts
+          ?.escalated || 0
+      ),
+      activeAgents: Number(
+        response?.dashboard?.counts
+          ?.activeAgents || 0
+      ),
+      pendingAgents: Number(
+        response?.dashboard?.counts
+          ?.pendingAgents || 0
+      ),
+    },
+
+    reports:
+      Array.isArray(
+        response?.dashboard?.reports
+      )
+        ? response.dashboard.reports
+        : [],
+
+    agents:
+      Array.isArray(
+        response?.dashboard?.agents
+      )
+        ? response.dashboard.agents
+        : [],
+  };
+}
