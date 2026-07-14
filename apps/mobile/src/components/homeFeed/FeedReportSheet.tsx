@@ -20,6 +20,13 @@ import {
   submitHomeFeedReport,
 } from "@/src/lib/homeFeedReport";
 import { blockHomeFeedUser } from "@/src/lib/homeFeedModeration";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import {
+  fileNameFromUri,
+  guessPosterContentType,
+  resolveUploadFileSize,
+  uploadPosterToStorageWithRetry,
+} from "@/src/lib/churchVideoUpload";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 
 type Props = {
@@ -123,6 +130,167 @@ function firstSafetyUri(
   return "";
 }
 
+function isHttpsSafetyThumbnail(
+  value: unknown
+) {
+  return /^https:\/\//i.test(
+    String(value || "").trim()
+  );
+}
+
+function isLocalSafetyThumbnail(
+  value: unknown
+) {
+  const uri =
+    String(value || "").trim();
+
+  return (
+    /^file:\/\//i.test(uri) ||
+    /^content:\/\//i.test(uri) ||
+    /^ph:\/\//i.test(uri) ||
+    /^assets-library:\/\//i.test(uri)
+  );
+}
+
+async function prepareSafetyThumbnailForReport(
+  input: {
+    thumbnailUri: string;
+    postId: string;
+  }
+) {
+  const thumbnailUri =
+    String(input.thumbnailUri || "").trim();
+
+  if (!thumbnailUri) {
+    return "";
+  }
+
+  if (isHttpsSafetyThumbnail(thumbnailUri)) {
+    console.log(
+      "KRISTO_SAFETY_THUMBNAIL_REMOTE_REUSED",
+      {
+        postId: input.postId,
+      }
+    );
+
+    return thumbnailUri;
+  }
+
+  if (!isLocalSafetyThumbnail(thumbnailUri)) {
+    console.log(
+      "KRISTO_SAFETY_THUMBNAIL_OMITTED",
+      {
+        postId: input.postId,
+        reason: "unsupported_uri",
+        scheme:
+          thumbnailUri.includes(":")
+            ? thumbnailUri.split(":")[0]
+            : "none",
+      }
+    );
+
+    return "";
+  }
+
+  try {
+    const fileSize =
+      await resolveUploadFileSize(
+        thumbnailUri
+      );
+
+    if (
+      !Number.isFinite(fileSize) ||
+      fileSize <= 0
+    ) {
+      console.log(
+        "KRISTO_SAFETY_THUMBNAIL_UPLOAD_SKIPPED",
+        {
+          postId: input.postId,
+          reason: "empty_file",
+        }
+      );
+
+      return "";
+    }
+
+    const fileName =
+      fileNameFromUri(
+        thumbnailUri,
+        `safety-report-${input.postId}-${Date.now()}.jpg`
+      );
+
+    const contentType =
+      guessPosterContentType(fileName);
+
+    console.log(
+      "KRISTO_SAFETY_THUMBNAIL_UPLOAD_START",
+      {
+        postId: input.postId,
+        fileSize,
+        contentType,
+      }
+    );
+
+    const uploaded =
+      await uploadPosterToStorageWithRetry({
+        fileUri: thumbnailUri,
+        fileName,
+        contentType,
+        fileSize,
+        headers: getKristoHeaders(),
+      });
+
+    const remoteUri =
+      String(
+        uploaded?.publicUrl ||
+        uploaded?.videoUrl ||
+        ""
+      ).trim();
+
+    if (!isHttpsSafetyThumbnail(remoteUri)) {
+      console.log(
+        "KRISTO_SAFETY_THUMBNAIL_UPLOAD_FAILED",
+        {
+          postId: input.postId,
+          reason: "non_https_result",
+        }
+      );
+
+      return "";
+    }
+
+    console.log(
+      "KRISTO_SAFETY_THUMBNAIL_UPLOAD_OK",
+      {
+        postId: input.postId,
+        remoteUri:
+          remoteUri.slice(0, 180),
+      }
+    );
+
+    return remoteUri;
+  } catch (error) {
+    /*
+     * Evidence upload must never prevent
+     * the safety report itself from being
+     * submitted.
+     */
+    console.log(
+      "KRISTO_SAFETY_THUMBNAIL_UPLOAD_FAILED",
+      {
+        postId: input.postId,
+        reason: "upload_error",
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      }
+    );
+
+    return "";
+  }
+}
+
 function buildFeedReportEvidence(
   item: any,
   fallbackAuthorUserId: string
@@ -221,14 +389,180 @@ function buildFeedReportEvidence(
     ]
   );
 
+  const targetOwnerAvatarUri =
+    firstSafetyUri(
+      [
+        row?.churchAvatarUri,
+        row?.churchAvatarUrl,
+        row?.churchLogoUri,
+        row?.churchLogoUrl,
+        row?.churchAvatar,
+        row?.churchLogo,
+        row?.churchImage,
+        row?.churchPhoto,
+
+        row?.mediaAvatarUri,
+        row?.mediaAvatarUrl,
+        row?.mediaLogoUri,
+        row?.mediaLogoUrl,
+        row?.mediaAvatar,
+        row?.mediaLogo,
+
+        row?.publisherAvatarUri,
+        row?.publisherAvatarUrl,
+        row?.publisherLogoUri,
+        row?.publisherLogoUrl,
+
+        row?.ownerAvatarUri,
+        row?.ownerAvatarUrl,
+        row?.ownerImageUri,
+        row?.ownerImageUrl,
+
+        row?.authorAvatarUri,
+        row?.authorAvatarUrl,
+        row?.authorAvatar,
+        row?.authorImageUri,
+        row?.authorImageUrl,
+
+        /*
+         * Canonical avatar fields used by the
+         * Home Feed backend/card mapper.
+         */
+        row?.actorAvatarUri,
+        row?.actorAvatarUrl,
+        row?.actorAvatar,
+        row?.profileAvatarUri,
+        row?.profileAvatarUrl,
+        row?.profileAvatar,
+
+        row?.avatarUri,
+        row?.avatarUrl,
+        row?.avatar,
+        row?.logoUri,
+        row?.logoUrl,
+        row?.logo,
+        row?.profileImage,
+        row?.profileImageUri,
+        row?.profileImageUrl,
+        row?.photoURL,
+        row?.photoUrl,
+        row?.image,
+
+        row?.church?.avatarUri,
+        row?.church?.avatarUrl,
+        row?.church?.avatar,
+        row?.church?.logoUri,
+        row?.church?.logoUrl,
+        row?.church?.logo,
+        row?.church?.imageUri,
+        row?.church?.imageUrl,
+
+        row?.owner?.avatarUri,
+        row?.owner?.avatarUrl,
+        row?.owner?.profileImage,
+
+        row?.author?.avatarUri,
+        row?.author?.avatarUrl,
+        row?.author?.profileImage,
+
+        row?.actor?.avatarUri,
+        row?.actor?.avatarUrl,
+        row?.actor?.profileImage,
+
+        row?.profile?.avatarUri,
+        row?.profile?.avatarUrl,
+        row?.profile?.profileImage,
+
+        media?.avatarUri,
+        media?.avatarUrl,
+        media?.avatar,
+        media?.logoUri,
+        media?.logoUrl,
+        media?.logo,
+        media?.churchAvatarUri,
+        media?.churchAvatarUrl,
+        media?.churchLogoUri,
+        media?.churchLogoUrl,
+      ]
+    );
+
+  const rawMediaType =
+    firstSafetyText(
+      [
+        row?.mediaType,
+        row?.contentType,
+        row?.postType,
+        row?.type,
+        media?.mediaType,
+        media?.contentType,
+        media?.type,
+      ],
+      40
+    ).toLowerCase();
+
+  const targetMediaType:
+    | "video"
+    | "image"
+    | "audio"
+    | "text" =
+    rawMediaType.includes("video") ||
+    Boolean(
+      row?.videoUri ||
+      row?.videoUrl ||
+      media?.videoUri ||
+      media?.videoUrl
+    )
+      ? "video"
+      : rawMediaType.includes("audio") ||
+          Boolean(
+            row?.audioUri ||
+            row?.audioUrl ||
+            media?.audioUri ||
+            media?.audioUrl
+          )
+        ? "audio"
+        : rawMediaType.includes("image") ||
+            Boolean(thumbnailUri)
+          ? "image"
+          : "text";
+
+  /*
+   * Context shown below the reported post title.
+   * Prefer the church/media identity attached to the post.
+   */
+  const targetSubtitle = firstSafetyText(
+    [
+      row?.churchName,
+      row?.churchDisplayName,
+      row?.mediaName,
+      row?.publisherName,
+      row?.organizationName,
+      row?.ministryName,
+      row?.authorChurchName,
+      row?.ownerChurchName,
+      row?.church?.name,
+      row?.church?.displayName,
+      media?.churchName,
+      media?.publisherName,
+      ownerName,
+    ],
+    300
+  );
+
   return {
     targetTitle:
       title ||
       ownerName ||
       "Reported post",
 
+    targetSubtitle,
+
     targetOwnerName:
       ownerName,
+
+    targetOwnerAvatarUri,
+
+    targetMediaType,
 
     targetOwnerUserId:
       ownerUserId,
@@ -300,13 +634,20 @@ export const FeedReportSheet = memo(function FeedReportSheet({
     setSubmitting(true);
 
     const evidence =
-        buildFeedReportEvidence(
-          targetItem,
-          authorUserId
-        );
+      buildFeedReportEvidence(
+        targetItem,
+        authorUserId
+      );
 
-      const result =
-        await submitHomeFeedReport({
+    const remoteThumbnailUri =
+      await prepareSafetyThumbnailForReport({
+        thumbnailUri:
+          evidence.targetThumbnailUri,
+        postId,
+      });
+
+    const result =
+      await submitHomeFeedReport({
           postId,
           reason: selectedReason,
           details,
@@ -317,8 +658,17 @@ export const FeedReportSheet = memo(function FeedReportSheet({
           targetTitle:
             evidence.targetTitle,
 
+          targetSubtitle:
+            evidence.targetSubtitle,
+
           targetOwnerName:
             evidence.targetOwnerName,
+
+          targetOwnerAvatarUri:
+            evidence.targetOwnerAvatarUri,
+
+          targetMediaType:
+            evidence.targetMediaType,
 
           targetOwnerUserId:
             evidence.targetOwnerUserId,
@@ -326,8 +676,8 @@ export const FeedReportSheet = memo(function FeedReportSheet({
           targetPreview:
             evidence.targetPreview,
 
-          targetThumbnailUri:
-            evidence.targetThumbnailUri,
+        targetThumbnailUri:
+          remoteThumbnailUri || undefined,
         });
 
     setSubmitting(false);

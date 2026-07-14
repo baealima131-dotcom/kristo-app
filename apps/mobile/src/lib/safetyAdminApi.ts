@@ -183,6 +183,12 @@ export type SafetyReportSummary = {
   targetOwnerUserId?: string;
   targetOwnerKristoId?: string;
   targetOwnerName?: string;
+  targetOwnerAvatarUri?: string;
+  targetMediaType?:
+    | "video"
+    | "image"
+    | "audio"
+    | "text";
   targetThumbnailUri?: string;
 
   category: string;

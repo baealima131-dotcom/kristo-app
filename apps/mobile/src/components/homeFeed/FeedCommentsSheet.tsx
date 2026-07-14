@@ -480,8 +480,29 @@ function CommentReportModal({
             targetTitle:
               displayName,
 
+            /*
+             * Keep the reported comment connected to
+             * the post where it appeared.
+             */
+            targetSubtitle:
+              String(
+                comment?.parentPostTitle ||
+                comment?.postTitle ||
+                comment?.feedPostTitle ||
+                comment?.parentTitle ||
+                `Post ${postId}`
+              )
+                .replace(/\s+/g, " ")
+                .trim(),
+
             targetOwnerName:
               displayName,
+
+            targetOwnerAvatarUri:
+              avatarUri,
+
+            targetMediaType:
+              "text",
 
             targetOwnerUserId:
               ownerUserId,

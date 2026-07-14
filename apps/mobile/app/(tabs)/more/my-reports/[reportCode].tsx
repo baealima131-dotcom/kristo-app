@@ -432,9 +432,13 @@ export default function MyReportDetailScreen() {
                 </Text>
 
                 <Text style={styles.reportedItemType}>
-                  {targetTypeLabel(
-                    report.targetType
-                  )}
+                  {report.targetType === "post" &&
+                  report.targetMediaType
+                    ? report.targetMediaType
+                        .toUpperCase()
+                    : targetTypeLabel(
+                        report.targetType
+                      )}
                 </Text>
               </View>
             </View>
@@ -471,9 +475,82 @@ export default function MyReportDetailScreen() {
             <Text style={styles.reportedItemTitle}>
               {report.targetTitle ||
                 report.targetOwnerName ||
-                report.targetSubtitle ||
                 "Reported item"}
             </Text>
+
+            {report.targetSubtitle ? (
+              <View style={styles.reportedItemContextRow}>
+                <Ionicons
+                  name={
+                    report.targetType === "comment"
+                      ? "document-text-outline"
+                      : report.targetType === "account"
+                        ? "person-circle-outline"
+                        : "business-outline"
+                  }
+                  size={16}
+                  color={GOLD}
+                />
+
+                <Text
+                  style={styles.reportedItemSubtitle}
+                  numberOfLines={2}
+                >
+                  {report.targetType === "comment"
+                    ? `On: ${report.targetSubtitle}`
+                    : report.targetSubtitle}
+                </Text>
+              </View>
+            ) : null}
+
+            {report.targetOwnerName ? (
+              <View style={styles.reportedOwnerRow}>
+                {safeSafetyImageUri(
+                  report.targetOwnerAvatarUri
+                ) ? (
+                  <Image
+                    source={{
+                      uri: safeSafetyImageUri(
+                        report.targetOwnerAvatarUri
+                      ),
+                    }}
+                    style={styles.reportedOwnerAvatar}
+                  />
+                ) : (
+                  <View
+                    style={
+                      styles.reportedOwnerAvatarFallback
+                    }
+                  >
+                    <Ionicons
+                      name="business-outline"
+                      size={27}
+                      color={GOLD}
+                    />
+                  </View>
+                )}
+
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={styles.reportedItemOwner}
+                    numberOfLines={1}
+                  >
+                    {report.targetOwnerName}
+                  </Text>
+
+                  {report.targetMediaType ? (
+                    <Text
+                      style={
+                        styles.reportedOwnerMediaType
+                      }
+                    >
+                      {report.targetMediaType
+                        .toUpperCase()}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            ) : null}
 
             {report.targetPreview ? (
               <Text
@@ -799,6 +876,66 @@ const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 23,
     fontWeight: "900",
+  },
+
+  reportedItemContextRow: {
+    marginTop: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+
+  reportedItemSubtitle: {
+    flex: 1,
+    color: "rgba(244,208,111,0.88)",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "800",
+  },
+
+  reportedOwnerRow: {
+    marginTop: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+  },
+
+  reportedOwnerAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 2,
+    borderColor: "rgba(244,208,111,0.58)",
+    backgroundColor:
+      "rgba(255,255,255,0.06)",
+  },
+
+  reportedOwnerAvatarFallback: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "rgba(244,208,111,0.46)",
+    backgroundColor:
+      "rgba(244,208,111,0.08)",
+  },
+
+  reportedItemOwner: {
+    color: "rgba(255,255,255,0.94)",
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: "800",
+  },
+
+  reportedOwnerMediaType: {
+    marginTop: 2,
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "800",
+    letterSpacing: 0.8,
   },
 
   reportedItemPreview: {

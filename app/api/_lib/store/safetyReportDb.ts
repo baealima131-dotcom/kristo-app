@@ -67,6 +67,12 @@ export type SafetyReportRecord = {
   targetOwnerUserId?: string;
   targetOwnerKristoId?: string;
   targetOwnerName?: string;
+  targetOwnerAvatarUri?: string;
+  targetMediaType?:
+    | "video"
+    | "image"
+    | "audio"
+    | "text";
   targetThumbnailUri?: string;
 
   category: string;
@@ -129,6 +135,8 @@ type SafetyReportRow = {
   target_owner_user_id?: string | null;
   target_owner_kristo_id?: string | null;
   target_owner_name?: string | null;
+  target_owner_avatar_uri?: string | null;
+  target_media_type?: string | null;
   target_thumbnail_uri?: string | null;
   category: string;
   reason: string;
@@ -276,6 +284,31 @@ function normalizeTargetType(
   return "other";
 }
 
+function normalizeTargetMediaType(
+  value: unknown
+):
+  | "video"
+  | "image"
+  | "audio"
+  | "text"
+  | undefined {
+  const normalized =
+    String(value || "")
+      .trim()
+      .toLowerCase();
+
+  if (
+    normalized === "video" ||
+    normalized === "image" ||
+    normalized === "audio" ||
+    normalized === "text"
+  ) {
+    return normalized;
+  }
+
+  return undefined;
+}
+
 function cleanTargetText(
   value: unknown,
   maxLength: number
@@ -409,6 +442,17 @@ function rowToReport(
         240
       ),
 
+    targetOwnerAvatarUri:
+      cleanTargetText(
+        row.target_owner_avatar_uri,
+        4000
+      ),
+
+    targetMediaType:
+      normalizeTargetMediaType(
+        row.target_media_type
+      ),
+
     targetThumbnailUri:
       cleanTargetText(
         row.target_thumbnail_uri,
@@ -495,6 +539,8 @@ export async function ensureSafetyReportSchema() {
           target_owner_user_id TEXT,
           target_owner_kristo_id TEXT,
           target_owner_name TEXT,
+          target_owner_avatar_uri TEXT,
+          target_media_type TEXT,
           target_thumbnail_uri TEXT,
 
           category TEXT NOT NULL DEFAULT 'other',
@@ -574,6 +620,16 @@ export async function ensureSafetyReportSchema() {
       await sql`
         ALTER TABLE kristo_safety_reports
         ADD COLUMN IF NOT EXISTS target_owner_name TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_owner_avatar_uri TEXT
+      `;
+
+      await sql`
+        ALTER TABLE kristo_safety_reports
+        ADD COLUMN IF NOT EXISTS target_media_type TEXT
       `;
 
       await sql`
@@ -697,6 +753,12 @@ export async function dbCreateSafetyReport(
     targetOwnerUserId?: string;
     targetOwnerKristoId?: string;
     targetOwnerName?: string;
+    targetOwnerAvatarUri?: string;
+    targetMediaType?:
+      | "video"
+      | "image"
+      | "audio"
+      | "text";
     targetThumbnailUri?: string;
 
     category: string;
@@ -789,6 +851,8 @@ export async function dbCreateSafetyReport(
           target_owner_user_id,
           target_owner_kristo_id,
           target_owner_name,
+          target_owner_avatar_uri,
+          target_media_type,
           target_thumbnail_uri,
 
           category,
@@ -904,6 +968,19 @@ export async function dbCreateSafetyReport(
 
           ${
             cleanTargetText(
+              input.targetOwnerAvatarUri,
+              4000
+            ) || null
+          },
+
+          ${
+            normalizeTargetMediaType(
+              input.targetMediaType
+            ) || null
+          },
+
+          ${
+            cleanTargetText(
               input.targetThumbnailUri,
               4000
             ) || null
@@ -955,6 +1032,8 @@ export async function dbCreateSafetyReport(
           target_owner_user_id,
           target_owner_kristo_id,
           target_owner_name,
+          target_owner_avatar_uri,
+          target_media_type,
           target_thumbnail_uri,
           category,
           reason,
@@ -1058,6 +1137,8 @@ export async function dbAssignReportToSupervisor(
       target_owner_user_id,
       target_owner_kristo_id,
       target_owner_name,
+      target_owner_avatar_uri,
+      target_media_type,
       target_thumbnail_uri,
       category,
       reason,
@@ -1146,6 +1227,8 @@ export async function dbAssignReportToAgent(
       target_owner_user_id,
       target_owner_kristo_id,
       target_owner_name,
+      target_owner_avatar_uri,
+      target_media_type,
       target_thumbnail_uri,
       category,
       reason,
@@ -1300,6 +1383,8 @@ export async function dbGetSafetySupervisorDashboard(
       target_owner_user_id,
       target_owner_kristo_id,
       target_owner_name,
+      target_owner_avatar_uri,
+      target_media_type,
       target_thumbnail_uri,
       category,
       reason,
@@ -1503,6 +1588,8 @@ export async function dbListSafetyReportsForReporter(
       target_owner_user_id,
       target_owner_kristo_id,
       target_owner_name,
+      target_owner_avatar_uri,
+      target_media_type,
       target_thumbnail_uri,
       category,
       reason,
@@ -1574,6 +1661,8 @@ export async function dbGetSafetyReportForReporterByCode(
       target_owner_user_id,
       target_owner_kristo_id,
       target_owner_name,
+      target_owner_avatar_uri,
+      target_media_type,
       target_thumbnail_uri,
       category,
       reason,
@@ -1654,6 +1743,8 @@ export async function dbFindSafetyReportForReporterSource(
       target_owner_user_id,
       target_owner_kristo_id,
       target_owner_name,
+      target_owner_avatar_uri,
+      target_media_type,
       target_thumbnail_uri,
       category,
       reason,

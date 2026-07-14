@@ -156,7 +156,14 @@ export async function submitHomeFeedReport(input: {
 
   targetId?: string;
   targetTitle?: string;
+  targetSubtitle?: string;
   targetOwnerName?: string;
+  targetOwnerAvatarUri?: string;
+  targetMediaType?:
+    | "video"
+    | "image"
+    | "audio"
+    | "text";
   targetPreview?: string;
   targetThumbnailUri?: string;
   targetOwnerUserId?: string;
@@ -192,10 +199,27 @@ export async function submitHomeFeedReport(input: {
             input.targetTitle || ""
           ).trim(),
 
+        targetSubtitle:
+          String(
+            input.targetSubtitle || ""
+          ).trim(),
+
         targetOwnerName:
           String(
             input.targetOwnerName || ""
           ).trim(),
+
+        targetOwnerAvatarUri:
+          String(
+            input.targetOwnerAvatarUri || ""
+          ).trim(),
+
+        targetMediaType:
+          String(
+            input.targetMediaType || ""
+          )
+            .trim()
+            .toLowerCase(),
 
         targetPreview:
           String(

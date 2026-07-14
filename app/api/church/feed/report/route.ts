@@ -120,6 +120,21 @@ export async function POST(req: NextRequest) {
       .trim()
       .slice(0, 240);
 
+  /*
+   * Extra context for the reported target:
+   *
+   * post    -> church/account name
+   * comment -> parent post title
+   * account -> Kristo ID / church name
+   */
+  const targetSubtitle =
+    String(
+      body?.targetSubtitle || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300);
+
   const targetPreview =
     String(
       body?.targetPreview || details || ""
@@ -127,6 +142,28 @@ export async function POST(req: NextRequest) {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 600);
+
+  const targetOwnerAvatarUri =
+    String(
+      body?.targetOwnerAvatarUri || ""
+    )
+      .trim()
+      .slice(0, 4000);
+
+  const requestedTargetMediaType =
+    String(
+      body?.targetMediaType || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const targetMediaType =
+    requestedTargetMediaType === "video" ||
+    requestedTargetMediaType === "image" ||
+    requestedTargetMediaType === "audio" ||
+    requestedTargetMediaType === "text"
+      ? requestedTargetMediaType
+      : undefined;
 
   const targetThumbnailUri =
     String(
@@ -284,18 +321,27 @@ export async function POST(req: NextRequest) {
               targetType === "comment"
                 ? targetOwnerName ||
                   "Reported comment"
-                : "Reported post"
+                : targetOwnerName ||
+                  "Reported post"
             ),
 
           targetSubtitle:
-            undefined,
+            targetSubtitle ||
+            (
+              targetType === "comment"
+                ? "Commented on this post"
+                : targetOwnerName ||
+                  undefined
+            ),
 
           targetPreview:
             targetPreview ||
             (
               targetType === "comment"
-                ? "Reported comment"
-                : `Post reported for ${reason}`
+                ? details ||
+                  "Reported comment"
+                : details ||
+                  `Post reported for ${reason}`
             ),
 
           targetOwnerUserId:
@@ -305,6 +351,12 @@ export async function POST(req: NextRequest) {
           targetOwnerName:
             targetOwnerName ||
             undefined,
+
+          targetOwnerAvatarUri:
+            targetOwnerAvatarUri ||
+            undefined,
+
+          targetMediaType,
 
           targetThumbnailUri:
             targetThumbnailUri ||
