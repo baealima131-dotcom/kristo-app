@@ -1167,3 +1167,122 @@ export async function dbGetSafetySupervisorDashboard(
     agents,
   };
 }
+
+
+export async function dbListSafetyReportsForReporter(
+  reporterUserId: string,
+  limit = 100
+): Promise<SafetyReportRecord[]> {
+  const userId =
+    String(reporterUserId || "").trim();
+
+  if (!userId) return [];
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+  const safeLimit = Math.max(
+    1,
+    Math.min(
+      Math.floor(Number(limit) || 100),
+      300
+    )
+  );
+
+  const rows = (await sql`
+    SELECT
+      id,
+      report_code,
+      reporter_user_id,
+      reporter_kristo_id,
+      reported_user_id,
+      reported_kristo_id,
+      church_id,
+      source_type,
+      source_id,
+      source_room_id,
+      source_message_id,
+      category,
+      reason,
+      description,
+      priority,
+      status,
+      assigned_supervisor_user_id,
+      assigned_agent_user_id,
+      created_at,
+      updated_at,
+      assigned_at,
+      resolved_at
+    FROM kristo_safety_reports
+    WHERE reporter_user_id = ${userId}
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `) as SafetyReportRow[];
+
+  return rows.map(rowToReport);
+}
+
+export async function dbGetSafetyReportForReporterByCode(
+  input: {
+    reporterUserId: string;
+    reportCode: string;
+  }
+): Promise<SafetyReportRecord | null> {
+  const reporterUserId =
+    String(
+      input.reporterUserId || ""
+    ).trim();
+
+  const reportCode =
+    String(input.reportCode || "")
+      .trim()
+      .toUpperCase();
+
+  if (!reporterUserId || !reportCode) {
+    return null;
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+
+  /*
+   * Owner protection:
+   * the command code alone never grants access.
+   * It must belong to the currently signed-in user.
+   */
+  const rows = (await sql`
+    SELECT
+      id,
+      report_code,
+      reporter_user_id,
+      reporter_kristo_id,
+      reported_user_id,
+      reported_kristo_id,
+      church_id,
+      source_type,
+      source_id,
+      source_room_id,
+      source_message_id,
+      category,
+      reason,
+      description,
+      priority,
+      status,
+      assigned_supervisor_user_id,
+      assigned_agent_user_id,
+      created_at,
+      updated_at,
+      assigned_at,
+      resolved_at
+    FROM kristo_safety_reports
+    WHERE report_code = ${reportCode}
+      AND reporter_user_id =
+        ${reporterUserId}
+    LIMIT 1
+  `) as SafetyReportRow[];
+
+  return rows[0]
+    ? rowToReport(rows[0])
+    : null;
+}

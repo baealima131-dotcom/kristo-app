@@ -52,6 +52,14 @@ const BUILTIN_MY_WAY_COMMANDS: MyWayCommandResolution[] = [
     source: "builtin",
   },
   {
+    code: "MYRPTS",
+    title: "My Reports",
+    description: "Track Safety reports connected to your KRISTO account.",
+    action: "navigate",
+    route: "/more/my-reports",
+    source: "builtin",
+  },
+  {
     code: "NOTIFY",
     title: "Notifications",
     description: "Open your Kristo notifications inbox.",

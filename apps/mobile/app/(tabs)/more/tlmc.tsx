@@ -817,6 +817,45 @@ Vibration.vibrate(120);
     setErr(null);
 
     try {
+      /*
+       * Report Command Codes are private
+       * owner-bound commands. Navigation
+       * opens an API-protected screen that
+       * also validates reporterUserId.
+       */
+      if (
+        /^RPT\d{6}[A-Z0-9]{6}$/.test(
+          code
+        )
+      ) {
+        setShowPad(false);
+        setCmd("");
+        setErr(null);
+        setUnlockStep(0);
+        Vibration.vibrate(120);
+
+        router.push({
+          pathname:
+            "/more/my-reports/[reportCode]",
+          params: {
+            reportCode: code,
+          },
+        } as any);
+
+        console.log(
+          "KRISTO_MY_WAY_PRIVATE_REPORT_COMMAND",
+          {
+            reportCode: code,
+            userId:
+              currentUserId,
+            ownerValidation:
+              "backend-required",
+          }
+        );
+
+        return;
+      }
+
       const resolved = await resolveMyWayCommand(code);
 
       if (!resolved) {

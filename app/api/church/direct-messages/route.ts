@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import {
+  dbCreateSafetyReport,
+} from "@/app/api/_lib/store/safetyReportDb";
+import {
+  getProfile,
+} from "@/app/api/auth/_lib/profile";
+
 
 import { guard } from "@/app/api/_lib/rbac";
 import {
@@ -220,12 +227,124 @@ export async function PATCH(req: NextRequest) {
       details: String(body?.details || "").trim(),
     });
 
-    return reported
-      ? json({ ok: true })
-      : json(
-          { ok: false, error: "Could not report user." },
-          { status: 400 }
-        );
+    if (!reported) {
+      return json(
+        {
+          ok: false,
+          error: "Could not report user.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const reporterProfile =
+      await getProfile(viewerUserId);
+
+    const reporterKristoId =
+      String(
+        reporterProfile?.userCode || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    if (!reporterKristoId) {
+      return json(
+        {
+          ok: false,
+          error:
+            "Your KRISTO ID could not be verified.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const reportedUserId =
+      String(
+        (reported as any)
+          ?.reportedUserId || ""
+      ).trim();
+
+    const reportedProfile =
+      reportedUserId
+        ? await getProfile(
+            reportedUserId
+          )
+        : null;
+
+    const safetyReport =
+      await dbCreateSafetyReport({
+        reporterUserId:
+          viewerUserId,
+
+        reporterKristoId,
+
+        reportedUserId:
+          reportedUserId ||
+          undefined,
+
+        reportedKristoId:
+          String(
+            reportedProfile?.userCode || ""
+          )
+            .trim()
+            .toUpperCase() ||
+          undefined,
+
+        churchId,
+
+        sourceType:
+          "direct_message",
+
+        sourceId: roomId,
+        sourceRoomId: roomId,
+
+        category: reason,
+        reason,
+
+        description:
+          String(
+            body?.details || ""
+          ).trim() ||
+          `Direct-message user report: ${reason}`,
+
+        priority:
+          reason === "harassment"
+            ? "high"
+            : "normal",
+      });
+
+    console.log(
+      "KRISTO_DM_SAFETY_REPORT_CREATED",
+      {
+        reportId:
+          safetyReport.id,
+        reportCode:
+          safetyReport.reportCode,
+        reporterUserId:
+          viewerUserId,
+        reporterKristoId,
+        reportedUserId,
+        churchId,
+      }
+    );
+
+    return json({
+      ok: true,
+      report: {
+        id:
+          safetyReport.id,
+        reportCode:
+          safetyReport.reportCode,
+        status:
+          safetyReport.status,
+        createdAt:
+          safetyReport.createdAt,
+      },
+    });
   }
 
   if (action !== "read") {

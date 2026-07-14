@@ -277,5 +277,38 @@ export async function reportDirectMessageConversation(args: {
       String(res?.error || "Could not report this user.")
     );
   }
+
+  const reportCode =
+    String(
+      res?.report?.reportCode || ""
+    )
+      .trim()
+      .toUpperCase();
+
+  if (!reportCode) {
+    throw new Error(
+      "The report was submitted, but its Report Command Code was not returned."
+    );
+  }
+
+  return {
+    id:
+      String(
+        res?.report?.id || ""
+      ).trim(),
+
+    reportCode,
+
+    status:
+      String(
+        res?.report?.status ||
+          "open"
+      ).trim(),
+
+    createdAt:
+      String(
+        res?.report?.createdAt || ""
+      ).trim(),
+  };
 }
 

@@ -10062,21 +10062,54 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
     const submitReport = async (reason: string) => {
       try {
-        await reportDirectMessageConversation({
-          roomId: backendRoomId,
-          churchId,
-          reason,
-        });
+        const submittedReport =
+          await reportDirectMessageConversation({
+            roomId:
+              backendRoomId,
+            churchId,
+            reason,
+          });
 
         Alert.alert(
-          "Report sent",
-          "Thank you. The report was submitted for review."
+          "Report submitted",
+          [
+            "Your Report Command Code:",
+            "",
+            submittedReport.reportCode,
+            "",
+            "Save this code. You can track the report from MY WAY.",
+          ].join("\n"),
+          [
+            {
+              text: "View in MY WAY",
+              onPress: () => {
+                router.push({
+                  pathname:
+                    "/more/my-reports/[reportCode]",
+                  params: {
+                    reportCode:
+                      submittedReport.reportCode,
+                  },
+                } as any);
+              },
+            },
+            {
+              text: "Done",
+              style: "cancel",
+            },
+          ]
         );
 
-        console.log("KRISTO_DM_REPORT_SUBMITTED", {
-          roomId: backendRoomId,
-          reason,
-        });
+        console.log(
+          "KRISTO_DM_REPORT_SUBMITTED",
+          {
+            roomId:
+              backendRoomId,
+            reason,
+            reportCode:
+              submittedReport.reportCode,
+          }
+        );
       } catch (error: any) {
         Alert.alert(
           "Could not send report",

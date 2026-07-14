@@ -288,3 +288,74 @@ export async function fetchSafetySupervisorDashboard():
         : [],
   };
 }
+
+
+export async function fetchMySafetyReports():
+  Promise<SafetyReportSummary[]> {
+  const path =
+    "/api/safety/my-reports";
+
+  const response: any =
+    await apiGet(path, {
+      headers:
+        getKristoHeaders() as any,
+    });
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not load your reports."
+      )
+    );
+  }
+
+  return Array.isArray(response.reports)
+    ? response.reports
+    : [];
+}
+
+export async function fetchMySafetyReportByCode(
+  reportCode: string
+): Promise<SafetyReportSummary> {
+  const normalizedCode =
+    String(reportCode || "")
+      .trim()
+      .toUpperCase();
+
+  if (!normalizedCode) {
+    throw new Error(
+      "Report Command Code is required."
+    );
+  }
+
+  const path =
+    "/api/safety/my-reports?code=" +
+    encodeURIComponent(
+      normalizedCode
+    );
+
+  const response: any =
+    await apiGet(path, {
+      headers:
+        getKristoHeaders() as any,
+    });
+
+  if (
+    !response ||
+    response.ok === false ||
+    !response.report
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Report not found."
+      )
+    );
+  }
+
+  return response.report;
+}
