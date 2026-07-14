@@ -98,12 +98,41 @@ export async function GET(req: NextRequest) {
     return json({ ok: true, data: [] });
   }
 
-  const inbox = await listDirectMessageInbox({
-    churchId,
-    viewerUserId,
-  });
+  try {
+    const inbox =
+      await listDirectMessageInbox({
+        churchId,
+        viewerUserId,
+      });
 
-  return json({ ok: true, data: inbox });
+    return json({
+      ok: true,
+      data: inbox,
+    });
+  } catch (error) {
+    console.error(
+      "KRISTO_DM_INBOX_ROUTE_FAILED",
+      {
+        churchId,
+        viewerUserId,
+        error:
+          String(
+            (error as any)?.message ||
+            error
+          ),
+      }
+    );
+
+    /*
+     * Inbox metadata failure must not break
+     * an already-open DM conversation.
+     */
+    return json({
+      ok: true,
+      data: [],
+      degraded: true,
+    });
+  }
 }
 
 export async function POST(req: NextRequest) {

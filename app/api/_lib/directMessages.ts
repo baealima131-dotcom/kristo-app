@@ -812,68 +812,220 @@ export async function listDirectMessageInbox(args: {
   churchId: string;
   viewerUserId: string;
 }): Promise<DirectMessageInboxItem[]> {
-  const churchId = String(args.churchId || "").trim();
-  const viewerUserId = normUserId(args.viewerUserId);
-  if (!churchId || !viewerUserId) return [];
+  const churchId =
+    String(args.churchId || "").trim();
 
-  const threads = await collectThreadRecordsForViewer(churchId, viewerUserId);
+  const viewerUserId =
+    normUserId(args.viewerUserId);
 
-  const items = await Promise.all(
-    threads.map(async (thread) => {
-      const peerUserId = peerUserIdFromParticipants(thread.participantUserIds, viewerUserId);
-      const profile = await getProfile(peerUserId).catch(() => null);
-      const church = await getChurchById(churchId).catch(() => null);
-      const clearedAt = Number(
-        thread.clearedAtByUserId?.[viewerUserId] || 0
-      );
-      const deletedAt = Number(
-        thread.deletedAtByUserId?.[viewerUserId] || 0
-      );
+  if (!churchId || !viewerUserId) {
+    return [];
+  }
 
-      const lastMessage = await lastMessageForThread(
+  let threads: DirectMessageThreadRecord[] = [];
+
+  try {
+    threads =
+      await collectThreadRecordsForViewer(
         churchId,
-        thread.roomId,
-        viewerUserId,
-        clearedAt
+        viewerUserId
       );
+  } catch (error) {
+    console.error(
+      "KRISTO_DM_INBOX_THREAD_COLLECTION_FAILED",
+      {
+        churchId,
+        viewerUserId,
+        error:
+          String(
+            (error as any)?.message ||
+            error
+          ),
+      }
+    );
 
-      if (!lastMessage) return null;
+    return [];
+  }
 
-      // A locally deleted conversation remains hidden until a newer
-      // message arrives after the deletion timestamp.
-      if (
-        deletedAt > 0 &&
-        Number(lastMessage.timestampMs || 0) <= deletedAt
-      ) {
+  const church =
+    await getChurchById(churchId)
+      .catch((error) => {
+        console.warn(
+          "KRISTO_DM_INBOX_CHURCH_LOOKUP_FAILED",
+          {
+            churchId,
+            error:
+              String(
+                (error as any)?.message ||
+                error
+              ),
+          }
+        );
+
         return null;
+      });
+
+  const settledItems =
+    await Promise.allSettled(
+      threads.map(async (thread) => {
+        const peerUserId =
+          peerUserIdFromParticipants(
+            thread.participantUserIds,
+            viewerUserId
+          );
+
+        const profile =
+          await getProfile(peerUserId)
+            .catch((error) => {
+              console.warn(
+                "KRISTO_DM_INBOX_PROFILE_LOOKUP_FAILED",
+                {
+                  roomId:
+                    thread.roomId,
+                  peerUserId,
+                  error:
+                    String(
+                      (error as any)?.message ||
+                      error
+                    ),
+                }
+              );
+
+              return null;
+            });
+
+        const clearedAt =
+          Number(
+            thread
+              .clearedAtByUserId
+              ?.[viewerUserId] || 0
+          );
+
+        const deletedAt =
+          Number(
+            thread
+              .deletedAtByUserId
+              ?.[viewerUserId] || 0
+          );
+
+        const lastMessage =
+          await lastMessageForThread(
+            churchId,
+            thread.roomId,
+            viewerUserId,
+            clearedAt
+          );
+
+        if (!lastMessage) {
+          return null;
+        }
+
+        if (
+          deletedAt > 0 &&
+          Number(
+            lastMessage.timestampMs || 0
+          ) <= deletedAt
+        ) {
+          return null;
+        }
+
+        const readAt =
+          Math.max(
+            Number(
+              thread
+                .readAtByUserId
+                ?.[viewerUserId] || 0
+            ),
+            clearedAt
+          );
+
+        const unreadCount =
+          await unreadCountForThread({
+            churchId,
+            roomId:
+              thread.roomId,
+            viewerUserId,
+            readAt,
+          });
+
+        const timestampMs =
+          Number(
+            lastMessage.timestampMs ||
+            thread.updatedAt ||
+            thread.createdAt ||
+            0
+          );
+
+        return {
+          roomId:
+            thread.roomId,
+          churchId,
+          peerUserId,
+          title:
+            pickDisplayName(profile),
+          subtitle:
+            String(
+              church?.name ||
+              "Direct message"
+            ).trim(),
+          avatarUri:
+            pickAvatar(profile),
+          lastMessagePreview:
+            String(
+              lastMessage.preview ||
+              "No messages yet"
+            ),
+          timestampLabel:
+            formatTimestampLabel(
+              timestampMs
+            ),
+          timestampMs,
+          unreadCount,
+        } satisfies DirectMessageInboxItem;
+      })
+    );
+
+  const items:
+    DirectMessageInboxItem[] = [];
+
+  settledItems.forEach(
+    (result, index) => {
+      if (
+        result.status === "fulfilled"
+      ) {
+        if (result.value) {
+          items.push(result.value);
+        }
+
+        return;
       }
 
-      const readAt = Math.max(
-        Number(thread.readAtByUserId?.[viewerUserId] || 0),
-        clearedAt
-      );
-      const unreadCount = await unreadCountForThread({
-        churchId,
-        roomId: thread.roomId,
-        viewerUserId,
-        readAt,
-      });
-      const timestampMs = Number(lastMessage?.timestampMs || thread.updatedAt || thread.createdAt || 0);
+      const thread =
+        threads[index];
 
-      return {
-        roomId: thread.roomId,
-        churchId,
-        peerUserId,
-        title: pickDisplayName(profile),
-        subtitle: String(church?.name || church?.name || "Direct message").trim(),
-        avatarUri: pickAvatar(profile),
-        lastMessagePreview: String(lastMessage?.preview || "No messages yet"),
-        timestampLabel: formatTimestampLabel(timestampMs),
-        timestampMs,
-        unreadCount,
-      } satisfies DirectMessageInboxItem;
-    })
+      console.error(
+        "KRISTO_DM_INBOX_THREAD_ENRICHMENT_FAILED",
+        {
+          churchId,
+          viewerUserId,
+          roomId:
+            String(
+              thread?.roomId || ""
+            ),
+          error:
+            String(
+              (result.reason as any)
+                ?.message ||
+              result.reason
+            ),
+        }
+      );
+    }
   );
 
-  return items.filter(Boolean).sort((a, b) => (b?.timestampMs ?? 0) - (a?.timestampMs ?? 0)) as DirectMessageInboxItem[];
+  return items.sort(
+    (a, b) =>
+      Number(b.timestampMs || 0) -
+      Number(a.timestampMs || 0)
+  );
 }
