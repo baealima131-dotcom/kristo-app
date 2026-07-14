@@ -1772,3 +1772,207 @@ export async function dbFindSafetyReportForReporterSource(
     ? rowToReport(rows[0])
     : null;
 }
+
+
+
+export type SafetySystemAdminDashboardCounts = {
+  total: number;
+  open: number;
+  assigned: number;
+  inReview: number;
+  highPriority: number;
+  resolved: number;
+  escalated: number;
+  dismissed: number;
+};
+
+export async function dbGetSafetySystemAdminDashboard():
+  Promise<{
+    counts: SafetySystemAdminDashboardCounts;
+  }> {
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    SELECT
+      COUNT(*)::int AS total,
+
+      COUNT(*) FILTER (
+        WHERE
+          status = 'open'
+          AND assigned_supervisor_user_id IS NULL
+      )::int AS open,
+
+      COUNT(*) FILTER (
+        WHERE
+          assigned_supervisor_user_id IS NOT NULL
+          AND status NOT IN (
+            'resolved',
+            'dismissed'
+          )
+      )::int AS assigned,
+
+      COUNT(*) FILTER (
+        WHERE status = 'in_review'
+      )::int AS in_review,
+
+      COUNT(*) FILTER (
+        WHERE
+          priority IN ('high', 'critical')
+          AND status NOT IN (
+            'resolved',
+            'dismissed'
+          )
+      )::int AS high_priority,
+
+      COUNT(*) FILTER (
+        WHERE status = 'resolved'
+      )::int AS resolved,
+
+      COUNT(*) FILTER (
+        WHERE status = 'escalated'
+      )::int AS escalated,
+
+      COUNT(*) FILTER (
+        WHERE status = 'dismissed'
+      )::int AS dismissed
+
+    FROM kristo_safety_reports
+  `) as Array<{
+    total?: number | string;
+    open?: number | string;
+    assigned?: number | string;
+    in_review?: number | string;
+    high_priority?: number | string;
+    resolved?: number | string;
+    escalated?: number | string;
+    dismissed?: number | string;
+  }>;
+
+  const row = rows[0] || {};
+
+  return {
+    counts: {
+      total: Number(row.total || 0),
+      open: Number(row.open || 0),
+      assigned: Number(
+        row.assigned || 0
+      ),
+      inReview: Number(
+        row.in_review || 0
+      ),
+      highPriority: Number(
+        row.high_priority || 0
+      ),
+      resolved: Number(
+        row.resolved || 0
+      ),
+      escalated: Number(
+        row.escalated || 0
+      ),
+      dismissed: Number(
+        row.dismissed || 0
+      ),
+    },
+  };
+}
+
+
+export async function
+dbAssignSafetyReportsToSupervisorByQuantity(
+  input: {
+    supervisorUserId: string;
+    quantity: number;
+  }
+): Promise<{
+  requestedQuantity: number;
+  assignedCount: number;
+  reportIds: string[];
+}> {
+  const supervisorUserId =
+    String(
+      input.supervisorUserId || ""
+    ).trim();
+
+  const rawQuantity =
+    Math.floor(
+      Number(input.quantity) || 0
+    );
+
+  if (!supervisorUserId) {
+    throw new Error(
+      "Supervisor user ID is required"
+    );
+  }
+
+  if (
+    !Number.isFinite(rawQuantity) ||
+    rawQuantity < 1
+  ) {
+    throw new Error(
+      "A valid report quantity is required"
+    );
+  }
+
+  const quantity = Math.min(
+    rawQuantity,
+    5000
+  );
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+  const now = nowIso();
+
+  const rows = (await sql`
+    WITH selected_reports AS (
+      SELECT id
+      FROM kristo_safety_reports
+      WHERE
+        status = 'open'
+        AND assigned_supervisor_user_id
+          IS NULL
+
+      ORDER BY
+        CASE priority
+          WHEN 'critical' THEN 1
+          WHEN 'high' THEN 2
+          WHEN 'normal' THEN 3
+          WHEN 'low' THEN 4
+          ELSE 5
+        END ASC,
+        created_at ASC
+
+      FOR UPDATE SKIP LOCKED
+      LIMIT ${quantity}
+    )
+
+    UPDATE kristo_safety_reports AS report
+    SET
+      assigned_supervisor_user_id =
+        ${supervisorUserId},
+      assigned_agent_user_id = NULL,
+      status = 'assigned',
+      assigned_at = ${now},
+      updated_at = ${now}
+
+    FROM selected_reports
+    WHERE report.id =
+      selected_reports.id
+
+    RETURNING report.id
+  `) as Array<{
+    id: string;
+  }>;
+
+  return {
+    requestedQuantity: quantity,
+    assignedCount: rows.length,
+    reportIds: rows
+      .map((row) =>
+        String(row.id || "").trim()
+      )
+      .filter(Boolean),
+  };
+}

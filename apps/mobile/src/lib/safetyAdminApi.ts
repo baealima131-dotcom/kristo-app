@@ -384,3 +384,141 @@ export async function fetchMySafetyReportByCode(
 
   return response.report;
 }
+
+
+
+export type SafetySystemAdminDashboardResponse = {
+  counts: {
+    total: number;
+    open: number;
+    assigned: number;
+    inReview: number;
+    highPriority: number;
+    resolved: number;
+    escalated: number;
+    dismissed: number;
+  };
+};
+
+export async function
+fetchSafetySystemAdminDashboard():
+  Promise<SafetySystemAdminDashboardResponse> {
+  const response: any =
+    await apiGet(
+      "/api/safety/system-admin/dashboard",
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not load Report Center."
+      )
+    );
+  }
+
+  const counts =
+    response?.dashboard?.counts || {};
+
+  return {
+    counts: {
+      total: Number(
+        counts.total || 0
+      ),
+      open: Number(
+        counts.open || 0
+      ),
+      assigned: Number(
+        counts.assigned || 0
+      ),
+      inReview: Number(
+        counts.inReview || 0
+      ),
+      highPriority: Number(
+        counts.highPriority || 0
+      ),
+      resolved: Number(
+        counts.resolved || 0
+      ),
+      escalated: Number(
+        counts.escalated || 0
+      ),
+      dismissed: Number(
+        counts.dismissed || 0
+      ),
+    },
+  };
+}
+
+
+export async function
+assignSafetyReportsToSupervisorByQuantity(
+  input: {
+    supervisorUserId: string;
+    quantity: number;
+  }
+) {
+  const response: any =
+    await apiPost(
+      "/api/safety/system-admin/assign",
+      {
+        supervisorUserId:
+          String(
+            input.supervisorUserId || ""
+          ).trim(),
+
+        quantity:
+          Math.floor(
+            Number(input.quantity) || 0
+          ),
+      },
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not assign reports."
+      )
+    );
+  }
+
+  return {
+    assignment: {
+      requestedQuantity: Number(
+        response?.assignment
+          ?.requestedQuantity || 0
+      ),
+
+      assignedCount: Number(
+        response?.assignment
+          ?.assignedCount || 0
+      ),
+
+      reportIds:
+        Array.isArray(
+          response?.assignment
+            ?.reportIds
+        )
+          ? response.assignment.reportIds
+          : [],
+    },
+
+    dashboard:
+      response?.dashboard || null,
+  };
+}

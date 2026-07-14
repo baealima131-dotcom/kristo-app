@@ -33,6 +33,11 @@ import {
   resolveSessionPlatformRole,
 } from "@/src/lib/platformRole";
 
+import {
+  fetchSafetySystemAdminDashboard,
+  type SafetySystemAdminDashboardResponse,
+} from "@/src/lib/safetyAdminApi";
+
 const BG = "#080C14";
 const TEXT = "rgba(255,255,255,0.96)";
 const MUTED = "rgba(255,255,255,0.60)";
@@ -158,6 +163,112 @@ export default function ReportCenterScreen() {
     hasOfflineActivationRole(
       platformRole || "",
       "System_Admin"
+    );
+
+
+  const [
+    systemDashboard,
+    setSystemDashboard,
+  ] = React.useState<
+    SafetySystemAdminDashboardResponse | null
+  >(null);
+
+  const [
+    systemDashboardLoading,
+    setSystemDashboardLoading,
+  ] = React.useState(true);
+
+  const [
+    systemDashboardError,
+    setSystemDashboardError,
+  ] = React.useState("");
+
+  const loadSystemDashboard =
+    React.useCallback(async () => {
+      if (!allowed) {
+        setSystemDashboardLoading(false);
+        return;
+      }
+
+      setSystemDashboardError("");
+      setSystemDashboardLoading(true);
+
+      try {
+        const result =
+          await fetchSafetySystemAdminDashboard();
+
+        setSystemDashboard(result);
+
+        console.log(
+          "KRISTO_SAFETY_SYSTEM_ADMIN_COUNTS_LOADED",
+          result.counts
+        );
+      } catch (error: any) {
+        const message =
+          String(
+            error?.message ||
+              "Could not load reports."
+          );
+
+        setSystemDashboardError(
+          message
+        );
+
+        console.log(
+          "KRISTO_SAFETY_SYSTEM_ADMIN_COUNTS_FAILED",
+          {
+            error: message,
+          }
+        );
+      } finally {
+        setSystemDashboardLoading(
+          false
+        );
+      }
+    }, [allowed]);
+
+  React.useEffect(() => {
+    void loadSystemDashboard();
+  }, [loadSystemDashboard]);
+
+  const resolveSystemMetricValue =
+    React.useCallback(
+      (metric: any) => {
+        const label =
+          String(
+            metric?.label || ""
+          ).trim();
+
+        const counts =
+          systemDashboard?.counts;
+
+        if (!counts) {
+          return 0;
+        }
+
+        if (label === "Open Reports") {
+          return counts.open;
+        }
+
+        if (label === "Assigned") {
+          return counts.assigned;
+        }
+
+        if (
+          label === "High Priority"
+        ) {
+          return counts.highPriority;
+        }
+
+        if (label === "Resolved") {
+          return counts.resolved;
+        }
+
+        return Number(
+          metric?.value || 0
+        );
+      },
+      [systemDashboard]
     );
 
   /*
@@ -393,6 +504,60 @@ export default function ReportCenterScreen() {
           </GlassCard>
         ) : (
           <>
+            {systemDashboardLoading ? (
+              <Text
+                style={{
+                  marginBottom: 12,
+                  color:
+                    "rgba(255,255,255,0.58)",
+                  fontSize: 12,
+                  fontWeight: "700",
+                }}
+              >
+                Loading platform reports…
+              </Text>
+            ) : null}
+
+            {systemDashboardError ? (
+              <Pressable
+                onPress={() =>
+                  void loadSystemDashboard()
+                }
+                style={{
+                  marginBottom: 12,
+                  padding: 12,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor:
+                    "rgba(251,113,133,0.30)",
+                  backgroundColor:
+                    "rgba(251,113,133,0.08)",
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#FDA4AF",
+                    fontSize: 12,
+                    fontWeight: "800",
+                  }}
+                >
+                  {systemDashboardError}
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 3,
+                    color:
+                      "rgba(255,255,255,0.55)",
+                    fontSize: 10,
+                    fontWeight: "700",
+                  }}
+                >
+                  Tap to try again
+                </Text>
+              </Pressable>
+            ) : null}
+
             <View style={styles.metricsGrid}>
               {metrics.map((metric) => (
                 <GlassCard
@@ -425,7 +590,9 @@ export default function ReportCenterScreen() {
                       },
                     ]}
                   >
-                    {metric.value}
+                    {resolveSystemMetricValue(
+                      metric
+                    )}
                   </Text>
 
                   <Text style={styles.metricLabel}>
