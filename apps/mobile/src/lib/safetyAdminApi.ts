@@ -104,3 +104,51 @@ export async function fetchSafetySupervisors() {
     },
   };
 }
+
+
+export type SafetyAccessResponse = {
+  roles: Array<{
+    userId: string;
+    churchId: string;
+    role:
+      | "Safety_Supervisor"
+      | "Safety_Agent";
+    createdAt?: string;
+    updatedAt?: string;
+  }>;
+  isSafetySupervisor: boolean;
+  isSafetyAgent: boolean;
+};
+
+export async function fetchSafetyAccess():
+  Promise<SafetyAccessResponse> {
+  const path = "/api/safety/access";
+
+  const response: any =
+    await apiGet(path, {
+      headers:
+        getKristoHeaders() as any,
+    });
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not load Safety access."
+      )
+    );
+  }
+
+  return {
+    roles: Array.isArray(response.roles)
+      ? response.roles
+      : [],
+    isSafetySupervisor:
+      response.isSafetySupervisor === true,
+    isSafetyAgent:
+      response.isSafetyAgent === true,
+  };
+}

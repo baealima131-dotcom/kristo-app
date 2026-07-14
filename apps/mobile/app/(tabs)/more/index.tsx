@@ -46,6 +46,10 @@ import {
   type AgentAccessResponse,
   type AgentInvitationRecord,
 } from "@/src/lib/offlineActivationAgentApi";
+import {
+  fetchSafetyAccess,
+  type SafetyAccessResponse,
+} from "@/src/lib/safetyAdminApi";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -66,6 +70,15 @@ const AGENT_MORE_ITEM: Item = {
   iconLib: "ion",
   icon: "key-outline",
   href: "/more/agent",
+};
+
+const SAFETY_SUPERVISOR_MORE_ITEM: Item = {
+  key: "safety_supervisor",
+  title: "Safety Supervisor",
+  sub: "Review reports • manage safety agents",
+  iconLib: "ion",
+  icon: "shield-checkmark-outline",
+  href: "/more/safety-supervisor",
 };
 
 /** Preserved for More tab restore; currently hidden via HIDDEN_MORE_CARD_KEYS. */
@@ -343,6 +356,13 @@ export default function MoreScreen() {
   const [agentAccess, setAgentAccess] = React.useState<AgentAccessResponse | null>(null);
   const [agentInvitations, setAgentInvitations] = React.useState<AgentInvitationRecord[]>([]);
 
+  const [
+    safetyAccess,
+    setSafetyAccess,
+  ] = React.useState<
+    SafetyAccessResponse | null
+  >(null);
+
   const offlineActivationItems = React.useMemo((): Item[] => {
     const platformRole = String(
       (session as any)?.platformRole || (session as any)?.offlineActivationRole || ""
@@ -381,8 +401,27 @@ export default function MoreScreen() {
     if (!canShowMediaCard) {
       base = base.filter((item) => item.key !== "media");
     }
-    return [...base, ...offlineActivationItems, ...(agentInvitationItem ? [agentInvitationItem] : [])];
-  }, [hasChurch, isPastor, canShowMediaCard, offlineActivationItems, agentInvitationItem]);
+    const safetyItems =
+      safetyAccess?.isSafetySupervisor
+        ? [SAFETY_SUPERVISOR_MORE_ITEM]
+        : [];
+
+    return [
+      ...base,
+      ...offlineActivationItems,
+      ...safetyItems,
+      ...(agentInvitationItem
+        ? [agentInvitationItem]
+        : []),
+    ];
+  }, [
+    hasChurch,
+    isPastor,
+    canShowMediaCard,
+    offlineActivationItems,
+    agentInvitationItem,
+    safetyAccess?.isSafetySupervisor,
+  ]);
 
   const { left: leftItems, right: rightItems } = React.useMemo(
     () => splitColumns(visibleItems),
@@ -463,6 +502,60 @@ export default function MoreScreen() {
       void fetchAgentInvitations()
         .then((rows) => setAgentInvitations(rows))
         .catch(() => setAgentInvitations([]));
+    }, [session?.userId])
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const userId = String(
+        session?.userId || ""
+      ).trim();
+
+      if (!userId) {
+        setSafetyAccess(null);
+        return;
+      }
+
+      let cancelled = false;
+
+      void fetchSafetyAccess()
+        .then((access) => {
+          if (cancelled) return;
+
+          setSafetyAccess(access);
+
+          console.log(
+            "KRISTO_MORE_SAFETY_ACCESS_LOADED",
+            {
+              userId,
+              isSafetySupervisor:
+                access.isSafetySupervisor,
+              isSafetyAgent:
+                access.isSafetyAgent,
+              roleCount:
+                access.roles.length,
+            }
+          );
+        })
+        .catch((error: any) => {
+          if (cancelled) return;
+
+          setSafetyAccess(null);
+
+          console.log(
+            "KRISTO_MORE_SAFETY_ACCESS_FAILED",
+            {
+              userId,
+              error: String(
+                error?.message || error
+              ),
+            }
+          );
+        });
+
+      return () => {
+        cancelled = true;
+      };
     }, [session?.userId])
   );
 
@@ -770,6 +863,8 @@ export default function MoreScreen() {
     const miniTag =
       item.key === "system_admin"
         ? "Admin"
+        : item.key === "safety_supervisor"
+        ? "Safety"
         : item.key === "supervisor"
         ? "Teams"
         : item.key === "agent"
