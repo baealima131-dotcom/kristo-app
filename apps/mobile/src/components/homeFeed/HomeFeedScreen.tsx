@@ -321,6 +321,8 @@ export default function HomeFeedScreen() {
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
   const [reportTargetPostId, setReportTargetPostId] = useState("");
   const [reportTargetAuthorUserId, setReportTargetAuthorUserId] = useState("");
+  const [reportTargetItem, setReportTargetItem] =
+    useState<any | null>(null);
   const [commentsSheetOpen, setCommentsSheetOpen] = useState(false);
   const [commentTargetPostId, setCommentTargetPostId] = useState("");
   const [commentRailCount, setCommentRailCount] = useState(0);
@@ -3142,6 +3144,13 @@ export default function HomeFeedScreen() {
     const authorUserId = resolveRowAuthorUserId(item);
     setReportTargetPostId(postId);
     setReportTargetAuthorUserId(authorUserId);
+
+    /*
+     * Preserve the exact item shown to the user.
+     * This becomes the durable evidence snapshot.
+     */
+    setReportTargetItem(item);
+
     setReportSheetOpen(true);
   }, [resolveRowAuthorUserId]);
 
@@ -3265,7 +3274,13 @@ export default function HomeFeedScreen() {
         onDiscussionCountBump={handleDiscussionCountBump}
         reportSheetOpen={reportSheetOpen}
         reportTargetPostId={reportTargetPostId}
-        onCloseReport={() => setReportSheetOpen(false)}
+        reportTargetItem={reportTargetItem}
+        onCloseReport={() => {
+          setReportSheetOpen(false);
+          setReportTargetPostId("");
+          setReportTargetAuthorUserId("");
+          setReportTargetItem(null);
+        }}
         onReported={handleReported}
         shareSheetOpen={shareSheetOpen}
         sharePayload={sharePayload}
@@ -3306,9 +3321,12 @@ export default function HomeFeedScreen() {
           visible={reportSheetOpen}
           postId={reportTargetPostId}
           authorUserId={reportTargetAuthorUserId}
+          targetItem={reportTargetItem}
           onClose={() => {
             setReportSheetOpen(false);
+            setReportTargetPostId("");
             setReportTargetAuthorUserId("");
+            setReportTargetItem(null);
           }}
           onReported={handleReported}
           onBlocked={handleBlockedUser}

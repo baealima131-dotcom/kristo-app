@@ -104,6 +104,7 @@ type Props = {
   onDiscussionCountBump: (postId: string, delta: number) => void;
   reportSheetOpen: boolean;
   reportTargetPostId: string;
+  reportTargetItem: any;
   onCloseReport: () => void;
   onReported: (postId: string) => void;
   shareSheetOpen: boolean;
@@ -657,6 +658,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   onDiscussionCountBump,
   reportSheetOpen,
   reportTargetPostId,
+  reportTargetItem,
   onCloseReport,
   onReported,
   shareSheetOpen,
@@ -827,6 +829,15 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         <FeedReportSheet
           visible={reportSheetOpen}
           postId={reportTargetPostId}
+          authorUserId={String(
+            reportTargetItem?.createdByUserId ||
+            reportTargetItem?.createdBy ||
+            reportTargetItem?.authorUserId ||
+            reportTargetItem?.ownerUserId ||
+            reportTargetItem?.userId ||
+            ""
+          ).trim()}
+          targetItem={reportTargetItem}
           onClose={onCloseReport}
           onReported={onReported}
         />

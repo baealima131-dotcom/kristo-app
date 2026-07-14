@@ -26,15 +26,185 @@ type Props = {
   visible: boolean;
   postId: string;
   authorUserId?: string;
+  targetItem?: any;
   onClose: () => void;
   onReported: (postId: string) => void;
   onBlocked?: (blockedUserId: string) => void;
 };
 
+
+function firstSafetyText(
+  values: unknown[],
+  maxLength: number
+) {
+  for (const value of values) {
+    const text = String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (text) {
+      return text.slice(0, maxLength);
+    }
+  }
+
+  return "";
+}
+
+function firstSafetyUri(
+  values: unknown[]
+) {
+  for (const value of values) {
+    const entries =
+      Array.isArray(value)
+        ? value
+        : [value];
+
+    for (const entry of entries) {
+      const uri =
+        typeof entry === "string"
+          ? entry.trim()
+          : String(
+              (entry as any)?.uri ||
+              (entry as any)?.url ||
+              (entry as any)?.thumbnailUri ||
+              (entry as any)?.thumbnailUrl ||
+              (entry as any)?.posterUri ||
+              (entry as any)?.posterUrl ||
+              ""
+            ).trim();
+
+      if (uri) {
+        return uri.slice(0, 4000);
+      }
+    }
+  }
+
+  return "";
+}
+
+function buildFeedReportEvidence(
+  item: any,
+  fallbackAuthorUserId: string
+) {
+  const row =
+    item &&
+    typeof item === "object"
+      ? item
+      : {};
+
+  const media =
+    row?.media &&
+    typeof row.media === "object"
+      ? row.media
+      : {};
+
+  const ownerName = firstSafetyText(
+    [
+      row?.churchMediaName,
+      row?.mediaName,
+      row?.churchName,
+      row?.authorName,
+      row?.ownerName,
+      row?.displayName,
+      row?.createdByName,
+      row?.publisherName,
+      row?.profileName,
+      row?.userName,
+    ],
+    240
+  );
+
+  const title = firstSafetyText(
+    [
+      row?.title,
+      row?.headline,
+      row?.videoTitle,
+      row?.postTitle,
+      row?.subject,
+      row?.caption,
+      ownerName,
+    ],
+    240
+  );
+
+  const preview = firstSafetyText(
+    [
+      row?.caption,
+      row?.description,
+      row?.body,
+      row?.text,
+      row?.message,
+      row?.content,
+      title,
+    ],
+    600
+  );
+
+  const ownerUserId = firstSafetyText(
+    [
+      row?.createdByUserId,
+      row?.createdBy,
+      row?.authorUserId,
+      row?.ownerUserId,
+      row?.creatorUserId,
+      row?.userId,
+      fallbackAuthorUserId,
+    ],
+    240
+  );
+
+  const thumbnailUri = firstSafetyUri(
+    [
+      row?.thumbnailUri,
+      row?.thumbnailUrl,
+      row?.posterUri,
+      row?.posterUrl,
+      row?.videoPosterUri,
+      row?.videoPosterUrl,
+      row?.coverUri,
+      row?.coverUrl,
+      row?.imageUri,
+      row?.imageUrl,
+      row?.mediaThumbnailUri,
+      row?.mediaThumbnailUrl,
+      row?.images,
+      row?.imageUrls,
+      row?.attachments,
+      row?.media,
+      media?.thumbnailUri,
+      media?.thumbnailUrl,
+      media?.posterUri,
+      media?.posterUrl,
+      media?.imageUri,
+      media?.imageUrl,
+    ]
+  );
+
+  return {
+    targetTitle:
+      title ||
+      ownerName ||
+      "Reported post",
+
+    targetOwnerName:
+      ownerName,
+
+    targetOwnerUserId:
+      ownerUserId,
+
+    targetPreview:
+      preview,
+
+    targetThumbnailUri:
+      thumbnailUri,
+  };
+}
+
 export const FeedReportSheet = memo(function FeedReportSheet({
   visible,
   postId,
   authorUserId = "",
+  targetItem = null,
   onClose,
   onReported,
   onBlocked,
@@ -88,11 +258,36 @@ export const FeedReportSheet = memo(function FeedReportSheet({
     setError("");
     setSubmitting(true);
 
-    const result = await submitHomeFeedReport({
-      postId,
-      reason: selectedReason,
-      details,
-    });
+    const evidence =
+        buildFeedReportEvidence(
+          targetItem,
+          authorUserId
+        );
+
+      const result =
+        await submitHomeFeedReport({
+          postId,
+          reason: selectedReason,
+          details,
+
+          targetType: "post",
+          targetId: postId,
+
+          targetTitle:
+            evidence.targetTitle,
+
+          targetOwnerName:
+            evidence.targetOwnerName,
+
+          targetOwnerUserId:
+            evidence.targetOwnerUserId,
+
+          targetPreview:
+            evidence.targetPreview,
+
+          targetThumbnailUri:
+            evidence.targetThumbnailUri,
+        });
 
     setSubmitting(false);
 
@@ -110,6 +305,8 @@ export const FeedReportSheet = memo(function FeedReportSheet({
     submitting,
     selectedReason,
     details,
+    targetItem,
+    authorUserId,
     onReported,
     onClose,
   ]);
