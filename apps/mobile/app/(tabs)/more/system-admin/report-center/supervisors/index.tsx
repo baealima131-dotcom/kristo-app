@@ -41,6 +41,11 @@ export default function SafetySupervisorsScreen() {
   const [rows, setRows] =
     React.useState<any[]>([]);
 
+  const [
+    pendingInvitations,
+    setPendingInvitations,
+  ] = React.useState<any[]>([]);
+
   const [modalOpen, setModalOpen] =
     React.useState(false);
 
@@ -61,7 +66,13 @@ export default function SafetySupervisorsScreen() {
         const next =
           await fetchSafetySupervisors();
 
-        setRows(next);
+        setRows(
+          next.supervisors
+        );
+
+        setPendingInvitations(
+          next.pendingInvitations
+        );
       } catch (error: any) {
         Alert.alert(
           "Could not load supervisors",
@@ -200,38 +211,105 @@ export default function SafetySupervisorsScreen() {
           <ActivityIndicator
             color={GOLD}
           />
-        ) : rows.length ? (
-          rows.map((row) => (
-            <View
-              key={`${row.userId}-${row.role}`}
-              style={styles.card}
-            >
-              <View style={styles.icon}>
-                <Ionicons
-                  name="shield-checkmark-outline"
-                  size={24}
-                  color="#C4B5FD"
-                />
+        ) : (
+          <>
+            <View style={styles.summaryRow}>
+              <View style={styles.summaryCard}>
+                <Text style={styles.summaryNumber}>
+                  {pendingInvitations.length}
+                </Text>
+                <Text style={styles.summaryLabel}>
+                  Pending
+                </Text>
               </View>
 
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardTitle}>
-                  {row.fullName ||
-                    row.kristoId ||
-                    row.userId}
+              <View style={styles.summaryCard}>
+                <Text style={styles.summaryNumber}>
+                  {rows.length}
                 </Text>
-
-                <Text style={styles.cardMeta}>
-                  {row.churchId}
-                </Text>
-
-                <Text style={styles.active}>
-                  Active Safety Supervisor
+                <Text style={styles.summaryLabel}>
+                  Active
                 </Text>
               </View>
             </View>
-          ))
-        ) : (
+
+            {pendingInvitations.length ? (
+              <>
+                <Text style={styles.sectionLabel}>
+                  PENDING INVITATIONS
+                </Text>
+
+                {pendingInvitations.map(
+                  (row) => (
+                    <View
+                      key={row.id}
+                      style={styles.pendingCard}
+                    >
+                      <View style={styles.pendingIcon}>
+                        <Ionicons
+                          name="mail-unread-outline"
+                          size={22}
+                          color={GOLD}
+                        />
+                      </View>
+
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.cardTitle}>
+                          {row.inviteeKristoId}
+                        </Text>
+
+                        <Text style={styles.cardMeta}>
+                          {row.churchId}
+                        </Text>
+
+                        <Text style={styles.pendingText}>
+                          Waiting for acceptance
+                        </Text>
+                      </View>
+                    </View>
+                  )
+                )}
+              </>
+            ) : null}
+
+            {rows.length ? (
+              <>
+                <Text style={styles.sectionLabel}>
+                  ACTIVE SUPERVISORS
+                </Text>
+
+                {rows.map((row) => (
+                  <View
+                    key={`${row.userId}-${row.role}`}
+                    style={styles.card}
+                  >
+                    <View style={styles.icon}>
+                      <Ionicons
+                        name="shield-checkmark-outline"
+                        size={24}
+                        color="#C4B5FD"
+                      />
+                    </View>
+
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.cardTitle}>
+                        {row.fullName ||
+                          row.kristoId ||
+                          row.userId}
+                      </Text>
+
+                      <Text style={styles.cardMeta}>
+                        {row.churchId}
+                      </Text>
+
+                      <Text style={styles.active}>
+                        Active Safety Supervisor
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </>
+            ) : (
           <View style={styles.empty}>
             <Ionicons
               name="people-outline"
@@ -248,6 +326,8 @@ export default function SafetySupervisorsScreen() {
               their KRISTO ID and Church ID.
             </Text>
           </View>
+            )}
+          </>
         )}
       </ScrollView>
 
@@ -370,6 +450,75 @@ const styles = StyleSheet.create({
     color: "#07111F",
     fontWeight: "900",
   },
+  summaryRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginBottom: 22,
+  },
+
+  summaryCard: {
+    flex: 1,
+    padding: 17,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,208,111,0.22)",
+    backgroundColor:
+      "rgba(244,208,111,0.07)",
+  },
+
+  summaryNumber: {
+    color: GOLD,
+    fontSize: 28,
+    fontWeight: "900",
+  },
+
+  summaryLabel: {
+    marginTop: 3,
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  sectionLabel: {
+    marginBottom: 10,
+    color: GOLD,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 1.1,
+  },
+
+  pendingCard: {
+    marginBottom: 12,
+    padding: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,208,111,0.22)",
+    backgroundColor:
+      "rgba(244,208,111,0.06)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+  },
+
+  pendingIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(244,208,111,0.13)",
+  },
+
+  pendingText: {
+    marginTop: 5,
+    color: GOLD,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+
   card: {
     marginBottom: 12,
     padding: 16,

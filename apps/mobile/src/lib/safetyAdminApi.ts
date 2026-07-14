@@ -81,9 +81,26 @@ export async function fetchSafetySupervisors() {
     );
   }
 
-  return Array.isArray(
-    response.supervisors
-  )
-    ? response.supervisors
-    : [];
+  return {
+    supervisors:
+      Array.isArray(
+        response.supervisors
+      )
+        ? response.supervisors
+        : [],
+    pendingInvitations:
+      Array.isArray(
+        response.pendingInvitations
+      )
+        ? response.pendingInvitations
+        : [],
+    counts: {
+      active: Number(
+        response?.counts?.active || 0
+      ),
+      pending: Number(
+        response?.counts?.pending || 0
+      ),
+    },
+  };
 }

@@ -354,3 +354,267 @@ export async function dbCreateSafetyInvite(input: {
     throw error;
   }
 }
+
+
+function safetyInvitationFromRow(
+  row: Record<string, any>
+): SafetyInvitation {
+  return {
+    id: String(row.id || ""),
+    inviteeUserId: String(
+      row.invitee_user_id || ""
+    ),
+    inviteeKristoId: String(
+      row.invitee_kristo_id || ""
+    ).toUpperCase(),
+    churchId: String(
+      row.church_id || ""
+    ),
+    invitedByUserId: String(
+      row.invited_by_user_id || ""
+    ),
+    role: row.role as SafetyRole,
+    status:
+      row.status as SafetyInvitationStatus,
+    createdAt: new Date(
+      row.created_at
+    ).toISOString(),
+    respondedAt: row.responded_at
+      ? new Date(
+          row.responded_at
+        ).toISOString()
+      : null,
+  };
+}
+
+export async function dbListPendingSafetyInvitationsForUser(
+  userId: string
+): Promise<SafetyInvitation[]> {
+  const uid = String(
+    userId || ""
+  ).trim();
+
+  if (!uid) return [];
+
+  await ensureSafetySchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    SELECT *
+    FROM kristo_safety_invitations
+    WHERE invitee_user_id = ${uid}
+      AND status = 'pending'
+    ORDER BY created_at DESC
+  `) as Array<Record<string, any>>;
+
+  return rows.map(
+    safetyInvitationFromRow
+  );
+}
+
+export async function dbListPendingSafetySupervisorInvitations():
+  Promise<SafetyInvitation[]> {
+  await ensureSafetySchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    SELECT *
+    FROM kristo_safety_invitations
+    WHERE role = 'Safety_Supervisor'
+      AND status = 'pending'
+    ORDER BY created_at DESC
+  `) as Array<Record<string, any>>;
+
+  return rows.map(
+    safetyInvitationFromRow
+  );
+}
+
+export async function dbGetSafetyInvitationById(
+  invitationId: string
+): Promise<SafetyInvitation | null> {
+  const id = String(
+    invitationId || ""
+  ).trim();
+
+  if (!id) return null;
+
+  await ensureSafetySchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    SELECT *
+    FROM kristo_safety_invitations
+    WHERE id = ${id}
+    LIMIT 1
+  `) as Array<Record<string, any>>;
+
+  const row = rows[0];
+
+  return row
+    ? safetyInvitationFromRow(row)
+    : null;
+}
+
+export async function dbRespondToSafetyInvitation(input: {
+  invitationId: string;
+  inviteeUserId: string;
+  action: "accept" | "decline";
+}): Promise<SafetyInvitation> {
+  const invitationId = String(
+    input.invitationId || ""
+  ).trim();
+
+  const inviteeUserId = String(
+    input.inviteeUserId || ""
+  ).trim();
+
+  const nextStatus:
+    SafetyInvitationStatus =
+    input.action === "accept"
+      ? "accepted"
+      : "declined";
+
+  if (!invitationId) {
+    throw new Error(
+      "Invitation ID is required"
+    );
+  }
+
+  if (!inviteeUserId) {
+    throw new Error(
+      "Invitee user ID is required"
+    );
+  }
+
+  await ensureSafetySchema();
+
+  const sql = getSql();
+
+  /*
+   * One PostgreSQL statement:
+   * - accepts/declines only a pending invitation
+   * - on acceptance creates the Safety role
+   * - does not alter Activation platformRole
+   */
+  const rows = (await sql`
+    WITH updated_invitation AS (
+      UPDATE kristo_safety_invitations
+      SET
+        status = ${nextStatus},
+        responded_at = NOW()
+      WHERE id = ${invitationId}
+        AND invitee_user_id = ${inviteeUserId}
+        AND status = 'pending'
+      RETURNING *
+    ),
+    inserted_role AS (
+      INSERT INTO kristo_safety_roles (
+        user_id,
+        church_id,
+        role,
+        created_at,
+        updated_at
+      )
+      SELECT
+        invitee_user_id,
+        church_id,
+        role,
+        NOW(),
+        NOW()
+      FROM updated_invitation
+      WHERE ${nextStatus} = 'accepted'
+      ON CONFLICT (user_id, role)
+      DO UPDATE SET
+        church_id =
+          EXCLUDED.church_id,
+        updated_at = NOW()
+      RETURNING user_id
+    )
+    SELECT *
+    FROM updated_invitation
+  `) as Array<Record<string, any>>;
+
+  const row = rows[0];
+
+  if (!row) {
+    const existing =
+      await dbGetSafetyInvitationById(
+        invitationId
+      );
+
+    if (
+      existing &&
+      existing.inviteeUserId !==
+        inviteeUserId
+    ) {
+      throw new Error(
+        "This invitation belongs to another user"
+      );
+    }
+
+    if (
+      existing &&
+      existing.status !== "pending"
+    ) {
+      return existing;
+    }
+
+    throw new Error(
+      "Safety invitation not found"
+    );
+  }
+
+  return safetyInvitationFromRow(row);
+}
+
+export async function dbListSafetyRolesForUser(
+  userId: string
+): Promise<SafetyRoleRecord[]> {
+  const uid = String(
+    userId || ""
+  ).trim();
+
+  if (!uid) return [];
+
+  await ensureSafetySchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    SELECT
+      user_id,
+      church_id,
+      role,
+      created_at,
+      updated_at
+    FROM kristo_safety_roles
+    WHERE user_id = ${uid}
+    ORDER BY updated_at DESC
+  `) as Array<{
+    user_id: string;
+    church_id: string;
+    role: string;
+    created_at: string | Date;
+    updated_at: string | Date;
+  }>;
+
+  return rows.map((row) => ({
+    userId: String(
+      row.user_id || ""
+    ),
+    churchId: String(
+      row.church_id || ""
+    ),
+    role: row.role as SafetyRole,
+    createdAt: new Date(
+      row.created_at
+    ).toISOString(),
+    updatedAt: new Date(
+      row.updated_at
+    ).toISOString(),
+  }));
+}

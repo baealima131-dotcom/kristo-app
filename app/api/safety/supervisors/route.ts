@@ -9,6 +9,7 @@ import {
   guardPlatformOfflineActivation,
 } from "@/app/api/_lib/rbac";
 import {
+  dbListPendingSafetySupervisorInvitations,
   dbListSafetyRoles,
 } from "@/app/api/_lib/store/safetyDb";
 
@@ -27,13 +28,24 @@ export async function GET(
     return auth;
   }
 
-  const supervisors =
-    await dbListSafetyRoles(
+  const [
+    supervisors,
+    pendingInvitations,
+  ] = await Promise.all([
+    dbListSafetyRoles(
       "Safety_Supervisor"
-    );
+    ),
+    dbListPendingSafetySupervisorInvitations(),
+  ]);
 
   return NextResponse.json({
     ok: true,
     supervisors,
+    pendingInvitations,
+    counts: {
+      active: supervisors.length,
+      pending:
+        pendingInvitations.length,
+    },
   });
 }

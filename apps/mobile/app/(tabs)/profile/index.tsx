@@ -80,6 +80,11 @@ import {
   respondOfflineAgentProfileInvite,
 } from "@/src/lib/profileOfflineAgentInvites";
 import {
+  isSafetySupervisorProfileInvite,
+  loadSafetySupervisorProfileInvites,
+  respondSafetySupervisorProfileInvite,
+} from "@/src/lib/profileSafetySupervisorInvites";
+import {
   fetchProfileCommunicationInboxSnapshot,
   formatProfileCommunicationBadgeCount,
 } from "@/src/lib/profileCommunicationInbox";
@@ -1330,7 +1335,37 @@ export default function MeScreen() {
         }
       } catch {}
 
-      const mergedInvites = [...offlineAgentInvites, ...offlineSupervisorInvites, ...churchInvites];
+      let safetySupervisorInvites:
+        Awaited<
+          ReturnType<
+            typeof loadSafetySupervisorProfileInvites
+          >
+        > = [];
+
+      try {
+        safetySupervisorInvites =
+          await loadSafetySupervisorProfileInvites();
+
+        if (
+          safetySupervisorInvites.length
+        ) {
+          console.log(
+            "KRISTO_INVITATIONS_SAFETY_SUPERVISOR_INCLUDED",
+            {
+              userId: uid,
+              count:
+                safetySupervisorInvites.length,
+            }
+          );
+        }
+      } catch {}
+
+      const mergedInvites = [
+        ...safetySupervisorInvites,
+        ...offlineAgentInvites,
+        ...offlineSupervisorInvites,
+        ...churchInvites,
+      ];
 
       setInviteItems(mergedInvites);
       setInviteCount(mergedInvites.length);
@@ -3013,6 +3048,159 @@ const user = {
               </View>
             ) : (
               inviteItems.map((inv: any, i: number) => {
+                if (isSafetySupervisorProfileInvite(inv)) {
+                  const invitationId = String(
+                    inv.invitationId ||
+                      inv.id ||
+                      ""
+                  ).trim();
+
+                  return (
+                    <View
+                      key={`safety-supervisor-${invitationId}-${i}`}
+                      style={s.inviteCompactWrap}
+                    >
+                      <Text style={s.inviteSectionLabel}>
+                        SAFETY INVITATION
+                      </Text>
+
+                      <View style={s.inviteCompactCard}>
+                        <View style={s.inviteCompactIcon}>
+                          <Ionicons
+                            name="shield-checkmark-outline"
+                            size={22}
+                            color={GOLD}
+                          />
+                        </View>
+
+                        <View style={s.inviteCompactInfo}>
+                          <Text style={s.inviteCompactTitle}>
+                            {inv.title}
+                          </Text>
+
+                          <Text style={s.inviteCompactRole}>
+                            {inv.message}
+                          </Text>
+
+                          {inv.referenceChurchLabel ? (
+                            <Text style={s.inviteCompactMeta}>
+                              {inv.referenceChurchLabel}
+                            </Text>
+                          ) : null}
+
+                          <View style={s.invitePendingMini}>
+                            <View style={s.invitePendingDot} />
+                            <Text style={s.invitePendingText}>
+                              Pending
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+
+                      <View style={s.inviteCompactActions}>
+                        <Pressable
+                          disabled={!!inviteBusy}
+                          onPress={async () => {
+                            if (!invitationId) {
+                              return Alert.alert(
+                                "Missing invite ID",
+                                "Please try again later."
+                              );
+                            }
+
+                            try {
+                              setInviteBusy("reject");
+
+                              await respondSafetySupervisorProfileInvite({
+                                invitationId,
+                                action: "decline",
+                              });
+
+                              setTimeout(
+                                () =>
+                                  refreshInvitations(),
+                                250
+                              );
+                            } catch (e: any) {
+                              Alert.alert(
+                                "Error",
+                                String(
+                                  e?.message || e
+                                )
+                              );
+                            } finally {
+                              setInviteBusy("");
+                            }
+                          }}
+                          style={[
+                            s.inviteCompactRejectBtn,
+                            !!inviteBusy && {
+                              opacity: 0.55,
+                            },
+                          ]}
+                        >
+                          <Text style={s.inviteCompactRejectText}>
+                            Decline
+                          </Text>
+                        </Pressable>
+
+                        <Pressable
+                          disabled={!!inviteBusy}
+                          onPress={async () => {
+                            if (!invitationId) {
+                              return Alert.alert(
+                                "Missing invite ID",
+                                "Please try again later."
+                              );
+                            }
+
+                            try {
+                              setInviteBusy("accept");
+
+                              await respondSafetySupervisorProfileInvite({
+                                invitationId,
+                                action: "accept",
+                              });
+
+                              setInviteModalOpen(false);
+
+                              Alert.alert(
+                                "Invitation accepted",
+                                "Safety Supervisor access has been activated."
+                              );
+
+                              setTimeout(
+                                () =>
+                                  refreshInvitations(),
+                                250
+                              );
+                            } catch (e: any) {
+                              Alert.alert(
+                                "Error",
+                                String(
+                                  e?.message || e
+                                )
+                              );
+                            } finally {
+                              setInviteBusy("");
+                            }
+                          }}
+                          style={[
+                            s.inviteCompactAcceptBtn,
+                            !!inviteBusy && {
+                              opacity: 0.55,
+                            },
+                          ]}
+                        >
+                          <Text style={s.inviteCompactAcceptText}>
+                            Accept
+                          </Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                }
+
                 if (isOfflineSupervisorProfileInvite(inv)) {
                   const invitationId = String(inv.invitationId || inv.id || "").trim();
                   return (
