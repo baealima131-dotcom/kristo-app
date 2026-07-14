@@ -329,6 +329,64 @@ export default function MyReportDetailScreen() {
             </View>
           </View>
 
+          <View style={styles.reportedItemCard}>
+            <View style={styles.reportedItemHeader}>
+              <View style={styles.reportedItemIcon}>
+                <Ionicons
+                  name={targetTypeIcon(
+                    report.targetType
+                  )}
+                  size={24}
+                  color={GOLD}
+                />
+              </View>
+
+              <View style={{ flex: 1 }}>
+                <Text style={styles.reportedItemEyebrow}>
+                  REPORTED ITEM
+                </Text>
+
+                <Text style={styles.reportedItemType}>
+                  {targetTypeLabel(
+                    report.targetType
+                  )}
+                </Text>
+              </View>
+            </View>
+
+            <Text style={styles.reportedItemTitle}>
+              {report.targetTitle ||
+                report.targetOwnerName ||
+                report.targetSubtitle ||
+                "Reported item"}
+            </Text>
+
+            {report.targetOwnerKristoId ||
+            report.reportedKristoId ? (
+              <Text style={styles.reportedItemKristoId}>
+                {report.targetOwnerKristoId ||
+                  report.reportedKristoId}
+              </Text>
+            ) : null}
+
+            {report.targetPreview ? (
+              <Text
+                style={styles.reportedItemPreview}
+                numberOfLines={4}
+              >
+                {report.targetPreview}
+              </Text>
+            ) : null}
+
+            {report.targetSubtitle &&
+            report.targetSubtitle !==
+              report.targetOwnerKristoId ? (
+              <Text style={styles.reportedItemSubtitle}>
+                {report.targetSubtitle}
+              </Text>
+            ) : null}
+          </View>
+
           <View style={styles.details}>
             <Text style={styles.sectionTitle}>
               Report details
@@ -543,6 +601,77 @@ const styles = StyleSheet.create({
     color: "#93C5FD",
     fontSize: 11,
     fontWeight: "900",
+  },
+
+  reportedItemCard: {
+    padding: 20,
+    borderRadius: 23,
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,208,111,0.22)",
+    backgroundColor:
+      "rgba(244,208,111,0.055)",
+  },
+
+  reportedItemHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+  },
+
+  reportedItemIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(244,208,111,0.11)",
+  },
+
+  reportedItemEyebrow: {
+    color: MUTED,
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+
+  reportedItemType: {
+    marginTop: 3,
+    color: TEXT,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  reportedItemTitle: {
+    marginTop: 16,
+    color: TEXT,
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: "900",
+  },
+
+  reportedItemKristoId: {
+    marginTop: 6,
+    color: GOLD,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+  },
+
+  reportedItemPreview: {
+    marginTop: 12,
+    color: "rgba(255,255,255,0.74)",
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "600",
+  },
+
+  reportedItemSubtitle: {
+    marginTop: 9,
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   details: {
