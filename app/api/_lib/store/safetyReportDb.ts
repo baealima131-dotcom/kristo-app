@@ -781,6 +781,16 @@ export async function dbCreateSafetyReport(
           source_room_id,
           source_message_id,
 
+          target_type,
+          target_id,
+          target_title,
+          target_subtitle,
+          target_preview,
+          target_owner_user_id,
+          target_owner_kristo_id,
+          target_owner_name,
+          target_thumbnail_uri,
+
           category,
           reason,
           description,
