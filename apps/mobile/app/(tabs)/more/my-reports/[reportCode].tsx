@@ -33,6 +33,30 @@ const TEXT = "#FFFFFF";
 const MUTED =
   "rgba(255,255,255,0.60)";
 
+
+function safeSafetyImageUri(
+  value: unknown
+) {
+  const uri =
+    String(value || "").trim();
+
+  if (!uri) {
+    return "";
+  }
+
+  const supported =
+    /^https?:\/\//i.test(uri) ||
+    /^file:\/\//i.test(uri) ||
+    /^content:\/\//i.test(uri) ||
+    /^data:image\//i.test(uri) ||
+    /^ph:\/\//i.test(uri) ||
+    /^assets-library:\/\//i.test(uri);
+
+  return supported
+    ? uri
+    : "";
+}
+
 function targetTypeLabel(
   targetType:
     SafetyReportSummary["targetType"]
@@ -415,11 +439,12 @@ export default function MyReportDetailScreen() {
               </View>
             </View>
 
-            {report.targetThumbnailUri ? (
+            {safeSafetyImageUri(report.targetThumbnailUri) ? (
               <Image
                 source={{
-                  uri:
-                    report.targetThumbnailUri,
+                  uri: safeSafetyImageUri(
+                    report.targetThumbnailUri
+                  ),
                 }}
                 style={[
                   styles.reportedItemMedia,

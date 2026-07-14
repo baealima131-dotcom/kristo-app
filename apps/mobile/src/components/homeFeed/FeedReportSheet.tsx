@@ -53,6 +53,57 @@ function firstSafetyText(
 function firstSafetyUri(
   values: unknown[]
 ) {
+  const normalizeImageUri = (
+    value: unknown
+  ) => {
+    const uri =
+      typeof value === "string"
+        ? value.trim()
+        : String(
+            (value as any)?.uri ||
+            (value as any)?.url ||
+            (value as any)?.thumbnailUri ||
+            (value as any)?.thumbnailUrl ||
+            (value as any)?.posterUri ||
+            (value as any)?.posterUrl ||
+            ""
+          ).trim();
+
+    if (!uri) {
+      return "";
+    }
+
+    /*
+     * Internal values such as
+     * `kristo:branded-poster` are markers,
+     * not image URLs. Sending them into
+     * React Native Image crashes iOS.
+     */
+    const supported =
+      /^https?:\/\//i.test(uri) ||
+      /^file:\/\//i.test(uri) ||
+      /^content:\/\//i.test(uri) ||
+      /^data:image\//i.test(uri) ||
+      /^ph:\/\//i.test(uri) ||
+      /^assets-library:\/\//i.test(uri);
+
+    if (!supported) {
+      console.log(
+        "KRISTO_SAFETY_THUMBNAIL_SKIPPED",
+        {
+          scheme:
+            uri.includes(":")
+              ? uri.split(":")[0]
+              : "none",
+        }
+      );
+
+      return "";
+    }
+
+    return uri.slice(0, 4000);
+  };
+
   for (const value of values) {
     const entries =
       Array.isArray(value)
@@ -61,20 +112,10 @@ function firstSafetyUri(
 
     for (const entry of entries) {
       const uri =
-        typeof entry === "string"
-          ? entry.trim()
-          : String(
-              (entry as any)?.uri ||
-              (entry as any)?.url ||
-              (entry as any)?.thumbnailUri ||
-              (entry as any)?.thumbnailUrl ||
-              (entry as any)?.posterUri ||
-              (entry as any)?.posterUrl ||
-              ""
-            ).trim();
+        normalizeImageUri(entry);
 
       if (uri) {
-        return uri.slice(0, 4000);
+        return uri;
       }
     }
   }
