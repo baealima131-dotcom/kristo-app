@@ -9,6 +9,13 @@ import {
   submitFeedPostReport,
 } from "@/app/api/_lib/store/feedReportDb";
 import { createModerationEvent } from "@/app/api/_lib/store/moderationEventsDb";
+import {
+  dbCreateSafetyReport,
+  dbFindSafetyReportForReporterSource,
+} from "@/app/api/_lib/store/safetyReportDb";
+import {
+  getProfile,
+} from "@/app/api/auth/_lib/profile";
 
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -108,18 +115,128 @@ export async function POST(req: NextRequest) {
       details,
     }).catch(() => {});
 
-    if (result.duplicate) {
-      return json({
-        ok: true,
-        alreadyReported: true,
-        duplicate: true,
-      });
+    const reporterProfile =
+      await getProfile(
+        reporterUserId
+      );
+
+    const reporterKristoId =
+      String(
+        reporterProfile?.userCode || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    if (!reporterKristoId) {
+      return json(
+        {
+          ok: false,
+          error:
+            "Your KRISTO ID could not be verified.",
+        },
+        {
+          status: 400,
+        }
+      );
     }
+
+    /*
+     * Preserve one Safety Report Command Code
+     * for the same reporter and feed post.
+     */
+    let safetyReport =
+      await dbFindSafetyReportForReporterSource(
+        {
+          reporterUserId,
+          sourceType:
+            "church_feed",
+          sourceId:
+            postId,
+        }
+      );
+
+    if (!safetyReport) {
+      const normalizedReason =
+        reason.toLowerCase();
+
+      const priority =
+        normalizedReason.includes(
+          "child"
+        ) ||
+        normalizedReason.includes(
+          "threat"
+        ) ||
+        normalizedReason.includes(
+          "violence"
+        )
+          ? "critical"
+          : normalizedReason.includes(
+                "harassment"
+              ) ||
+              normalizedReason.includes(
+                "hate"
+              )
+            ? "high"
+            : "normal";
+
+      safetyReport =
+        await dbCreateSafetyReport({
+          reporterUserId,
+          reporterKristoId,
+
+          churchId:
+            ctxOrRes.churchId || "",
+
+          sourceType:
+            "church_feed",
+
+          sourceId:
+            postId,
+
+          category:
+            reason,
+
+          reason,
+
+          description:
+            details ||
+            `Feed post report: ${reason}`,
+
+          priority,
+        });
+    }
+
+    console.log(
+      "KRISTO_FEED_SAFETY_REPORT_CREATED",
+      {
+        postId,
+        reportId:
+          safetyReport.id,
+        reportCode:
+          safetyReport.reportCode,
+        reporterUserId,
+        reporterKristoId,
+        duplicate:
+          result.duplicate === true,
+      }
+    );
 
     return json({
       ok: true,
-      alreadyReported: false,
-      duplicate: false,
+      alreadyReported:
+        result.duplicate === true,
+      duplicate:
+        result.duplicate === true,
+      report: {
+        id:
+          safetyReport.id,
+        reportCode:
+          safetyReport.reportCode,
+        status:
+          safetyReport.status,
+        createdAt:
+          safetyReport.createdAt,
+      },
     });
   } catch (error) {
     const message = String((error as any)?.message || error || "");

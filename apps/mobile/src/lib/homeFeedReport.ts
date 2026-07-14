@@ -1,3 +1,4 @@
+import { Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -131,8 +132,18 @@ export async function fetchPostReportStatus(postId: string) {
 }
 
 export type SubmitHomeFeedReportResult =
-  | { ok: true; alreadyReported: boolean; duplicate: boolean }
-  | { ok: false; error: string };
+  | {
+      ok: true;
+      alreadyReported: boolean;
+      duplicate: boolean;
+      reportCode: string;
+      reportStatus: string;
+      reportId: string;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
 
 export async function submitHomeFeedReport(input: {
   postId: string;
@@ -171,15 +182,104 @@ export async function submitHomeFeedReport(input: {
       return { ok: false, error: String(res?.error || "Report failed") };
     }
 
-    const alreadyReported = Boolean(res?.alreadyReported || res?.duplicate);
-    if (alreadyReported) {
-      console.log("KRISTO_REPORT_DUPLICATE", { postId });
-    } else {
-      console.log("KRISTO_REPORT_SUCCESS", { postId });
+    const alreadyReported =
+      Boolean(
+        res?.alreadyReported ||
+          res?.duplicate
+      );
+
+    const reportCode =
+      String(
+        res?.report?.reportCode || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    const reportStatus =
+      String(
+        res?.report?.status || "open"
+      ).trim();
+
+    const reportId =
+      String(
+        res?.report?.id || ""
+      ).trim();
+
+    if (!reportCode) {
+      console.log(
+        "KRISTO_REPORT_CODE_MISSING",
+        {
+          postId,
+          alreadyReported,
+        }
+      );
+
+      return {
+        ok: false,
+        error:
+          "The report was received, but its Report Command Code was not returned.",
+      };
     }
 
-    await markPostReportedLocally(postId);
-    return { ok: true, alreadyReported, duplicate: alreadyReported };
+    if (alreadyReported) {
+      console.log(
+        "KRISTO_REPORT_DUPLICATE",
+        {
+          postId,
+          reportCode,
+        }
+      );
+    } else {
+      console.log(
+        "KRISTO_REPORT_SUCCESS",
+        {
+          postId,
+          reportCode,
+        }
+      );
+    }
+
+    await markPostReportedLocally(
+      postId
+    );
+
+    Alert.alert(
+      alreadyReported
+        ? "Report already submitted"
+        : "Report submitted",
+      [
+        "Your Report Command Code:",
+        "",
+        reportCode,
+        "",
+        "Save this code. You can track this report from MY WAY using MYRPTS.",
+      ].join("\n"),
+      [
+        {
+          text: "Done",
+          style: "default",
+        },
+      ]
+    );
+
+    console.log(
+      "KRISTO_FEED_REPORT_COMMAND_CODE_SHOWN",
+      {
+        postId,
+        reportCode,
+        alreadyReported,
+      }
+    );
+
+    return {
+      ok: true,
+      alreadyReported,
+      duplicate:
+        alreadyReported,
+      reportCode,
+      reportStatus,
+      reportId,
+    };
   } catch (error: any) {
     console.log("KRISTO_REPORT_FAILED", {
       postId,

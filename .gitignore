@@ -89,3 +89,27 @@ apps/mobile/.expo/
 apps/mobile/**/*.backup_*
 apps/mobile/**/*.error_backup
 apps/mobile/**/*.save
+
+# ============================================================
+# Local builds, logs, previews and temporary backups
+# ============================================================
+
+apps/mobile/*.aab
+apps/mobile/*.apk
+apps/mobile/*.log
+apps/mobile/.ui-preview/
+apps/mobile/_disabled-hermes-patch/
+
+apps/mobile/**/*.before-*
+apps/mobile/**/*.bak
+apps/mobile/*.before-*
+apps/mobile/*.bak
+
+apps/mobile/homeFeedUtils
+apps/mobile/liveSlotsCatalog
+apps/mobile/mediaScheduleLock
+apps/mobile/mediaScheduleSlotTimes
+
+backups/
+*.log
+.DS_Store
