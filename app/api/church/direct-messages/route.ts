@@ -27,6 +27,44 @@ function json(data: unknown, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
 
+function resolveReportedDmUserId(
+  roomId: string,
+  viewerUserId: string
+) {
+  const normalizedRoomId =
+    String(roomId || "").trim();
+
+  const normalizedViewerUserId =
+    String(viewerUserId || "").trim();
+
+  if (
+    !normalizedRoomId.startsWith("dm:") ||
+    !normalizedViewerUserId
+  ) {
+    return "";
+  }
+
+  const participants =
+    normalizedRoomId
+      .slice(3)
+      .split("::")
+      .map((value) =>
+        String(value || "").trim()
+      )
+      .filter(Boolean);
+
+  if (participants.length !== 2) {
+    return "";
+  }
+
+  return (
+    participants.find(
+      (userId) =>
+        userId !== normalizedViewerUserId
+    ) || ""
+  );
+}
+
 export async function GET(req: NextRequest) {
   const ctxOrRes = await guard(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
@@ -294,7 +332,12 @@ export async function PATCH(req: NextRequest) {
     const reportedUserId =
       String(
         (reported as any)
-          ?.reportedUserId || ""
+          ?.reportedUserId ||
+        resolveReportedDmUserId(
+          roomId,
+          viewerUserId
+        ) ||
+        ""
       ).trim();
 
     const reportedProfile =
@@ -346,11 +389,6 @@ export async function PATCH(req: NextRequest) {
           ).trim(),
 
         targetSubtitle:
-          String(
-            reportedProfile?.userCode || ""
-          )
-            .trim()
-            .toUpperCase() ||
           undefined,
 
         targetOwnerUserId:
