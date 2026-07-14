@@ -11,6 +11,8 @@ export type SafetySupervisorSummary = {
   kristoId?: string;
   churchId: string;
   fullName?: string;
+  avatarUrl?: string;
+  avatarUri?: string;
   invitationStatus?:
     | "pending"
     | "accepted";

@@ -1,9 +1,14 @@
 import React from "react";
 import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import {
@@ -34,7 +39,10 @@ import {
 } from "@/src/lib/platformRole";
 
 import {
+  assignSafetyReportsToSupervisorByQuantity,
+  fetchSafetySupervisors,
   fetchSafetySystemAdminDashboard,
+  type SafetySupervisorSummary,
   type SafetySystemAdminDashboardResponse,
 } from "@/src/lib/safetyAdminApi";
 
@@ -183,6 +191,35 @@ export default function ReportCenterScreen() {
     setSystemDashboardError,
   ] = React.useState("");
 
+  const [
+    supervisors,
+    setSupervisors,
+  ] = React.useState<
+    SafetySupervisorSummary[]
+  >([]);
+
+  const [
+    supervisorsLoading,
+    setSupervisorsLoading,
+  ] = React.useState(true);
+
+  const [
+    assignTarget,
+    setAssignTarget,
+  ] = React.useState<
+    SafetySupervisorSummary | null
+  >(null);
+
+  const [
+    assignQuantity,
+    setAssignQuantity,
+  ] = React.useState("");
+
+  const [
+    assigningReports,
+    setAssigningReports,
+  ] = React.useState(false);
+
   const loadSystemDashboard =
     React.useCallback(async () => {
       if (!allowed) {
@@ -230,6 +267,135 @@ export default function ReportCenterScreen() {
   React.useEffect(() => {
     void loadSystemDashboard();
   }, [loadSystemDashboard]);
+
+  const loadSupervisors =
+    React.useCallback(async () => {
+      if (!allowed) {
+        setSupervisorsLoading(false);
+        return;
+      }
+
+      setSupervisorsLoading(true);
+
+      try {
+        const result =
+          await fetchSafetySupervisors();
+
+        setSupervisors(
+          result.supervisors
+        );
+
+        console.log(
+          "KRISTO_SAFETY_SYSTEM_ADMIN_SUPERVISORS_LOADED",
+          {
+            count:
+              result.supervisors.length,
+          }
+        );
+      } catch (error: any) {
+        console.log(
+          "KRISTO_SAFETY_SYSTEM_ADMIN_SUPERVISORS_FAILED",
+          {
+            error: String(
+              error?.message || error
+            ),
+          }
+        );
+      } finally {
+        setSupervisorsLoading(false);
+      }
+    }, [allowed]);
+
+  React.useEffect(() => {
+    void loadSupervisors();
+  }, [loadSupervisors]);
+
+  const highestWorkloadSupervisor =
+    React.useMemo(() => {
+      return [...supervisors].sort(
+        (a, b) =>
+          Number(
+            b?.counts?.open || 0
+          ) -
+          Number(
+            a?.counts?.open || 0
+          )
+      )[0] || null;
+    }, [supervisors]);
+
+  const submitReportAssignment =
+    React.useCallback(async () => {
+      if (
+        !assignTarget ||
+        assigningReports
+      ) {
+        return;
+      }
+
+      const quantity =
+        Math.floor(
+          Number(assignQuantity) || 0
+        );
+
+      const available =
+        Number(
+          systemDashboard?.counts
+            ?.open || 0
+        );
+
+      if (
+        quantity < 1 ||
+        quantity > available
+      ) {
+        Alert.alert(
+          "Invalid quantity",
+          `Enter a number between 1 and ${available}.`
+        );
+        return;
+      }
+
+      setAssigningReports(true);
+
+      try {
+        const result =
+          await assignSafetyReportsToSupervisorByQuantity({
+            supervisorUserId:
+              assignTarget.userId,
+
+            quantity,
+          });
+
+        setAssignTarget(null);
+        setAssignQuantity("");
+
+        await Promise.all([
+          loadSystemDashboard(),
+          loadSupervisors(),
+        ]);
+
+        Alert.alert(
+          "Reports assigned",
+          `${result.assignment.assignedCount} reports were assigned successfully.`
+        );
+      } catch (error: any) {
+        Alert.alert(
+          "Could not assign reports",
+          String(
+            error?.message ||
+              "Please try again."
+          )
+        );
+      } finally {
+        setAssigningReports(false);
+      }
+    }, [
+      assignTarget,
+      assigningReports,
+      assignQuantity,
+      systemDashboard,
+      loadSystemDashboard,
+      loadSupervisors,
+    ]);
 
   const resolveSystemMetricValue =
     React.useCallback(
@@ -606,11 +772,23 @@ export default function ReportCenterScreen() {
               ))}
             </View>
 
-            <GlassCard
-              style={styles.primaryAction}
-              borderColor=
-                "rgba(244,208,111,0.30)"
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open Report Queue"
+              onPress={() =>
+                router.push(
+                  "/more/system-admin/report-center/queue" as any
+                )
+              }
+              style={({ pressed }) => ({
+                opacity: pressed ? 0.76 : 1,
+              })}
             >
+              <GlassCard
+                style={styles.primaryAction}
+                borderColor=
+                  "rgba(244,208,111,0.30)"
+              >
               <View style={styles.primaryIcon}>
                 <Ionicons
                   name="file-tray-full-outline"
@@ -632,101 +810,452 @@ export default function ReportCenterScreen() {
 
               <View style={styles.comingBadge}>
                 <Text style={styles.comingBadgeText}>
-                  NEXT
+                  VIEW
                 </Text>
               </View>
             </GlassCard>
+            </Pressable>
 
-            <Text style={styles.sectionTitle}>
-              Safety Team
-            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Add Safety Supervisor"
+              onPress={() =>
+                router.push(
+                  "/more/system-admin/report-center/supervisors?add=1" as any
+                )
+              }
+              style={({ pressed }) => ({
+                marginTop: 18,
+                opacity: pressed ? 0.78 : 1,
+              })}
+            >
+              <GlassCard
+                style={styles.addSupervisorCard}
+                borderColor=
+                  "rgba(167,139,250,0.36)"
+              >
+                <View style={styles.addSupervisorIcon}>
+                  <Ionicons
+                    name="person-add-outline"
+                    size={25}
+                    color="#DDD6FE"
+                  />
+                </View>
 
-            <GlassCard style={styles.teamCard}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.addSupervisorTitle}>
+                    Add Supervisor
+                  </Text>
+
+                  <Text style={styles.addSupervisorSubtitle}>
+                    Invite and empower a trusted supervisor.
+                  </Text>
+                </View>
+
+                <View style={styles.addSupervisorAction}>
+                  <Ionicons
+                    name="add"
+                    size={27}
+                    color="#DDD6FE"
+                  />
+                </View>
+              </GlassCard>
+            </Pressable>
+
+            <View style={styles.sectionHeaderRow}>
+              <View>
+                <Text style={styles.sectionHeading}>
+                  Safety Supervisors
+                </Text>
+
+                <Text style={styles.sectionCount}>
+                  {supervisors.length} active
+                </Text>
+              </View>
+
               <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Open Safety Supervisors"
                 onPress={() =>
                   router.push(
                     "/more/system-admin/report-center/supervisors" as any
                   )
                 }
-                style={({ pressed }) => [
-                  styles.teamRow,
-                  pressed && {
-                    opacity: 0.72,
-                  },
-                ]}
               >
-                <View
-                  style={[
-                    styles.teamIcon,
-                    {
-                      backgroundColor:
-                        "rgba(167,139,250,0.14)",
-                    },
-                  ]}
-                >
-                  <Ionicons
-                    name="people-circle-outline"
-                    size={24}
-                    color="#C4B5FD"
-                  />
-                </View>
-
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.teamTitle}>
-                    Safety Supervisors
-                  </Text>
-
-                  <Text style={styles.teamSubtitle}>
-                    Supervisors can review reports,
-                    manage agents and escalate cases.
-                  </Text>
-                </View>
-
-                <Ionicons
-                  name="chevron-forward"
-                  size={20}
-                  color="rgba(255,255,255,0.35)"
-                />
+                <Text style={styles.viewAllText}>
+                  View all
+                </Text>
               </Pressable>
+            </View>
 
-              <View style={styles.divider} />
+            {supervisorsLoading ? (
+              <View style={styles.supervisorLoading}>
+                <ActivityIndicator
+                  color={PURPLE}
+                />
+              </View>
+            ) : supervisors.length ? (
+              <View style={styles.supervisorList}>
+                {supervisors
+                  .slice(0, 4)
+                  .map((supervisor) => {
+                    const counts =
+                      supervisor.counts || {
+                        assigned: 0,
+                        open: 0,
+                        inReview: 0,
+                        resolved: 0,
+                        highPriority: 0,
+                        escalated: 0,
+                        activeAgents: 0,
+                        pendingAgents: 0,
+                        totalAssigned: 0,
+                      };
 
-              <View style={styles.teamRow}>
-                <View
-                  style={[
-                    styles.teamIcon,
-                    {
-                      backgroundColor:
-                        "rgba(147,197,253,0.13)",
-                    },
-                  ]}
-                >
+                    const name =
+                      String(
+                        supervisor.fullName ||
+                        ""
+                      ).trim() ||
+                      "Safety Supervisor";
+
+                    const kristoId =
+                      String(
+                        supervisor.kristoId ||
+                        ""
+                      )
+                        .trim()
+                        .toUpperCase() ||
+                      "—";
+
+                    const churchId =
+                      String(
+                        supervisor.churchId ||
+                        ""
+                      )
+                        .trim()
+                        .toUpperCase() ||
+                      "Church ID unavailable";
+
+                    const avatarUri =
+                      String(
+                        supervisor.avatarUrl ||
+                        supervisor.avatarUri ||
+                        ""
+                      ).trim();
+
+                    return (
+                      <GlassCard
+                        key={supervisor.userId}
+                        style={styles.supervisorCard}
+                      >
+                        <Pressable
+                          onPress={() =>
+                            router.push(
+                              (
+                                "/more/system-admin/report-center/supervisors/" +
+                                encodeURIComponent(
+                                  supervisor.userId
+                                )
+                              ) as any
+                            )
+                          }
+                          style={styles.supervisorMain}
+                        >
+                          <View style={styles.supervisorAvatar}>
+                            {avatarUri ? (
+                              <Image
+                                source={{
+                                  uri: avatarUri,
+                                }}
+                                resizeMode="cover"
+                                style={styles.supervisorAvatarImage}
+                              />
+                            ) : (
+                              <Text style={styles.supervisorInitial}>
+                                {String(name)
+                                  .trim()
+                                  .split(/\s+/)
+                                  .slice(0, 2)
+                                  .map((part) =>
+                                    part
+                                      .charAt(0)
+                                      .toUpperCase()
+                                  )
+                                  .join("") ||
+                                  "S"}
+                              </Text>
+                            )}
+
+                            <View style={styles.activeDot} />
+                          </View>
+
+                          <View
+                            style={styles.supervisorIdentity}
+                          >
+                            <View style={styles.supervisorNameRow}>
+                              <Text
+                                numberOfLines={1}
+                                style={styles.supervisorName}
+                              >
+                                {name}
+                              </Text>
+
+                              <View style={styles.activeBadge}>
+                                <Text style={styles.activeBadgeText}>
+                                  Active
+                                </Text>
+                              </View>
+                            </View>
+
+                            <Text
+                              numberOfLines={1}
+                              style={styles.supervisorKristoId}
+                            >
+                              KRISTO ID: {kristoId}
+                            </Text>
+
+                            <Text
+                              numberOfLines={1}
+                              style={styles.supervisorChurch}
+                            >
+                              Church ID: {churchId}
+                            </Text>
+                          </View>
+
+                          <Ionicons
+                            name="chevron-forward"
+                            size={17}
+                            color="rgba(255,255,255,0.34)"
+                          />
+                        </Pressable>
+
+                        <View style={styles.supervisorStats}>
+                          <View style={styles.supervisorStat}>
+                            <Text
+                              style={[
+                                styles.supervisorStatValue,
+                                { color: BLUE },
+                              ]}
+                            >
+                              {counts.totalAssigned}
+                            </Text>
+
+                            <Text style={styles.supervisorStatLabel}>
+                              Assigned
+                            </Text>
+                          </View>
+
+                          <View style={styles.supervisorStat}>
+                            <Text
+                              style={[
+                                styles.supervisorStatValue,
+                                { color: GOLD },
+                              ]}
+                            >
+                              {counts.open}
+                            </Text>
+
+                            <Text style={styles.supervisorStatLabel}>
+                              Open
+                            </Text>
+                          </View>
+
+                          <View style={styles.supervisorStat}>
+                            <Text
+                              style={[
+                                styles.supervisorStatValue,
+                                { color: GREEN },
+                              ]}
+                            >
+                              {counts.resolved}
+                            </Text>
+
+                            <Text style={styles.supervisorStatLabel}>
+                              Resolved
+                            </Text>
+                          </View>
+
+                          <View style={styles.supervisorStat}>
+                            <Text
+                              style={[
+                                styles.supervisorStatValue,
+                                { color: PURPLE },
+                              ]}
+                            >
+                              {counts.activeAgents}
+                            </Text>
+
+                            <Text style={styles.supervisorStatLabel}>
+                              Agents
+                            </Text>
+                          </View>
+                        </View>
+
+                        <Pressable
+                          disabled={
+                            Number(
+                              systemDashboard?.counts
+                                ?.open || 0
+                            ) < 1
+                          }
+                          onPress={() => {
+                            setAssignTarget(
+                              supervisor
+                            );
+
+                            setAssignQuantity("");
+                          }}
+                          style={({ pressed }) => [
+                            styles.assignReportsButton,
+
+                            pressed && {
+                              opacity: 0.72,
+                            },
+
+                            Number(
+                              systemDashboard?.counts
+                                ?.open || 0
+                            ) < 1 && {
+                              opacity: 0.42,
+                            },
+                          ]}
+                        >
+                          <Ionicons
+                            name="layers-outline"
+                            size={17}
+                            color="#DDD6FE"
+                          />
+
+                          <Text style={styles.assignReportsText}>
+                            Assign
+                          </Text>
+                        </Pressable>
+                      </GlassCard>
+                    );
+                  })}
+              </View>
+            ) : (
+              <GlassCard style={styles.emptySupervisorCard}>
+                <Ionicons
+                  name="people-outline"
+                  size={30}
+                  color={PURPLE}
+                />
+
+                <Text style={styles.emptySupervisorTitle}>
+                  No active supervisors
+                </Text>
+
+                <Text style={styles.emptySupervisorText}>
+                  Add a supervisor to start distributing reports.
+                </Text>
+              </GlassCard>
+            )}
+
+            <View style={styles.sectionHeaderRow}>
+              <View>
+                <Text style={styles.sectionHeading}>
+                  Platform Analysis
+                </Text>
+
+                <Text style={styles.sectionCount}>
+                  Global Report Center overview
+                </Text>
+              </View>
+            </View>
+
+            <GlassCard
+              style={styles.analysisCard}
+              borderColor=
+                "rgba(110,231,183,0.23)"
+            >
+              <View style={styles.analysisGrid}>
+                <View style={styles.analysisMetric}>
+                  <Text style={styles.analysisValue}>
+                    {systemDashboard?.counts?.total || 0}
+                  </Text>
+
+                  <Text style={styles.analysisLabel}>
+                    Total Reports
+                  </Text>
+                </View>
+
+                <View style={styles.analysisMetric}>
+                  <Text
+                    style={[
+                      styles.analysisValue,
+                      { color: GOLD },
+                    ]}
+                  >
+                    {systemDashboard?.counts?.open || 0}
+                  </Text>
+
+                  <Text style={styles.analysisLabel}>
+                    Unassigned
+                  </Text>
+                </View>
+
+                <View style={styles.analysisMetric}>
+                  <Text
+                    style={[
+                      styles.analysisValue,
+                      { color: BLUE },
+                    ]}
+                  >
+                    {systemDashboard?.counts?.assigned || 0}
+                  </Text>
+
+                  <Text style={styles.analysisLabel}>
+                    With Supervisors
+                  </Text>
+                </View>
+
+                <View style={styles.analysisMetric}>
+                  <Text
+                    style={[
+                      styles.analysisValue,
+                      { color: GREEN },
+                    ]}
+                  >
+                    {systemDashboard?.counts?.resolved || 0}
+                  </Text>
+
+                  <Text style={styles.analysisLabel}>
+                    Resolved
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.analysisDivider} />
+
+              <View style={styles.workloadRow}>
+                <View style={styles.workloadIcon}>
                   <Ionicons
-                    name="person-outline"
-                    size={23}
-                    color={BLUE}
+                    name="analytics-outline"
+                    size={21}
+                    color={PURPLE}
                   />
                 </View>
 
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.teamTitle}>
-                    Safety Agents
+                  <Text style={styles.workloadLabel}>
+                    Highest workload
                   </Text>
 
-                  <Text style={styles.teamSubtitle}>
-                    New reports will be assigned to
-                    eligible agents with the lowest
-                    workload.
+                  <Text style={styles.workloadName}>
+                    {highestWorkloadSupervisor
+                      ? (
+                          highestWorkloadSupervisor.fullName ||
+                          highestWorkloadSupervisor.kristoId ||
+                          "Safety Supervisor"
+                        )
+                      : "No supervisor data"}
                   </Text>
                 </View>
 
-                <Ionicons
-                  name="chevron-forward"
-                  size={20}
-                  color="rgba(255,255,255,0.35)"
-                />
+                <Text style={styles.workloadValue}>
+                  {highestWorkloadSupervisor
+                    ?.counts?.open || 0} open
+                </Text>
               </View>
             </GlassCard>
 
@@ -757,6 +1286,119 @@ export default function ReportCenterScreen() {
           </>
         )}
       </ScrollView>
+      <Modal
+        visible={Boolean(assignTarget)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!assigningReports) {
+            setAssignTarget(null);
+          }
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.assignModalCard}>
+            <View style={styles.assignModalIcon}>
+              <Ionicons
+                name="layers-outline"
+                size={25}
+                color="#DDD6FE"
+              />
+            </View>
+
+            <Text style={styles.assignModalTitle}>
+              Assign Reports
+            </Text>
+
+            <Text style={styles.assignModalSupervisor}>
+              {assignTarget?.fullName ||
+                "Safety Supervisor"}
+            </Text>
+
+            <Text style={styles.assignModalIdentity}>
+              {[
+                assignTarget?.kristoId
+                  ? `KRISTO ID: ${assignTarget.kristoId}`
+                  : "",
+                assignTarget?.churchId
+                  ? `Church ID: ${assignTarget.churchId}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join("  •  ")}
+            </Text>
+
+            <View style={styles.availableBox}>
+              <Text style={styles.availableLabel}>
+                Available reports
+              </Text>
+
+              <Text style={styles.availableValue}>
+                {systemDashboard?.counts?.open || 0}
+              </Text>
+            </View>
+
+            <Text style={styles.quantityLabel}>
+              Quantity
+            </Text>
+
+            <TextInput
+              value={assignQuantity}
+              onChangeText={(value) =>
+                setAssignQuantity(
+                  value.replace(
+                    /[^0-9]/g,
+                    ""
+                  )
+                )
+              }
+              keyboardType="number-pad"
+              placeholder="Enter quantity"
+              placeholderTextColor=
+                "rgba(255,255,255,0.34)"
+              style={styles.quantityInput}
+            />
+
+            <View style={styles.modalActions}>
+              <Pressable
+                disabled={assigningReports}
+                onPress={() =>
+                  setAssignTarget(null)
+                }
+                style={styles.modalCancel}
+              >
+                <Text style={styles.modalCancelText}>
+                  Cancel
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={assigningReports}
+                onPress={() =>
+                  void submitReportAssignment()
+                }
+                style={({ pressed }) => [
+                  styles.modalConfirm,
+
+                  pressed && {
+                    opacity: 0.76,
+                  },
+                ]}
+              >
+                {assigningReports ? (
+                  <ActivityIndicator
+                    color="#090D16"
+                  />
+                ) : (
+                  <Text style={styles.modalConfirmText}>
+                    Assign
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1002,6 +1644,480 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 18,
     fontWeight: "600",
+  },
+
+  addSupervisorCard: {
+    minHeight: 105,
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+
+  addSupervisorIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(139,92,246,0.18)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(167,139,250,0.36)",
+  },
+
+  addSupervisorTitle: {
+    color: TEXT,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  addSupervisorSubtitle: {
+    marginTop: 5,
+    color: MUTED,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "600",
+  },
+
+  addSupervisorAction: {
+    width: 44,
+    height: 44,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(139,92,246,0.16)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(167,139,250,0.34)",
+  },
+
+  sectionHeaderRow: {
+    marginTop: 26,
+    marginBottom: 11,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+  },
+
+  sectionHeading: {
+    color: TEXT,
+    fontSize: 20,
+    fontWeight: "900",
+  },
+
+  sectionCount: {
+    marginTop: 3,
+    color: "#C4B5FD",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  viewAllText: {
+    color: "#C4B5FD",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  supervisorLoading: {
+    paddingVertical: 24,
+    alignItems: "center",
+  },
+
+  supervisorList: {
+    gap: 8,
+  },
+
+  supervisorCard: {
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+
+  supervisorMain: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+
+  supervisorAvatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(139,92,246,0.19)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(167,139,250,0.42)",
+  },
+
+  supervisorAvatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+
+  supervisorIdentity: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  supervisorNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+
+  activeBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor:
+      "rgba(110,231,183,0.11)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(110,231,183,0.30)",
+  },
+
+  activeBadgeText: {
+    color: "#86EFAC",
+    fontSize: 8,
+    lineHeight: 10,
+    fontWeight: "900",
+  },
+
+  supervisorInitial: {
+    color: "#E9D5FF",
+    fontSize: 20,
+    fontWeight: "900",
+  },
+
+  activeDot: {
+    position: "absolute",
+    right: 0,
+    bottom: 1,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: GREEN,
+    borderWidth: 2,
+    borderColor: "#151927",
+  },
+
+  supervisorName: {
+    flexShrink: 1,
+    color: TEXT,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "900",
+  },
+
+  supervisorKristoId: {
+    marginTop: 3,
+    color: "#C4B5FD",
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: "800",
+  },
+
+  supervisorChurch: {
+    marginTop: 1,
+    color: MUTED,
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: "700",
+  },
+
+  supervisorStats: {
+    marginTop: 9,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor:
+      "rgba(255,255,255,0.075)",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+
+  supervisorStat: {
+    flex: 1,
+    alignItems: "center",
+  },
+
+  supervisorStatValue: {
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: "900",
+  },
+
+  supervisorStatLabel: {
+    marginTop: 1,
+    color:
+      "rgba(255,255,255,0.48)",
+    fontSize: 8,
+    lineHeight: 10,
+    fontWeight: "800",
+  },
+
+  assignReportsButton: {
+    alignSelf: "flex-end",
+    marginTop: 9,
+    minHeight: 34,
+    minWidth: 94,
+    paddingHorizontal: 13,
+    borderRadius: 11,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor:
+      "rgba(139,92,246,0.16)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(167,139,250,0.38)",
+  },
+
+  assignReportsText: {
+    color: "#DDD6FE",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.35,
+  },
+
+  emptySupervisorCard: {
+    padding: 22,
+    alignItems: "center",
+  },
+
+  emptySupervisorTitle: {
+    marginTop: 10,
+    color: TEXT,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+
+  emptySupervisorText: {
+    marginTop: 6,
+    color: MUTED,
+    textAlign: "center",
+    fontSize: 11,
+    lineHeight: 17,
+    fontWeight: "600",
+  },
+
+  analysisCard: {
+    padding: 16,
+  },
+
+  analysisGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+
+  analysisMetric: {
+    width: "47%",
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor:
+      "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.075)",
+  },
+
+  analysisValue: {
+    color: TEXT,
+    fontSize: 24,
+    fontWeight: "900",
+  },
+
+  analysisLabel: {
+    marginTop: 4,
+    color: MUTED,
+    fontSize: 10,
+    fontWeight: "700",
+  },
+
+  analysisDivider: {
+    height: 1,
+    marginVertical: 16,
+    backgroundColor:
+      "rgba(255,255,255,0.075)",
+  },
+
+  workloadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+
+  workloadIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(139,92,246,0.15)",
+  },
+
+  workloadLabel: {
+    color: MUTED,
+    fontSize: 10,
+    fontWeight: "700",
+  },
+
+  workloadName: {
+    marginTop: 3,
+    color: TEXT,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  workloadValue: {
+    color: GOLD,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+
+  modalBackdrop: {
+    flex: 1,
+    padding: 22,
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(0,0,0,0.72)",
+  },
+
+  assignModalCard: {
+    padding: 20,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor:
+      "rgba(167,139,250,0.38)",
+    backgroundColor: "#171A29",
+  },
+
+  assignModalIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(139,92,246,0.17)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(167,139,250,0.35)",
+  },
+
+  assignModalTitle: {
+    marginTop: 16,
+    color: TEXT,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+
+  assignModalSupervisor: {
+    marginTop: 5,
+    color: TEXT,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  assignModalIdentity: {
+    marginTop: 4,
+    color: "#C4B5FD",
+    fontSize: 10,
+    lineHeight: 15,
+    fontWeight: "700",
+  },
+
+  availableBox: {
+    marginTop: 18,
+    padding: 14,
+    borderRadius: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor:
+      "rgba(244,208,111,0.08)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(244,208,111,0.23)",
+  },
+
+  availableLabel: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  availableValue: {
+    color: GOLD,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+
+  quantityLabel: {
+    marginTop: 18,
+    marginBottom: 8,
+    color: TEXT,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  quantityInput: {
+    minHeight: 52,
+    paddingHorizontal: 15,
+    borderRadius: 16,
+    color: TEXT,
+    fontSize: 17,
+    fontWeight: "800",
+    backgroundColor:
+      "rgba(255,255,255,0.055)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.12)",
+  },
+
+  modalActions: {
+    marginTop: 20,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 12,
+  },
+
+  modalCancel: {
+    minHeight: 45,
+    paddingHorizontal: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  modalCancelText: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  modalConfirm: {
+    minWidth: 110,
+    minHeight: 45,
+    paddingHorizontal: 20,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GOLD,
+  },
+
+  modalConfirmText: {
+    color: "#090D16",
+    fontSize: 13,
+    fontWeight: "900",
   },
 
   restricted: {
