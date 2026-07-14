@@ -618,3 +618,48 @@ export async function dbListSafetyRolesForUser(
     ).toISOString(),
   }));
 }
+
+
+
+/*
+ * Revokes only a Kristo Safety role.
+ *
+ * This does not delete the user's Kristo account,
+ * church membership, profile, or any other role.
+ */
+export async function dbRemoveSafetyRole(
+  input: {
+    userId: string;
+    role: SafetyRole;
+  }
+): Promise<{
+  removed: boolean;
+}> {
+  const userId =
+    String(
+      input.userId || ""
+    ).trim();
+
+  if (!userId) {
+    throw new Error(
+      "Safety role user ID is required."
+    );
+  }
+
+  await ensureSafetySchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    DELETE FROM kristo_safety_roles
+    WHERE user_id = ${userId}
+      AND role = ${input.role}
+    RETURNING user_id
+  `) as Array<{
+    user_id: string;
+  }>;
+
+  return {
+    removed: rows.length > 0,
+  };
+}

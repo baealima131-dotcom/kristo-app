@@ -1976,3 +1976,65 @@ dbAssignSafetyReportsToSupervisorByQuantity(
       .filter(Boolean),
   };
 }
+
+
+
+/*
+ * Before System Admin revokes a supervisor,
+ * all unfinished reports owned by that supervisor
+ * return to the global unassigned queue.
+ *
+ * Resolved and dismissed reports keep their
+ * historical supervisor ownership for audit history.
+ */
+export async function dbReleaseSafetySupervisorReports(
+  supervisorUserId: string
+): Promise<{
+  releasedCount: number;
+  reportIds: string[];
+}> {
+  const supervisorId =
+    String(
+      supervisorUserId || ""
+    ).trim();
+
+  if (!supervisorId) {
+    throw new Error(
+      "Safety Supervisor user ID is required."
+    );
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+  const now = nowIso();
+
+  const rows = (await sql`
+    UPDATE kristo_safety_reports
+    SET
+      assigned_supervisor_user_id = NULL,
+      assigned_agent_user_id = NULL,
+      assigned_at = NULL,
+      status = 'open',
+      updated_at = ${now}
+    WHERE
+      assigned_supervisor_user_id =
+        ${supervisorId}
+      AND status NOT IN (
+        'resolved',
+        'dismissed'
+      )
+    RETURNING id
+  `) as Array<{
+    id: string;
+  }>;
+
+  return {
+    releasedCount: rows.length,
+    reportIds: rows
+      .map((row) =>
+        String(row.id || "").trim()
+      )
+      .filter(Boolean),
+  };
+}

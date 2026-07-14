@@ -634,7 +634,7 @@ export default function ReportCenterScreen() {
             <View style={styles.heroIcon}>
               <MaterialCommunityIcons
                 name="shield-alert-outline"
-                size={28}
+                size={23}
                 color="#DDD6FE"
               />
             </View>
@@ -646,7 +646,7 @@ export default function ReportCenterScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
           paddingHorizontal: 16,
-          paddingTop: 18,
+          paddingTop: 12,
           paddingBottom:
             insets.bottom + 38,
         }}
@@ -1444,34 +1444,35 @@ const styles = StyleSheet.create({
   },
 
   hero: {
-    paddingHorizontal: 20,
-    paddingVertical: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
 
   heroRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    gap: 11,
   },
 
   heroTitle: {
     color: TEXT,
-    fontSize: 31,
-    lineHeight: 36,
+    fontSize: 26,
+    lineHeight: 30,
     fontWeight: "900",
   },
 
   heroSubtitle: {
-    marginTop: 6,
+    marginTop: 4,
     color: "#C4B5FD",
-    fontSize: 14,
+    fontSize: 12,
+    lineHeight: 16,
     fontWeight: "800",
   },
 
   heroIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 22,
+    width: 50,
+    height: 50,
+    borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
@@ -1485,41 +1486,44 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 9,
   },
 
   metricCard: {
-    width: "48%",
-    minHeight: 170,
-    padding: 16,
+    width: "48.5%",
+    minHeight: 132,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
   },
 
   metricIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 15,
+    width: 36,
+    height: 36,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
 
   metricValue: {
-    marginTop: 21,
-    fontSize: 36,
+    marginTop: 11,
+    fontSize: 29,
+    lineHeight: 33,
     fontWeight: "900",
   },
 
   metricLabel: {
-    marginTop: 5,
+    marginTop: 2,
     color: TEXT,
-    fontSize: 16,
+    fontSize: 13,
+    lineHeight: 17,
     fontWeight: "900",
   },
 
   metricHelper: {
-    marginTop: 5,
+    marginTop: 3,
     color: MUTED,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 10,
+    lineHeight: 14,
     fontWeight: "600",
   },
 

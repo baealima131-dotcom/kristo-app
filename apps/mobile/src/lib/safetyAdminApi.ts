@@ -61,6 +61,61 @@ export async function inviteSafetySupervisor(
   };
 }
 
+export async function removeSafetySupervisor(
+  supervisorUserId: string
+): Promise<{
+  removed: boolean;
+  releasedReportCount: number;
+}> {
+  const normalizedUserId =
+    String(
+      supervisorUserId || ""
+    ).trim();
+
+  if (!normalizedUserId) {
+    throw new Error(
+      "Safety Supervisor user ID is required."
+    );
+  }
+
+  const response: any =
+    await apiPost(
+      "/api/safety/supervisors/remove",
+      {
+        supervisorUserId:
+          normalizedUserId,
+      },
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not remove Safety Supervisor."
+      )
+    );
+  }
+
+  return {
+    removed:
+      response.removed === true,
+
+    releasedReportCount:
+      Number(
+        response.releasedReportCount ||
+        0
+      ),
+  };
+}
+
+
 export async function fetchSafetySupervisors() {
   const path =
     "/api/safety/supervisors";
