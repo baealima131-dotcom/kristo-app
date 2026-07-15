@@ -12,6 +12,11 @@ import {
   dbRespondToSafetyInvitation,
 } from "@/app/api/_lib/store/safetyDb";
 
+import {
+  dbCreateSupervisorAgent,
+  dbRemoveSupervisorAgent,
+} from "@/app/api/_lib/store/safetyReportDb";
+
 export const runtime = "nodejs";
 
 export async function POST(
@@ -61,6 +66,40 @@ export async function POST(
             | "accept"
             | "decline",
       });
+
+    if (
+      invitation.role ===
+      "Safety_Agent"
+    ) {
+      if (action === "accept") {
+        await dbCreateSupervisorAgent({
+          supervisorUserId:
+            invitation.invitedByUserId,
+
+          agentUserId:
+            invitation.inviteeUserId,
+
+          agentKristoId:
+            invitation.inviteeKristoId,
+
+          churchId:
+            invitation.churchId,
+
+          status: "active",
+        });
+      } else {
+        await dbRemoveSupervisorAgent({
+          supervisorUserId:
+            invitation.invitedByUserId,
+
+          agentUserId:
+            invitation.inviteeUserId,
+
+          churchId:
+            invitation.churchId,
+        });
+      }
+    }
 
     console.log(
       "KRISTO_SAFETY_INVITATION_RESPONDED",

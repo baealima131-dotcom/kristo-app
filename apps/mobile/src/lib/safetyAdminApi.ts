@@ -496,8 +496,13 @@ addSafetySupervisorAgent(
   }
 ): Promise<{
   outcome:
-    | "added"
-    | "alreadyAdded";
+    | "invited"
+    | "alreadyInvited"
+    | "alreadyActive";
+  invitation?: {
+    id: string;
+    status: string;
+  } | null;
   agent: SafetySupervisorAgent;
 }> {
   const kristoId =
@@ -544,9 +549,15 @@ addSafetySupervisorAgent(
   return {
     outcome:
       response.outcome ===
-      "alreadyAdded"
-        ? "alreadyAdded"
-        : "added",
+      "alreadyActive"
+        ? "alreadyActive"
+        : response.outcome ===
+          "alreadyInvited"
+        ? "alreadyInvited"
+        : "invited",
+
+    invitation:
+      response?.invitation || null,
 
     agent:
       response.agent as

@@ -8,6 +8,7 @@ import {
 } from "@/app/api/_lib/rbac";
 
 import {
+  dbCreateSafetyInvite,
   dbHasSafetyRole,
 } from "@/app/api/_lib/store/safetyDb";
 
@@ -157,6 +158,12 @@ export async function POST(
       );
     }
 
+    const alreadyHasRole =
+      await dbHasSafetyRole(
+        resolved.userId,
+        "Safety_Agent"
+      );
+
     const before =
       await dbGetSafetySupervisorDashboard(
         access.supervisorUserId
@@ -171,13 +178,34 @@ export async function POST(
             resolved.churchId
       );
 
-    if (existing) {
+    if (
+      alreadyHasRole &&
+      existing?.status === "active"
+    ) {
       return NextResponse.json({
         ok: true,
-        outcome: "alreadyAdded",
+        outcome: "alreadyActive",
+        invitation: null,
         agent: existing,
       });
     }
+
+    const invitation =
+      await dbCreateSafetyInvite({
+        inviteeUserId:
+          resolved.userId,
+
+        inviteeKristoId:
+          resolved.kristoId,
+
+        churchId:
+          resolved.churchId,
+
+        invitedByUserId:
+          access.supervisorUserId,
+
+        role: "Safety_Agent",
+      });
 
     await dbCreateSupervisorAgent({
       supervisorUserId:
@@ -192,7 +220,7 @@ export async function POST(
       churchId:
         resolved.churchId,
 
-      status: "active",
+      status: "pending",
     });
 
     const dashboard =
@@ -211,12 +239,12 @@ export async function POST(
 
     if (!agent) {
       throw new Error(
-        "Safety Agent was created but could not be reloaded."
+        "Safety Agent invitation was created but the pending agent could not be reloaded."
       );
     }
 
     console.log(
-      "KRISTO_SAFETY_AGENT_ADDED",
+      "KRISTO_SAFETY_AGENT_INVITATION_CREATED",
       {
         supervisorUserId:
           access.supervisorUserId,
@@ -229,12 +257,19 @@ export async function POST(
 
         churchId:
           resolved.churchId,
+
+        invitationId:
+          invitation.id,
       }
     );
 
     return NextResponse.json({
       ok: true,
-      outcome: "added",
+      outcome:
+        invitation.createdAt
+          ? "invited"
+          : "alreadyInvited",
+      invitation,
       agent,
     });
   } catch (error: any) {

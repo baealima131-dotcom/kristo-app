@@ -187,13 +187,19 @@ SafetySupervisorAgentsScreen() {
 
         Alert.alert(
           result.outcome ===
-            "alreadyAdded"
-            ? "Agent already added"
-            : "Safety Agent added",
+            "alreadyActive"
+            ? "Agent already active"
+            : result.outcome ===
+              "alreadyInvited"
+            ? "Invitation already pending"
+            : "Invitation sent",
           result.outcome ===
-            "alreadyAdded"
-            ? "This user is already in your Safety Agents list."
-            : "The Safety Agent is now available for report assignment."
+            "alreadyActive"
+            ? "This member is already an active Safety Agent."
+            : result.outcome ===
+              "alreadyInvited"
+            ? "This member already has a pending Safety Agent invitation."
+            : "The member must accept the invitation before reports can be assigned."
         );
       } catch (nextError: any) {
         Alert.alert(

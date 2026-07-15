@@ -1411,6 +1411,66 @@ export async function dbCreateSupervisorAgent(
   return rows[0];
 }
 
+export async function
+dbRemoveSupervisorAgent(
+  input: {
+    supervisorUserId: string;
+    agentUserId: string;
+    churchId: string;
+  }
+): Promise<{
+  removed: boolean;
+}> {
+  const supervisorUserId =
+    String(
+      input.supervisorUserId || ""
+    ).trim();
+
+  const agentUserId =
+    String(
+      input.agentUserId || ""
+    ).trim();
+
+  const churchId =
+    String(
+      input.churchId || ""
+    ).trim();
+
+  if (
+    !supervisorUserId ||
+    !agentUserId ||
+    !churchId
+  ) {
+    return {
+      removed: false,
+    };
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    DELETE FROM
+      kristo_safety_supervisor_agents
+    WHERE
+      supervisor_user_id =
+        ${supervisorUserId}
+      AND agent_user_id =
+        ${agentUserId}
+      AND church_id =
+        ${churchId}
+    RETURNING id
+  `) as Array<{
+    id: string;
+  }>;
+
+  return {
+    removed: rows.length > 0,
+  };
+}
+
+
 export async function dbGetSafetySupervisorDashboard(
   supervisorUserId: string
 ): Promise<SafetySupervisorDashboard> {

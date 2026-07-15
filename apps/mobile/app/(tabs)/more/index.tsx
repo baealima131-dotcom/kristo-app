@@ -81,6 +81,15 @@ const SAFETY_SUPERVISOR_MORE_ITEM: Item = {
   href: "/more/safety-supervisor",
 };
 
+const SAFETY_AGENT_MORE_ITEM: Item = {
+  key: "safety_agent",
+  title: "Safety Agent",
+  sub: "Review assigned safety reports",
+  iconLib: "ion",
+  icon: "shield-half-outline",
+  href: "/more/safety-agent",
+};
+
 /** Preserved for More tab restore; currently hidden via HIDDEN_MORE_CARD_KEYS. */
 const MESSAGES_MORE_ITEM: Item = {
   key: "messages",
@@ -401,10 +410,23 @@ export default function MoreScreen() {
     if (!canShowMediaCard) {
       base = base.filter((item) => item.key !== "media");
     }
-    const safetyItems =
+    const safetyItems: Item[] = [];
+
+    if (
       safetyAccess?.isSafetySupervisor
-        ? [SAFETY_SUPERVISOR_MORE_ITEM]
-        : [];
+    ) {
+      safetyItems.push(
+        SAFETY_SUPERVISOR_MORE_ITEM
+      );
+    }
+
+    if (
+      safetyAccess?.isSafetyAgent
+    ) {
+      safetyItems.push(
+        SAFETY_AGENT_MORE_ITEM
+      );
+    }
 
     return [
       ...base,
@@ -421,6 +443,7 @@ export default function MoreScreen() {
     offlineActivationItems,
     agentInvitationItem,
     safetyAccess?.isSafetySupervisor,
+    safetyAccess?.isSafetyAgent,
   ]);
 
   const { left: leftItems, right: rightItems } = React.useMemo(
