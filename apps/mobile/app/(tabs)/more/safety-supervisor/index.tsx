@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import {
@@ -34,6 +35,13 @@ const TEXT = "#FFFFFF";
 const MUTED =
   "rgba(255,255,255,0.60)";
 
+type ReportQueueFilter =
+  | "all"
+  | "open"
+  | "in_review"
+  | "resolved"
+  | "escalated";
+
 export default function SafetySupervisorScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -57,6 +65,18 @@ export default function SafetySupervisorScreen() {
   ] = React.useState<
     SafetySupervisorDashboardResponse | null
   >(null);
+
+  const [
+    reportFilter,
+    setReportFilter,
+  ] = React.useState<ReportQueueFilter>(
+    "all"
+  );
+
+  const [
+    reportSearch,
+    setReportSearch,
+  ] = React.useState("");
 
   useFocusEffect(
     React.useCallback(() => {
@@ -124,6 +144,58 @@ export default function SafetySupervisorScreen() {
 
   const allowed =
     access?.isSafetySupervisor === true;
+
+  const filteredReports =
+    React.useMemo(() => {
+      const reports =
+        dashboard?.reports || [];
+
+      const query =
+        reportSearch
+          .trim()
+          .toLowerCase();
+
+      return reports.filter(
+        (report) => {
+          const matchesFilter =
+            reportFilter === "all"
+              ? true
+              : reportFilter === "open"
+                ? (
+                    report.status === "open" ||
+                    report.status === "assigned"
+                  )
+                : report.status ===
+                  reportFilter;
+
+          if (!matchesFilter) {
+            return false;
+          }
+
+          if (!query) {
+            return true;
+          }
+
+          return [
+            report.reportCode,
+            report.reason,
+            report.category,
+            report.reporterKristoId,
+            report.reportedKristoId,
+            report.targetTitle,
+            report.targetOwnerName,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase()
+            .includes(query);
+        }
+      );
+    }, [
+      dashboard?.reports,
+      reportFilter,
+      reportSearch,
+    ]);
 
   return (
     <View style={styles.screen}>
@@ -339,33 +411,349 @@ export default function SafetySupervisorScreen() {
             ))}
           </View>
 
-          <Pressable style={styles.primaryAction}>
-            <View style={styles.primaryIcon}>
-              <Ionicons
-                name="file-tray-full-outline"
-                size={25}
-                color={GOLD}
-              />
-            </View>
-
-            <View style={{ flex: 1 }}>
-              <Text style={styles.primaryTitle}>
-                Assigned Reports
+          <View style={styles.queueHeader}>
+            <View>
+              <Text style={styles.sectionTitle}>
+                Report Queue
               </Text>
 
-              <Text style={styles.primaryText}>
-                Open report queue, review
-                Report Command Codes and
-                assign cases to agents.
+              <Text style={styles.queueSubtitle}>
+                {filteredReports.length} cases shown
               </Text>
             </View>
 
+            <View style={styles.queueLiveBadge}>
+              <View style={styles.queueLiveDot} />
+
+              <Text style={styles.queueLiveText}>
+                LIVE
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.searchShell}>
             <Ionicons
-              name="chevron-forward"
-              size={22}
-              color={GOLD}
+              name="search-outline"
+              size={20}
+              color={MUTED}
             />
-          </Pressable>
+
+            <TextInput
+              value={reportSearch}
+              onChangeText={setReportSearch}
+              placeholder="Search code, reporter or reason"
+              placeholderTextColor=
+                "rgba(255,255,255,0.34)"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.searchInput}
+            />
+
+            {reportSearch ? (
+              <Pressable
+                onPress={() =>
+                  setReportSearch("")
+                }
+                hitSlop={10}
+              >
+                <Ionicons
+                  name="close-circle"
+                  size={20}
+                  color={MUTED}
+                />
+              </Pressable>
+            ) : null}
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={
+              styles.filterTabs
+            }
+          >
+            {[
+              {
+                key: "all",
+                label: "All",
+                count:
+                  dashboard?.reports.length || 0,
+              },
+              {
+                key: "open",
+                label: "Open",
+                count:
+                  dashboard?.counts.open || 0,
+              },
+              {
+                key: "in_review",
+                label: "In Review",
+                count:
+                  dashboard?.counts.inReview || 0,
+              },
+              {
+                key: "resolved",
+                label: "Resolved",
+                count:
+                  dashboard?.counts.resolved || 0,
+              },
+              {
+                key: "escalated",
+                label: "Escalated",
+                count:
+                  dashboard?.counts.escalated || 0,
+              },
+            ].map((tab) => {
+              const active =
+                reportFilter === tab.key;
+
+              return (
+                <Pressable
+                  key={tab.key}
+                  onPress={() =>
+                    setReportFilter(
+                      tab.key as ReportQueueFilter
+                    )
+                  }
+                  style={[
+                    styles.filterTab,
+                    active &&
+                      styles.filterTabActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.filterTabText,
+                      active &&
+                        styles.filterTabTextActive,
+                    ]}
+                  >
+                    {tab.label}
+                  </Text>
+
+                  <View
+                    style={[
+                      styles.filterCount,
+                      active &&
+                        styles.filterCountActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.filterCountText,
+                        active &&
+                          styles.filterCountTextActive,
+                      ]}
+                    >
+                      {tab.count}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          {filteredReports.length ? (
+            filteredReports.map(
+              (report) => {
+                const critical =
+                  report.priority ===
+                    "critical" ||
+                  report.priority ===
+                    "high";
+
+                return (
+                  <Pressable
+                    key={report.id}
+                    onPress={() =>
+                      router.push({
+                        pathname:
+                          "/(tabs)/more/safety-supervisor/reports/[reportId]",
+                        params: {
+                          reportId:
+                            report.id,
+                        },
+                      })
+                    }
+                    style={({ pressed }) => [
+                      styles.caseCard,
+                      critical &&
+                        styles.caseCardCritical,
+                      pressed && {
+                        opacity: 0.76,
+                      },
+                    ]}
+                  >
+                    <View
+                      style={styles.caseTopRow}
+                    >
+                      <View
+                        style={
+                          styles.caseCodeRow
+                        }
+                      >
+                        <Ionicons
+                          name={
+                            critical
+                              ? "warning"
+                              : "shield-checkmark-outline"
+                          }
+                          size={17}
+                          color={
+                            critical
+                              ? "#FB7185"
+                              : GOLD
+                          }
+                        />
+
+                        <Text
+                          style={styles.caseCode}
+                        >
+                          {report.reportCode}
+                        </Text>
+                      </View>
+
+                      <View
+                        style={[
+                          styles.priorityBadge,
+                          critical &&
+                            styles.priorityBadgeCritical,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.priorityText,
+                            critical &&
+                              styles.priorityTextCritical,
+                          ]}
+                        >
+                          {report.priority.toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Text
+                      numberOfLines={2}
+                      style={styles.caseReason}
+                    >
+                      {report.reason ||
+                        report.category}
+                    </Text>
+
+                    {report.targetTitle ||
+                    report.targetOwnerName ? (
+                      <Text
+                        numberOfLines={1}
+                        style={styles.caseTarget}
+                      >
+                        Target:{" "}
+                        {report.targetTitle ||
+                          report.targetOwnerName}
+                      </Text>
+                    ) : null}
+
+                    <View
+                      style={styles.caseMetaRow}
+                    >
+                      <Text
+                        style={styles.caseMeta}
+                      >
+                        Reporter:{" "}
+                        {report.reporterKristoId ||
+                          "Unknown"}
+                      </Text>
+
+                      <Text
+                        style={styles.caseMeta}
+                      >
+                        {new Date(
+                          report.createdAt
+                        ).toLocaleDateString()}
+                      </Text>
+                    </View>
+
+                    <View
+                      style={styles.caseFooter}
+                    >
+                      <View
+                        style={styles.statusBadge}
+                      >
+                        <View
+                          style={[
+                            styles.statusDot,
+                            report.status ===
+                              "resolved"
+                              ? {
+                                  backgroundColor:
+                                    "#6EE7B7",
+                                }
+                              : report.status ===
+                                  "escalated"
+                                ? {
+                                    backgroundColor:
+                                      "#FB7185",
+                                  }
+                                : report.status ===
+                                    "in_review"
+                                  ? {
+                                      backgroundColor:
+                                        "#C4B5FD",
+                                    }
+                                  : null,
+                          ]}
+                        />
+
+                        <Text
+                          style={styles.statusText}
+                        >
+                          {report.status
+                            .replace(
+                              "_",
+                              " "
+                            )
+                            .toUpperCase()}
+                        </Text>
+                      </View>
+
+                      <View
+                        style={styles.openCaseButton}
+                      >
+                        <Text
+                          style={
+                            styles.openCaseText
+                          }
+                        >
+                          Open Case
+                        </Text>
+
+                        <Ionicons
+                          name="chevron-forward"
+                          size={16}
+                          color={GOLD}
+                        />
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              }
+            )
+          ) : (
+            <View style={styles.emptyQueue}>
+              <Ionicons
+                name="file-tray-outline"
+                size={34}
+                color={MUTED}
+              />
+
+              <Text style={styles.emptyQueueTitle}>
+                No matching cases
+              </Text>
+
+              <Text style={styles.emptyQueueText}>
+                Change the filter or search term.
+              </Text>
+            </View>
+          )}
 
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>
@@ -455,40 +843,6 @@ export default function SafetySupervisorScreen() {
               </Text>
             </View>
           )}
-
-          {dashboard?.reports
-            .slice(0, 5)
-            .map((report) => (
-              <View
-                key={report.id}
-                style={styles.reportCard}
-              >
-                <View style={styles.reportTopRow}>
-                  <Text style={styles.reportCode}>
-                    {report.reportCode}
-                  </Text>
-
-                  <Text style={styles.reportPriority}>
-                    {report.priority.toUpperCase()}
-                  </Text>
-                </View>
-
-                <Text style={styles.reportReason}>
-                  {report.reason}
-                </Text>
-
-                <Text style={styles.reportReporter}>
-                  Reporter:{" "}
-                  {report.reporterKristoId}
-                </Text>
-
-                <Text style={styles.reportStatus}>
-                  {report.status
-                    .replace("_", " ")
-                    .toUpperCase()}
-                </Text>
-              </View>
-            ))}
 
           <View style={styles.infoCard}>
             <Ionicons
@@ -680,6 +1034,288 @@ const styles = StyleSheet.create({
     color: MUTED,
     fontSize: 11,
     lineHeight: 16,
+    fontWeight: "700",
+  },
+
+  queueHeader: {
+    marginTop: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  queueSubtitle: {
+    marginTop: 3,
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  queueLiveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor:
+      "rgba(110,231,183,0.10)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(110,231,183,0.22)",
+  },
+
+  queueLiveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: "#6EE7B7",
+  },
+
+  queueLiveText: {
+    color: "#6EE7B7",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+
+  searchShell: {
+    minHeight: 50,
+    paddingHorizontal: 14,
+    borderRadius: 17,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor:
+      "rgba(255,255,255,0.055)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.10)",
+  },
+
+  searchInput: {
+    flex: 1,
+    color: TEXT,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  filterTabs: {
+    gap: 8,
+    paddingRight: 10,
+  },
+
+  filterTab: {
+    minHeight: 40,
+    paddingHorizontal: 13,
+    borderRadius: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor:
+      "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.085)",
+  },
+
+  filterTabActive: {
+    backgroundColor:
+      "rgba(244,208,111,0.12)",
+    borderColor:
+      "rgba(244,208,111,0.35)",
+  },
+
+  filterTabText: {
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+
+  filterTabTextActive: {
+    color: GOLD,
+  },
+
+  filterCount: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 5,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(255,255,255,0.07)",
+  },
+
+  filterCountActive: {
+    backgroundColor:
+      "rgba(244,208,111,0.18)",
+  },
+
+  filterCountText: {
+    color: MUTED,
+    fontSize: 9,
+    fontWeight: "900",
+  },
+
+  filterCountTextActive: {
+    color: GOLD,
+  },
+
+  caseCard: {
+    padding: 16,
+    borderRadius: 21,
+    backgroundColor:
+      "rgba(255,255,255,0.052)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(147,197,253,0.17)",
+  },
+
+  caseCardCritical: {
+    borderColor:
+      "rgba(251,113,133,0.30)",
+    backgroundColor:
+      "rgba(251,113,133,0.055)",
+  },
+
+  caseTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  caseCodeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+
+  caseCode: {
+    color: GOLD,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+
+  priorityBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor:
+      "rgba(147,197,253,0.10)",
+  },
+
+  priorityBadgeCritical: {
+    backgroundColor:
+      "rgba(251,113,133,0.13)",
+  },
+
+  priorityText: {
+    color: "#93C5FD",
+    fontSize: 8,
+    fontWeight: "900",
+  },
+
+  priorityTextCritical: {
+    color: "#FB7185",
+  },
+
+  caseReason: {
+    marginTop: 12,
+    color: TEXT,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "900",
+  },
+
+  caseTarget: {
+    marginTop: 6,
+    color: "#C4B5FD",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  caseMetaRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+
+  caseMeta: {
+    color: MUTED,
+    fontSize: 10,
+    fontWeight: "700",
+  },
+
+  caseFooter: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor:
+      "rgba(255,255,255,0.07)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#93C5FD",
+  },
+
+  statusText: {
+    color: MUTED,
+    fontSize: 9,
+    fontWeight: "900",
+  },
+
+  openCaseButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+
+  openCaseText: {
+    color: GOLD,
+    fontSize: 10,
+    fontWeight: "900",
+  },
+
+  emptyQueue: {
+    padding: 25,
+    borderRadius: 21,
+    alignItems: "center",
+    backgroundColor:
+      "rgba(255,255,255,0.035)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.07)",
+  },
+
+  emptyQueueTitle: {
+    marginTop: 10,
+    color: TEXT,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+
+  emptyQueueText: {
+    marginTop: 5,
+    color: MUTED,
+    fontSize: 11,
+    textAlign: "center",
     fontWeight: "700",
   },
 

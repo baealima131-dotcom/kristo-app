@@ -432,6 +432,58 @@ export type SafetySupervisorDashboardResponse = {
   }>;
 };
 
+
+export async function fetchSafetySupervisorReport(
+  reportId: string
+): Promise<{
+  report: SafetyReportSummary;
+  agents: SafetySupervisorDashboardResponse["agents"];
+}> {
+  const normalizedId =
+    String(reportId || "").trim();
+
+  if (!normalizedId) {
+    throw new Error(
+      "Safety report ID is required."
+    );
+  }
+
+  const response: any =
+    await apiGet(
+      `/api/safety/supervisor/reports/${encodeURIComponent(
+        normalizedId
+      )}`,
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false ||
+    !response.report
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not load this safety report."
+      )
+    );
+  }
+
+  return {
+    report:
+      response.report as SafetyReportSummary,
+
+    agents:
+      Array.isArray(response.agents)
+        ? response.agents
+        : [],
+  };
+}
+
+
 export async function fetchSafetySupervisorDashboard():
   Promise<SafetySupervisorDashboardResponse> {
   const path =
