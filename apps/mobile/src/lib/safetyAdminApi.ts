@@ -484,6 +484,77 @@ export async function fetchSafetySupervisorReport(
 }
 
 
+
+export type SafetySupervisorAgent =
+  SafetySupervisorDashboardResponse["agents"][number];
+
+export async function
+addSafetySupervisorAgent(
+  input: {
+    kristoId: string;
+    churchId: string;
+  }
+): Promise<{
+  outcome:
+    | "added"
+    | "alreadyAdded";
+  agent: SafetySupervisorAgent;
+}> {
+  const kristoId =
+    String(input.kristoId || "")
+      .trim()
+      .toUpperCase();
+
+  const churchId =
+    String(input.churchId || "")
+      .trim()
+      .toUpperCase();
+
+  if (!kristoId || !churchId) {
+    throw new Error(
+      "KRISTO ID and Church ID are required."
+    );
+  }
+
+  const response: any =
+    await apiPost(
+      "/api/safety/supervisor/agents",
+      {
+        kristoId,
+        churchId,
+      },
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not add Safety Agent."
+      )
+    );
+  }
+
+  return {
+    outcome:
+      response.outcome ===
+      "alreadyAdded"
+        ? "alreadyAdded"
+        : "added",
+
+    agent:
+      response.agent as
+        SafetySupervisorAgent,
+  };
+}
+
+
 export async function fetchSafetySupervisorDashboard():
   Promise<SafetySupervisorDashboardResponse> {
   const path =

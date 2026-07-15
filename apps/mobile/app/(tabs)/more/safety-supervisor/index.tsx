@@ -78,6 +78,21 @@ export default function SafetySupervisorScreen() {
     setReportSearch,
   ] = React.useState("");
 
+  const workspaceScrollRef =
+    React.useRef<ScrollView | null>(
+      null
+    );
+
+  const [
+    reportQueueY,
+    setReportQueueY,
+  ] = React.useState(0);
+
+  const [
+    safetyAgentsY,
+    setSafetyAgentsY,
+  ] = React.useState(0);
+
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
@@ -144,6 +159,35 @@ export default function SafetySupervisorScreen() {
 
   const allowed =
     access?.isSafetySupervisor === true;
+
+  const openReportList =
+    React.useCallback(
+      (
+        filter:
+          | ReportQueueFilter
+          | "high_priority"
+      ) => {
+        if (filter === "high_priority") {
+          setReportFilter("all");
+          setReportSearch("");
+        } else {
+          setReportFilter(filter);
+          setReportSearch("");
+        }
+
+        requestAnimationFrame(() => {
+          workspaceScrollRef.current
+            ?.scrollTo({
+              y: Math.max(
+                0,
+                reportQueueY - 16
+              ),
+              animated: true,
+            });
+        });
+      },
+      [reportQueueY]
+    );
 
   const filteredReports =
     React.useMemo(() => {
@@ -229,7 +273,12 @@ export default function SafetySupervisorScreen() {
         </Pressable>
 
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>
+          <Text
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.72}
+            style={styles.headerTitle}
+          >
             Safety Supervisor
           </Text>
 
@@ -241,7 +290,7 @@ export default function SafetySupervisorScreen() {
         <View style={styles.shield}>
           <Ionicons
             name="shield-checkmark-outline"
-            size={27}
+            size={25}
             color={GOLD}
           />
         </View>
@@ -284,6 +333,7 @@ export default function SafetySupervisorScreen() {
         </View>
       ) : (
         <ScrollView
+          ref={workspaceScrollRef}
           contentContainerStyle={[
             styles.content,
             {
@@ -297,7 +347,7 @@ export default function SafetySupervisorScreen() {
             <View style={styles.heroIcon}>
               <Ionicons
                 name="shield-checkmark"
-                size={34}
+                size={18}
                 color={GOLD}
               />
             </View>
@@ -312,6 +362,72 @@ export default function SafetySupervisorScreen() {
               escalate serious cases to the
               System Admin.
             </Text>
+          </View>
+
+          <View style={styles.workspaceActions}>
+            <Pressable
+              onPress={() =>
+                router.push({
+                  pathname:
+                    "/(tabs)/more/safety-supervisor/agents",
+                  params: {
+                    mode: "add",
+                  },
+                })
+              }
+              style={({ pressed }) => [
+                styles.workspaceActionPrimary,
+                pressed && {
+                  opacity: 0.78,
+                },
+              ]}
+            >
+              <Ionicons
+                name="person-add-outline"
+                size={18}
+                color="#07111F"
+              />
+
+              <Text
+                style={
+                  styles.workspaceActionPrimaryText
+                }
+              >
+                Add Agent
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() =>
+                router.push({
+                  pathname:
+                    "/(tabs)/more/safety-supervisor/agents",
+                  params: {
+                    mode: "list",
+                  },
+                })
+              }
+              style={({ pressed }) => [
+                styles.workspaceActionSecondary,
+                pressed && {
+                  opacity: 0.75,
+                },
+              ]}
+            >
+              <Ionicons
+                name="people-outline"
+                size={18}
+                color="#C4B5FD"
+              />
+
+              <Text
+                style={
+                  styles.workspaceActionSecondaryText
+                }
+              >
+                Agents
+              </Text>
+            </Pressable>
           </View>
 
           <View style={styles.metricsGrid}>
@@ -378,9 +494,69 @@ export default function SafetySupervisorScreen() {
                 color: "#7DD3FC",
               },
             ].map((metric) => (
-              <View
+              <Pressable
                 key={metric.key}
-                style={styles.metricCard}
+                onPress={() => {
+                  if (
+                    metric.key === "assigned"
+                  ) {
+                    openReportList("all");
+                    return;
+                  }
+
+                  if (
+                    metric.key === "open"
+                  ) {
+                    openReportList("open");
+                    return;
+                  }
+
+                  if (
+                    metric.key === "review"
+                  ) {
+                    openReportList(
+                      "in_review"
+                    );
+                    return;
+                  }
+
+                  if (
+                    metric.key === "resolved"
+                  ) {
+                    openReportList(
+                      "resolved"
+                    );
+                    return;
+                  }
+
+                  if (
+                    metric.key === "priority"
+                  ) {
+                    openReportList(
+                      "high_priority"
+                    );
+                    return;
+                  }
+
+                  if (
+                    metric.key === "agents"
+                  ) {
+                    router.push(
+                      "/(tabs)/more/system-admin/report-center/supervisors"
+                    );
+                  }
+                }}
+                style={({ pressed }) => [
+                  styles.metricCard,
+                  pressed && {
+                    opacity: 0.76,
+                    transform: [
+                      {
+                        scale: 0.985,
+                      },
+                    ],
+                  },
+                ]}
               >
                 <Ionicons
                   name={metric.icon as any}
@@ -407,11 +583,34 @@ export default function SafetySupervisorScreen() {
                 <Text style={styles.metricHelper}>
                   {metric.helper}
                 </Text>
-              </View>
+
+                <View style={styles.metricOpenHint}>
+                  <Text
+                    style={
+                      styles.metricOpenHintText
+                    }
+                  >
+                    Open list
+                  </Text>
+
+                  <Ionicons
+                    name="chevron-forward"
+                    size={13}
+                    color="rgba(255,255,255,0.40)"
+                  />
+                </View>
+              </Pressable>
             ))}
           </View>
 
-          <View style={styles.queueHeader}>
+          <View
+            onLayout={(event) =>
+              setReportQueueY(
+                event.nativeEvent.layout.y
+              )
+            }
+            style={styles.queueHeader}
+          >
             <View>
               <Text style={styles.sectionTitle}>
                 Report Queue
@@ -755,22 +954,17 @@ export default function SafetySupervisorScreen() {
             </View>
           )}
 
-          <View style={styles.sectionHeader}>
+          <View
+            onLayout={(event) =>
+              setSafetyAgentsY(
+                event.nativeEvent.layout.y
+              )
+            }
+            style={styles.sectionHeader}
+          >
             <Text style={styles.sectionTitle}>
               Safety Agents
             </Text>
-
-            <Pressable style={styles.addAgentButton}>
-              <Ionicons
-                name="person-add-outline"
-                size={18}
-                color="#07111F"
-              />
-
-              <Text style={styles.addAgentText}>
-                Add Agent
-              </Text>
-            </Pressable>
           </View>
 
           {dashboard?.agents.length ? (
@@ -898,14 +1092,17 @@ const styles = StyleSheet.create({
 
   headerTitle: {
     color: TEXT,
-    fontSize: 27,
+    fontSize: 21,
+    lineHeight: 25,
     fontWeight: "900",
+    flexShrink: 1,
   },
 
   headerSub: {
-    marginTop: 3,
+    marginTop: 2,
     color: MUTED,
-    fontSize: 13,
+    fontSize: 11,
+    lineHeight: 15,
     fontWeight: "700",
   },
 
@@ -964,8 +1161,9 @@ const styles = StyleSheet.create({
   },
 
   hero: {
-    padding: 23,
-    borderRadius: 25,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor:
       "rgba(244,208,111,0.26)",
@@ -974,9 +1172,9 @@ const styles = StyleSheet.create({
   },
 
   heroIcon: {
-    width: 62,
-    height: 62,
-    borderRadius: 20,
+    width: 34,
+    height: 34,
+    borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor:
@@ -984,18 +1182,80 @@ const styles = StyleSheet.create({
   },
 
   heroTitle: {
-    marginTop: 17,
+    marginTop: 6,
     color: TEXT,
-    fontSize: 25,
+    fontSize: 16,
+    lineHeight: 19,
     fontWeight: "900",
   },
 
   heroText: {
-    marginTop: 8,
+    marginTop: 3,
     color: MUTED,
-    fontSize: 14,
-    lineHeight: 22,
+    fontSize: 9,
+    lineHeight: 13,
     fontWeight: "600",
+  },
+
+  workspaceActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+
+  workspaceActionPrimary: {
+    flex: 1,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    borderRadius: 15,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    backgroundColor: GOLD,
+  },
+
+  workspaceActionPrimaryText: {
+    color: "#07111F",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+
+  workspaceActionSecondary: {
+    flex: 1,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    borderRadius: 15,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    backgroundColor:
+      "rgba(196,181,253,0.08)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(196,181,253,0.22)",
+  },
+
+  workspaceActionSecondaryText: {
+    color: "#C4B5FD",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+
+  metricOpenHint: {
+    marginTop: "auto",
+    paddingTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
+
+  metricOpenHintText: {
+    color:
+      "rgba(255,255,255,0.40)",
+    fontSize: 9,
+    fontWeight: "800",
   },
 
   metricsGrid: {
