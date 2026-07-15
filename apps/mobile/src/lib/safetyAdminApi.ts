@@ -311,6 +311,8 @@ export type SafetyAccessResponse = {
   }>;
   isSafetySupervisor: boolean;
   isSafetyAgent: boolean;
+  hasSafetyAgentRole?: boolean;
+  hasActiveSafetyAgentRelationship?: boolean;
 };
 
 export async function fetchSafetyAccess():
@@ -341,8 +343,17 @@ export async function fetchSafetyAccess():
       : [],
     isSafetySupervisor:
       response.isSafetySupervisor === true,
+
     isSafetyAgent:
       response.isSafetyAgent === true,
+
+    hasSafetyAgentRole:
+      response.hasSafetyAgentRole === true,
+
+    hasActiveSafetyAgentRelationship:
+      response
+        .hasActiveSafetyAgentRelationship ===
+      true,
   };
 }
 

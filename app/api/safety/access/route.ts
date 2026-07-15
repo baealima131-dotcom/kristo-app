@@ -12,6 +12,10 @@ import {
   dbListSafetyRolesForUser,
 } from "@/app/api/_lib/store/safetyDb";
 
+import {
+  dbHasActiveSafetyAgentRelationship,
+} from "@/app/api/_lib/store/safetyReportDb";
+
 export const runtime = "nodejs";
 
 export async function GET(
@@ -23,25 +27,59 @@ export async function GET(
     return auth;
   }
 
-  const roles =
-    await dbListSafetyRolesForUser(
+  const [
+    roles,
+    hasActiveSafetyAgentRelationship,
+  ] = await Promise.all([
+    dbListSafetyRolesForUser(
       auth.viewer.userId
+    ),
+
+    dbHasActiveSafetyAgentRelationship(
+      auth.viewer.userId
+    ),
+  ]);
+
+  const hasSafetyAgentRole =
+    roles.some(
+      (row) =>
+        row.role ===
+        "Safety_Agent"
     );
+
+  const isSafetyAgent =
+    hasSafetyAgentRole &&
+    hasActiveSafetyAgentRelationship;
+
+  console.log(
+    "KRISTO_SAFETY_ACCESS_RESOLVED",
+    {
+      userId:
+        auth.viewer.userId,
+
+      hasSafetyAgentRole,
+
+      hasActiveSafetyAgentRelationship,
+
+      isSafetyAgent,
+    }
+  );
 
   return NextResponse.json({
     ok: true,
     roles,
+
     isSafetySupervisor:
       roles.some(
         (row) =>
           row.role ===
           "Safety_Supervisor"
       ),
-    isSafetyAgent:
-      roles.some(
-        (row) =>
-          row.role ===
-          "Safety_Agent"
-      ),
+
+    isSafetyAgent,
+
+    hasSafetyAgentRole,
+
+    hasActiveSafetyAgentRelationship,
   });
 }

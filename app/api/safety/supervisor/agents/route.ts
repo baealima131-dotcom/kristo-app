@@ -74,10 +74,96 @@ export async function GET(
     return access;
   }
 
-  const dashboard =
+  let dashboard =
     await dbGetSafetySupervisorDashboard(
       access.supervisorUserId
     );
+
+  let reconciledLegacyAgent = false;
+
+  for (const agent of dashboard.agents) {
+    if (agent.status !== "active") {
+      continue;
+    }
+
+    const hasAcceptedSafetyAgentRole =
+      await dbHasSafetyRole(
+        agent.userId,
+        "Safety_Agent"
+      );
+
+    if (hasAcceptedSafetyAgentRole) {
+      continue;
+    }
+
+    /*
+     * Legacy protection:
+     * Agents created before invitation-first onboarding
+     * may still have an active supervisor link without
+     * ever accepting a Safety_Agent invitation.
+     */
+    await dbCreateSafetyInvite({
+      inviteeUserId:
+        agent.userId,
+
+      inviteeKristoId:
+        String(
+          agent.kristoId || ""
+        )
+          .trim()
+          .toUpperCase(),
+
+      churchId:
+        agent.churchId,
+
+      invitedByUserId:
+        access.supervisorUserId,
+
+      role: "Safety_Agent",
+    });
+
+    await dbCreateSupervisorAgent({
+      supervisorUserId:
+        access.supervisorUserId,
+
+      agentUserId:
+        agent.userId,
+
+      agentKristoId:
+        agent.kristoId,
+
+      churchId:
+        agent.churchId,
+
+      status: "pending",
+    });
+
+    reconciledLegacyAgent = true;
+
+    console.log(
+      "KRISTO_LEGACY_SAFETY_AGENT_DOWNGRADED_TO_PENDING",
+      {
+        supervisorUserId:
+          access.supervisorUserId,
+
+        agentUserId:
+          agent.userId,
+
+        kristoId:
+          agent.kristoId,
+
+        churchId:
+          agent.churchId,
+      }
+    );
+  }
+
+  if (reconciledLegacyAgent) {
+    dashboard =
+      await dbGetSafetySupervisorDashboard(
+        access.supervisorUserId
+      );
+  }
 
   return NextResponse.json(
     {

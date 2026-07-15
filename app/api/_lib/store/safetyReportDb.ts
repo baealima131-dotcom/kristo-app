@@ -1471,6 +1471,45 @@ dbRemoveSupervisorAgent(
 }
 
 
+export async function
+dbHasActiveSafetyAgentRelationship(
+  agentUserIdInput: string
+): Promise<boolean> {
+  const agentUserId =
+    String(
+      agentUserIdInput || ""
+    ).trim();
+
+  if (!agentUserId) {
+    return false;
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    SELECT EXISTS (
+      SELECT 1
+      FROM
+        kristo_safety_supervisor_agents
+      WHERE
+        agent_user_id =
+          ${agentUserId}
+        AND status = 'active'
+    ) AS has_active_relationship
+  `) as Array<{
+    has_active_relationship:
+      boolean;
+  }>;
+
+  return (
+    rows[0]
+      ?.has_active_relationship === true
+  );
+}
+
+
 export async function dbGetSafetySupervisorDashboard(
   supervisorUserId: string
 ): Promise<SafetySupervisorDashboard> {

@@ -66,12 +66,23 @@ export async function loadSafetySupervisorProfileInvites():
   return invitations
     .filter(
       (row: any) =>
-        String(row?.role || "") ===
-          "Safety_Supervisor" &&
+        [
+          "Safety_Supervisor",
+          "Safety_Agent",
+        ].includes(
+          String(row?.role || "")
+        ) &&
         String(row?.status || "") ===
           "pending"
     )
-    .map((row: any) => ({
+    .map((row: any) => {
+      const role =
+        String(row?.role || "");
+
+      const isSafetyAgent =
+        role === "Safety_Agent";
+
+      return {
       id: String(row.id || ""),
       invitationId: String(
         row.id || ""
@@ -79,9 +90,13 @@ export async function loadSafetySupervisorProfileInvites():
       kind:
         SAFETY_SUPERVISOR_INVITE_KIND,
       title:
-        "Safety Supervisor invitation",
+        isSafetyAgent
+          ? "Safety Agent invitation"
+          : "Safety Supervisor invitation",
       message:
-        "You were invited to help review reports and protect the Kristo community.",
+        isSafetyAgent
+          ? "You were invited to become a Safety Agent. Accept to receive assigned reports and investigation access."
+          : "You were invited to help review reports and protect the Kristo community.",
       referenceChurchLabel:
         `Church ID: ${String(
           row.churchId || ""
@@ -93,7 +108,8 @@ export async function loadSafetySupervisorProfileInvites():
       createdAt: String(
         row.createdAt || ""
       ),
-    }));
+      };
+    });
 }
 
 export async function respondSafetySupervisorProfileInvite(
