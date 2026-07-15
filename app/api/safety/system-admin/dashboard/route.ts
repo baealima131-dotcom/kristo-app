@@ -11,6 +11,7 @@ import {
 
 import {
   dbGetSafetySystemAdminDashboard,
+  dbGetSafetySystemOperationsDashboard,
 } from "@/app/api/_lib/store/safetyReportDb";
 
 export const runtime = "nodejs";
@@ -30,8 +31,13 @@ export async function GET(
   }
 
   try {
-    const dashboard =
-      await dbGetSafetySystemAdminDashboard();
+    const [
+      dashboard,
+      operations,
+    ] = await Promise.all([
+      dbGetSafetySystemAdminDashboard(),
+      dbGetSafetySystemOperationsDashboard(),
+    ]);
 
     console.log(
       "KRISTO_SAFETY_SYSTEM_ADMIN_DASHBOARD",
@@ -44,7 +50,11 @@ export async function GET(
 
     return NextResponse.json({
       ok: true,
-      dashboard,
+
+      dashboard: {
+        ...dashboard,
+        operations,
+      },
     });
   } catch (error: any) {
     console.error(

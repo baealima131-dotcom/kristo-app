@@ -13,6 +13,19 @@ export type SafetySupervisorSummary = {
   fullName?: string;
   avatarUrl?: string;
   avatarUri?: string;
+
+  counts?: {
+    open: number;
+    assigned: number;
+    inReview: number;
+    resolved: number;
+    highPriority?: number;
+    escalated?: number;
+    activeAgents?: number;
+    pendingAgents?: number;
+    totalAssigned?: number;
+  };
+
   invitationStatus?:
     | "pending"
     | "accepted";
@@ -444,6 +457,17 @@ export async function fetchMySafetyReportByCode(
 
 
 
+export type SafetySystemPerformanceRow = {
+  userId: string;
+  kristoId?: string;
+  assigned: number;
+  resolved: number;
+  open: number;
+  resolutionRate: number;
+  averageResolutionMinutes:
+    number | null;
+};
+
 export type SafetySystemAdminDashboardResponse = {
   counts: {
     total: number;
@@ -454,6 +478,22 @@ export type SafetySystemAdminDashboardResponse = {
     resolved: number;
     escalated: number;
     dismissed: number;
+  };
+
+  operations: {
+    autoWorkEnabled: boolean;
+
+    topSupervisors:
+      SafetySystemPerformanceRow[];
+
+    topAgents:
+      SafetySystemPerformanceRow[];
+
+    mostProductive:
+      SafetySystemPerformanceRow | null;
+
+    fastestResolution:
+      SafetySystemPerformanceRow | null;
   };
 };
 
@@ -481,37 +521,113 @@ fetchSafetySystemAdminDashboard():
     );
   }
 
+  const dashboard =
+    response?.dashboard || {};
+
   const counts =
-    response?.dashboard?.counts || {};
+    dashboard?.counts || {};
+
+  const operations =
+    dashboard?.operations || {};
 
   return {
     counts: {
       total: Number(
         counts.total || 0
       ),
+
       open: Number(
         counts.open || 0
       ),
+
       assigned: Number(
         counts.assigned || 0
       ),
+
       inReview: Number(
         counts.inReview || 0
       ),
+
       highPriority: Number(
         counts.highPriority || 0
       ),
+
       resolved: Number(
         counts.resolved || 0
       ),
+
       escalated: Number(
         counts.escalated || 0
       ),
+
       dismissed: Number(
         counts.dismissed || 0
       ),
     },
+
+    operations: {
+      autoWorkEnabled:
+        operations.autoWorkEnabled ===
+        true,
+
+      topSupervisors:
+        Array.isArray(
+          operations.topSupervisors
+        )
+          ? operations.topSupervisors
+          : [],
+
+      topAgents:
+        Array.isArray(
+          operations.topAgents
+        )
+          ? operations.topAgents
+          : [],
+
+      mostProductive:
+        operations.mostProductive ||
+        null,
+
+      fastestResolution:
+        operations.fastestResolution ||
+        null,
+    },
   };
+}
+
+
+export async function
+setSafetyAutoWorkEnabled(
+  enabled: boolean
+): Promise<boolean> {
+  const response: any =
+    await apiPost(
+      "/api/safety/system-admin/auto-work",
+      {
+        enabled:
+          enabled === true,
+      },
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+        "Could not update Auto Work."
+      )
+    );
+  }
+
+  return (
+    response.enabled === true
+  );
 }
 
 

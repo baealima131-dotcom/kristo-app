@@ -3,7 +3,9 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -239,6 +241,11 @@ export default function ReportCenterScreen() {
         console.log(
           "KRISTO_SAFETY_SYSTEM_ADMIN_COUNTS_LOADED",
           result.counts
+        );
+
+        console.log(
+          "KRISTO_SAFETY_SYSTEM_ADMIN_OPERATIONS_LOADED",
+          result.operations
         );
       } catch (error: any) {
         const message =
@@ -948,16 +955,13 @@ export default function ReportCenterScreen() {
                         style={styles.supervisorCard}
                       >
                         <Pressable
-                          onPress={() =>
-                            router.push(
-                              (
-                                "/more/system-admin/report-center/supervisors/" +
-                                encodeURIComponent(
-                                  supervisor.userId
-                                )
-                              ) as any
-                            )
-                          }
+                          onPress={() => {
+                            setAssignTarget(
+                              supervisor
+                            );
+
+                            setAssignQuantity("");
+                          }}
                           style={styles.supervisorMain}
                         >
                           <View style={styles.supervisorAvatar}>
@@ -1259,6 +1263,112 @@ export default function ReportCenterScreen() {
               </View>
             </GlassCard>
 
+            <View style={styles.sectionHeaderRow}>
+              <View>
+                <Text style={styles.sectionHeading}>
+                  Operations Dashboard
+                </Text>
+
+                <Text style={styles.sectionCount}>
+                  Live performance overview
+                </Text>
+              </View>
+            </View>
+
+            <GlassCard
+              style={styles.analysisCard}
+              borderColor="rgba(167,139,250,0.22)"
+            >
+              <Text style={styles.infoTitle}>
+                Top Supervisors
+              </Text>
+
+              <Text style={styles.infoText}>
+                {systemDashboard?.operations?.topSupervisors?.length
+                  ? systemDashboard.operations.topSupervisors
+                      .map(
+                        (s) =>
+                          `${s.kristoId || s.userId} • ${s.resolved} resolved`
+                      )
+                      .join("\n")
+                  : "No supervisor statistics yet."}
+              </Text>
+            </GlassCard>
+
+            <GlassCard
+              style={styles.infoCard}
+              borderColor="rgba(147,197,253,0.22)"
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.infoTitle}>
+                  Top Agents
+                </Text>
+
+                <Text style={styles.infoText}>
+                  {systemDashboard?.operations?.topAgents?.length
+                    ? systemDashboard.operations.topAgents
+                        .map(
+                          (a) =>
+                            `${a.kristoId || a.userId} • ${a.resolved} resolved`
+                        )
+                        .join("\n")
+                    : "No agent statistics yet."}
+                </Text>
+              </View>
+            </GlassCard>
+
+
+            <GlassCard
+              style={styles.infoCard}
+              borderColor="rgba(110,231,183,0.22)"
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.infoTitle}>
+                  Most Productive
+                </Text>
+
+                <Text style={styles.infoText}>
+                  {systemDashboard?.operations?.mostProductive
+                    ? `${systemDashboard.operations.mostProductive.kristoId || systemDashboard.operations.mostProductive.userId} • ${systemDashboard.operations.mostProductive.resolved} resolved`
+                    : "No productivity data yet."}
+                </Text>
+              </View>
+            </GlassCard>
+
+            <GlassCard
+              style={styles.infoCard}
+              borderColor="rgba(251,191,36,0.22)"
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.infoTitle}>
+                  Fastest Resolution
+                </Text>
+
+                <Text style={styles.infoText}>
+                  {systemDashboard?.operations?.fastestResolution
+                    ? `${systemDashboard.operations.fastestResolution.kristoId || systemDashboard.operations.fastestResolution.userId} • ${systemDashboard.operations.fastestResolution.averageResolutionMinutes ?? "-"} min average`
+                    : "No resolution statistics yet."}
+                </Text>
+              </View>
+            </GlassCard>
+
+            <GlassCard
+              style={styles.infoCard}
+              borderColor="rgba(167,139,250,0.22)"
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.infoTitle}>
+                  Auto Work
+                </Text>
+
+                <Text style={styles.infoText}>
+                  {systemDashboard?.operations?.autoWorkEnabled
+                    ? "Automatic report distribution is enabled."
+                    : "Automatic report distribution is disabled."}
+                </Text>
+              </View>
+            </GlassCard>
+
             <GlassCard
               style={styles.infoCard}
               borderColor=
@@ -1296,108 +1406,159 @@ export default function ReportCenterScreen() {
           }
         }}
       >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.assignModalCard}>
-            <View style={styles.assignModalIcon}>
-              <Ionicons
-                name="layers-outline"
-                size={25}
-                color="#DDD6FE"
-              />
-            </View>
-
-            <Text style={styles.assignModalTitle}>
-              Assign Reports
-            </Text>
-
-            <Text style={styles.assignModalSupervisor}>
-              {assignTarget?.fullName ||
-                "Safety Supervisor"}
-            </Text>
-
-            <Text style={styles.assignModalIdentity}>
-              {[
-                assignTarget?.kristoId
-                  ? `KRISTO ID: ${assignTarget.kristoId}`
-                  : "",
-                assignTarget?.churchId
-                  ? `Church ID: ${assignTarget.churchId}`
-                  : "",
-              ]
-                .filter(Boolean)
-                .join("  •  ")}
-            </Text>
-
-            <View style={styles.availableBox}>
-              <Text style={styles.availableLabel}>
-                Available reports
-              </Text>
-
-              <Text style={styles.availableValue}>
-                {systemDashboard?.counts?.open || 0}
-              </Text>
-            </View>
-
-            <Text style={styles.quantityLabel}>
-              Quantity
-            </Text>
-
-            <TextInput
-              value={assignQuantity}
-              onChangeText={(value) =>
-                setAssignQuantity(
-                  value.replace(
-                    /[^0-9]/g,
-                    ""
-                  )
-                )
+        <KeyboardAvoidingView
+          style={styles.modalKeyboardRoot}
+          behavior={
+            Platform.OS === "ios"
+              ? "padding"
+              : "height"
+          }
+          keyboardVerticalOffset={8}
+        >
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => {
+              if (!assigningReports) {
+                setAssignTarget(null);
               }
-              keyboardType="number-pad"
-              placeholder="Enter quantity"
-              placeholderTextColor=
-                "rgba(255,255,255,0.34)"
-              style={styles.quantityInput}
-            />
-
-            <View style={styles.modalActions}>
-              <Pressable
-                disabled={assigningReports}
-                onPress={() =>
-                  setAssignTarget(null)
+            }}
+          >
+            <Pressable
+              onPress={(event) =>
+                event.stopPropagation()
+              }
+              style={styles.assignModalShell}
+            >
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="interactive"
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={
+                  styles.assignModalScrollContent
                 }
-                style={styles.modalCancel}
               >
-                <Text style={styles.modalCancelText}>
-                  Cancel
+                <View style={styles.assignModalHeaderRow}>
+                  <View style={styles.assignModalIcon}>
+                    <Ionicons
+                      name="layers-outline"
+                      size={21}
+                      color="#DDD6FE"
+                    />
+                  </View>
+
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.assignModalTitle}>
+                      Assign Reports
+                    </Text>
+
+                    <Text style={styles.assignModalSupervisor}>
+                      {assignTarget?.fullName ||
+                        "Safety Supervisor"}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.assignModalIdentity}>
+                  {[
+                    assignTarget?.kristoId
+                      ? `KRISTO ID: ${assignTarget.kristoId}`
+                      : "",
+                    assignTarget?.churchId
+                      ? `Church ID: ${assignTarget.churchId}`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join("  •  ")}
                 </Text>
-              </Pressable>
 
-              <Pressable
-                disabled={assigningReports}
-                onPress={() =>
-                  void submitReportAssignment()
-                }
-                style={({ pressed }) => [
-                  styles.modalConfirm,
+                <View style={styles.availableCompactRow}>
+                  <View>
+                    <Text style={styles.availableLabel}>
+                      Available reports
+                    </Text>
 
-                  pressed && {
-                    opacity: 0.76,
-                  },
-                ]}
-              >
-                {assigningReports ? (
-                  <ActivityIndicator
-                    color="#090D16"
-                  />
-                ) : (
-                  <Text style={styles.modalConfirmText}>
-                    Assign
-                  </Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </View>
+                    <Text style={styles.availableHelper}>
+                      Ready to assign
+                    </Text>
+                  </View>
+
+                  <View style={styles.availableBadge}>
+                    <Text style={styles.availableValue}>
+                      {systemDashboard?.counts?.open || 0}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.quantityLabel}>
+                  Quantity
+                </Text>
+
+                <TextInput
+                  value={assignQuantity}
+                  onChangeText={(value) =>
+                    setAssignQuantity(
+                      value.replace(
+                        /[^0-9]/g,
+                        ""
+                      )
+                    )
+                  }
+                  autoFocus
+                  keyboardType="number-pad"
+                  returnKeyType="done"
+                  placeholder="Enter quantity"
+                  placeholderTextColor=
+                    "rgba(255,255,255,0.32)"
+                  style={styles.quantityInput}
+                />
+
+                <View style={styles.modalActions}>
+                  <Pressable
+                    disabled={assigningReports}
+                    onPress={() =>
+                      setAssignTarget(null)
+                    }
+                    style={({ pressed }) => [
+                      styles.modalCancel,
+
+                      pressed && {
+                        opacity: 0.72,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.modalCancelText}>
+                      Cancel
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    disabled={assigningReports}
+                    onPress={() =>
+                      void submitReportAssignment()
+                    }
+                    style={({ pressed }) => [
+                      styles.modalConfirm,
+
+                      pressed && {
+                        opacity: 0.76,
+                      },
+                    ]}
+                  >
+                    {assigningReports ? (
+                      <ActivityIndicator
+                        color="#090D16"
+                      />
+                    ) : (
+                      <Text style={styles.modalConfirmText}>
+                        Assign
+                      </Text>
+                    )}
+                  </Pressable>
+                </View>
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -1987,27 +2148,46 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
 
-  modalBackdrop: {
+  modalKeyboardRoot: {
     flex: 1,
-    padding: 22,
-    justifyContent: "center",
-    backgroundColor:
-      "rgba(0,0,0,0.72)",
   },
 
-  assignModalCard: {
-    padding: 20,
-    borderRadius: 25,
+  modalBackdrop: {
+    flex: 1,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(0,0,0,0.74)",
+  },
+
+  assignModalShell: {
+    width: "100%",
+    maxHeight: "84%",
+    borderRadius: 26,
+    overflow: "hidden",
     borderWidth: 1,
     borderColor:
-      "rgba(167,139,250,0.38)",
+      "rgba(167,139,250,0.42)",
     backgroundColor: "#171A29",
   },
 
+  assignModalScrollContent: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 18,
+  },
+
+  assignModalHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+
   assignModalIcon: {
-    width: 54,
-    height: 54,
-    borderRadius: 19,
+    width: 46,
+    height: 46,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor:
@@ -2018,39 +2198,61 @@ const styles = StyleSheet.create({
   },
 
   assignModalTitle: {
-    marginTop: 16,
     color: TEXT,
-    fontSize: 22,
+    fontSize: 20,
+    lineHeight: 24,
     fontWeight: "900",
   },
 
   assignModalSupervisor: {
-    marginTop: 5,
+    marginTop: 2,
     color: TEXT,
-    fontSize: 15,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: "900",
   },
 
   assignModalIdentity: {
-    marginTop: 4,
+    marginTop: 10,
     color: "#C4B5FD",
     fontSize: 10,
-    lineHeight: 15,
+    lineHeight: 14,
     fontWeight: "700",
   },
 
-  availableBox: {
-    marginTop: 18,
-    padding: 14,
-    borderRadius: 16,
+  availableCompactRow: {
+    marginTop: 16,
+    minHeight: 66,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 17,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor:
-      "rgba(244,208,111,0.08)",
+      "rgba(244,208,111,0.07)",
     borderWidth: 1,
     borderColor:
       "rgba(244,208,111,0.23)",
+  },
+
+  availableBadge: {
+    minWidth: 52,
+    height: 42,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(244,208,111,0.14)",
+  },
+
+  availableHelper: {
+    marginTop: 2,
+    color:
+      "rgba(255,255,255,0.45)",
+    fontSize: 9,
+    fontWeight: "700",
   },
 
   availableLabel: {
@@ -2061,22 +2263,23 @@ const styles = StyleSheet.create({
 
   availableValue: {
     color: GOLD,
-    fontSize: 22,
+    fontSize: 20,
+    lineHeight: 23,
     fontWeight: "900",
   },
 
   quantityLabel: {
-    marginTop: 18,
-    marginBottom: 8,
+    marginTop: 16,
+    marginBottom: 7,
     color: TEXT,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
   },
 
   quantityInput: {
-    minHeight: 52,
-    paddingHorizontal: 15,
-    borderRadius: 16,
+    minHeight: 50,
+    paddingHorizontal: 14,
+    borderRadius: 15,
     color: TEXT,
     fontSize: 17,
     fontWeight: "800",
@@ -2084,22 +2287,27 @@ const styles = StyleSheet.create({
       "rgba(255,255,255,0.055)",
     borderWidth: 1,
     borderColor:
-      "rgba(255,255,255,0.12)",
+      "rgba(255,255,255,0.13)",
   },
 
   modalActions: {
-    marginTop: 20,
+    marginTop: 16,
     flexDirection: "row",
-    justifyContent: "flex-end",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
 
   modalCancel: {
-    minHeight: 45,
-    paddingHorizontal: 17,
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor:
+      "rgba(255,255,255,0.055)",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.10)",
   },
 
   modalCancelText: {
@@ -2109,10 +2317,10 @@ const styles = StyleSheet.create({
   },
 
   modalConfirm: {
-    minWidth: 110,
-    minHeight: 45,
-    paddingHorizontal: 20,
-    borderRadius: 15,
+    flex: 1,
+    minHeight: 46,
+    paddingHorizontal: 18,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: GOLD,

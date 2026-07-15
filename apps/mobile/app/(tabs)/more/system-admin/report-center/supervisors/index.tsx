@@ -308,19 +308,19 @@ export default function SafetySupervisorsScreen() {
             <View style={styles.summaryRow}>
               <View style={styles.summaryCard}>
                 <Text style={styles.summaryNumber}>
-                  {pendingInvitations.length}
+                  {rows.length}
                 </Text>
                 <Text style={styles.summaryLabel}>
-                  Pending
+                  Active
                 </Text>
               </View>
 
               <View style={styles.summaryCard}>
                 <Text style={styles.summaryNumber}>
-                  {rows.length}
+                  {pendingInvitations.length}
                 </Text>
                 <Text style={styles.summaryLabel}>
-                  Active
+                  Pending
                 </Text>
               </View>
             </View>
@@ -474,13 +474,16 @@ export default function SafetySupervisorsScreen() {
                             `View ${fullName} details`
                           }
                           onPress={() =>
-                            router.push(
-                              (
-                                "/more/system-admin/report-center/supervisors/" +
-                                encodeURIComponent(
-                                  row.userId
-                                )
-                              ) as any
+                            Alert.alert(
+                              "Supervisor details",
+                              [
+                                fullName,
+                                "",
+                                `KRISTO ID: ${kristoId}`,
+                                `Church ID: ${churchId}`,
+                                "",
+                                "Detailed workload and report history will be added in the next Report Center step.",
+                              ].join("\n")
                             )
                           }
                           style={({ pressed }) => [
@@ -691,31 +694,36 @@ const styles = StyleSheet.create({
   },
   summaryRow: {
     flexDirection: "row",
-    gap: 12,
-    marginBottom: 22,
+    gap: 8,
+    marginBottom: 12,
   },
 
   summaryCard: {
     flex: 1,
-    padding: 17,
-    borderRadius: 19,
+    minHeight: 54,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 17,
     borderWidth: 1,
     borderColor:
       "rgba(244,208,111,0.22)",
     backgroundColor:
       "rgba(244,208,111,0.07)",
+    justifyContent: "center",
   },
 
   summaryNumber: {
     color: GOLD,
-    fontSize: 28,
+    fontSize: 18,
+    lineHeight: 20,
     fontWeight: "900",
   },
 
   summaryLabel: {
-    marginTop: 3,
+    marginTop: 1,
     color: MUTED,
-    fontSize: 12,
+    fontSize: 10,
+    lineHeight: 12,
     fontWeight: "800",
   },
 
