@@ -3,6 +3,7 @@ import React from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -48,6 +49,101 @@ const MUTED =
 const BLUE = "#93C5FD";
 const GREEN = "#6EE7B7";
 const PURPLE = "#C4B5FD";
+
+
+function getAgentInitial(
+  displayName?: string,
+  kristoId?: string,
+  userId?: string
+) {
+  const source =
+    String(
+      displayName ||
+        kristoId ||
+        userId ||
+        "A"
+    ).trim();
+
+  const cleaned =
+    source.replace(
+      /[^A-Za-z0-9]/g,
+      ""
+    );
+
+  return (
+    cleaned
+      .slice(0, 1)
+      .toUpperCase() || "A"
+  );
+}
+
+function SafetyAgentAvatar({
+  displayName,
+  kristoId,
+  userId,
+  avatarUri,
+}: {
+  displayName?: string;
+  kristoId?: string;
+  userId?: string;
+  avatarUri?: string;
+}) {
+  const resolvedAvatarUri =
+    String(
+      avatarUri || ""
+    ).trim();
+
+  return (
+    <View
+      style={
+        styles.agentAvatarShell
+      }
+    >
+      {resolvedAvatarUri ? (
+        <Image
+          source={{
+            uri: resolvedAvatarUri,
+          }}
+          resizeMode="cover"
+          style={
+            styles.agentAvatarImage
+          }
+        />
+      ) : (
+        <LinearGradient
+          colors={[
+            "#FDE68A",
+            "#F4D06F",
+            "#B7791F",
+          ]}
+          start={{
+            x: 0.15,
+            y: 0,
+          }}
+          end={{
+            x: 0.85,
+            y: 1,
+          }}
+          style={
+            styles.agentAvatarFallback
+          }
+        >
+          <Text
+            style={
+              styles.agentAvatarInitial
+            }
+          >
+            {getAgentInitial(
+              displayName,
+              kristoId,
+              userId
+            )}
+          </Text>
+        </LinearGradient>
+      )}
+    </View>
+  );
+}
 
 export default function
 SafetySupervisorAgentsScreen() {
@@ -267,9 +363,14 @@ SafetySupervisorAgentsScreen() {
           SafetySupervisorAgent
       ) => {
         Alert.alert(
-          agent.kristoId ||
+          agent.displayName ||
+            agent.kristoId ||
             "Safety Agent",
           [
+            `Kristo ID: ${
+              agent.kristoId ||
+              agent.userId
+            }`,
             `Church: ${agent.churchId}`,
             `Status: ${agent.status.toUpperCase()}`,
             `Assigned: ${agent.totalAssigned}`,
@@ -296,6 +397,7 @@ SafetySupervisorAgentsScreen() {
         Alert.alert(
           "Remove Safety Agent?",
           `${
+            agent.displayName ||
             agent.kristoId ||
             agent.userId
           } will be removed from your investigation team.`,
@@ -470,6 +572,7 @@ SafetySupervisorAgentsScreen() {
         );
 
         const agentName =
+          assignmentAgent.displayName ||
           assignmentAgent.kristoId ||
           assignmentAgent.userId;
 
@@ -762,23 +865,56 @@ SafetySupervisorAgentsScreen() {
                         styles.agentCardTop
                       }
                     >
-                    <View style={{ flex: 1 }}>
-                      <Text
-                        style={
-                          styles.agentName
+                      <SafetyAgentAvatar
+                        displayName={
+                          agent.displayName
                         }
-                      >
-                        {agent.kristoId ||
-                          agent.userId}
-                      </Text>
+                        kristoId={
+                          agent.kristoId
+                        }
+                        userId={
+                          agent.userId
+                        }
+                        avatarUri={
+                          agent.avatarUri ||
+                          agent.avatarUrl
+                        }
+                      />
 
-                      <Text
+                      <View
                         style={
-                          styles.agentChurch
+                          styles.agentIdentity
                         }
                       >
-                        {agent.churchId}
-                      </Text>
+                        <Text
+                          numberOfLines={1}
+                          style={
+                            styles.agentName
+                          }
+                        >
+                          {agent.displayName ||
+                            agent.kristoId ||
+                            agent.userId}
+                        </Text>
+
+                        <Text
+                          numberOfLines={1}
+                          style={
+                            styles.agentKristoId
+                          }
+                        >
+                          {agent.kristoId ||
+                            agent.userId}
+                        </Text>
+
+                        <Text
+                          numberOfLines={1}
+                          style={
+                            styles.agentChurch
+                          }
+                        >
+                          {agent.churchId}
+                        </Text>
 
                       <View
                         style={
@@ -1443,10 +1579,58 @@ const styles =
       fontWeight: "900",
     },
 
+    agentAvatarShell: {
+      width: 52,
+      height: 52,
+      borderRadius: 18,
+      padding: 2,
+      overflow: "hidden",
+      flexShrink: 0,
+      backgroundColor:
+        "rgba(244,208,111,0.10)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(244,208,111,0.26)",
+    },
+
+    agentAvatarImage: {
+      width: "100%",
+      height: "100%",
+      borderRadius: 15,
+      backgroundColor:
+        "rgba(255,255,255,0.06)",
+    },
+
+    agentAvatarFallback: {
+      flex: 1,
+      borderRadius: 15,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+
+    agentAvatarInitial: {
+      color: "#07111F",
+      fontSize: 21,
+      fontWeight: "900",
+    },
+
+    agentIdentity: {
+      flex: 1,
+      minWidth: 0,
+    },
+
     agentName: {
       color: TEXT,
-      fontSize: 14,
+      fontSize: 15,
       fontWeight: "900",
+    },
+
+    agentKristoId: {
+      marginTop: 2,
+      color: BLUE,
+      fontSize: 10,
+      fontWeight: "900",
+      letterSpacing: 0.15,
     },
 
     agentChurch: {

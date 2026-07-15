@@ -9,6 +9,10 @@ import {
   isVercelRuntime,
 } from "@/app/api/_lib/store/authDb";
 
+import {
+  getProfile,
+} from "@/app/api/auth/_lib/profile";
+
 neonConfig.fetchConnectionCache = true;
 
 export type SafetyReportStatus =
@@ -106,6 +110,9 @@ export type SafetySupervisorDashboard = {
   agents: Array<{
     userId: string;
     kristoId?: string;
+    displayName?: string;
+    avatarUrl?: string;
+    avatarUri?: string;
     churchId: string;
     status: "active" | "pending" | "paused";
     open: number;
@@ -1720,61 +1727,108 @@ export async function dbGetSafetySupervisorDashboard(
   const reportRecords =
     reports.map(rowToReport);
 
-  const agents = agentRows.map((agent) => {
-    const assigned =
-      reportRecords.filter(
-        (report) =>
-          report.assignedAgentUserId ===
-          agent.agent_user_id
-      );
+  const agents = await Promise.all(
+    agentRows.map(async (agent) => {
+      const agentUserId =
+        String(
+          agent.agent_user_id || ""
+        ).trim();
 
-    return {
-      userId:
-        String(agent.agent_user_id || "")
-          .trim(),
-
-      kristoId:
+      const agentKristoId =
         String(
           agent.agent_kristo_id || ""
         )
           .trim()
-          .toUpperCase() || undefined,
+          .toUpperCase();
 
-      churchId:
-        String(agent.church_id || "")
-          .trim(),
-
-      status:
-        (
-          agent.status === "pending" ||
-          agent.status === "paused"
-            ? agent.status
-            : "active"
-        ) as "active" | "pending" | "paused",
-
-      open:
-        assigned.filter(
+      const assigned =
+        reportRecords.filter(
           (report) =>
-            report.status === "open" ||
-            report.status === "assigned"
-        ).length,
+            report.assignedAgentUserId ===
+            agentUserId
+        );
 
-      inReview:
-        assigned.filter(
-          (report) =>
-            report.status === "in_review"
-        ).length,
+      const profile =
+        agentUserId
+          ? await getProfile(
+              agentUserId
+            ).catch(() => null)
+          : null;
 
-      resolved:
-        assigned.filter(
-          (report) =>
-            report.status === "resolved"
-        ).length,
+      const displayName =
+        String(
+          profile?.fullName ||
+            agentKristoId ||
+            agentUserId
+        ).trim();
 
-      totalAssigned:
-        assigned.length,
-    };
-  });
+      const avatarUrl =
+        String(
+          profile?.avatarUrl || ""
+        ).trim();
+
+      return {
+        userId:
+          agentUserId,
+
+        kristoId:
+          agentKristoId ||
+          undefined,
+
+        displayName:
+          displayName ||
+          undefined,
+
+        avatarUrl:
+          avatarUrl ||
+          undefined,
+
+        avatarUri:
+          avatarUrl ||
+          undefined,
+
+        churchId:
+          String(
+            agent.church_id || ""
+          ).trim(),
+
+        status:
+          (
+            agent.status === "pending" ||
+            agent.status === "paused"
+              ? agent.status
+              : "active"
+          ) as
+            | "active"
+            | "pending"
+            | "paused",
+
+        open:
+          assigned.filter(
+            (report) =>
+              report.status === "open" ||
+              report.status === "assigned"
+          ).length,
+
+        inReview:
+          assigned.filter(
+            (report) =>
+              report.status ===
+              "in_review"
+          ).length,
+
+        resolved:
+          assigned.filter(
+            (report) =>
+              report.status ===
+              "resolved"
+          ).length,
+
+        totalAssigned:
+          assigned.length,
+      };
+    })
+  );
 
   return {
     counts: {

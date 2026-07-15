@@ -431,6 +431,9 @@ export type SafetySupervisorDashboardResponse = {
   agents: Array<{
     userId: string;
     kristoId?: string;
+    displayName?: string;
+    avatarUrl?: string;
+    avatarUri?: string;
     churchId: string;
     status:
       | "active"
