@@ -638,6 +638,30 @@ export async function ensureSafetyReportSchema() {
       `;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS kristo_safety_system_settings (
+          setting_key TEXT PRIMARY KEY,
+          enabled BOOLEAN NOT NULL DEFAULT FALSE,
+          updated_by_user_id TEXT,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+
+      await sql`
+        INSERT INTO kristo_safety_system_settings (
+          setting_key,
+          enabled,
+          updated_at
+        )
+        VALUES (
+          'auto_work',
+          FALSE,
+          NOW()
+        )
+        ON CONFLICT (setting_key)
+        DO NOTHING
+      `;
+
+      await sql`
         CREATE INDEX IF NOT EXISTS kristo_safety_reports_supervisor_idx
         ON kristo_safety_reports (
           assigned_supervisor_user_id,
@@ -1056,7 +1080,48 @@ export async function dbCreateSafetyReport(
         );
       }
 
-      return rowToReport(row);
+      const createdReport =
+        rowToReport(row);
+
+      try {
+        const autoAssignment =
+          await dbAutoAssignNewSafetyReport(
+            createdReport.id
+          );
+
+        if (
+          autoAssignment.assigned &&
+          autoAssignment.supervisorUserId
+        ) {
+          return {
+            ...createdReport,
+            status: "assigned",
+            assignedSupervisorUserId:
+              autoAssignment.supervisorUserId,
+            assignedAt: now,
+            updatedAt: now,
+          };
+        }
+      } catch (autoWorkError: any) {
+        /*
+         * Report creation must still succeed
+         * even if Auto Work temporarily fails.
+         */
+        console.error(
+          "KRISTO_SAFETY_AUTO_WORK_CREATE_HOOK_FAILED",
+          {
+            reportId:
+              createdReport.id,
+
+            error: String(
+              autoWorkError?.message ||
+              autoWorkError
+            ),
+          }
+        );
+      }
+
+      return createdReport;
     } catch (error: any) {
       const message =
         String(
@@ -1979,6 +2044,10 @@ dbAssignSafetyReportsToSupervisorByQuantity(
 
 
 
+
+
+
+
 /*
  * Before System Admin revokes a supervisor,
  * all unfinished reports owned by that supervisor
@@ -2036,5 +2105,549 @@ export async function dbReleaseSafetySupervisorReports(
         String(row.id || "").trim()
       )
       .filter(Boolean),
+  };
+}
+
+
+
+export type SafetySystemPerformanceRow = {
+  userId: string;
+  kristoId?: string;
+  assigned: number;
+  resolved: number;
+  open: number;
+  resolutionRate: number;
+  averageResolutionMinutes:
+    number | null;
+};
+
+export type SafetySystemOperationsDashboard = {
+  autoWorkEnabled: boolean;
+
+  topSupervisors:
+    SafetySystemPerformanceRow[];
+
+  topAgents:
+    SafetySystemPerformanceRow[];
+
+  mostProductive:
+    SafetySystemPerformanceRow | null;
+
+  fastestResolution:
+    SafetySystemPerformanceRow | null;
+};
+
+
+/*
+ * Durable System Admin Auto Work setting.
+ */
+export async function
+dbGetSafetyAutoWorkSetting():
+  Promise<boolean> {
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+
+  const rows = (await sql`
+    SELECT enabled
+    FROM kristo_safety_system_settings
+    WHERE setting_key = 'auto_work'
+    LIMIT 1
+  `) as Array<{
+    enabled: boolean;
+  }>;
+
+  return rows[0]?.enabled === true;
+}
+
+
+export async function
+dbSetSafetyAutoWorkSetting(
+  input: {
+    enabled: boolean;
+    updatedByUserId: string;
+  }
+): Promise<boolean> {
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+
+  const enabled =
+    input.enabled === true;
+
+  const updatedByUserId =
+    String(
+      input.updatedByUserId || ""
+    ).trim();
+
+  await sql`
+    INSERT INTO kristo_safety_system_settings (
+      setting_key,
+      enabled,
+      updated_by_user_id,
+      updated_at
+    )
+    VALUES (
+      'auto_work',
+      ${enabled},
+      ${updatedByUserId || null},
+      NOW()
+    )
+    ON CONFLICT (setting_key)
+    DO UPDATE SET
+      enabled =
+        EXCLUDED.enabled,
+
+      updated_by_user_id =
+        EXCLUDED.updated_by_user_id,
+
+      updated_at =
+        EXCLUDED.updated_at
+  `;
+
+  return enabled;
+}
+
+
+function mapSafetyPerformanceRow(
+  row: any
+): SafetySystemPerformanceRow {
+  const assigned =
+    Number(
+      row?.assigned || 0
+    );
+
+  const resolved =
+    Number(
+      row?.resolved || 0
+    );
+
+  const open =
+    Number(
+      row?.open || 0
+    );
+
+  const rawAverage =
+    row?.average_resolution_minutes;
+
+  const averageResolutionMinutes =
+    rawAverage === null ||
+    rawAverage === undefined
+      ? null
+      : Number(rawAverage);
+
+  return {
+    userId:
+      String(
+        row?.user_id || ""
+      ).trim(),
+
+    kristoId:
+      String(
+        row?.kristo_id || ""
+      )
+        .trim()
+        .toUpperCase() ||
+      undefined,
+
+    assigned,
+    resolved,
+    open,
+
+    resolutionRate:
+      assigned > 0
+        ? Math.round(
+            (
+              resolved /
+              assigned
+            ) * 100
+          )
+        : 0,
+
+    averageResolutionMinutes:
+      averageResolutionMinutes !==
+        null &&
+      Number.isFinite(
+        averageResolutionMinutes
+      ) &&
+      averageResolutionMinutes >= 0
+        ? Math.round(
+            averageResolutionMinutes
+          )
+        : null,
+  };
+}
+
+
+/*
+ * Real platform performance for the most recent
+ * 30 days.
+ *
+ * This does not pretend to measure online time.
+ * Productivity is currently based on completed
+ * moderation work.
+ */
+export async function
+dbGetSafetySystemOperationsDashboard():
+  Promise<SafetySystemOperationsDashboard> {
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+
+  const supervisorRows = (await sql`
+    SELECT
+      report.assigned_supervisor_user_id
+        AS user_id,
+
+      COUNT(*)::int
+        AS assigned,
+
+      COUNT(*) FILTER (
+        WHERE
+          report.status = 'resolved'
+      )::int AS resolved,
+
+      COUNT(*) FILTER (
+        WHERE
+          report.status NOT IN (
+            'resolved',
+            'dismissed'
+          )
+      )::int AS open,
+
+      AVG(
+        EXTRACT(
+          EPOCH FROM (
+            report.resolved_at -
+            COALESCE(
+              report.assigned_at,
+              report.created_at
+            )
+          )
+        ) / 60
+      ) FILTER (
+        WHERE
+          report.status = 'resolved'
+          AND report.resolved_at
+            IS NOT NULL
+          AND report.resolved_at >=
+            COALESCE(
+              report.assigned_at,
+              report.created_at
+            )
+      ) AS average_resolution_minutes
+
+    FROM kristo_safety_reports
+      AS report
+
+    WHERE
+      report.assigned_supervisor_user_id
+        IS NOT NULL
+
+      AND COALESCE(
+        report.assigned_at,
+        report.updated_at,
+        report.created_at
+      ) >= NOW() - INTERVAL '30 days'
+
+    GROUP BY
+      report.assigned_supervisor_user_id
+
+    ORDER BY
+      assigned DESC,
+      resolved DESC,
+      open ASC
+
+    LIMIT 30
+  `) as any[];
+
+  const agentRows = (await sql`
+    SELECT
+      report.assigned_agent_user_id
+        AS user_id,
+
+      MAX(
+        agent.agent_kristo_id
+      ) AS kristo_id,
+
+      COUNT(*)::int
+        AS assigned,
+
+      COUNT(*) FILTER (
+        WHERE
+          report.status = 'resolved'
+      )::int AS resolved,
+
+      COUNT(*) FILTER (
+        WHERE
+          report.status NOT IN (
+            'resolved',
+            'dismissed'
+          )
+      )::int AS open,
+
+      AVG(
+        EXTRACT(
+          EPOCH FROM (
+            report.resolved_at -
+            COALESCE(
+              report.assigned_at,
+              report.created_at
+            )
+          )
+        ) / 60
+      ) FILTER (
+        WHERE
+          report.status = 'resolved'
+          AND report.resolved_at
+            IS NOT NULL
+          AND report.resolved_at >=
+            COALESCE(
+              report.assigned_at,
+              report.created_at
+            )
+      ) AS average_resolution_minutes
+
+    FROM kristo_safety_reports
+      AS report
+
+    LEFT JOIN
+      kristo_safety_supervisor_agents
+        AS agent
+
+      ON agent.agent_user_id =
+        report.assigned_agent_user_id
+
+    WHERE
+      report.assigned_agent_user_id
+        IS NOT NULL
+
+      AND COALESCE(
+        report.assigned_at,
+        report.updated_at,
+        report.created_at
+      ) >= NOW() - INTERVAL '30 days'
+
+    GROUP BY
+      report.assigned_agent_user_id
+
+    ORDER BY
+      assigned DESC,
+      resolved DESC,
+      open ASC
+
+    LIMIT 30
+  `) as any[];
+
+  const topSupervisors =
+    supervisorRows.map(
+      mapSafetyPerformanceRow
+    );
+
+  const topAgents =
+    agentRows.map(
+      mapSafetyPerformanceRow
+    );
+
+  const combined = [
+    ...topSupervisors,
+    ...topAgents,
+  ];
+
+  const mostProductive =
+    [...combined]
+      .sort(
+        (a, b) =>
+          b.resolved -
+            a.resolved ||
+
+          b.resolutionRate -
+            a.resolutionRate ||
+
+          a.open -
+            b.open
+      )[0] ||
+    null;
+
+  const fastestResolution =
+    combined
+      .filter(
+        (row) =>
+          row.resolved > 0 &&
+          row.averageResolutionMinutes !==
+            null
+      )
+      .sort(
+        (a, b) =>
+          Number(
+            a.averageResolutionMinutes
+          ) -
+          Number(
+            b.averageResolutionMinutes
+          )
+      )[0] ||
+    null;
+
+  return {
+    autoWorkEnabled:
+      await dbGetSafetyAutoWorkSetting(),
+
+    topSupervisors,
+    topAgents,
+    mostProductive,
+    fastestResolution,
+  };
+}
+
+
+/*
+ * Automatically assigns a specific open report
+ * to the active Safety Supervisor carrying the
+ * smallest unresolved workload.
+ *
+ * Concurrent report creation remains safe because
+ * the report can only be updated while it is still
+ * open and unassigned.
+ */
+export async function
+dbAutoAssignNewSafetyReport(
+  reportId: string
+): Promise<{
+  assigned: boolean;
+  supervisorUserId?: string;
+}> {
+  const normalizedReportId =
+    String(
+      reportId || ""
+    ).trim();
+
+  if (!normalizedReportId) {
+    return {
+      assigned: false,
+    };
+  }
+
+  await ensureSafetyReportSchema();
+
+  const enabled =
+    await dbGetSafetyAutoWorkSetting();
+
+  if (!enabled) {
+    return {
+      assigned: false,
+    };
+  }
+
+  const sql = getSql();
+  const now = nowIso();
+
+  const rows = (await sql`
+    WITH supervisor_workload AS (
+      SELECT
+        role.user_id,
+
+        COUNT(report.id) FILTER (
+          WHERE
+            report.status NOT IN (
+              'resolved',
+              'dismissed'
+            )
+        )::int AS open_count,
+
+        COUNT(report.id)::int
+          AS total_count
+
+      FROM kristo_safety_roles
+        AS role
+
+      LEFT JOIN
+        kristo_safety_reports
+          AS report
+
+        ON
+          report.assigned_supervisor_user_id =
+            role.user_id
+
+      WHERE
+        role.role =
+          'Safety_Supervisor'
+
+      GROUP BY
+        role.user_id
+
+      ORDER BY
+        open_count ASC,
+        total_count ASC,
+        role.user_id ASC
+
+      LIMIT 1
+    )
+
+    UPDATE kristo_safety_reports
+      AS report
+
+    SET
+      assigned_supervisor_user_id =
+        supervisor_workload.user_id,
+
+      assigned_agent_user_id =
+        NULL,
+
+      status =
+        'assigned',
+
+      assigned_at =
+        ${now},
+
+      updated_at =
+        ${now}
+
+    FROM supervisor_workload
+
+    WHERE
+      report.id =
+        ${normalizedReportId}
+
+      AND report.status =
+        'open'
+
+      AND
+        report.assigned_supervisor_user_id
+          IS NULL
+
+    RETURNING
+      supervisor_workload.user_id
+        AS supervisor_user_id
+  `) as Array<{
+    supervisor_user_id: string;
+  }>;
+
+  const supervisorUserId =
+    String(
+      rows[0]?.supervisor_user_id ||
+      ""
+    ).trim();
+
+  if (supervisorUserId) {
+    console.log(
+      "KRISTO_SAFETY_AUTO_WORK_ASSIGNED",
+      {
+        reportId:
+          normalizedReportId,
+
+        supervisorUserId,
+      }
+    );
+  }
+
+  return {
+    assigned:
+      Boolean(
+        supervisorUserId
+      ),
+
+    supervisorUserId:
+      supervisorUserId ||
+      undefined,
   };
 }
