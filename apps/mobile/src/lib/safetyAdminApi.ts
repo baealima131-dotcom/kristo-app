@@ -129,6 +129,129 @@ export async function removeSafetySupervisor(
 }
 
 
+
+export type SafetySupervisorDetailResponse = {
+  supervisor: SafetySupervisorSummary;
+  dashboard: {
+    counts: {
+      assigned: number;
+      open: number;
+      inReview: number;
+      resolved: number;
+      highPriority: number;
+      escalated: number;
+      activeAgents: number;
+      pendingAgents: number;
+    };
+    reports: any[];
+    agents: any[];
+  };
+};
+
+export async function fetchSafetySupervisorDetail(
+  supervisorUserId: string
+): Promise<SafetySupervisorDetailResponse> {
+  const normalizedUserId =
+    String(
+      supervisorUserId || ""
+    ).trim();
+
+  if (!normalizedUserId) {
+    throw new Error(
+      "Safety Supervisor user ID is required."
+    );
+  }
+
+  const response: any =
+    await apiGet(
+      `/api/safety/system-admin/supervisors/${encodeURIComponent(
+        normalizedUserId
+      )}`,
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not load supervisor details."
+      )
+    );
+  }
+
+  const dashboard =
+    response?.dashboard || {};
+
+  const counts =
+    dashboard?.counts || {};
+
+  return {
+    supervisor:
+      response?.supervisor || {
+        userId:
+          normalizedUserId,
+        churchId: "",
+      },
+
+    dashboard: {
+      counts: {
+        assigned: Number(
+          counts.assigned || 0
+        ),
+
+        open: Number(
+          counts.open || 0
+        ),
+
+        inReview: Number(
+          counts.inReview || 0
+        ),
+
+        resolved: Number(
+          counts.resolved || 0
+        ),
+
+        highPriority: Number(
+          counts.highPriority || 0
+        ),
+
+        escalated: Number(
+          counts.escalated || 0
+        ),
+
+        activeAgents: Number(
+          counts.activeAgents || 0
+        ),
+
+        pendingAgents: Number(
+          counts.pendingAgents || 0
+        ),
+      },
+
+      reports:
+        Array.isArray(
+          dashboard?.reports
+        )
+          ? dashboard.reports
+          : [],
+
+      agents:
+        Array.isArray(
+          dashboard?.agents
+        )
+          ? dashboard.agents
+          : [],
+    },
+  };
+}
+
+
 export async function fetchSafetySupervisors() {
   const path =
     "/api/safety/supervisors";

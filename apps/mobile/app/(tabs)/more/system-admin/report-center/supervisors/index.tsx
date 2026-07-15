@@ -474,17 +474,17 @@ export default function SafetySupervisorsScreen() {
                             `View ${fullName} details`
                           }
                           onPress={() =>
-                            Alert.alert(
-                              "Supervisor details",
-                              [
-                                fullName,
-                                "",
-                                `KRISTO ID: ${kristoId}`,
-                                `Church ID: ${churchId}`,
-                                "",
-                                "Detailed workload and report history will be added in the next Report Center step.",
-                              ].join("\n")
-                            )
+                            router.push({
+                              pathname:
+                                "/(tabs)/more/system-admin/report-center/supervisors/[userId]",
+                              params: {
+                                userId:
+                                  String(
+                                    row?.userId ||
+                                    ""
+                                  ).trim(),
+                              },
+                            })
                           }
                           style={({ pressed }) => [
                             styles.detailsButton,

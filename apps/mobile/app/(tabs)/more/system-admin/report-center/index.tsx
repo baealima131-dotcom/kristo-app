@@ -9,6 +9,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -44,6 +45,7 @@ import {
   assignSafetyReportsToSupervisorByQuantity,
   fetchSafetySupervisors,
   fetchSafetySystemAdminDashboard,
+  setSafetyAutoWorkEnabled,
   type SafetySupervisorSummary,
   type SafetySystemAdminDashboardResponse,
 } from "@/src/lib/safetyAdminApi";
@@ -66,6 +68,13 @@ type Metric = {
   color: string;
   glow: string;
 };
+
+type OperationsTab =
+  | "supervisors"
+  | "agents"
+  | "productive"
+  | "fastest"
+  | "autoWork";
 
 function BackgroundScene() {
   return (
@@ -220,6 +229,18 @@ export default function ReportCenterScreen() {
   const [
     assigningReports,
     setAssigningReports,
+  ] = React.useState(false);
+
+  const [
+    selectedOperationsTab,
+    setSelectedOperationsTab,
+  ] = React.useState<OperationsTab>(
+    "supervisors"
+  );
+
+  const [
+    updatingAutoWork,
+    setUpdatingAutoWork,
   ] = React.useState(false);
 
   const loadSystemDashboard =
@@ -402,6 +423,95 @@ export default function ReportCenterScreen() {
       systemDashboard,
       loadSystemDashboard,
       loadSupervisors,
+    ]);
+
+  const resolvePerformanceName =
+    React.useCallback(
+      (
+        row:
+          | {
+              userId?: string;
+              kristoId?: string;
+            }
+          | null
+          | undefined
+      ) => {
+        if (!row) {
+          return "Unknown";
+        }
+
+        const supervisor =
+          supervisors.find(
+            (item) =>
+              item.userId === row.userId
+          );
+
+        return (
+          supervisor?.fullName ||
+          supervisor?.kristoId ||
+          row.kristoId ||
+          row.userId ||
+          "Unknown"
+        );
+      },
+      [supervisors]
+    );
+
+  const toggleAutoWork =
+    React.useCallback(async () => {
+      if (
+        updatingAutoWork ||
+        !systemDashboard
+      ) {
+        return;
+      }
+
+      const nextEnabled =
+        !systemDashboard.operations
+          .autoWorkEnabled;
+
+      setUpdatingAutoWork(true);
+
+      try {
+        const enabled =
+          await setSafetyAutoWorkEnabled(
+            nextEnabled
+          );
+
+        setSystemDashboard(
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  operations: {
+                    ...current.operations,
+                    autoWorkEnabled:
+                      enabled,
+                  },
+                }
+              : current
+        );
+
+        console.log(
+          "KRISTO_SAFETY_AUTO_WORK_UPDATED",
+          {
+            enabled,
+          }
+        );
+      } catch (error: any) {
+        Alert.alert(
+          "Could not update Auto Work",
+          String(
+            error?.message ||
+              "Please try again."
+          )
+        );
+      } finally {
+        setUpdatingAutoWork(false);
+      }
+    }, [
+      updatingAutoWork,
+      systemDashboard,
     ]);
 
   const resolveSystemMetricValue =
@@ -1275,124 +1385,277 @@ export default function ReportCenterScreen() {
               </View>
             </View>
 
-            <GlassCard
-              style={styles.analysisCard}
-              borderColor="rgba(167,139,250,0.22)"
+            <View
+              style={styles.operationsTabsRow}
             >
-              <Text style={styles.infoTitle}>
-                Top Supervisors
-              </Text>
+              {[
+                {
+                  key: "supervisors",
+                  icon:
+                    "shield-checkmark-outline",
+                  label: "Supervisors",
+                },
+                {
+                  key: "agents",
+                  icon: "people-outline",
+                  label: "Agents",
+                },
+                {
+                  key: "productive",
+                  icon: "trophy-outline",
+                  label: "Productive",
+                },
+                {
+                  key: "fastest",
+                  icon: "flash-outline",
+                  label: "Fastest",
+                },
+                {
+                  key: "autoWork",
+                  icon: "settings-outline",
+                  label: "Auto Work",
+                },
+              ].map((tab) => {
+                const active =
+                  selectedOperationsTab ===
+                  tab.key;
 
-              <Text style={styles.infoText}>
-                {systemDashboard?.operations?.topSupervisors?.length
-                  ? systemDashboard.operations.topSupervisors
-                      .map(
-                        (s) =>
-                          `${s.kristoId || s.userId} • ${s.resolved} resolved`
+                return (
+                  <Pressable
+                    key={tab.key}
+                    onPress={() =>
+                      setSelectedOperationsTab(
+                        tab.key as OperationsTab
                       )
-                      .join("\n")
-                  : "No supervisor statistics yet."}
-              </Text>
-            </GlassCard>
+                    }
+                    style={({ pressed }) => [
+                      styles.operationsTabButton,
+                      active &&
+                        styles.operationsTabButtonActive,
+                      pressed && {
+                        opacity: 0.74,
+                      },
+                    ]}
+                  >
+                    <Ionicons
+                      name={
+                        tab.icon as keyof typeof Ionicons.glyphMap
+                      }
+                      size={20}
+                      color={
+                        active
+                          ? "#E9DDFF"
+                          : MUTED
+                      }
+                    />
+
+                    <Text
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.72}
+                      style={[
+                        styles.operationsTabText,
+                        active &&
+                          styles.operationsTabTextActive,
+                      ]}
+                    >
+                      {tab.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
             <GlassCard
-              style={styles.infoCard}
-              borderColor="rgba(147,197,253,0.22)"
+              style={
+                styles.operationsContentCard
+              }
+              borderColor={
+                selectedOperationsTab ===
+                "productive"
+                  ? "rgba(110,231,183,0.30)"
+                  : selectedOperationsTab ===
+                    "fastest"
+                  ? "rgba(251,191,36,0.30)"
+                  : selectedOperationsTab ===
+                    "agents"
+                  ? "rgba(147,197,253,0.30)"
+                  : "rgba(167,139,250,0.30)"
+              }
             >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.infoTitle}>
-                  Top Agents
-                </Text>
+              {selectedOperationsTab ===
+              "supervisors" ? (
+                <>
+                  <Text style={styles.infoTitle}>
+                    Top Supervisors
+                  </Text>
 
-                <Text style={styles.infoText}>
-                  {systemDashboard?.operations?.topAgents?.length
-                    ? systemDashboard.operations.topAgents
-                        .map(
-                          (a) =>
-                            `${a.kristoId || a.userId} • ${a.resolved} resolved`
-                        )
-                        .join("\n")
-                    : "No agent statistics yet."}
-                </Text>
-              </View>
+                  <Text style={styles.infoText}>
+                    {systemDashboard?.operations
+                      ?.topSupervisors?.length
+                      ? systemDashboard.operations
+                          .topSupervisors
+                          .map(
+                            (row) =>
+                              `${resolvePerformanceName(
+                                row
+                              )} • ${
+                                row.assigned
+                              } assigned • ${
+                                row.resolved
+                              } resolved`
+                          )
+                          .join("\n")
+                      : "No supervisor statistics yet."}
+                  </Text>
+                </>
+              ) : null}
+
+              {selectedOperationsTab ===
+              "agents" ? (
+                <>
+                  <Text style={styles.infoTitle}>
+                    Top Agents
+                  </Text>
+
+                  <Text style={styles.infoText}>
+                    {systemDashboard?.operations
+                      ?.topAgents?.length
+                      ? systemDashboard.operations
+                          .topAgents
+                          .map(
+                            (row) =>
+                              `${resolvePerformanceName(
+                                row
+                              )} • ${
+                                row.assigned
+                              } assigned • ${
+                                row.resolved
+                              } resolved`
+                          )
+                          .join("\n")
+                      : "No agent statistics yet."}
+                  </Text>
+                </>
+              ) : null}
+
+              {selectedOperationsTab ===
+              "productive" ? (
+                <>
+                  <Text style={styles.infoTitle}>
+                    Most Productive
+                  </Text>
+
+                  <Text style={styles.infoText}>
+                    {systemDashboard?.operations
+                      ?.mostProductive &&
+                    systemDashboard.operations
+                      .mostProductive.resolved > 0
+                      ? `${resolvePerformanceName(
+                          systemDashboard
+                            .operations
+                            .mostProductive
+                        )} • ${
+                          systemDashboard
+                            .operations
+                            .mostProductive
+                            .resolved
+                        } resolved • ${
+                          systemDashboard
+                            .operations
+                            .mostProductive
+                            .resolutionRate
+                        }% resolution rate`
+                      : "No productivity statistics yet."}
+                  </Text>
+                </>
+              ) : null}
+
+              {selectedOperationsTab ===
+              "fastest" ? (
+                <>
+                  <Text style={styles.infoTitle}>
+                    Fastest Resolution
+                  </Text>
+
+                  <Text style={styles.infoText}>
+                    {systemDashboard?.operations
+                      ?.fastestResolution
+                      ? `${resolvePerformanceName(
+                          systemDashboard
+                            .operations
+                            .fastestResolution
+                        )} • ${
+                          systemDashboard
+                            .operations
+                            .fastestResolution
+                            .averageResolutionMinutes ??
+                          "-"
+                        } min average`
+                      : "No resolution statistics yet."}
+                  </Text>
+                </>
+              ) : null}
+
+              {selectedOperationsTab ===
+              "autoWork" ? (
+                <View
+                  style={
+                    styles.autoWorkContentRow
+                  }
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={styles.infoTitle}
+                    >
+                      Auto Work
+                    </Text>
+
+                    <Text
+                      style={styles.infoText}
+                    >
+                      {systemDashboard?.operations
+                        ?.autoWorkEnabled
+                        ? "New reports are automatically assigned to the active supervisor with the smallest unresolved workload."
+                        : "New reports remain unassigned until Auto Work is enabled or a System Admin distributes them manually."}
+                    </Text>
+                  </View>
+
+                  {updatingAutoWork ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={PURPLE}
+                    />
+                  ) : (
+                    <Switch
+                      value={
+                        systemDashboard
+                          ?.operations
+                          ?.autoWorkEnabled ===
+                        true
+                      }
+                      onValueChange={() =>
+                        void toggleAutoWork()
+                      }
+                      trackColor={{
+                        false:
+                          "rgba(255,255,255,0.16)",
+                        true:
+                          "rgba(110,231,183,0.42)",
+                      }}
+                      thumbColor={
+                        systemDashboard
+                          ?.operations
+                          ?.autoWorkEnabled
+                          ? GREEN
+                          : "rgba(255,255,255,0.78)"
+                      }
+                    />
+                  )}
+                </View>
+              ) : null}
             </GlassCard>
 
-
-            <GlassCard
-              style={styles.infoCard}
-              borderColor="rgba(110,231,183,0.22)"
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.infoTitle}>
-                  Most Productive
-                </Text>
-
-                <Text style={styles.infoText}>
-                  {systemDashboard?.operations?.mostProductive
-                    ? `${systemDashboard.operations.mostProductive.kristoId || systemDashboard.operations.mostProductive.userId} • ${systemDashboard.operations.mostProductive.resolved} resolved`
-                    : "No productivity data yet."}
-                </Text>
-              </View>
-            </GlassCard>
-
-            <GlassCard
-              style={styles.infoCard}
-              borderColor="rgba(251,191,36,0.22)"
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.infoTitle}>
-                  Fastest Resolution
-                </Text>
-
-                <Text style={styles.infoText}>
-                  {systemDashboard?.operations?.fastestResolution
-                    ? `${systemDashboard.operations.fastestResolution.kristoId || systemDashboard.operations.fastestResolution.userId} • ${systemDashboard.operations.fastestResolution.averageResolutionMinutes ?? "-"} min average`
-                    : "No resolution statistics yet."}
-                </Text>
-              </View>
-            </GlassCard>
-
-            <GlassCard
-              style={styles.infoCard}
-              borderColor="rgba(167,139,250,0.22)"
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.infoTitle}>
-                  Auto Work
-                </Text>
-
-                <Text style={styles.infoText}>
-                  {systemDashboard?.operations?.autoWorkEnabled
-                    ? "Automatic report distribution is enabled."
-                    : "Automatic report distribution is disabled."}
-                </Text>
-              </View>
-            </GlassCard>
-
-            <GlassCard
-              style={styles.infoCard}
-              borderColor=
-                "rgba(110,231,183,0.22)"
-            >
-              <Ionicons
-                name="git-network-outline"
-                size={24}
-                color={GREEN}
-              />
-
-              <View style={{ flex: 1 }}>
-                <Text style={styles.infoTitle}>
-                  Automatic workload distribution
-                </Text>
-
-                <Text style={styles.infoText}>
-                  Reports will be routed to available
-                  agents with fewer open cases.
-                  High-priority reports will go to a
-                  supervisor or System Admin.
-                </Text>
-              </View>
-            </GlassCard>
           </>
         )}
       </ScrollView>
@@ -1801,6 +2064,62 @@ const styles = StyleSheet.create({
     color: TEXT,
     fontSize: 14,
     fontWeight: "900",
+  },
+
+  operationsTabsRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 6,
+    marginBottom: 12,
+  },
+
+  operationsTabButton: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 64,
+    paddingHorizontal: 3,
+    paddingVertical: 9,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.10)",
+    backgroundColor:
+      "rgba(255,255,255,0.045)",
+  },
+
+  operationsTabButtonActive: {
+    borderColor:
+      "rgba(167,139,250,0.58)",
+    backgroundColor:
+      "rgba(124,92,210,0.25)",
+  },
+
+  operationsTabText: {
+    width: "100%",
+    color: MUTED,
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+
+  operationsTabTextActive: {
+    color: "#E9DDFF",
+  },
+
+  operationsContentCard: {
+    minHeight: 140,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+  },
+
+  autoWorkContentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
   },
 
   infoText: {
