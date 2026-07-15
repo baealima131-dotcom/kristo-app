@@ -2,6 +2,7 @@ import React from "react";
 
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Pressable,
   ScrollView,
@@ -29,6 +30,7 @@ import {
 } from "react-native-safe-area-context";
 
 import {
+  assignSafetyReportToAgent,
   fetchSafetySupervisorReport,
   type SafetyReportSummary,
   type SafetySupervisorDashboardResponse,
@@ -118,6 +120,16 @@ SafetySupervisorReportDetailsScreen() {
     setError,
   ] = React.useState("");
 
+  const [
+    showAgentPicker,
+    setShowAgentPicker,
+  ] = React.useState(false);
+
+  const [
+    assigningAgentUserId,
+    setAssigningAgentUserId,
+  ] = React.useState("");
+
   const load =
     React.useCallback(async () => {
       if (!reportId) {
@@ -165,6 +177,104 @@ SafetySupervisorReportDetailsScreen() {
       ) =>
         agent.userId ===
         report?.assignedAgentUserId
+    );
+
+  const activeAgents =
+    agents.filter(
+      (
+        agent:
+          SafetySupervisorDashboardResponse["agents"][number]
+      ) =>
+        agent.status ===
+        "active"
+    );
+
+  const assignToAgent =
+    React.useCallback(
+      (
+        agent:
+          SafetySupervisorDashboardResponse["agents"][number]
+      ) => {
+        if (
+          !reportId ||
+          assigningAgentUserId
+        ) {
+          return;
+        }
+
+        Alert.alert(
+          report?.assignedAgentUserId
+            ? "Change assigned agent?"
+            : "Assign this report?",
+          `Assign ${report?.reportCode || "this report"} to ${
+            agent.kristoId ||
+            agent.userId
+          }?`,
+          [
+            {
+              text: "Cancel",
+              style: "cancel",
+            },
+            {
+              text: "Assign",
+              onPress: async () => {
+                setAssigningAgentUserId(
+                  agent.userId
+                );
+
+                try {
+                  const result =
+                    await assignSafetyReportToAgent(
+                      {
+                        reportId,
+                        agentUserId:
+                          agent.userId,
+                      }
+                    );
+
+                  setReport(
+                    result.report
+                  );
+                  setAgents(
+                    result.agents
+                  );
+                  setShowAgentPicker(
+                    false
+                  );
+
+                  Alert.alert(
+                    "Report assigned",
+                    `${result.report.reportCode} is now assigned to ${
+                      agent.kristoId ||
+                      agent.userId
+                    }.`
+                  );
+                } catch (
+                  nextError: any
+                ) {
+                  Alert.alert(
+                    "Could not assign report",
+                    String(
+                      nextError?.message ||
+                        "Please try again."
+                    )
+                  );
+                } finally {
+                  setAssigningAgentUserId(
+                    ""
+                  );
+                }
+              },
+            },
+          ]
+        );
+      },
+      [
+        assigningAgentUserId,
+        report?.assignedAgentUserId,
+        report?.reportCode,
+        reportId,
+      ]
     );
 
   const critical =
@@ -526,17 +636,217 @@ SafetySupervisorReportDetailsScreen() {
               <Text style={styles.assignmentMeta}>
                 {assignedAgent
                   ? `${assignedAgent.open} open • ${assignedAgent.inReview} in review • ${assignedAgent.resolved} resolved`
-                  : `${agents.filter(
-                      (
-                        agent:
-                          SafetySupervisorDashboardResponse["agents"][number]
-                      ) =>
-                        agent.status ===
-                        "active"
-                    ).length} active agents available`}
+                  : `${activeAgents.length} active agents available`}
               </Text>
             </View>
+
+            <Pressable
+              disabled={
+                assigningAgentUserId !==
+                  "" ||
+                report.status ===
+                  "resolved" ||
+                report.status ===
+                  "dismissed"
+              }
+              onPress={() =>
+                setShowAgentPicker(
+                  (current) =>
+                    !current
+                )
+              }
+              style={({ pressed }) => [
+                styles.assignAgentButton,
+                pressed && {
+                  opacity: 0.75,
+                },
+              ]}
+            >
+              <Ionicons
+                name={
+                  showAgentPicker
+                    ? "chevron-up"
+                    : assignedAgent
+                      ? "swap-horizontal-outline"
+                      : "person-add-outline"
+                }
+                size={16}
+                color="#07111F"
+              />
+
+              <Text
+                style={
+                  styles.assignAgentButtonText
+                }
+              >
+                {assignedAgent
+                  ? "Change"
+                  : "Assign"}
+              </Text>
+            </Pressable>
           </View>
+
+          {showAgentPicker ? (
+            <View style={styles.agentPicker}>
+              <View
+                style={
+                  styles.agentPickerHeader
+                }
+              >
+                <View>
+                  <Text
+                    style={
+                      styles.agentPickerTitle
+                    }
+                  >
+                    Select Safety Agent
+                  </Text>
+
+                  <Text
+                    style={
+                      styles.agentPickerSubtitle
+                    }
+                  >
+                    Active agents from your team
+                  </Text>
+                </View>
+
+                <Text
+                  style={
+                    styles.agentPickerCount
+                  }
+                >
+                  {activeAgents.length}
+                </Text>
+              </View>
+
+              {activeAgents.length ? (
+                activeAgents.map(
+                  (
+                    agent:
+                      SafetySupervisorDashboardResponse["agents"][number]
+                  ) => {
+                    const selected =
+                      report.assignedAgentUserId ===
+                      agent.userId;
+
+                    const assigning =
+                      assigningAgentUserId ===
+                      agent.userId;
+
+                    return (
+                      <Pressable
+                        key={[
+                          agent.userId,
+                          agent.churchId,
+                        ].join(":")}
+                        disabled={
+                          Boolean(
+                            assigningAgentUserId
+                          )
+                        }
+                        onPress={() =>
+                          assignToAgent(
+                            agent
+                          )
+                        }
+                        style={({
+                          pressed,
+                        }) => [
+                          styles.agentPickerRow,
+                          selected &&
+                            styles.agentPickerRowSelected,
+                          pressed && {
+                            opacity: 0.75,
+                          },
+                        ]}
+                      >
+                        <View
+                          style={
+                            styles.agentPickerAvatar
+                          }
+                        >
+                          <Ionicons
+                            name="person-outline"
+                            size={20}
+                            color={
+                              selected
+                                ? GREEN
+                                : BLUE
+                            }
+                          />
+                        </View>
+
+                        <View
+                          style={{
+                            flex: 1,
+                          }}
+                        >
+                          <Text
+                            style={
+                              styles.agentPickerName
+                            }
+                          >
+                            {agent.kristoId ||
+                              agent.userId}
+                          </Text>
+
+                          <Text
+                            style={
+                              styles.agentPickerMeta
+                            }
+                          >
+                            {agent.open} open •{" "}
+                            {agent.inReview} review •{" "}
+                            {agent.resolved} resolved
+                          </Text>
+                        </View>
+
+                        {assigning ? (
+                          <ActivityIndicator
+                            size="small"
+                            color={GOLD}
+                          />
+                        ) : selected ? (
+                          <Ionicons
+                            name="checkmark-circle"
+                            size={23}
+                            color={GREEN}
+                          />
+                        ) : (
+                          <Ionicons
+                            name="chevron-forward"
+                            size={20}
+                            color={MUTED}
+                          />
+                        )}
+                      </Pressable>
+                    );
+                  }
+                )
+              ) : (
+                <View
+                  style={
+                    styles.noActiveAgents
+                  }
+                >
+                  <Ionicons
+                    name="people-outline"
+                    size={27}
+                    color={MUTED}
+                  />
+
+                  <Text
+                    style={
+                      styles.noActiveAgentsText
+                    }
+                  >
+                    No active agents. An invited member must accept the Safety Agent role first.
+                  </Text>
+                </View>
+              )}
+            </View>
+          ) : null}
 
           <Text style={styles.sectionLabel}>
             OPERATION TIMELINE
@@ -666,10 +976,7 @@ SafetySupervisorReportDetailsScreen() {
               </Text>
 
               <Text style={styles.phaseText}>
-                Assign Agent, Start Review,
-                Resolve, Escalate and Dismiss
-                controls are the next workflow
-                phase.
+                Agent assignment is active. Start Review, Resolve, Escalate and Dismiss controls remain in the next workflow phase.
               </Text>
             </View>
           </View>
@@ -1030,6 +1337,121 @@ const styles =
       color: MUTED,
       fontSize: 10,
       lineHeight: 15,
+      fontWeight: "700",
+    },
+
+    assignAgentButton: {
+      minHeight: 38,
+      paddingHorizontal: 11,
+      borderRadius: 12,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 5,
+      backgroundColor: GOLD,
+    },
+
+    assignAgentButtonText: {
+      color: "#07111F",
+      fontSize: 9,
+      fontWeight: "900",
+    },
+
+    agentPicker: {
+      marginTop: 10,
+      padding: 13,
+      borderRadius: 19,
+      gap: 8,
+      backgroundColor:
+        "rgba(255,255,255,0.045)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(196,181,253,0.19)",
+    },
+
+    agentPickerHeader: {
+      marginBottom: 3,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+
+    agentPickerTitle: {
+      color: TEXT,
+      fontSize: 13,
+      fontWeight: "900",
+    },
+
+    agentPickerSubtitle: {
+      marginTop: 3,
+      color: MUTED,
+      fontSize: 9,
+      fontWeight: "700",
+    },
+
+    agentPickerCount: {
+      color: PURPLE,
+      fontSize: 16,
+      fontWeight: "900",
+    },
+
+    agentPickerRow: {
+      minHeight: 62,
+      paddingHorizontal: 11,
+      paddingVertical: 9,
+      borderRadius: 15,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      backgroundColor:
+        "rgba(147,197,253,0.055)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(147,197,253,0.13)",
+    },
+
+    agentPickerRowSelected: {
+      backgroundColor:
+        "rgba(110,231,183,0.07)",
+      borderColor:
+        "rgba(110,231,183,0.28)",
+    },
+
+    agentPickerAvatar: {
+      width: 41,
+      height: 41,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor:
+        "rgba(147,197,253,0.10)",
+    },
+
+    agentPickerName: {
+      color: TEXT,
+      fontSize: 12,
+      fontWeight: "900",
+    },
+
+    agentPickerMeta: {
+      marginTop: 4,
+      color: MUTED,
+      fontSize: 8,
+      fontWeight: "700",
+    },
+
+    noActiveAgents: {
+      paddingVertical: 18,
+      paddingHorizontal: 12,
+      alignItems: "center",
+    },
+
+    noActiveAgentsText: {
+      marginTop: 8,
+      color: MUTED,
+      fontSize: 10,
+      lineHeight: 16,
+      textAlign: "center",
       fontWeight: "700",
     },
 

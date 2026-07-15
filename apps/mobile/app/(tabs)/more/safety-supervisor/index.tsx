@@ -541,9 +541,14 @@ export default function SafetySupervisorScreen() {
                   if (
                     metric.key === "agents"
                   ) {
-                    router.push(
-                      "/(tabs)/more/system-admin/report-center/supervisors"
-                    );
+                    router.push({
+                      pathname:
+                        "/(tabs)/more/safety-supervisor/agents",
+                      params: {
+                        mode: "list",
+                      },
+                    });
+                    return;
                   }
                 }}
                 style={({ pressed }) => [

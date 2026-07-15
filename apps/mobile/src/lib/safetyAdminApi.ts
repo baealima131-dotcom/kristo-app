@@ -496,6 +496,157 @@ export async function fetchSafetySupervisorReport(
 
 
 
+export async function
+assignSafetyReportToAgent(
+  input: {
+    reportId: string;
+    agentUserId: string;
+  }
+): Promise<{
+  report: SafetyReportSummary;
+  agents:
+    SafetySupervisorDashboardResponse["agents"];
+}> {
+  const reportId =
+    String(
+      input.reportId || ""
+    ).trim();
+
+  const agentUserId =
+    String(
+      input.agentUserId || ""
+    ).trim();
+
+  if (!reportId || !agentUserId) {
+    throw new Error(
+      "Report ID and Agent user ID are required."
+    );
+  }
+
+  const response: any =
+    await apiPost(
+      `/api/safety/supervisor/reports/${encodeURIComponent(
+        reportId
+      )}`,
+      {
+        agentUserId,
+      },
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false ||
+    !response.report
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not assign this report."
+      )
+    );
+  }
+
+  return {
+    report:
+      response.report as
+        SafetyReportSummary,
+
+    agents:
+      Array.isArray(
+        response.agents
+      )
+        ? response.agents
+        : [],
+  };
+}
+
+
+
+export async function
+assignSafetyReportsToAgent(
+  input: {
+    agentUserId: string;
+    count: number;
+  }
+): Promise<{
+  assignedCount: number;
+  availableCount: number;
+  agents:
+    SafetySupervisorDashboardResponse["agents"];
+}> {
+  const agentUserId =
+    String(
+      input.agentUserId || ""
+    ).trim();
+
+  const count =
+    Math.floor(
+      Number(input.count) || 0
+    );
+
+  if (!agentUserId) {
+    throw new Error(
+      "Agent user ID is required."
+    );
+  }
+
+  if (count < 1) {
+    throw new Error(
+      "Enter the number of reports to assign."
+    );
+  }
+
+  const response: any =
+    await apiPost(
+      "/api/safety/supervisor/agents",
+      {
+        action:
+          "assign_reports",
+        agentUserId,
+        count,
+      },
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not assign reports."
+      )
+    );
+  }
+
+  return {
+    assignedCount:
+      Number(
+        response.assignedCount || 0
+      ),
+
+    availableCount:
+      Number(
+        response.availableCount || 0
+      ),
+
+    agents:
+      Array.isArray(
+        response.agents
+      )
+        ? response.agents
+        : [],
+  };
+}
+
 export type SafetySupervisorAgent =
   SafetySupervisorDashboardResponse["agents"][number];
 
@@ -573,6 +724,66 @@ addSafetySupervisorAgent(
     agent:
       response.agent as
         SafetySupervisorAgent,
+  };
+}
+
+
+export async function
+removeSafetySupervisorAgent(
+  input: {
+    agentUserId: string;
+    churchId: string;
+  }
+): Promise<{
+  removed: boolean;
+}> {
+  const agentUserId =
+    String(
+      input.agentUserId || ""
+    ).trim();
+
+  const churchId =
+    String(
+      input.churchId || ""
+    )
+      .trim()
+      .toUpperCase();
+
+  if (!agentUserId || !churchId) {
+    throw new Error(
+      "Agent user ID and Church ID are required."
+    );
+  }
+
+  const response: any =
+    await apiPost(
+      "/api/safety/supervisor/agents",
+      {
+        action: "remove",
+        agentUserId,
+        churchId,
+      },
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not remove Safety Agent."
+      )
+    );
+  }
+
+  return {
+    removed:
+      response.removed === true,
   };
 }
 

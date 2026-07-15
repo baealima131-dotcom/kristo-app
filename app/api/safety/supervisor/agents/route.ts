@@ -13,7 +13,9 @@ import {
 } from "@/app/api/_lib/store/safetyDb";
 
 import {
+  dbAssignReportsToAgent,
   dbCreateSupervisorAgent,
+  dbRemoveSupervisorAgent,
   dbGetSafetySupervisorDashboard,
 } from "@/app/api/_lib/store/safetyReportDb";
 
@@ -193,6 +195,274 @@ export async function POST(
     await req.json().catch(
       () => ({})
     );
+
+  const action =
+    String(
+      body?.action || ""
+    )
+      .trim()
+      .toLowerCase();
+
+
+  if (action === "assign_reports") {
+    const agentUserId =
+      String(
+        body?.agentUserId || ""
+      ).trim();
+
+    const requestedCount =
+      Math.floor(
+        Number(body?.count) || 0
+      );
+
+    if (!agentUserId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Agent user ID is required.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    if (requestedCount < 1) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Enter the number of reports to assign.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const before =
+      await dbGetSafetySupervisorDashboard(
+        access.supervisorUserId
+      );
+
+    const agent =
+      before.agents.find(
+        (row) =>
+          row.userId ===
+            agentUserId &&
+          row.status ===
+            "active"
+      );
+
+    if (!agent) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Choose an active Safety Agent from your team.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const availableReports =
+      before.reports.filter(
+        (report) =>
+          !report.assignedAgentUserId &&
+          report.status !==
+            "resolved" &&
+          report.status !==
+            "dismissed"
+      );
+
+    if (!availableReports.length) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "There are no unassigned reports available.",
+          availableCount: 0,
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    if (
+      requestedCount >
+      availableReports.length
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            `Only ${availableReports.length} unassigned reports are available.`,
+          availableCount:
+            availableReports.length,
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    const assignedReports =
+      await dbAssignReportsToAgent({
+        supervisorUserId:
+          access.supervisorUserId,
+
+        agentUserId,
+
+        count:
+          requestedCount,
+      });
+
+    if (
+      assignedReports.length !==
+      requestedCount
+    ) {
+      const latest =
+        await dbGetSafetySupervisorDashboard(
+          access.supervisorUserId
+        );
+
+      const latestAvailable =
+        latest.reports.filter(
+          (report) =>
+            !report.assignedAgentUserId &&
+            report.status !==
+              "resolved" &&
+            report.status !==
+              "dismissed"
+        ).length;
+
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            assignedReports.length > 0
+              ? `${assignedReports.length} reports were assigned because the available queue changed.`
+              : "The available report queue changed. Please try again.",
+          assignedCount:
+            assignedReports.length,
+          availableCount:
+            latestAvailable,
+          agents:
+            latest.agents,
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    const dashboard =
+      await dbGetSafetySupervisorDashboard(
+        access.supervisorUserId
+      );
+
+    const remainingAvailable =
+      dashboard.reports.filter(
+        (report) =>
+          !report.assignedAgentUserId &&
+          report.status !==
+            "resolved" &&
+          report.status !==
+            "dismissed"
+      ).length;
+
+    console.log(
+      "KRISTO_SAFETY_REPORTS_BULK_ASSIGNED_TO_AGENT",
+      {
+        supervisorUserId:
+          access.supervisorUserId,
+
+        agentUserId,
+
+        agentKristoId:
+          agent.kristoId,
+
+        requestedCount,
+
+        assignedCount:
+          assignedReports.length,
+
+        remainingAvailable,
+      }
+    );
+
+    return NextResponse.json({
+      ok: true,
+      assignedCount:
+        assignedReports.length,
+      availableCount:
+        remainingAvailable,
+      agents:
+        dashboard.agents,
+    });
+  }
+
+  if (action === "remove") {
+    const agentUserId =
+      String(
+        body?.agentUserId || ""
+      ).trim();
+
+    const removeChurchId =
+      String(
+        body?.churchId || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    if (
+      !agentUserId ||
+      !removeChurchId
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Agent user ID and Church ID are required.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const removed =
+      await dbRemoveSupervisorAgent({
+        supervisorUserId:
+          access.supervisorUserId,
+        agentUserId,
+        churchId:
+          removeChurchId,
+      });
+
+    console.log(
+      "KRISTO_SAFETY_AGENT_REMOVED",
+      {
+        supervisorUserId:
+          access.supervisorUserId,
+        agentUserId,
+        churchId:
+          removeChurchId,
+        removed:
+          removed.removed,
+      }
+    );
+
+    return NextResponse.json({
+      ok: true,
+      removed:
+        removed.removed,
+    });
+  }
 
   const kristoId =
     String(

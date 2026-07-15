@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -33,7 +34,9 @@ import {
 
 import {
   addSafetySupervisorAgent,
+  assignSafetyReportsToAgent,
   fetchSafetySupervisorDashboard,
+  removeSafetySupervisorAgent,
   type SafetySupervisorAgent,
 } from "@/src/lib/safetyAdminApi";
 
@@ -104,6 +107,33 @@ SafetySupervisorAgentsScreen() {
     setError,
   ] = React.useState("");
 
+  const [
+    removingAgentKey,
+    setRemovingAgentKey,
+  ] = React.useState("");
+
+  const [
+    availableReportCount,
+    setAvailableReportCount,
+  ] = React.useState(0);
+
+  const [
+    assignmentAgent,
+    setAssignmentAgent,
+  ] = React.useState<
+    SafetySupervisorAgent | null
+  >(null);
+
+  const [
+    assignmentCount,
+    setAssignmentCount,
+  ] = React.useState("");
+
+  const [
+    assigningReports,
+    setAssigningReports,
+  ] = React.useState(false);
+
   React.useEffect(() => {
     if (requestedMode === "add") {
       setShowForm(true);
@@ -121,6 +151,17 @@ SafetySupervisorAgentsScreen() {
 
         setAgents(
           dashboard.agents
+        );
+
+        setAvailableReportCount(
+          dashboard.reports.filter(
+            (report) =>
+              !report.assignedAgentUserId &&
+              report.status !==
+                "resolved" &&
+              report.status !==
+                "dismissed"
+          ).length
         );
       } catch (nextError: any) {
         setError(
@@ -216,6 +257,253 @@ SafetySupervisorAgentsScreen() {
       saving,
       kristoId,
       churchId,
+      load,
+    ]);
+
+  const showAgentDetails =
+    React.useCallback(
+      (
+        agent:
+          SafetySupervisorAgent
+      ) => {
+        Alert.alert(
+          agent.kristoId ||
+            "Safety Agent",
+          [
+            `Church: ${agent.churchId}`,
+            `Status: ${agent.status.toUpperCase()}`,
+            `Assigned: ${agent.totalAssigned}`,
+            `Open: ${agent.open}`,
+            `In review: ${agent.inReview}`,
+            `Resolved: ${agent.resolved}`,
+          ].join("\n")
+        );
+      },
+      []
+    );
+
+  const confirmRemoveAgent =
+    React.useCallback(
+      (
+        agent:
+          SafetySupervisorAgent
+      ) => {
+        const key = [
+          agent.userId,
+          agent.churchId,
+        ].join(":");
+
+        Alert.alert(
+          "Remove Safety Agent?",
+          `${
+            agent.kristoId ||
+            agent.userId
+          } will be removed from your investigation team.`,
+          [
+            {
+              text: "Cancel",
+              style: "cancel",
+            },
+            {
+              text: "Remove",
+              style: "destructive",
+              onPress: async () => {
+                if (
+                  removingAgentKey
+                ) {
+                  return;
+                }
+
+                setRemovingAgentKey(
+                  key
+                );
+
+                try {
+                  const result =
+                    await removeSafetySupervisorAgent(
+                      {
+                        agentUserId:
+                          agent.userId,
+                        churchId:
+                          agent.churchId,
+                      }
+                    );
+
+                  if (
+                    !result.removed
+                  ) {
+                    throw new Error(
+                      "This agent relationship was not found."
+                    );
+                  }
+
+                  await load();
+
+                  Alert.alert(
+                    "Agent removed",
+                    "The Safety Agent was removed from your team."
+                  );
+                } catch (
+                  nextError: any
+                ) {
+                  Alert.alert(
+                    "Could not remove agent",
+                    String(
+                      nextError?.message ||
+                        "Please try again."
+                    )
+                  );
+                } finally {
+                  setRemovingAgentKey(
+                    ""
+                  );
+                }
+              },
+            },
+          ]
+        );
+      },
+      [
+        load,
+        removingAgentKey,
+      ]
+    );
+
+  const openAgentAssignments =
+    React.useCallback(
+      (
+        agent:
+          SafetySupervisorAgent
+      ) => {
+        if (
+          agent.status !==
+          "active"
+        ) {
+          Alert.alert(
+            "Agent not active",
+            "This agent must accept the invitation before reports can be assigned."
+          );
+          return;
+        }
+
+        if (
+          availableReportCount < 1
+        ) {
+          Alert.alert(
+            "No reports available",
+            "All reports received by this supervisor have already been assigned."
+          );
+          return;
+        }
+
+        setAssignmentCount("");
+        setAssignmentAgent(agent);
+      },
+      [
+        availableReportCount,
+      ]
+    );
+
+  const closeAssignmentModal =
+    React.useCallback(() => {
+      if (assigningReports) {
+        return;
+      }
+
+      setAssignmentAgent(null);
+      setAssignmentCount("");
+    }, [assigningReports]);
+
+  const submitReportAssignment =
+    React.useCallback(async () => {
+      if (
+        !assignmentAgent ||
+        assigningReports
+      ) {
+        return;
+      }
+
+      const count =
+        Math.floor(
+          Number(
+            assignmentCount
+          ) || 0
+        );
+
+      if (count < 1) {
+        Alert.alert(
+          "Enter report count",
+          "Enter how many reports you want to assign to this agent."
+        );
+        return;
+      }
+
+      if (
+        count >
+        availableReportCount
+      ) {
+        Alert.alert(
+          "Not enough reports",
+          `Only ${availableReportCount} unassigned reports are available.`
+        );
+        return;
+      }
+
+      setAssigningReports(true);
+
+      try {
+        const result =
+          await assignSafetyReportsToAgent(
+            {
+              agentUserId:
+                assignmentAgent.userId,
+              count,
+            }
+          );
+
+        setAgents(
+          result.agents
+        );
+
+        setAvailableReportCount(
+          result.availableCount
+        );
+
+        const agentName =
+          assignmentAgent.kristoId ||
+          assignmentAgent.userId;
+
+        setAssignmentAgent(null);
+        setAssignmentCount("");
+
+        Alert.alert(
+          "Reports assigned",
+          `${result.assignedCount} ${
+            result.assignedCount === 1
+              ? "report was"
+              : "reports were"
+          } assigned to ${agentName}.`
+        );
+      } catch (
+        nextError: any
+      ) {
+        Alert.alert(
+          "Could not assign reports",
+          String(
+            nextError?.message ||
+              "Please try again."
+          )
+        );
+
+        await load();
+      } finally {
+        setAssigningReports(false);
+      }
+    }, [
+      assignmentAgent,
+      assignmentCount,
+      assigningReports,
+      availableReportCount,
       load,
     ]);
 
@@ -470,15 +758,10 @@ SafetySupervisorAgentsScreen() {
                     style={styles.agentCard}
                   >
                     <View
-                      style={styles.agentAvatar}
+                      style={
+                        styles.agentCardTop
+                      }
                     >
-                      <Ionicons
-                        name="person-outline"
-                        size={23}
-                        color={BLUE}
-                      />
-                    </View>
-
                     <View style={{ flex: 1 }}>
                       <Text
                         style={
@@ -569,6 +852,122 @@ SafetySupervisorAgentsScreen() {
                         ASSIGNED
                       </Text>
                     </View>
+                    </View>
+
+                    <View
+                      style={
+                        styles.agentActions
+                      }
+                    >
+                      <Pressable
+                        disabled={
+                          agent.status !==
+                            "active" ||
+                          availableReportCount <
+                            1
+                        }
+                        onPress={() =>
+                          openAgentAssignments(
+                            agent
+                          )
+                        }
+                        style={({
+                          pressed,
+                        }) => [
+                          styles.agentActionPrimary,
+                          (
+                            agent.status !==
+                              "active" ||
+                            availableReportCount <
+                              1
+                          ) &&
+                            styles.agentActionDisabled,
+                          pressed && {
+                            opacity: 0.75,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={
+                            styles.agentActionPrimaryText
+                          }
+                        >
+                          {availableReportCount > 0
+                            ? "Assign"
+                            : "No Reports"}
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() =>
+                          showAgentDetails(
+                            agent
+                          )
+                        }
+                        style={({
+                          pressed,
+                        }) => [
+                          styles.agentActionSecondary,
+                          pressed && {
+                            opacity: 0.75,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={
+                            styles.agentActionSecondaryText
+                          }
+                        >
+                          Details
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        disabled={
+                          Boolean(
+                            removingAgentKey
+                          )
+                        }
+                        onPress={() =>
+                          confirmRemoveAgent(
+                            agent
+                          )
+                        }
+                        style={({
+                          pressed,
+                        }) => [
+                          styles.agentActionDanger,
+                          pressed && {
+                            opacity: 0.75,
+                          },
+                        ]}
+                      >
+                        {removingAgentKey ===
+                        [
+                          agent.userId,
+                          agent.churchId,
+                        ].join(":") ? (
+                          <ActivityIndicator
+                            size="small"
+                            color="#FB7185"
+                          />
+                        ) : (
+                          <Ionicons
+                            name="trash-outline"
+                            size={15}
+                            color="#FB7185"
+                          />
+                        )}
+
+                        <Text
+                          style={
+                            styles.agentActionDangerText
+                          }
+                        >
+                          Remove
+                        </Text>
+                      </Pressable>
+                    </View>
                   </View>
                 )
               )}
@@ -592,6 +991,182 @@ SafetySupervisorAgentsScreen() {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+      <Modal
+        visible={Boolean(
+          assignmentAgent
+        )}
+        transparent
+        animationType="fade"
+        onRequestClose={
+          closeAssignmentModal
+        }
+      >
+        <KeyboardAvoidingView
+          style={
+            styles.assignmentModalRoot
+          }
+          behavior={
+            Platform.OS === "ios"
+              ? "padding"
+              : undefined
+          }
+        >
+          <Pressable
+            style={
+              styles.assignmentModalBackdrop
+            }
+            onPress={
+              closeAssignmentModal
+            }
+          />
+
+          <View
+            style={
+              styles.assignmentModalCard
+            }
+          >
+            <Text
+              style={
+                styles.assignmentModalTitle
+              }
+            >
+              Assign Reports
+            </Text>
+
+            <Text
+              style={
+                styles.assignmentModalAgent
+              }
+            >
+              {assignmentAgent?.kristoId ||
+                assignmentAgent?.userId ||
+                "Safety Agent"}
+            </Text>
+
+            <View
+              style={
+                styles.assignmentAvailableCard
+              }
+            >
+              <Text
+                style={
+                  styles.assignmentAvailableLabel
+                }
+              >
+                REPORTS AVAILABLE
+              </Text>
+
+              <Text
+                style={
+                  styles.assignmentAvailableValue
+                }
+              >
+                {availableReportCount}
+              </Text>
+            </View>
+
+            <Text
+              style={
+                styles.assignmentInputLabel
+              }
+            >
+              How many reports should this agent receive?
+            </Text>
+
+            <TextInput
+              autoFocus
+              value={assignmentCount}
+              onChangeText={(value) =>
+                setAssignmentCount(
+                  value.replace(
+                    /[^0-9]/g,
+                    ""
+                  )
+                )
+              }
+              keyboardType="number-pad"
+              inputMode="numeric"
+              returnKeyType="done"
+              placeholder="Enter number"
+              placeholderTextColor=
+                "rgba(255,255,255,0.30)"
+              selectTextOnFocus
+              style={
+                styles.assignmentInput
+              }
+            />
+
+            <Text
+              style={
+                styles.assignmentHint
+              }
+            >
+              You may assign any number up to the reports currently available.
+            </Text>
+
+            <View
+              style={
+                styles.assignmentModalActions
+              }
+            >
+              <Pressable
+                disabled={
+                  assigningReports
+                }
+                onPress={
+                  closeAssignmentModal
+                }
+                style={
+                  styles.assignmentCancelButton
+                }
+              >
+                <Text
+                  style={
+                    styles.assignmentCancelText
+                  }
+                >
+                  Cancel
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={
+                  assigningReports ||
+                  !assignmentCount
+                }
+                onPress={() =>
+                  void submitReportAssignment()
+                }
+                style={[
+                  styles.assignmentSubmitButton,
+                  (
+                    assigningReports ||
+                    !assignmentCount
+                  ) && {
+                    opacity: 0.48,
+                  },
+                ]}
+              >
+                {assigningReports ? (
+                  <ActivityIndicator
+                    size="small"
+                    color="#07111F"
+                  />
+                ) : (
+                  <Text
+                    style={
+                      styles.assignmentSubmitText
+                    }
+                  >
+                    Assign
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
     </View>
   );
 }
@@ -782,9 +1357,6 @@ const styles =
     agentCard: {
       padding: 14,
       borderRadius: 19,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 11,
       backgroundColor:
         "rgba(255,255,255,0.045)",
       borderWidth: 1,
@@ -792,14 +1364,83 @@ const styles =
         "rgba(147,197,253,0.16)",
     },
 
-    agentAvatar: {
-      width: 47,
-      height: 47,
-      borderRadius: 16,
+    agentCardTop: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 11,
+    },
+
+    agentActions: {
+      marginTop: 13,
+      paddingTop: 12,
+      borderTopWidth: 1,
+      borderTopColor:
+        "rgba(255,255,255,0.07)",
+      flexDirection: "row",
+      gap: 7,
+    },
+
+    agentActionPrimary: {
+      flex: 1,
+      minHeight: 37,
+      borderRadius: 12,
+      flexDirection: "row",
       alignItems: "center",
       justifyContent: "center",
+      gap: 5,
+      backgroundColor: GOLD,
+    },
+
+    agentActionPrimaryText: {
+      color: "#07111F",
+      fontSize: 9,
+      fontWeight: "900",
+    },
+
+    agentActionDisabled: {
+      opacity: 0.38,
+    },
+
+    agentActionSecondary: {
+      flex: 1,
+      minHeight: 37,
+      borderRadius: 12,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 5,
       backgroundColor:
-        "rgba(147,197,253,0.11)",
+        "rgba(147,197,253,0.08)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(147,197,253,0.18)",
+    },
+
+    agentActionSecondaryText: {
+      color: BLUE,
+      fontSize: 9,
+      fontWeight: "900",
+    },
+
+    agentActionDanger: {
+      flex: 1,
+      minHeight: 37,
+      borderRadius: 12,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 5,
+      backgroundColor:
+        "rgba(251,113,133,0.07)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(251,113,133,0.18)",
+    },
+
+    agentActionDangerText: {
+      color: "#FB7185",
+      fontSize: 9,
+      fontWeight: "900",
     },
 
     agentName: {
@@ -920,4 +1561,144 @@ const styles =
       color: GOLD,
       fontWeight: "900",
     },
+
+
+    assignmentModalRoot: {
+      flex: 1,
+      justifyContent: "center",
+      paddingHorizontal: 18,
+    },
+
+    assignmentModalBackdrop: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor:
+        "rgba(0,0,0,0.72)",
+    },
+
+    assignmentModalCard: {
+      padding: 20,
+      borderRadius: 24,
+      backgroundColor:
+        "#111B2A",
+      borderWidth: 1,
+      borderColor:
+        "rgba(244,208,111,0.28)",
+    },
+
+    assignmentModalTitle: {
+      color: TEXT,
+      fontSize: 20,
+      fontWeight: "900",
+      textAlign: "center",
+    },
+
+    assignmentModalAgent: {
+      marginTop: 5,
+      color: GOLD,
+      fontSize: 12,
+      fontWeight: "900",
+      textAlign: "center",
+    },
+
+    assignmentAvailableCard: {
+      marginTop: 18,
+      minHeight: 78,
+      borderRadius: 18,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor:
+        "rgba(244,208,111,0.08)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(244,208,111,0.19)",
+    },
+
+    assignmentAvailableLabel: {
+      color: MUTED,
+      fontSize: 9,
+      fontWeight: "900",
+      letterSpacing: 0.8,
+    },
+
+    assignmentAvailableValue: {
+      marginTop: 4,
+      color: GOLD,
+      fontSize: 28,
+      fontWeight: "900",
+    },
+
+    assignmentInputLabel: {
+      marginTop: 18,
+      color: TEXT,
+      fontSize: 12,
+      lineHeight: 18,
+      fontWeight: "800",
+      textAlign: "center",
+    },
+
+    assignmentInput: {
+      marginTop: 12,
+      minHeight: 58,
+      paddingHorizontal: 16,
+      borderRadius: 17,
+      color: TEXT,
+      fontSize: 23,
+      fontWeight: "900",
+      textAlign: "center",
+      backgroundColor:
+        "rgba(255,255,255,0.055)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(255,255,255,0.14)",
+    },
+
+    assignmentHint: {
+      marginTop: 9,
+      color: MUTED,
+      fontSize: 9,
+      lineHeight: 14,
+      fontWeight: "700",
+      textAlign: "center",
+    },
+
+    assignmentModalActions: {
+      marginTop: 19,
+      flexDirection: "row",
+      gap: 10,
+    },
+
+    assignmentCancelButton: {
+      flex: 1,
+      minHeight: 49,
+      borderRadius: 15,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor:
+        "rgba(255,255,255,0.055)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(255,255,255,0.11)",
+    },
+
+    assignmentCancelText: {
+      color: TEXT,
+      fontSize: 12,
+      fontWeight: "900",
+    },
+
+    assignmentSubmitButton: {
+      flex: 1,
+      minHeight: 49,
+      borderRadius: 15,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: GOLD,
+    },
+
+    assignmentSubmitText: {
+      color: "#07111F",
+      fontSize: 12,
+      fontWeight: "900",
+    },
+
   });

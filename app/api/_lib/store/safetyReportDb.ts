@@ -1317,6 +1317,127 @@ export async function dbAssignReportToAgent(
   return rowToReport(rows[0]);
 }
 
+
+export async function dbAssignReportsToAgent(
+  input: {
+    supervisorUserId: string;
+    agentUserId: string;
+    count: number;
+  }
+): Promise<SafetyReportRecord[]> {
+  const supervisorUserId =
+    String(
+      input.supervisorUserId || ""
+    ).trim();
+
+  const agentUserId =
+    String(
+      input.agentUserId || ""
+    ).trim();
+
+  const requestedCount =
+    Math.floor(
+      Number(input.count) || 0
+    );
+
+  if (
+    !supervisorUserId ||
+    !agentUserId ||
+    requestedCount < 1
+  ) {
+    throw new Error(
+      "Supervisor, agent and a valid report count are required"
+    );
+  }
+
+  await ensureSafetyReportSchema();
+
+  const sql = getSql();
+  const now = nowIso();
+
+  /*
+   * Atomic queue assignment:
+   * - only reports belonging to this supervisor
+   * - only reports not already assigned to an agent
+   * - completed reports are excluded
+   * - serious reports are selected first
+   * - no hard-coded maximum
+   */
+  const rows = (await sql`
+    WITH candidates AS (
+      SELECT id
+      FROM kristo_safety_reports
+      WHERE
+        assigned_supervisor_user_id =
+          ${supervisorUserId}
+        AND assigned_agent_user_id IS NULL
+        AND status NOT IN (
+          'resolved',
+          'dismissed'
+        )
+      ORDER BY
+        CASE priority
+          WHEN 'critical' THEN 1
+          WHEN 'high' THEN 2
+          WHEN 'normal' THEN 3
+          ELSE 4
+        END,
+        created_at ASC
+      LIMIT ${requestedCount}
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE kristo_safety_reports AS report
+    SET
+      assigned_agent_user_id =
+        ${agentUserId},
+      status = 'assigned',
+      assigned_at =
+        COALESCE(
+          report.assigned_at,
+          ${now}
+        ),
+      updated_at = ${now}
+    FROM candidates
+    WHERE report.id = candidates.id
+    RETURNING
+      report.id,
+      report.report_code,
+      report.reporter_user_id,
+      report.reporter_kristo_id,
+      report.reported_user_id,
+      report.reported_kristo_id,
+      report.church_id,
+      report.source_type,
+      report.source_id,
+      report.source_room_id,
+      report.source_message_id,
+      report.target_type,
+      report.target_id,
+      report.target_title,
+      report.target_subtitle,
+      report.target_preview,
+      report.target_owner_user_id,
+      report.target_owner_kristo_id,
+      report.target_owner_name,
+      report.target_owner_avatar_uri,
+      report.target_media_type,
+      report.target_thumbnail_uri,
+      report.category,
+      report.reason,
+      report.description,
+      report.priority,
+      report.status,
+      report.assigned_supervisor_user_id,
+      report.assigned_agent_user_id,
+      report.created_at,
+      report.updated_at,
+      report.assigned_at,
+      report.resolved_at
+  `) as SafetyReportRow[];
+
+  return rows.map(rowToReport);
+}
+
 export async function dbCreateSupervisorAgent(
   input: {
     supervisorUserId: string;
