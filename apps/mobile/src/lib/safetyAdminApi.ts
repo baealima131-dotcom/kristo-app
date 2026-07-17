@@ -6,6 +6,7 @@ import {
 import {
   getKristoHeaders,
 } from "@/src/lib/kristoHeaders";
+import { resolveApiBase } from "@/src/lib/kristoEnv";
 
 export type SafetySupervisorSummary = {
   userId: string;
@@ -767,6 +768,17 @@ export async function fetchSafetySupervisorReport(
       "object"
       ? reportPayload.caseIntelligence
       : null;
+
+  console.log("KRISTO_SAFETY_CASE_CLIENT_FETCH", {
+    reportId: normalizedId,
+    apiBase: resolveApiBase(),
+    httpOk: response?.ok !== false,
+    hasCaseIntelligence: Boolean(caseIntelligence),
+    status: caseIntelligence?.status ?? null,
+    caseRiskScore:
+      caseIntelligence?.assessment?.caseRiskScore ??
+      null,
+  });
 
   return {
     viewerMode,

@@ -5362,6 +5362,7 @@ export async function dbGetSafetyCaseIntelligence(input: {
       targetUserId: ownerUserId || null,
       stage: "case_intelligence",
       error: message,
+      stack: String(error?.stack || "") || null,
     });
 
     return {

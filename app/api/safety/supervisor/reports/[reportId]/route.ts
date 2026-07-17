@@ -799,6 +799,7 @@ async function hydrateSafetyCaseReport(
       error: String(
         error?.message || "hydrate_case_intelligence_failed"
       ),
+      stack: String(error?.stack || "") || null,
     });
 
     caseIntelligence = {
@@ -1324,6 +1325,11 @@ export async function GET(
     );
   }
 
+  console.log("KRISTO_SAFETY_CASE_GET", {
+    reportId,
+    viewerUserId,
+  });
+
   const [
     isSupervisor,
     isActiveAgent,
@@ -1386,6 +1392,23 @@ export async function GET(
       await hydrateSafetyCaseReport(
         report
       );
+
+    console.log("KRISTO_SAFETY_CASE_RESPONSE", {
+      reportId,
+      viewerMode: "supervisor",
+      hasCaseIntelligence: Boolean(
+        hydratedReport?.caseIntelligence
+      ),
+      status:
+        hydratedReport?.caseIntelligence?.status ??
+        null,
+      caseRiskScore:
+        hydratedReport?.caseIntelligence?.assessment
+          ?.caseRiskScore ?? null,
+      recommendation:
+        hydratedReport?.caseIntelligence?.assessment
+          ?.recommendation ?? null,
+    });
 
     return NextResponse.json(
       {
@@ -1459,6 +1482,22 @@ export async function GET(
         viewerUserId,
     }
   );
+
+  console.log("KRISTO_SAFETY_CASE_RESPONSE", {
+    reportId,
+    viewerMode: "agent",
+    hasCaseIntelligence: Boolean(
+      hydratedReport?.caseIntelligence
+    ),
+    status:
+      hydratedReport?.caseIntelligence?.status ?? null,
+    caseRiskScore:
+      hydratedReport?.caseIntelligence?.assessment
+        ?.caseRiskScore ?? null,
+    recommendation:
+      hydratedReport?.caseIntelligence?.assessment
+        ?.recommendation ?? null,
+  });
 
   return NextResponse.json(
     {
