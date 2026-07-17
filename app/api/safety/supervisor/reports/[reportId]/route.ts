@@ -13,7 +13,9 @@ import {
 
 import {
   dbAssignReportToAgent,
+  dbGetSafetyAgentDashboard,
   dbGetSafetySupervisorDashboard,
+  dbHasActiveSafetyAgentRelationship,
 } from "@/app/api/_lib/store/safetyReportDb";
 
 export const runtime = "nodejs";
@@ -31,30 +33,26 @@ export async function GET(
   const auth =
     await guardAuth(req);
 
-  if (auth instanceof NextResponse) {
+  if (
+    auth instanceof NextResponse
+  ) {
     return auth;
   }
 
-  const supervisorUserId =
+  const viewerUserId =
     String(
       auth.viewer.userId || ""
     ).trim();
 
-  const allowed =
-    await dbHasSafetyRole(
-      supervisorUserId,
-      "Safety_Supervisor"
-    );
-
-  if (!allowed) {
+  if (!viewerUserId) {
     return NextResponse.json(
       {
         ok: false,
         error:
-          "Safety Supervisor access required.",
+          "You must be signed in.",
       },
       {
-        status: 403,
+        status: 401,
       }
     );
   }
@@ -82,16 +80,105 @@ export async function GET(
     );
   }
 
+  const [
+    isSupervisor,
+    isActiveAgent,
+  ] = await Promise.all([
+    dbHasSafetyRole(
+      viewerUserId,
+      "Safety_Supervisor"
+    ),
+
+    dbHasActiveSafetyAgentRelationship(
+      viewerUserId
+    ),
+  ]);
+
+  if (
+    !isSupervisor &&
+    !isActiveAgent
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Safety case access required.",
+      },
+      {
+        status: 403,
+      }
+    );
+  }
+
+  if (isSupervisor) {
+    const dashboard =
+      await dbGetSafetySupervisorDashboard(
+        viewerUserId
+      );
+
+    const report =
+      dashboard.reports.find(
+        (row) =>
+          String(
+            row.id || ""
+          ).trim() ===
+          reportId
+      );
+
+    if (!report) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Report was not found or is not assigned to this supervisor.",
+        },
+        {
+          status: 404,
+        }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        ok: true,
+        viewerMode:
+          "supervisor",
+        permissions: {
+          canInvestigate: true,
+          canAssignAgent: true,
+          canEscalate: true,
+          canResolve: true,
+        },
+        report,
+        agents:
+          dashboard.agents,
+      },
+      {
+        headers: {
+          "Cache-Control":
+            "private, no-store, no-cache, must-revalidate",
+        },
+      }
+    );
+  }
+
   const dashboard =
-    await dbGetSafetySupervisorDashboard(
-      supervisorUserId
+    await dbGetSafetyAgentDashboard(
+      viewerUserId
     );
 
   const report =
     dashboard.reports.find(
       (row) =>
-        String(row.id || "").trim() ===
-        reportId
+        String(
+          row.id || ""
+        ).trim() ===
+          reportId &&
+        String(
+          row.assignedAgentUserId ||
+            ""
+        ).trim() ===
+          viewerUserId
     );
 
   if (!report) {
@@ -99,20 +186,38 @@ export async function GET(
       {
         ok: false,
         error:
-          "Report was not found or is not assigned to this supervisor.",
+          "This case is not assigned to your Safety Agent account.",
       },
       {
-        status: 404,
+        status: 403,
       }
     );
   }
 
+  console.log(
+    "KRISTO_SAFETY_AGENT_CASE_OPENED",
+    {
+      reportId,
+      reportCode:
+        report.reportCode,
+      agentUserId:
+        viewerUserId,
+    }
+  );
+
   return NextResponse.json(
     {
       ok: true,
+      viewerMode:
+        "agent",
+      permissions: {
+        canInvestigate: true,
+        canAssignAgent: false,
+        canEscalate: true,
+        canResolve: true,
+      },
       report,
-      agents:
-        dashboard.agents,
+      agents: [],
     },
     {
       headers: {
@@ -317,4 +422,3 @@ export async function POST(
     );
   }
 }
-
