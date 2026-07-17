@@ -1,5 +1,6 @@
 import {
   apiGet,
+  apiPatch,
   apiPost,
 } from "@/src/lib/kristoApi";
 import {
@@ -358,11 +359,70 @@ export async function fetchSafetyAccess():
 }
 
 
+export type SafetyCaseIntelligence = {
+  status: "ready" | "insufficient_data" | "error";
+  analysisMode: "heuristic";
+  generatedAt: string;
+  reporter: {
+    credibilityScore: number;
+    credibilityLevel: string;
+    lifetimeReports: number;
+    confirmedReports: number;
+    dismissedReports: number;
+    accuracyPercent: number | null;
+    abuseFlags: string[];
+  };
+  target: {
+    riskScore: number;
+    totalReports: number;
+    uniqueReporters: number;
+    confirmedViolations: number;
+    warnings: number;
+    removals: number;
+    restrictions: number;
+    suspensions: number;
+    permanentBans?: number;
+    repeatedCategories: string[];
+    trend: string;
+    reportsLast7d?: number;
+    reportsLast30d?: number;
+    reportsLast90d?: number;
+  };
+  evidence: {
+    strengthScore: number;
+    originalAvailable: boolean;
+    snapshotAvailable: boolean;
+    signals: string[];
+    limitations: string[];
+  };
+  patterns: Array<{
+    type: string;
+    severity: "low" | "medium" | "high";
+    title: string;
+    explanation: string;
+    supportingCount?: number;
+  }>;
+  assessment: {
+    caseRiskScore: number;
+    signalLevel: "low" | "moderate" | "high" | "critical";
+    recommendation: string;
+    confidence: number;
+    reasoning: string[];
+    aggravatingFactors: string[];
+    mitigatingFactors: string[];
+    requiresHumanReview: true;
+  };
+};
+
 export type SafetyReportSummary = {
   id: string;
   reportCode: string;
   reporterUserId: string;
   reporterKristoId: string;
+  reporterDisplayName?: string;
+  reporterAvatarUri?: string;
+  reporterChurchName?: string;
+
   reportedUserId?: string;
   reportedKristoId?: string;
   churchId: string;
@@ -394,6 +454,41 @@ export type SafetyReportSummary = {
     | "audio"
     | "text";
   targetThumbnailUri?: string;
+  targetMediaUri?: string;
+  targetCreatedAt?: string;
+  targetChurchName?: string;
+  originalContentAvailable?: boolean;
+
+  targetReportCount?: number;
+  targetUniqueReporterCount?: number;
+  targetActiveReportCount?: number;
+  targetEscalatedReportCount?: number;
+  targetResolvedReportCount?: number;
+  targetDismissedReportCount?: number;
+
+  aiIntelligenceAvailable?: boolean;
+  aiWeightedReportScore?: number | null;
+  aiWeightedReportPercent?: number | null;
+  aiActionThreshold?: number;
+  aiActionRequired?: boolean;
+
+  aiSignalLevel?:
+    | "calculating"
+    | "low"
+    | "monitor"
+    | "review"
+    | "action_required";
+
+  aiReportRecommendation?:
+    | "calculating"
+    | "monitor"
+    | "review_evidence"
+    | "agent_action_required";
+
+  reporterLifetimeReportCount?: number | null;
+  reporterVoteWeightPercent?: number | null;
+
+  caseIntelligence?: SafetyCaseIntelligence | null;
 
   category: string;
   reason: string;
@@ -409,9 +504,40 @@ export type SafetyReportSummary = {
     | "in_review"
     | "resolved"
     | "escalated"
-    | "dismissed";
+    | "dismissed"
+    | "enforcement_pending"
+    | "recovery_required";
   assignedSupervisorUserId?: string;
   assignedAgentUserId?: string;
+
+  decisionType?:
+    | "no_violation"
+    | "warning"
+    | "remove_content"
+    | "restrict_account"
+    | "suspend_account"
+    | "permanent_ban"
+    | "escalate";
+  decisionReason?: string;
+  decisionNotes?: string;
+  decisionConfidence?: number;
+  decisionDurationDays?: number;
+  decidedByUserId?: string;
+  decidedByRole?:
+    | "agent"
+    | "supervisor"
+    | "system_admin";
+  decisionAt?: string;
+  aiRecommendation?:
+    | "no_violation"
+    | "warning"
+    | "remove_content"
+    | "restrict_account"
+    | "suspend_account"
+    | "permanent_ban"
+    | "escalate";
+  aiConfidence?: number;
+
   createdAt: string;
   updatedAt: string;
 };
@@ -443,6 +569,9 @@ export type SafetySupervisorDashboardResponse = {
   agents: Array<{
     userId: string;
     kristoId?: string;
+    displayName?: string;
+    avatarUrl?: string;
+    avatarUri?: string;
     churchId: string;
     status:
       | "active"
@@ -454,6 +583,116 @@ export type SafetySupervisorDashboardResponse = {
     totalAssigned: number;
   }>;
 };
+
+export type SafetyAgentProfile = {
+  userId: string;
+  displayName?: string;
+  avatarUri?: string;
+};
+
+const safetyAgentProfileCache =
+  new Map<string, SafetyAgentProfile>();
+
+function normalizeSafetyAgentRow(
+  row: any
+): SafetySupervisorDashboardResponse["agents"][number] {
+  const userId = String(row?.userId || "").trim();
+  const displayName = String(
+    row?.displayName || row?.fullName || ""
+  ).trim();
+  const avatarUri = String(
+    row?.avatarUri || row?.avatarUrl || ""
+  ).trim();
+
+  return {
+    userId,
+    kristoId:
+      String(row?.kristoId || "").trim().toUpperCase() ||
+      undefined,
+    displayName: displayName || undefined,
+    avatarUrl: avatarUri || undefined,
+    avatarUri: avatarUri || undefined,
+    churchId: String(row?.churchId || "").trim(),
+    status:
+      row?.status === "pending" ||
+      row?.status === "paused"
+        ? row.status
+        : "active",
+    open: Number(row?.open || 0),
+    inReview: Number(row?.inReview || 0),
+    resolved: Number(row?.resolved || 0),
+    totalAssigned: Number(row?.totalAssigned || 0),
+  };
+}
+
+/** Load real profile name/avatar for Safety Agents via the shared users profile API. */
+export async function fetchSafetyAgentProfiles(
+  userIds: string[]
+): Promise<Record<string, SafetyAgentProfile>> {
+  const unique = Array.from(
+    new Set(
+      userIds
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  const out: Record<string, SafetyAgentProfile> = {};
+
+  await Promise.all(
+    unique.map(async (userId) => {
+      const cached = safetyAgentProfileCache.get(userId);
+      if (cached) {
+        out[userId] = cached;
+        return;
+      }
+
+      try {
+        const response: any = await apiGet(
+          `/api/users/${encodeURIComponent(userId)}/profile`,
+          {
+            headers: getKristoHeaders() as any,
+          },
+          {
+            screen: "SafetyAgentProfile",
+            throttleMs: 60_000,
+          }
+        );
+
+        if (!response || response.ok === false || !response.profile) {
+          return;
+        }
+
+        const profile = response.profile;
+        const displayName = String(
+          profile?.fullName ||
+            profile?.displayName ||
+            profile?.name ||
+            ""
+        ).trim();
+        const avatarUri = String(
+          profile?.avatarUrl ||
+            profile?.avatarUri ||
+            profile?.profileImage ||
+            ""
+        ).trim();
+
+        const resolved: SafetyAgentProfile = {
+          userId,
+          displayName: displayName || undefined,
+          avatarUri: avatarUri || undefined,
+        };
+
+        safetyAgentProfileCache.set(userId, resolved);
+        out[userId] = resolved;
+      } catch {
+        // Keep placeholder identity when a single profile fails.
+      }
+    })
+  );
+
+  return out;
+}
 
 
 export type SafetyCaseViewerMode =
@@ -519,6 +758,16 @@ export async function fetchSafetySupervisorReport(
         ? "agent"
         : "supervisor";
 
+  const reportPayload =
+    (response.report || {}) as SafetyReportSummary;
+
+  const caseIntelligence =
+    reportPayload.caseIntelligence &&
+    typeof reportPayload.caseIntelligence ===
+      "object"
+      ? reportPayload.caseIntelligence
+      : null;
+
   return {
     viewerMode,
 
@@ -540,15 +789,16 @@ export async function fetchSafetySupervisorReport(
           ?.canResolve !== false,
     },
 
-    report:
-      response.report as
-        SafetyReportSummary,
+    report: {
+      ...reportPayload,
+      caseIntelligence,
+    },
 
     agents:
       Array.isArray(
         response.agents
       )
-        ? response.agents
+        ? response.agents.map(normalizeSafetyAgentRow)
         : [],
   };
 }
@@ -618,7 +868,7 @@ assignSafetyReportToAgent(
       Array.isArray(
         response.agents
       )
-        ? response.agents
+        ? response.agents.map(normalizeSafetyAgentRow)
         : [],
   };
 }
@@ -701,7 +951,7 @@ assignSafetyReportsToAgent(
       Array.isArray(
         response.agents
       )
-        ? response.agents
+        ? response.agents.map(normalizeSafetyAgentRow)
         : [],
   };
 }
@@ -917,7 +1167,9 @@ export async function fetchSafetySupervisorDashboard():
       Array.isArray(
         response?.dashboard?.agents
       )
-        ? response.dashboard.agents
+        ? response.dashboard.agents.map(
+            normalizeSafetyAgentRow
+          )
         : [],
   };
 }
@@ -1299,3 +1551,143 @@ Promise<SafetyAgentDashboardResponse> {
         : [],
   };
 }
+
+export type SafetyDecisionType =
+  | "no_violation"
+  | "warning"
+  | "remove_content"
+  | "restrict_account"
+  | "suspend_account"
+  | "permanent_ban"
+  | "escalate";
+
+export async function issueSafetyReportDecision(
+  input: {
+    reportId: string;
+    decisionType:
+      SafetyDecisionType;
+    reason: string;
+    notes?: string;
+    confidence?: number;
+    durationDays?: number;
+  }
+): Promise<{
+  report: SafetyReportSummary;
+  enforcement?: {
+    type: string;
+    applied: boolean;
+    message: string;
+    enforcementId?: string;
+    expiresAt?: string;
+  };
+}> {
+  const reportId =
+    String(
+      input.reportId || ""
+    ).trim();
+
+  const reason =
+    String(
+      input.reason || ""
+    ).trim();
+
+  if (!reportId) {
+    throw new Error(
+      "Safety report ID is required."
+    );
+  }
+
+  if (reason.length < 8) {
+    throw new Error(
+      "Enter a clear reason for this decision."
+    );
+  }
+
+  const response: any =
+    await apiPatch(
+      `/api/safety/supervisor/reports/${encodeURIComponent(
+        reportId
+      )}`,
+      {
+        action:
+          "issue_decision",
+        decisionType:
+          input.decisionType,
+        reason,
+        notes:
+          String(
+            input.notes || ""
+          ).trim(),
+        confidence:
+          input.confidence,
+        durationDays:
+          input.durationDays,
+      },
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false ||
+    !response.report
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+        "Could not issue this Safety decision."
+      )
+    );
+  }
+
+  return {
+    report:
+      response.report as
+        SafetyReportSummary,
+
+    enforcement:
+      response.enforcement
+        ? {
+            type:
+              String(
+                response
+                  .enforcement
+                  .type || ""
+              ),
+
+            applied:
+              Boolean(
+                response
+                  .enforcement
+                  .applied
+              ),
+
+            message:
+              String(
+                response
+                  .enforcement
+                  .message || ""
+              ),
+
+            enforcementId:
+              String(
+                response
+                  .enforcement
+                  .enforcementId ||
+                ""
+              ) || undefined,
+
+            expiresAt:
+              String(
+                response
+                  .enforcement
+                  .expiresAt ||
+                ""
+              ) || undefined,
+          }
+        : undefined,
+  };
+}
+
