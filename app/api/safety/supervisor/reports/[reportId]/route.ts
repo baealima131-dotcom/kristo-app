@@ -806,9 +806,21 @@ async function hydrateSafetyCaseReport(
       status: "error",
       analysisMode: "heuristic",
       generatedAt: new Date().toISOString(),
+      dataQuality: {
+        reporterHistoryAvailable: false,
+        targetHistoryAvailable: false,
+        evidenceVerified: false,
+        finalizedReporterCases: 0,
+        finalizedTargetCases: 0,
+        limitations: [
+          String(
+            error?.message || "hydrate_case_intelligence_failed"
+          ),
+        ],
+      },
       reporter: {
-        credibilityScore: 0,
-        credibilityLevel: "low",
+        credibilityScore: null,
+        credibilityLevel: "unknown",
         lifetimeReports: 0,
         confirmedReports: 0,
         dismissedReports: 0,
@@ -816,7 +828,7 @@ async function hydrateSafetyCaseReport(
         abuseFlags: [],
       },
       target: {
-        riskScore: 0,
+        riskScore: null,
         totalReports: 0,
         uniqueReporters: 0,
         confirmedViolations: 0,
@@ -826,13 +838,13 @@ async function hydrateSafetyCaseReport(
         suspensions: 0,
         permanentBans: 0,
         repeatedCategories: [],
-        trend: "unknown",
+        trend: "insufficient_data",
         reportsLast7d: 0,
         reportsLast30d: 0,
         reportsLast90d: 0,
       },
       evidence: {
-        strengthScore: 0,
+        strengthScore: null,
         originalAvailable: false,
         snapshotAvailable: false,
         signals: [],
@@ -844,10 +856,10 @@ async function hydrateSafetyCaseReport(
       },
       patterns: [],
       assessment: {
-        caseRiskScore: 0,
-        signalLevel: "low",
-        recommendation: "escalate",
-        confidence: 0,
+        caseRiskScore: null,
+        signalLevel: "unknown",
+        recommendation: "human_review",
+        confidence: null,
         reasoning: [
           "Case Intelligence could not be generated due to a backend error.",
         ],

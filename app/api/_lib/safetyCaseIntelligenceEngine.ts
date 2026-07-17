@@ -2,8 +2,9 @@
  * Heuristic Case Intelligence Engine.
  *
  * Decision-support only — never auto-enforces.
- * Uses real report/enforcement/evidence signals only.
- * analysisMode is always "heuristic" until an LLM/classifier is wired.
+ * Scores are computed only from real finalized history / verified evidence.
+ * Missing denominators → null + insufficient_data (no fabricated baselines).
+ * analysisMode stays "heuristic" until an LLM/classifier is wired.
  */
 
 export type CaseIntelligenceStatus =
@@ -15,15 +16,18 @@ export type CaseIntelligenceCredibilityLevel =
   | "low"
   | "medium"
   | "high"
-  | "trusted";
+  | "trusted"
+  | "unknown";
 
 export type CaseIntelligenceSignalLevel =
   | "low"
   | "moderate"
   | "high"
-  | "critical";
+  | "critical"
+  | "unknown";
 
 export type CaseIntelligenceRecommendation =
+  | "human_review"
   | "no_violation"
   | "monitor"
   | "warning"
@@ -41,12 +45,22 @@ export type CaseIntelligencePattern = {
   supportingCount?: number;
 };
 
+export type CaseIntelligenceDataQuality = {
+  reporterHistoryAvailable: boolean;
+  targetHistoryAvailable: boolean;
+  evidenceVerified: boolean;
+  finalizedReporterCases: number;
+  finalizedTargetCases: number;
+  limitations: string[];
+};
+
 export type SafetyCaseIntelligence = {
   status: CaseIntelligenceStatus;
   analysisMode: "heuristic";
   generatedAt: string;
+  dataQuality: CaseIntelligenceDataQuality;
   reporter: {
-    credibilityScore: number;
+    credibilityScore: number | null;
     credibilityLevel: CaseIntelligenceCredibilityLevel;
     lifetimeReports: number;
     confirmedReports: number;
@@ -55,7 +69,7 @@ export type SafetyCaseIntelligence = {
     abuseFlags: string[];
   };
   target: {
-    riskScore: number;
+    riskScore: number | null;
     totalReports: number;
     uniqueReporters: number;
     confirmedViolations: number;
@@ -65,13 +79,18 @@ export type SafetyCaseIntelligence = {
     suspensions: number;
     permanentBans: number;
     repeatedCategories: string[];
-    trend: "increasing" | "stable" | "declining" | "unknown";
+    trend:
+      | "increasing"
+      | "stable"
+      | "declining"
+      | "unknown"
+      | "insufficient_data";
     reportsLast7d: number;
     reportsLast30d: number;
     reportsLast90d: number;
   };
   evidence: {
-    strengthScore: number;
+    strengthScore: number | null;
     originalAvailable: boolean;
     snapshotAvailable: boolean;
     signals: string[];
@@ -79,10 +98,10 @@ export type SafetyCaseIntelligence = {
   };
   patterns: CaseIntelligencePattern[];
   assessment: {
-    caseRiskScore: number;
+    caseRiskScore: number | null;
     signalLevel: CaseIntelligenceSignalLevel;
     recommendation: CaseIntelligenceRecommendation;
-    confidence: number;
+    confidence: number | null;
     reasoning: string[];
     aggravatingFactors: string[];
     mitigatingFactors: string[];
@@ -90,40 +109,34 @@ export type SafetyCaseIntelligence = {
   };
 };
 
-/** Named weight constants — no hidden magic numbers in scoring. */
+/**
+ * Named constants used only when real denominators exist.
+ * No baseline fill-ins (no 50/52/68/79 defaults).
+ */
 export const CASE_INTELLIGENCE_WEIGHTS = {
-  CASE_RISK_TARGET_HISTORY: 0.32,
-  CASE_RISK_EVIDENCE: 0.22,
-  CASE_RISK_CORROBORATION: 0.14,
-  CASE_RISK_RECENCY: 0.1,
-  CASE_RISK_REPEAT_BEHAVIOR: 0.1,
-  CASE_RISK_PRIOR_ENFORCEMENT: 0.08,
-  CASE_RISK_REPORTER_CREDIBILITY: 0.04,
+  /** Minimum finalized reporter decisions before credibility is numeric. */
+  MIN_FINALIZED_REPORTER_CASES: 2,
 
-  COORDINATED_ABUSE_PENALTY_MAX: 18,
-  DISMISSED_HISTORY_PENALTY_MAX: 12,
-  LOW_CREDIBILITY_PENALTY_MAX: 10,
+  CREDIBILITY_ACCURACY_WEIGHT: 0.7,
+  CREDIBILITY_CONFIRMATION_WEIGHT: 0.3,
+  CREDIBILITY_FALSE_REPORT_PENALTY: 35,
+  CREDIBILITY_REPEAT_TARGET_PENALTY: 12,
+  CREDIBILITY_DUPLICATE_BURST_PENALTY: 10,
+  CREDIBILITY_LOW_ACCURACY_PENALTY: 20,
 
-  CREDIBILITY_ACCURACY_WEIGHT: 0.55,
-  CREDIBILITY_VOLUME_TRUST_WEIGHT: 0.2,
-  CREDIBILITY_CONFIRMATION_WEIGHT: 0.25,
+  TARGET_CONFIRMED_WEIGHT: 0.45,
+  TARGET_ENFORCEMENT_WEIGHT: 0.35,
+  TARGET_UNIQUE_REPORTERS_WEIGHT: 0.12,
+  TARGET_FREQUENCY_WEIGHT: 0.08,
 
-  TARGET_CONFIRMED_WEIGHT: 0.35,
-  TARGET_UNIQUE_REPORTERS_WEIGHT: 0.2,
-  TARGET_ENFORCEMENT_WEIGHT: 0.25,
-  TARGET_FREQUENCY_WEIGHT: 0.2,
-
-  EVIDENCE_ORIGINAL_POINTS: 28,
-  EVIDENCE_SNAPSHOT_POINTS: 18,
-  EVIDENCE_MEDIA_POINTS: 16,
-  EVIDENCE_TEXT_POINTS: 12,
-  EVIDENCE_METADATA_POINTS: 12,
-  EVIDENCE_CORROBORATION_POINTS: 14,
+  CASE_RISK_TARGET_HISTORY: 0.4,
+  CASE_RISK_EVIDENCE: 0.3,
+  CASE_RISK_CORROBORATION: 0.15,
+  CASE_RISK_PRIOR_ENFORCEMENT: 0.15,
 
   PERMANENT_BAN_MIN_CASE_RISK: 88,
   PERMANENT_BAN_MIN_EVIDENCE: 70,
   PERMANENT_BAN_MIN_CONFIRMED: 2,
-  PERMANENT_BAN_REQUIRES_PRIOR_SERIOUS: true,
 
   SUSPEND_MIN_CASE_RISK: 72,
   RESTRICT_MIN_CASE_RISK: 58,
@@ -154,6 +167,9 @@ export type CaseIntelligenceRawInput = {
   hasMediaUri: boolean;
   mediaType?: string;
   createdAt?: string;
+  /** True only when a real classifier/LLM verified case evidence. */
+  evidenceMachineVerified?: boolean;
+  evidenceAttachmentCount?: number;
 
   reporterLifetimeReports: number;
   reporterConfirmedReports: number;
@@ -192,6 +208,12 @@ function safeText(value: unknown) {
   return String(value).trim();
 }
 
+function nonNegInt(value: unknown) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
+
 function categorySeverityBoost(category: unknown): number {
   const c = safeText(category).toLowerCase();
   if (!c) return 0;
@@ -225,45 +247,57 @@ export function computeReporterCredibility(input: {
   reportsOnThisTarget: number;
   hasFalseReportingPenalty: boolean;
 }): {
-  credibilityScore: number;
+  credibilityScore: number | null;
   credibilityLevel: CaseIntelligenceCredibilityLevel;
   accuracyPercent: number | null;
   abuseFlags: string[];
+  limitations: string[];
+  finalizedDecisionCount: number;
 } {
-  const lifetime = Math.max(0, Math.floor(input.lifetimeReports || 0));
-  const confirmed = Math.max(0, Math.floor(input.confirmedReports || 0));
-  const dismissed = Math.max(0, Math.floor(input.dismissedReports || 0));
-  const decided = confirmed + dismissed;
-  const accuracyPercent =
-    decided > 0
-      ? Math.round((confirmed / decided) * 1000) / 10
-      : null;
-
+  const lifetime = nonNegInt(input.lifetimeReports);
+  const confirmed = nonNegInt(input.confirmedReports);
+  const dismissed = nonNegInt(input.dismissedReports);
+  const finalizedDecisionCount = confirmed + dismissed;
   const abuseFlags: string[] = [];
+  const limitations: string[] = [];
 
-  /*
-   * Accuracy dominates. High-volume accurate reporters stay credible.
-   * Volume alone does not reduce credibility.
-   */
-  let score = 55;
-  if (accuracyPercent !== null) {
-    score =
-      accuracyPercent *
-        CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_ACCURACY_WEIGHT +
-      Math.min(100, confirmed * 8) *
-        CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_CONFIRMATION_WEIGHT +
-      Math.min(100, lifetime * 2) *
-        CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_VOLUME_TRUST_WEIGHT;
-  } else if (lifetime === 0) {
-    score = 50;
-  } else if (lifetime === 1) {
-    score = 58;
-  } else {
-    score = 52;
+  if (finalizedDecisionCount === 0) {
+    return {
+      credibilityScore: null,
+      credibilityLevel: "unknown",
+      accuracyPercent: null,
+      abuseFlags,
+      limitations: ["insufficient_finalized_reporter_history"],
+      finalizedDecisionCount: 0,
+    };
   }
 
+  if (
+    finalizedDecisionCount <
+    CASE_INTELLIGENCE_WEIGHTS.MIN_FINALIZED_REPORTER_CASES
+  ) {
+    limitations.push("insufficient_finalized_reporter_history");
+    return {
+      credibilityScore: null,
+      credibilityLevel: "unknown",
+      accuracyPercent:
+        Math.round((confirmed / finalizedDecisionCount) * 1000) / 10,
+      abuseFlags,
+      limitations,
+      finalizedDecisionCount,
+    };
+  }
+
+  const accuracyPercent =
+    Math.round((confirmed / finalizedDecisionCount) * 1000) / 10;
+
+  let score =
+    accuracyPercent * CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_ACCURACY_WEIGHT +
+    Math.min(100, confirmed * 8) *
+      CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_CONFIRMATION_WEIGHT;
+
   if (input.hasFalseReportingPenalty) {
-    score -= 35;
+    score -= CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_FALSE_REPORT_PENALTY;
     abuseFlags.push("prior_false_or_malicious_reporting_penalty");
   }
 
@@ -271,7 +305,7 @@ export function computeReporterCredibility(input: {
     input.reportsOnThisTarget >=
     CASE_INTELLIGENCE_WEIGHTS.REPEAT_SAME_TARGET_BY_REPORTER
   ) {
-    score -= 12;
+    score -= CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_REPEAT_TARGET_PENALTY;
     abuseFlags.push("repeated_reports_against_same_target");
   }
 
@@ -279,12 +313,12 @@ export function computeReporterCredibility(input: {
     input.duplicateOnThisTarget >=
     CASE_INTELLIGENCE_WEIGHTS.DUPLICATE_BURST_SAME_REPORTER
   ) {
-    score -= 10;
+    score -= CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_DUPLICATE_BURST_PENALTY;
     abuseFlags.push("duplicate_report_burst");
   }
 
-  if (decided >= 5 && accuracyPercent !== null && accuracyPercent < 25) {
-    score -= 20;
+  if (finalizedDecisionCount >= 5 && accuracyPercent < 25) {
+    score -= CASE_INTELLIGENCE_WEIGHTS.CREDIBILITY_LOW_ACCURACY_PENALTY;
     abuseFlags.push("low_historical_accuracy");
   }
 
@@ -303,6 +337,8 @@ export function computeReporterCredibility(input: {
     credibilityLevel,
     accuracyPercent,
     abuseFlags,
+    limitations,
+    finalizedDecisionCount,
   };
 }
 
@@ -319,54 +355,78 @@ export function computeTargetRisk(input: {
   reportsLast30d: number;
   reportsLast90d: number;
 }): {
-  riskScore: number;
-  trend: "increasing" | "stable" | "declining" | "unknown";
+  riskScore: number | null;
+  trend:
+    | "increasing"
+    | "stable"
+    | "declining"
+    | "unknown"
+    | "insufficient_data";
+  finalizedTargetCases: number;
 } {
+  const confirmed = nonNegInt(input.confirmedViolations);
+  const warnings = nonNegInt(input.warnings);
+  const removals = nonNegInt(input.removals);
+  const restrictions = nonNegInt(input.restrictions);
+  const suspensions = nonNegInt(input.suspensions);
+  const bans = nonNegInt(input.permanentBans);
+
+  /*
+   * Open/unresolved volume must not invent target risk.
+   * Risk requires at least one confirmed violation or prior enforcement action.
+   */
+  const finalizedTargetCases =
+    confirmed + warnings + removals + restrictions + suspensions + bans;
+
+  if (confirmed === 0 && restrictions === 0 && suspensions === 0 && bans === 0) {
+    return {
+      riskScore: null,
+      trend: "insufficient_data",
+      finalizedTargetCases,
+    };
+  }
+
   const confirmedComponent = Math.min(
     100,
-    input.confirmedViolations * 18 +
-      input.removals * 10 +
-      input.warnings * 6
+    confirmed * 18 + removals * 10 + warnings * 6
   );
-  const uniqueComponent = Math.min(100, input.uniqueReporters * 12);
   const enforcementComponent = Math.min(
     100,
-    input.restrictions * 16 +
-      input.suspensions * 22 +
-      input.permanentBans * 40
+    restrictions * 16 + suspensions * 22 + bans * 40
   );
+  const uniqueComponent = Math.min(100, nonNegInt(input.uniqueReporters) * 12);
   const frequencyComponent = Math.min(
     100,
-    input.reportsLast7d * 14 +
-      input.reportsLast30d * 4 +
-      Math.min(40, input.reportsLast90d)
+    nonNegInt(input.reportsLast7d) * 14 +
+      nonNegInt(input.reportsLast30d) * 4 +
+      Math.min(40, nonNegInt(input.reportsLast90d))
   );
 
   const riskScore = clampScore(
-    confirmedComponent *
-      CASE_INTELLIGENCE_WEIGHTS.TARGET_CONFIRMED_WEIGHT +
-      uniqueComponent *
-        CASE_INTELLIGENCE_WEIGHTS.TARGET_UNIQUE_REPORTERS_WEIGHT +
+    confirmedComponent * CASE_INTELLIGENCE_WEIGHTS.TARGET_CONFIRMED_WEIGHT +
       enforcementComponent *
         CASE_INTELLIGENCE_WEIGHTS.TARGET_ENFORCEMENT_WEIGHT +
-      frequencyComponent *
-        CASE_INTELLIGENCE_WEIGHTS.TARGET_FREQUENCY_WEIGHT
+      uniqueComponent *
+        CASE_INTELLIGENCE_WEIGHTS.TARGET_UNIQUE_REPORTERS_WEIGHT +
+      frequencyComponent * CASE_INTELLIGENCE_WEIGHTS.TARGET_FREQUENCY_WEIGHT
   );
 
-  let trend: "increasing" | "stable" | "declining" | "unknown" = "unknown";
+  let trend:
+    | "increasing"
+    | "stable"
+    | "declining"
+    | "unknown"
+    | "insufficient_data" = "unknown";
   if (input.reportsLast90d > 0 || input.reportsLast30d > 0) {
     const recentRate = input.reportsLast7d;
-    const olderWindow = Math.max(
-      0,
-      input.reportsLast30d - input.reportsLast7d
-    );
+    const olderWindow = Math.max(0, input.reportsLast30d - input.reportsLast7d);
     const olderWeekly = olderWindow / 3;
     if (recentRate > olderWeekly * 1.35 + 0.5) trend = "increasing";
     else if (recentRate + 0.5 < olderWeekly * 0.65) trend = "declining";
     else trend = "stable";
   }
 
-  return { riskScore, trend };
+  return { riskScore, trend, finalizedTargetCases };
 }
 
 export function computeEvidenceStrength(input: {
@@ -380,32 +440,26 @@ export function computeEvidenceStrength(input: {
   category: string;
   reason: string;
   description?: string;
+  evidenceMachineVerified?: boolean;
+  evidenceAttachmentCount?: number;
 }): {
-  strengthScore: number;
+  strengthScore: number | null;
   snapshotAvailable: boolean;
   signals: string[];
   limitations: string[];
+  evidenceVerified: boolean;
 } {
   const signals: string[] = [];
   const limitations: string[] = [];
-  let score = 0;
 
-  if (input.originalAvailable) {
-    score += CASE_INTELLIGENCE_WEIGHTS.EVIDENCE_ORIGINAL_POINTS;
-    signals.push("original_content_available");
-  } else {
-    limitations.push("original_content_unavailable");
-  }
+  if (input.originalAvailable) signals.push("original_content_available");
+  else limitations.push("original_content_unavailable");
 
   const snapshotAvailable = Boolean(
     input.hasThumbnail || input.hasPreview || input.hasMediaUri
   );
-  if (snapshotAvailable) {
-    score += CASE_INTELLIGENCE_WEIGHTS.EVIDENCE_SNAPSHOT_POINTS;
-    signals.push("saved_snapshot_or_media_reference");
-  } else {
-    limitations.push("no_saved_media_snapshot");
-  }
+  if (snapshotAvailable) signals.push("saved_snapshot_or_media_reference");
+  else limitations.push("no_saved_media_snapshot");
 
   const mediaType = safeText(input.mediaType).toLowerCase();
   if (
@@ -414,48 +468,75 @@ export function computeEvidenceStrength(input: {
     mediaType === "audio" ||
     input.hasMediaUri
   ) {
-    score += CASE_INTELLIGENCE_WEIGHTS.EVIDENCE_MEDIA_POINTS;
     signals.push(`media_type_${mediaType || "present"}`);
   } else if (input.hasPreview) {
-    score += CASE_INTELLIGENCE_WEIGHTS.EVIDENCE_TEXT_POINTS;
     signals.push("text_or_comment_preview");
   } else {
     limitations.push("limited_media_or_text_evidence");
   }
 
+  if (nonNegInt(input.evidenceAttachmentCount) > 0) {
+    signals.push("evidence_attachments_present");
+  }
+
+  if (input.uniqueReporters > 1) {
+    signals.push("corroborating_unique_reporters");
+  }
+
+  limitations.push("no_automated_content_classifier_or_llm_review_connected");
+  limitations.push("evidence_quality_not_machine_verified");
+
+  /*
+   * Presence of original media alone is NOT a scored evidence strength.
+   * Numeric strength requires machine-verified analysis.
+   */
+  if (!input.evidenceMachineVerified) {
+    return {
+      strengthScore: null,
+      snapshotAvailable,
+      signals,
+      limitations,
+      evidenceVerified: false,
+    };
+  }
+
+  let score = 0;
+  if (input.originalAvailable) score += 28;
+  if (snapshotAvailable) score += 18;
+  if (
+    mediaType === "video" ||
+    mediaType === "image" ||
+    mediaType === "audio" ||
+    input.hasMediaUri
+  ) {
+    score += 16;
+  } else if (input.hasPreview) {
+    score += 12;
+  }
   const metadataBits = [
     input.hasTitle,
     Boolean(safeText(input.category)),
     Boolean(safeText(input.reason)),
     Boolean(safeText(input.description)),
   ].filter(Boolean).length;
-  score +=
-    (metadataBits / 4) * CASE_INTELLIGENCE_WEIGHTS.EVIDENCE_METADATA_POINTS;
-  if (metadataBits >= 3) signals.push("metadata_mostly_complete");
-  else limitations.push("incomplete_report_metadata");
-
-  const corroboration = Math.min(
-    CASE_INTELLIGENCE_WEIGHTS.EVIDENCE_CORROBORATION_POINTS,
-    Math.max(0, input.uniqueReporters - 1) * 5
-  );
-  score += corroboration;
-  if (input.uniqueReporters > 1) {
-    signals.push("corroborating_unique_reporters");
-  }
-
-  limitations.push(
-    "no_automated_content_classifier_or_llm_review_connected"
-  );
+  score += (metadataBits / 4) * 12;
+  score += Math.min(14, Math.max(0, input.uniqueReporters - 1) * 5);
+  score += Math.min(10, nonNegInt(input.evidenceAttachmentCount) * 2);
 
   return {
     strengthScore: clampScore(score),
     snapshotAvailable,
     signals,
-    limitations,
+    limitations: limitations.filter(
+      (item) => item !== "evidence_quality_not_machine_verified"
+    ),
+    evidenceVerified: true,
   };
 }
 
-export function detectCasePatterns(input: CaseIntelligenceRawInput): CaseIntelligencePattern[] {
+export function detectCasePatterns(
+  input: CaseIntelligenceRawInput
+): CaseIntelligencePattern[] {
   const patterns: CaseIntelligencePattern[] = [];
 
   if (input.targetConfirmedViolations >= 2) {
@@ -556,8 +637,7 @@ export function detectCasePatterns(input: CaseIntelligenceRawInput): CaseIntelli
       title: "Prior restriction/suspension then new violation",
       explanation:
         "Account enforcement history exists and new confirmed violations followed.",
-      supportingCount:
-        input.targetRestrictions + input.targetSuspensions,
+      supportingCount: input.targetRestrictions + input.targetSuspensions,
     });
   }
 
@@ -565,18 +645,62 @@ export function detectCasePatterns(input: CaseIntelligenceRawInput): CaseIntelli
 }
 
 function signalLevelFromRisk(
-  caseRiskScore: number
+  caseRiskScore: number | null
 ): CaseIntelligenceSignalLevel {
+  if (caseRiskScore == null) return "unknown";
   if (caseRiskScore >= 80) return "critical";
   if (caseRiskScore >= 60) return "high";
   if (caseRiskScore >= 35) return "moderate";
   return "low";
 }
 
+export function computeInputConfidence(input: {
+  reporterHistoryAvailable: boolean;
+  targetHistoryAvailable: boolean;
+  evidenceVerified: boolean;
+  uniqueReporters: number;
+  finalizedReporterCases: number;
+  finalizedTargetCases: number;
+}): number | null {
+  const coverageBits = [
+    input.reporterHistoryAvailable,
+    input.targetHistoryAvailable,
+    input.evidenceVerified,
+  ];
+  const availableCount = coverageBits.filter(Boolean).length;
+  if (availableCount === 0) return null;
+
+  let score = 0;
+  if (input.reporterHistoryAvailable) {
+    score += 30;
+    score += Math.min(15, input.finalizedReporterCases * 3);
+  }
+  if (input.targetHistoryAvailable) {
+    score += 30;
+    score += Math.min(15, input.finalizedTargetCases * 3);
+  }
+  if (input.evidenceVerified) {
+    score += 25;
+  }
+  if (input.uniqueReporters > 1) {
+    score += Math.min(10, (input.uniqueReporters - 1) * 3);
+  }
+
+  const missingPenalty = (3 - availableCount) * 18;
+  score -= missingPenalty;
+
+  if (!input.evidenceVerified) return null;
+  if (!input.reporterHistoryAvailable || !input.targetHistoryAvailable) {
+    return null;
+  }
+
+  return clampScore(score);
+}
+
 export function computeCaseRecommendation(input: {
   caseRiskScore: number;
   evidenceScore: number;
-  credibilityScore: number;
+  credibilityScore: number | null;
   confirmedViolations: number;
   suspensions: number;
   permanentBans: number;
@@ -584,10 +708,8 @@ export function computeCaseRecommendation(input: {
   category: string;
   targetType: string;
   coordinatedSuspicion: boolean;
-  patterns: CaseIntelligencePattern[];
 }): {
   recommendation: CaseIntelligenceRecommendation;
-  confidence: number;
   reasoning: string[];
   aggravatingFactors: string[];
   mitigatingFactors: string[];
@@ -597,10 +719,7 @@ export function computeCaseRecommendation(input: {
   const mitigatingFactors: string[] = [];
 
   const categoryBoost = categorySeverityBoost(input.category);
-  if (categoryBoost >= 12) {
-    aggravatingFactors.push("elevated_category_severity");
-  }
-
+  if (categoryBoost >= 12) aggravatingFactors.push("elevated_category_severity");
   if (input.confirmedViolations > 0) {
     aggravatingFactors.push("prior_confirmed_violations");
   }
@@ -610,14 +729,8 @@ export function computeCaseRecommendation(input: {
   if (input.coordinatedSuspicion) {
     aggravatingFactors.push("coordinated_reporting_suspicion");
   }
-  if (input.evidenceScore < 35) {
-    mitigatingFactors.push("weak_or_incomplete_evidence");
-  }
-  if (input.credibilityScore < 40) {
+  if (input.credibilityScore != null && input.credibilityScore < 40) {
     mitigatingFactors.push("low_reporter_credibility");
-  }
-  if (input.confirmedViolations === 0 && input.caseRiskScore < 40) {
-    mitigatingFactors.push("limited_target_history");
   }
 
   let recommendation: CaseIntelligenceRecommendation = "monitor";
@@ -631,13 +744,12 @@ export function computeCaseRecommendation(input: {
 
   if (
     risk >= CASE_INTELLIGENCE_WEIGHTS.PERMANENT_BAN_MIN_CASE_RISK &&
-    input.evidenceScore >=
-      CASE_INTELLIGENCE_WEIGHTS.PERMANENT_BAN_MIN_EVIDENCE &&
+    input.evidenceScore >= CASE_INTELLIGENCE_WEIGHTS.PERMANENT_BAN_MIN_EVIDENCE &&
     priorSerious
   ) {
     recommendation = "permanent_ban";
     reasoning.push(
-      "Case risk, evidence strength, and prior serious enforcement jointly support permanent ban consideration."
+      "Case risk, verified evidence, and prior serious enforcement jointly support permanent ban consideration."
     );
   } else if (risk >= CASE_INTELLIGENCE_WEIGHTS.SUSPEND_MIN_CASE_RISK) {
     recommendation =
@@ -656,12 +768,12 @@ export function computeCaseRecommendation(input: {
     recommendation =
       input.targetType === "account" ? "warning" : "remove_content";
     reasoning.push(
-      "Evidence and case risk support content removal or a formal warning."
+      "Verified evidence and case risk support content removal or a formal warning."
     );
   } else if (risk >= CASE_INTELLIGENCE_WEIGHTS.WARNING_MIN_CASE_RISK) {
     recommendation = "warning";
     reasoning.push(
-      "Early violation signals are present but do not yet justify heavy enforcement."
+      "Early verified violation signals are present but do not yet justify heavy enforcement."
     );
   } else if (risk >= CASE_INTELLIGENCE_WEIGHTS.MONITOR_MIN_CASE_RISK) {
     recommendation = "monitor";
@@ -671,7 +783,7 @@ export function computeCaseRecommendation(input: {
   } else {
     recommendation = "no_violation";
     reasoning.push(
-      "Available signals do not currently support a policy violation finding."
+      "Available verified signals do not currently support a policy violation finding."
     );
   }
 
@@ -686,54 +798,75 @@ export function computeCaseRecommendation(input: {
     );
   }
 
-  if (
-    input.evidenceScore < 30 &&
-    recommendation !== "monitor" &&
-    recommendation !== "no_violation" &&
-    recommendation !== "escalate"
-  ) {
-    recommendation = "escalate";
-    reasoning.push(
-      "Evidence is too thin for a durable enforcement recommendation without human review."
-    );
-  }
-
-  if (input.credibilityScore < 35 && recommendation === "no_violation") {
-    // keep
-  } else if (
-    input.credibilityScore < 35 &&
-    ["warning", "remove_content", "restrict_account"].includes(
-      recommendation
-    )
-  ) {
-    recommendation = "monitor";
-    reasoning.push(
-      "Low reporter credibility reduces confidence; monitor pending stronger corroboration."
-    );
-  }
-
-  const confidence = clampScore(
-    40 +
-      input.evidenceScore * 0.25 +
-      input.credibilityScore * 0.15 +
-      Math.min(20, input.confirmedViolations * 5) -
-      (input.coordinatedSuspicion ? 8 : 0) -
-      (input.evidenceScore < 35 ? 12 : 0)
-  );
-
-  reasoning.push(
-    `Case risk ${input.caseRiskScore}/100, evidence ${input.evidenceScore}/100, reporter credibility ${input.credibilityScore}/100.`
-  );
-  reasoning.push(
-    "Heuristic analysis only — no automated video/audio content classifier was used."
-  );
-
   return {
     recommendation,
-    confidence,
     reasoning,
     aggravatingFactors,
     mitigatingFactors,
+  };
+}
+
+function emptyIntelligence(
+  generatedAt: string,
+  limitations: string[]
+): SafetyCaseIntelligence {
+  return {
+    status: "insufficient_data",
+    analysisMode: "heuristic",
+    generatedAt,
+    dataQuality: {
+      reporterHistoryAvailable: false,
+      targetHistoryAvailable: false,
+      evidenceVerified: false,
+      finalizedReporterCases: 0,
+      finalizedTargetCases: 0,
+      limitations,
+    },
+    reporter: {
+      credibilityScore: null,
+      credibilityLevel: "unknown",
+      lifetimeReports: 0,
+      confirmedReports: 0,
+      dismissedReports: 0,
+      accuracyPercent: null,
+      abuseFlags: [],
+    },
+    target: {
+      riskScore: null,
+      totalReports: 0,
+      uniqueReporters: 0,
+      confirmedViolations: 0,
+      warnings: 0,
+      removals: 0,
+      restrictions: 0,
+      suspensions: 0,
+      permanentBans: 0,
+      repeatedCategories: [],
+      trend: "insufficient_data",
+      reportsLast7d: 0,
+      reportsLast30d: 0,
+      reportsLast90d: 0,
+    },
+    evidence: {
+      strengthScore: null,
+      originalAvailable: false,
+      snapshotAvailable: false,
+      signals: [],
+      limitations,
+    },
+    patterns: [],
+    assessment: {
+      caseRiskScore: null,
+      signalLevel: "unknown",
+      recommendation: "human_review",
+      confidence: null,
+      reasoning: [
+        "Insufficient real finalized history / verified evidence for scored Case Intelligence.",
+      ],
+      aggravatingFactors: [],
+      mitigatingFactors: ["insufficient_data"],
+      requiresHumanReview: true,
+    },
   };
 }
 
@@ -743,56 +876,9 @@ export function computeSafetyCaseIntelligence(
   const generatedAt = new Date().toISOString();
 
   if (!input.reporterUserId && !input.targetId && !input.targetOwnerUserId) {
-    return {
-      status: "insufficient_data",
-      analysisMode: "heuristic",
-      generatedAt,
-      reporter: {
-        credibilityScore: 0,
-        credibilityLevel: "low",
-        lifetimeReports: 0,
-        confirmedReports: 0,
-        dismissedReports: 0,
-        accuracyPercent: null,
-        abuseFlags: [],
-      },
-      target: {
-        riskScore: 0,
-        totalReports: 0,
-        uniqueReporters: 0,
-        confirmedViolations: 0,
-        warnings: 0,
-        removals: 0,
-        restrictions: 0,
-        suspensions: 0,
-        permanentBans: 0,
-        repeatedCategories: [],
-        trend: "unknown",
-        reportsLast7d: 0,
-        reportsLast30d: 0,
-        reportsLast90d: 0,
-      },
-      evidence: {
-        strengthScore: 0,
-        originalAvailable: false,
-        snapshotAvailable: false,
-        signals: [],
-        limitations: ["missing_reporter_and_target_identifiers"],
-      },
-      patterns: [],
-      assessment: {
-        caseRiskScore: 0,
-        signalLevel: "low",
-        recommendation: "monitor",
-        confidence: 0,
-        reasoning: [
-          "Insufficient identifiers to compute Case Intelligence.",
-        ],
-        aggravatingFactors: [],
-        mitigatingFactors: ["insufficient_data"],
-        requiresHumanReview: true,
-      },
-    };
+    return emptyIntelligence(generatedAt, [
+      "missing_reporter_and_target_identifiers",
+    ]);
   }
 
   const reporter = computeReporterCredibility({
@@ -829,6 +915,8 @@ export function computeSafetyCaseIntelligence(
     category: input.category,
     reason: input.reason,
     description: input.description,
+    evidenceMachineVerified: Boolean(input.evidenceMachineVerified),
+    evidenceAttachmentCount: input.evidenceAttachmentCount,
   });
 
   const patterns = detectCasePatterns(input);
@@ -838,18 +926,102 @@ export function computeSafetyCaseIntelligence(
       p.type === "multi_reporter_short_window"
   );
 
+  const reporterHistoryAvailable = reporter.credibilityScore != null;
+  const targetHistoryAvailable = target.riskScore != null;
+  const evidenceVerified = evidence.evidenceVerified;
+
+  const limitations = Array.from(
+    new Set([
+      ...reporter.limitations,
+      ...evidence.limitations,
+      ...(target.riskScore == null
+        ? ["insufficient_confirmed_target_history"]
+        : []),
+    ])
+  );
+
+  const dataQuality: CaseIntelligenceDataQuality = {
+    reporterHistoryAvailable,
+    targetHistoryAvailable,
+    evidenceVerified,
+    finalizedReporterCases: reporter.finalizedDecisionCount,
+    finalizedTargetCases: target.finalizedTargetCases,
+    limitations,
+  };
+
+  const confidence = computeInputConfidence({
+    reporterHistoryAvailable,
+    targetHistoryAvailable,
+    evidenceVerified,
+    uniqueReporters: input.targetUniqueReporters,
+    finalizedReporterCases: reporter.finalizedDecisionCount,
+    finalizedTargetCases: target.finalizedTargetCases,
+  });
+
+  const canRecommendEnforcement =
+    evidence.strengthScore != null &&
+    target.riskScore != null &&
+    confidence != null;
+
+  if (!canRecommendEnforcement) {
+    return {
+      status: "insufficient_data",
+      analysisMode: "heuristic",
+      generatedAt,
+      dataQuality,
+      reporter: {
+        credibilityScore: reporter.credibilityScore,
+        credibilityLevel: reporter.credibilityLevel,
+        lifetimeReports: nonNegInt(input.reporterLifetimeReports),
+        confirmedReports: nonNegInt(input.reporterConfirmedReports),
+        dismissedReports: nonNegInt(input.reporterDismissedReports),
+        accuracyPercent: reporter.accuracyPercent,
+        abuseFlags: reporter.abuseFlags,
+      },
+      target: {
+        riskScore: target.riskScore,
+        totalReports: nonNegInt(input.targetTotalReports),
+        uniqueReporters: nonNegInt(input.targetUniqueReporters),
+        confirmedViolations: nonNegInt(input.targetConfirmedViolations),
+        warnings: nonNegInt(input.targetWarnings),
+        removals: nonNegInt(input.targetRemovals),
+        restrictions: nonNegInt(input.targetRestrictions),
+        suspensions: nonNegInt(input.targetSuspensions),
+        permanentBans: nonNegInt(input.targetPermanentBans),
+        repeatedCategories: input.repeatedCategories || [],
+        trend: target.trend,
+        reportsLast7d: nonNegInt(input.targetReportsLast7d),
+        reportsLast30d: nonNegInt(input.targetReportsLast30d),
+        reportsLast90d: nonNegInt(input.targetReportsLast90d),
+      },
+      evidence: {
+        strengthScore: evidence.strengthScore,
+        originalAvailable: Boolean(input.originalContentAvailable),
+        snapshotAvailable: evidence.snapshotAvailable,
+        signals: evidence.signals,
+        limitations: evidence.limitations,
+      },
+      patterns,
+      assessment: {
+        caseRiskScore: null,
+        signalLevel: "unknown",
+        recommendation: "human_review",
+        confidence: null,
+        reasoning: [
+          "Minimum real-data gates were not met for an enforcement recommendation.",
+          "Reporter credibility, target risk, and evidence strength require finalized/verified history — not open-report volume or presence-only media.",
+          ...limitations.slice(0, 4),
+        ],
+        aggravatingFactors: [],
+        mitigatingFactors: ["insufficient_data"],
+        requiresHumanReview: true,
+      },
+    };
+  }
+
   const corroborationScore = Math.min(
     100,
     Math.max(0, input.targetUniqueReporters - 1) * 18
-  );
-  const recencyScore = Math.min(
-    100,
-    input.targetReportsLast7d * 20 + input.targetReportsLast30d * 3
-  );
-  const repeatBehaviorScore = Math.min(
-    100,
-    input.targetConfirmedViolations * 20 +
-      input.repeatedCategories.length * 10
   );
   const priorEnforcementScore = Math.min(
     100,
@@ -860,40 +1032,13 @@ export function computeSafetyCaseIntelligence(
   );
 
   let caseRiskScore =
-    target.riskScore *
+    (target.riskScore as number) *
       CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_TARGET_HISTORY +
-    evidence.strengthScore * CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_EVIDENCE +
-    corroborationScore *
-      CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_CORROBORATION +
-    recencyScore * CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_RECENCY +
-    repeatBehaviorScore *
-      CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_REPEAT_BEHAVIOR +
+    (evidence.strengthScore as number) *
+      CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_EVIDENCE +
+    corroborationScore * CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_CORROBORATION +
     priorEnforcementScore *
-      CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_PRIOR_ENFORCEMENT +
-    reporter.credibilityScore *
-      CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_REPORTER_CREDIBILITY;
-
-  if (coordinatedSuspicion) {
-    caseRiskScore -=
-      CASE_INTELLIGENCE_WEIGHTS.COORDINATED_ABUSE_PENALTY_MAX *
-      (input.targetUniqueReportersLast24h >=
-      CASE_INTELLIGENCE_WEIGHTS.COORDINATED_UNIQUE_REPORTERS_24H
-        ? 1
-        : 0.55);
-  }
-
-  if (input.targetDismissedReports > input.targetConfirmedViolations) {
-    caseRiskScore -= Math.min(
-      CASE_INTELLIGENCE_WEIGHTS.DISMISSED_HISTORY_PENALTY_MAX,
-      (input.targetDismissedReports - input.targetConfirmedViolations) * 3
-    );
-  }
-
-  if (reporter.credibilityLevel === "low") {
-    caseRiskScore -=
-      CASE_INTELLIGENCE_WEIGHTS.LOW_CREDIBILITY_PENALTY_MAX *
-      ((45 - reporter.credibilityScore) / 45);
-  }
+      CASE_INTELLIGENCE_WEIGHTS.CASE_RISK_PRIOR_ENFORCEMENT;
 
   caseRiskScore = clampScore(
     caseRiskScore + categorySeverityBoost(input.category) * 0.35
@@ -901,7 +1046,7 @@ export function computeSafetyCaseIntelligence(
 
   const recommendation = computeCaseRecommendation({
     caseRiskScore,
-    evidenceScore: evidence.strengthScore,
+    evidenceScore: evidence.strengthScore as number,
     credibilityScore: reporter.credibilityScore,
     confirmedViolations: input.targetConfirmedViolations,
     suspensions: input.targetSuspensions,
@@ -910,41 +1055,48 @@ export function computeSafetyCaseIntelligence(
     category: input.category,
     targetType: input.targetType,
     coordinatedSuspicion,
-    patterns,
   });
+
+  recommendation.reasoning.push(
+    `Case risk ${caseRiskScore}/100 from verified target history and machine-verified evidence.`
+  );
+  recommendation.reasoning.push(
+    "Heuristic engine — recommendation still requires human review before enforcement."
+  );
 
   return {
     status: "ready",
     analysisMode: "heuristic",
     generatedAt,
+    dataQuality,
     reporter: {
       credibilityScore: reporter.credibilityScore,
       credibilityLevel: reporter.credibilityLevel,
-      lifetimeReports: input.reporterLifetimeReports,
-      confirmedReports: input.reporterConfirmedReports,
-      dismissedReports: input.reporterDismissedReports,
+      lifetimeReports: nonNegInt(input.reporterLifetimeReports),
+      confirmedReports: nonNegInt(input.reporterConfirmedReports),
+      dismissedReports: nonNegInt(input.reporterDismissedReports),
       accuracyPercent: reporter.accuracyPercent,
       abuseFlags: reporter.abuseFlags,
     },
     target: {
       riskScore: target.riskScore,
-      totalReports: input.targetTotalReports,
-      uniqueReporters: input.targetUniqueReporters,
-      confirmedViolations: input.targetConfirmedViolations,
-      warnings: input.targetWarnings,
-      removals: input.targetRemovals,
-      restrictions: input.targetRestrictions,
-      suspensions: input.targetSuspensions,
-      permanentBans: input.targetPermanentBans,
-      repeatedCategories: input.repeatedCategories,
+      totalReports: nonNegInt(input.targetTotalReports),
+      uniqueReporters: nonNegInt(input.targetUniqueReporters),
+      confirmedViolations: nonNegInt(input.targetConfirmedViolations),
+      warnings: nonNegInt(input.targetWarnings),
+      removals: nonNegInt(input.targetRemovals),
+      restrictions: nonNegInt(input.targetRestrictions),
+      suspensions: nonNegInt(input.targetSuspensions),
+      permanentBans: nonNegInt(input.targetPermanentBans),
+      repeatedCategories: input.repeatedCategories || [],
       trend: target.trend,
-      reportsLast7d: input.targetReportsLast7d,
-      reportsLast30d: input.targetReportsLast30d,
-      reportsLast90d: input.targetReportsLast90d,
+      reportsLast7d: nonNegInt(input.targetReportsLast7d),
+      reportsLast30d: nonNegInt(input.targetReportsLast30d),
+      reportsLast90d: nonNegInt(input.targetReportsLast90d),
     },
     evidence: {
       strengthScore: evidence.strengthScore,
-      originalAvailable: input.originalContentAvailable,
+      originalAvailable: Boolean(input.originalContentAvailable),
       snapshotAvailable: evidence.snapshotAvailable,
       signals: evidence.signals,
       limitations: evidence.limitations,
@@ -954,7 +1106,7 @@ export function computeSafetyCaseIntelligence(
       caseRiskScore,
       signalLevel: signalLevelFromRisk(caseRiskScore),
       recommendation: recommendation.recommendation,
-      confidence: recommendation.confidence,
+      confidence,
       reasoning: recommendation.reasoning,
       aggravatingFactors: recommendation.aggravatingFactors,
       mitigatingFactors: recommendation.mitigatingFactors,

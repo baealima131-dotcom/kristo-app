@@ -1522,10 +1522,12 @@ SafetySupervisorReportDetailsScreen() {
                         </Text>
                         <Text style={styles.aiScorePercent}>
                           Heuristic confidence{" "}
-                          {Math.round(
-                            intel!.assessment.confidence
-                          )}
-                          %
+                          {typeof intel!.assessment.confidence ===
+                          "number"
+                            ? `${Math.round(
+                                intel!.assessment.confidence
+                              )}%`
+                            : "n/a"}
                         </Text>
                       </View>
 
@@ -1534,9 +1536,12 @@ SafetySupervisorReportDetailsScreen() {
                           CASE RISK
                         </Text>
                         <Text style={styles.aiThresholdValue}>
-                          {Math.round(
-                            intel!.assessment.caseRiskScore
-                          )}
+                          {typeof intel!.assessment.caseRiskScore ===
+                          "number"
+                            ? Math.round(
+                                intel!.assessment.caseRiskScore
+                              )
+                            : "—"}
                           <Text style={styles.aiThresholdMaximum}>
                             /100
                           </Text>
@@ -1553,7 +1558,10 @@ SafetySupervisorReportDetailsScreen() {
                               100,
                               Math.max(
                                 0,
-                                intel!.assessment.caseRiskScore
+                                typeof intel!.assessment
+                                  .caseRiskScore === "number"
+                                  ? intel!.assessment.caseRiskScore
+                                  : 0
                               )
                             )}%`,
                             backgroundColor: badgeColor,

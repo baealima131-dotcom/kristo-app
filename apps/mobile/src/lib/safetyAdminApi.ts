@@ -364,8 +364,16 @@ export type SafetyCaseIntelligence = {
   status: "ready" | "insufficient_data" | "error";
   analysisMode: "heuristic";
   generatedAt: string;
+  dataQuality?: {
+    reporterHistoryAvailable: boolean;
+    targetHistoryAvailable: boolean;
+    evidenceVerified: boolean;
+    finalizedReporterCases: number;
+    finalizedTargetCases: number;
+    limitations: string[];
+  };
   reporter: {
-    credibilityScore: number;
+    credibilityScore: number | null;
     credibilityLevel: string;
     lifetimeReports: number;
     confirmedReports: number;
@@ -374,7 +382,7 @@ export type SafetyCaseIntelligence = {
     abuseFlags: string[];
   };
   target: {
-    riskScore: number;
+    riskScore: number | null;
     totalReports: number;
     uniqueReporters: number;
     confirmedViolations: number;
@@ -390,7 +398,7 @@ export type SafetyCaseIntelligence = {
     reportsLast90d?: number;
   };
   evidence: {
-    strengthScore: number;
+    strengthScore: number | null;
     originalAvailable: boolean;
     snapshotAvailable: boolean;
     signals: string[];
@@ -404,10 +412,10 @@ export type SafetyCaseIntelligence = {
     supportingCount?: number;
   }>;
   assessment: {
-    caseRiskScore: number;
-    signalLevel: "low" | "moderate" | "high" | "critical";
+    caseRiskScore: number | null;
+    signalLevel: string;
     recommendation: string;
-    confidence: number;
+    confidence: number | null;
     reasoning: string[];
     aggravatingFactors: string[];
     mitigatingFactors: string[];

@@ -5336,9 +5336,54 @@ export async function dbGetSafetyCaseIntelligence(input: {
       repeatedCategories: categoryRows
         .map((row) => safeText(row?.category))
         .filter(Boolean),
+      evidenceMachineVerified: false,
+      evidenceAttachmentCount: [
+        Boolean(input.originalContentAvailable),
+        Boolean(safeText(report?.targetThumbnailUri)),
+        Boolean(safeText(report?.targetPreview)),
+        Boolean(input.hasMediaUri),
+      ].filter(Boolean).length,
     };
 
+    const facts = {
+      reportId: reportId || null,
+      reporterLifetimeReports: raw.reporterLifetimeReports,
+      reporterFinalizedReports:
+        raw.reporterConfirmedReports + raw.reporterDismissedReports,
+      reporterConfirmedReports: raw.reporterConfirmedReports,
+      reporterDismissedReports: raw.reporterDismissedReports,
+      targetTotalReports: raw.targetTotalReports,
+      targetFinalizedReports:
+        raw.targetConfirmedViolations + raw.targetDismissedReports,
+      targetConfirmedViolations: raw.targetConfirmedViolations,
+      uniqueReporters: raw.targetUniqueReporters,
+      warningCount: raw.targetWarnings,
+      removalCount: raw.targetRemovals,
+      restrictionCount: raw.targetRestrictions,
+      suspensionCount: raw.targetSuspensions,
+      banCount: raw.targetPermanentBans,
+      originalAvailable: raw.originalContentAvailable,
+      snapshotAvailable: Boolean(
+        raw.hasThumbnail || raw.hasPreview || raw.hasMediaUri
+      ),
+      evidenceAttachmentCount: raw.evidenceAttachmentCount ?? 0,
+    };
+
+    console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_FACTS", facts);
+
     const intelligence = computeSafetyCaseIntelligence(raw);
+
+    console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_RESULT", {
+      reportId: reportId || null,
+      status: intelligence.status,
+      credibilityScore: intelligence.reporter.credibilityScore,
+      targetRiskScore: intelligence.target.riskScore,
+      evidenceStrengthScore: intelligence.evidence.strengthScore,
+      caseRiskScore: intelligence.assessment.caseRiskScore,
+      confidence: intelligence.assessment.confidence,
+      recommendation: intelligence.assessment.recommendation,
+      dataQuality: intelligence.dataQuality,
+    });
 
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_READY", {
       reportId: reportId || null,
@@ -5369,9 +5414,17 @@ export async function dbGetSafetyCaseIntelligence(input: {
       status: "error",
       analysisMode: "heuristic",
       generatedAt: new Date().toISOString(),
+      dataQuality: {
+        reporterHistoryAvailable: false,
+        targetHistoryAvailable: false,
+        evidenceVerified: false,
+        finalizedReporterCases: 0,
+        finalizedTargetCases: 0,
+        limitations: [message || "case_intelligence_query_failed"],
+      },
       reporter: {
-        credibilityScore: 0,
-        credibilityLevel: "low",
+        credibilityScore: null,
+        credibilityLevel: "unknown",
         lifetimeReports: 0,
         confirmedReports: 0,
         dismissedReports: 0,
@@ -5379,7 +5432,7 @@ export async function dbGetSafetyCaseIntelligence(input: {
         abuseFlags: [],
       },
       target: {
-        riskScore: 0,
+        riskScore: null,
         totalReports: 0,
         uniqueReporters: 0,
         confirmedViolations: 0,
@@ -5389,13 +5442,13 @@ export async function dbGetSafetyCaseIntelligence(input: {
         suspensions: 0,
         permanentBans: 0,
         repeatedCategories: [],
-        trend: "unknown",
+        trend: "insufficient_data",
         reportsLast7d: 0,
         reportsLast30d: 0,
         reportsLast90d: 0,
       },
       evidence: {
-        strengthScore: 0,
+        strengthScore: null,
         originalAvailable: false,
         snapshotAvailable: false,
         signals: [],
@@ -5403,10 +5456,10 @@ export async function dbGetSafetyCaseIntelligence(input: {
       },
       patterns: [],
       assessment: {
-        caseRiskScore: 0,
-        signalLevel: "low",
-        recommendation: "escalate",
-        confidence: 0,
+        caseRiskScore: null,
+        signalLevel: "unknown",
+        recommendation: "human_review",
+        confidence: null,
         reasoning: [
           "Case Intelligence could not be generated due to a backend error.",
         ],

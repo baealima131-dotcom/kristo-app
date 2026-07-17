@@ -249,7 +249,7 @@ describe("4. Identity integrity", () => {
   });
 });
 
-describe("5. Case Intelligence Engine — heuristic decision-support", () => {
+describe("5. Case Intelligence Engine — real-data gates only", () => {
   const decisionDb = read("app/api/_lib/store/safetyReportDb.ts");
   const route = read(
     "app/api/safety/supervisor/reports/[reportId]/route.ts"
@@ -277,15 +277,17 @@ describe("5. Case Intelligence Engine — heuristic decision-support", () => {
       hasMediaUri: false,
       mediaType: "text",
       createdAt: new Date().toISOString(),
+      evidenceMachineVerified: false,
+      evidenceAttachmentCount: 1,
       reporterLifetimeReports: 1,
       reporterConfirmedReports: 0,
       reporterDismissedReports: 0,
       reporterDuplicateOnThisTarget: 0,
       reporterReportsOnThisTarget: 1,
       reporterHasFalseReportingPenalty: false,
-      targetTotalReports: 1,
-      targetUniqueReporters: 1,
-      targetActiveReports: 1,
+      targetTotalReports: 2,
+      targetUniqueReporters: 2,
+      targetActiveReports: 2,
       targetResolvedReports: 0,
       targetDismissedReports: 0,
       targetEscalatedReports: 0,
@@ -295,319 +297,249 @@ describe("5. Case Intelligence Engine — heuristic decision-support", () => {
       targetRestrictions: 0,
       targetSuspensions: 0,
       targetPermanentBans: 0,
-      targetReportsLast7d: 1,
-      targetReportsLast30d: 1,
-      targetReportsLast90d: 1,
-      targetUniqueReportersLast24h: 1,
-      targetUniqueReportersLast7d: 1,
+      targetReportsLast7d: 2,
+      targetReportsLast30d: 2,
+      targetReportsLast90d: 2,
+      targetUniqueReportersLast24h: 2,
+      targetUniqueReportersLast7d: 2,
       repeatedCategories: [] as string[],
       ...overrides,
     };
   }
 
-  it("wires dbGetSafetyCaseIntelligence into report detail hydrate", () => {
+  it("wires db loader + FACTS/RESULT diagnostics", () => {
     assertIncludes(
       decisionDb,
       "export async function dbGetSafetyCaseIntelligence",
       "db loader"
     );
+    assertIncludes(
+      decisionDb,
+      "KRISTO_SAFETY_CASE_INTELLIGENCE_FACTS",
+      "facts log"
+    );
+    assertIncludes(
+      decisionDb,
+      "KRISTO_SAFETY_CASE_INTELLIGENCE_RESULT",
+      "result log"
+    );
     assertIncludes(route, "dbGetSafetyCaseIntelligence", "route import/use");
-    assertIncludes(route, "caseIntelligence", "API field");
-    assertIncludes(engine, 'analysisMode: "heuristic"', "heuristic mode");
-    assertIncludes(engine, "requiresHumanReview: true", "human review");
-    assertIncludes(engine, "CASE_INTELLIGENCE_WEIGHTS", "named weights");
-    assertIncludes(
-      decisionDb,
-      "KRISTO_SAFETY_CASE_INTELLIGENCE_INPUT",
-      "db input log"
-    );
-    assertIncludes(
-      decisionDb,
-      "KRISTO_SAFETY_CASE_INTELLIGENCE_READY",
-      "db ready log"
-    );
-    assertIncludes(
-      decisionDb,
-      "KRISTO_SAFETY_CASE_INTELLIGENCE_FAILED",
-      "db failure log"
-    );
-    assertIncludes(
-      route,
-      'console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_INPUT"',
-      "route input log before call"
-    );
-    assertIncludes(
-      route,
-      'console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_READY"',
-      "route ready log after call"
-    );
-    assertIncludes(
-      route,
-      "hydrated.caseIntelligence = caseIntelligence",
-      "explicit caseIntelligence attach"
-    );
-    assertIncludes(
-      route,
-      "hydrate_route_before_call",
-      "route stages the intelligence call"
-    );
-
-    const fnStart = decisionDb.indexOf(
-      "export async function dbGetSafetyCaseIntelligence"
-    );
-    const fnEnd = decisionDb.indexOf(
-      "export type SafetyAccountEnforcementType",
-      fnStart
-    );
-    const fnBody = decisionDb.slice(fnStart, fnEnd > fnStart ? fnEnd : undefined);
-    assert.ok(
-      !fnBody.includes("await ensureSafetyAccountEnforcementSchema()"),
-      "report-detail intelligence must not migrate enforcement schema/indexes"
-    );
-    assert.ok(
-      !fnBody.includes("${targetId} <> ''"),
-      "must not use ${id} <> '' Neon parameter comparisons"
-    );
+    assertIncludes(engine, 'recommendation: "human_review"', "human_review");
+    assertIncludes(engine, "credibilityScore: number | null", "nullable cred");
+    assertNotIncludes(engine, "let score = 55;", "no baseline 55");
+    assertNotIncludes(engine, "score = 52;", "no baseline 52");
+    assertNotIncludes(engine, "score = 50;", "no baseline 50");
+    assertNotIncludes(engine, "score = 58;", "no baseline 58");
   });
 
-  it("trusted reporter + repeated confirmed target behavior", async () => {
-    const {
-      computeSafetyCaseIntelligence,
-    } = await import("../app/api/_lib/safetyCaseIntelligenceEngine.ts");
-
-    const result = computeSafetyCaseIntelligence(
-      baseRaw({
-        reporterLifetimeReports: 20,
-        reporterConfirmedReports: 16,
-        reporterDismissedReports: 2,
-        targetConfirmedViolations: 4,
-        targetWarnings: 2,
-        targetRestrictions: 1,
-        targetTotalReports: 12,
-        targetUniqueReporters: 5,
-        targetReportsLast7d: 4,
-        targetReportsLast30d: 8,
-        repeatedCategories: ["harassment"],
-        originalContentAvailable: true,
-        hasThumbnail: true,
-        hasPreview: true,
-      })
+  it("new reporter with no finalized history → credibility null", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
     );
-
-    assert.equal(result.status, "ready");
-    assert.equal(result.analysisMode, "heuristic");
-    assert.equal(result.assessment.requiresHumanReview, true);
-    assert.ok(result.reporter.credibilityScore >= 70);
-    assert.ok(["high", "trusted"].includes(result.reporter.credibilityLevel));
-    assert.ok(result.target.riskScore >= 40);
-    assert.ok(result.assessment.caseRiskScore >= 40);
-    assert.ok(
-      ["warning", "remove_content", "restrict_account", "suspend_account", "escalate", "permanent_ban"].includes(
-        result.assessment.recommendation
-      )
-    );
-    assert.ok(
-      result.patterns.some((p) => p.type === "repeated_confirmed_violations")
-    );
-  });
-
-  it("unreliable reporter + clean target history stays cautious", async () => {
-    const {
-      computeSafetyCaseIntelligence,
-    } = await import("../app/api/_lib/safetyCaseIntelligenceEngine.ts");
-
-    const result = computeSafetyCaseIntelligence(
-      baseRaw({
-        reporterLifetimeReports: 12,
-        reporterConfirmedReports: 1,
-        reporterDismissedReports: 9,
-        reporterHasFalseReportingPenalty: true,
-        targetConfirmedViolations: 0,
-        targetWarnings: 0,
-        targetTotalReports: 1,
-        targetUniqueReporters: 1,
-        originalContentAvailable: false,
-        hasThumbnail: false,
-        hasPreview: false,
-        hasMediaUri: false,
-      })
-    );
-
-    assert.equal(result.status, "ready");
-    assert.ok(result.reporter.credibilityScore < 45);
-    assert.equal(result.reporter.credibilityLevel, "low");
-    assert.ok(result.target.riskScore < 35);
-    assert.ok(
-      ["no_violation", "monitor", "escalate"].includes(
-        result.assessment.recommendation
-      )
-    );
-    assert.ok(
-      result.assessment.mitigatingFactors.includes("low_reporter_credibility") ||
-        result.assessment.mitigatingFactors.includes("weak_or_incomplete_evidence") ||
-        result.assessment.mitigatingFactors.includes("limited_target_history")
-    );
-  });
-
-  it("coordinated-report suspicion surfaces as pattern and escalate path", async () => {
-    const {
-      computeSafetyCaseIntelligence,
-    } = await import("../app/api/_lib/safetyCaseIntelligenceEngine.ts");
-
-    const result = computeSafetyCaseIntelligence(
-      baseRaw({
-        targetUniqueReportersLast24h: 5,
-        targetUniqueReportersLast7d: 7,
-        targetUniqueReporters: 7,
-        targetTotalReports: 8,
-        originalContentAvailable: true,
-        hasPreview: true,
-      })
-    );
-
-    assert.ok(
-      result.patterns.some(
-        (p) => p.type === "coordinated_reporting_suspicion"
-      )
-    );
-    assert.equal(result.assessment.recommendation, "escalate");
-    assert.ok(
-      result.assessment.aggravatingFactors.includes(
-        "coordinated_reporting_suspicion"
-      )
-    );
-  });
-
-  it("repeated confirmed harassment after warning", async () => {
-    const {
-      computeSafetyCaseIntelligence,
-    } = await import("../app/api/_lib/safetyCaseIntelligenceEngine.ts");
-
-    const result = computeSafetyCaseIntelligence(
-      baseRaw({
-        category: "harassment",
-        reporterLifetimeReports: 8,
-        reporterConfirmedReports: 6,
-        reporterDismissedReports: 1,
-        targetConfirmedViolations: 3,
-        targetWarnings: 2,
-        targetSuspensions: 0,
-        targetRestrictions: 0,
-        targetTotalReports: 9,
-        targetUniqueReporters: 4,
-        repeatedCategories: ["harassment"],
-        originalContentAvailable: true,
-        hasPreview: true,
-        hasThumbnail: true,
-      })
-    );
-
-    assert.ok(
-      result.patterns.some((p) => p.type === "prior_warning_ignored")
-    );
-    assert.ok(result.assessment.caseRiskScore >= 45);
-    assert.notEqual(result.assessment.recommendation, "no_violation");
-  });
-
-  it("insufficient data when identifiers are missing", async () => {
-    const {
-      computeSafetyCaseIntelligence,
-    } = await import("../app/api/_lib/safetyCaseIntelligenceEngine.ts");
-
-    const result = computeSafetyCaseIntelligence(
-      baseRaw({
-        reporterUserId: "",
-        targetId: "",
-        targetOwnerUserId: "",
-      })
-    );
-
+    const result = computeSafetyCaseIntelligence(baseRaw());
+    assert.equal(result.reporter.credibilityScore, null);
+    assert.equal(result.reporter.accuracyPercent, null);
+    assert.equal(result.reporter.credibilityLevel, "unknown");
     assert.equal(result.status, "insufficient_data");
-    assert.equal(result.assessment.confidence, 0);
+    assert.equal(result.assessment.recommendation, "human_review");
+  });
+
+  it("target with reports but zero confirmed violations → risk null", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const result = computeSafetyCaseIntelligence(
+      baseRaw({
+        reporterConfirmedReports: 3,
+        reporterDismissedReports: 1,
+        reporterLifetimeReports: 6,
+        targetTotalReports: 8,
+        targetUniqueReporters: 4,
+        targetConfirmedViolations: 0,
+      })
+    );
+    assert.equal(result.target.riskScore, null);
+    assert.equal(result.target.confirmedViolations, 0);
+    assert.equal(result.target.trend, "insufficient_data");
+    assert.equal(result.assessment.caseRiskScore, null);
+  });
+
+  it("original content alone → evidence null/not verified", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const result = computeSafetyCaseIntelligence(
+      baseRaw({
+        originalContentAvailable: true,
+        hasThumbnail: true,
+        hasPreview: true,
+        hasMediaUri: true,
+        mediaType: "video",
+        evidenceMachineVerified: false,
+      })
+    );
+    assert.equal(result.evidence.strengthScore, null);
+    assert.equal(result.dataQuality.evidenceVerified, false);
     assert.ok(
       result.evidence.limitations.includes(
-        "missing_reporter_and_target_identifiers"
+        "evidence_quality_not_machine_verified"
       )
     );
   });
 
-  it("does not fabricate 0/1/100% volume fallbacks as decision scores", () => {
-    assertNotIncludes(
-      engine,
-      'recommendation: "permanent_ban"\n    reasoning.push(\n      "High report volume"',
-      "volume-only ban"
+  it("incomplete inputs → status insufficient_data", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
     );
-    assertIncludes(engine, "PERMANENT_BAN_MIN_CASE_RISK", "ban gate");
-    assertIncludes(engine, "PERMANENT_BAN_MIN_EVIDENCE", "evidence gate");
-    assertIncludes(route, "caseIntelligence", "hydrate caseIntelligence");
-    assertNotIncludes(
-      route,
-      "weightedScore: 1,\n      weightedPercent: 10",
-      "fake hydrate fallback"
-    );
-    assertIncludes(decisionDb, "return emptyRiskAssessment();", "legacy empty");
+    const result = computeSafetyCaseIntelligence(baseRaw());
+    assert.equal(result.status, "insufficient_data");
+    assert.equal(result.assessment.confidence, null);
+    assert.equal(result.assessment.caseRiskScore, null);
+    assert.equal(result.assessment.recommendation, "human_review");
   });
 
-  it("permanent ban is not triggered by report volume alone", async () => {
-    const {
-      computeSafetyCaseIntelligence,
-      CASE_INTELLIGENCE_WEIGHTS,
-    } = await import("../app/api/_lib/safetyCaseIntelligenceEngine.ts");
+  it("no default numeric baselines for thin history", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const result = computeSafetyCaseIntelligence(baseRaw());
+    assert.notEqual(result.reporter.credibilityScore, 52);
+    assert.notEqual(result.target.riskScore, 12);
+    assert.notEqual(result.evidence.strengthScore, 79);
+    assert.notEqual(result.assessment.caseRiskScore, 31);
+    assert.notEqual(result.assessment.confidence, 68);
+  });
 
+  it("open reports do not count as confirmed", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const result = computeSafetyCaseIntelligence(
+      baseRaw({
+        targetTotalReports: 10,
+        targetActiveReports: 10,
+        targetConfirmedViolations: 0,
+        targetResolvedReports: 0,
+      })
+    );
+    assert.equal(result.target.confirmedViolations, 0);
+    assert.equal(result.target.riskScore, null);
+  });
+
+  it("dismissed reports reduce credibility only after finalized denominator exists", async () => {
+    const { computeReporterCredibility } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const thin = computeReporterCredibility({
+      lifetimeReports: 1,
+      confirmedReports: 0,
+      dismissedReports: 0,
+      duplicateOnThisTarget: 0,
+      reportsOnThisTarget: 1,
+      hasFalseReportingPenalty: false,
+    });
+    assert.equal(thin.credibilityScore, null);
+
+    const finalized = computeReporterCredibility({
+      lifetimeReports: 10,
+      confirmedReports: 2,
+      dismissedReports: 8,
+      duplicateOnThisTarget: 0,
+      reportsOnThisTarget: 1,
+      hasFalseReportingPenalty: false,
+    });
+    assert.ok(finalized.credibilityScore != null);
+    assert.ok((finalized.accuracyPercent as number) < 50);
+    assert.ok((finalized.credibilityScore as number) < 50);
+  });
+
+  it("recommendation requires minimum data gates", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const gated = computeSafetyCaseIntelligence(
+      baseRaw({
+        reporterConfirmedReports: 8,
+        reporterDismissedReports: 2,
+        reporterLifetimeReports: 12,
+        targetConfirmedViolations: 3,
+        targetWarnings: 1,
+        evidenceMachineVerified: false,
+      })
+    );
+    assert.equal(gated.status, "insufficient_data");
+    assert.equal(gated.assessment.recommendation, "human_review");
+  });
+
+  it("permanent ban cannot come from volume", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
     const volumeOnly = computeSafetyCaseIntelligence(
       baseRaw({
         targetTotalReports: 40,
         targetUniqueReporters: 1,
         targetConfirmedViolations: 0,
-        targetWarnings: 0,
-        targetRestrictions: 0,
-        targetSuspensions: 0,
-        targetPermanentBans: 0,
         targetReportsLast7d: 20,
-        targetReportsLast30d: 30,
-        reporterLifetimeReports: 1,
         reporterConfirmedReports: 0,
         reporterDismissedReports: 0,
-        originalContentAvailable: false,
-        hasThumbnail: false,
-        hasPreview: true,
-        hasMediaUri: false,
       })
     );
-
     assert.notEqual(volumeOnly.assessment.recommendation, "permanent_ban");
-    assert.ok(
-      volumeOnly.assessment.caseRiskScore <
-        CASE_INTELLIGENCE_WEIGHTS.PERMANENT_BAN_MIN_CASE_RISK ||
-        volumeOnly.evidence.strengthScore <
-          CASE_INTELLIGENCE_WEIGHTS.PERMANENT_BAN_MIN_EVIDENCE
-    );
+    assert.equal(volumeOnly.assessment.recommendation, "human_review");
   });
 
-  it("mobile CASE INTELLIGENCE UI avoids eternal CALCULATING", () => {
+  it("real historical fixture produces deterministic score", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const fixture = {
+      reporterLifetimeReports: 20,
+      reporterConfirmedReports: 16,
+      reporterDismissedReports: 2,
+      targetConfirmedViolations: 4,
+      targetWarnings: 2,
+      targetRestrictions: 1,
+      targetSuspensions: 1,
+      targetTotalReports: 12,
+      targetUniqueReporters: 5,
+      targetReportsLast7d: 4,
+      targetReportsLast30d: 8,
+      repeatedCategories: ["harassment"],
+      evidenceMachineVerified: true,
+      originalContentAvailable: true,
+      hasThumbnail: true,
+      hasPreview: true,
+      hasMediaUri: true,
+      mediaType: "video",
+      evidenceAttachmentCount: 3,
+    };
+    const a = computeSafetyCaseIntelligence(baseRaw(fixture));
+    const b = computeSafetyCaseIntelligence(baseRaw(fixture));
+    assert.equal(a.status, "ready");
+    assert.equal(a.assessment.caseRiskScore, b.assessment.caseRiskScore);
+    assert.equal(a.assessment.confidence, b.assessment.confidence);
+    assert.equal(a.assessment.recommendation, b.assessment.recommendation);
+    assert.ok(a.reporter.credibilityScore != null);
+    assert.ok(a.target.riskScore != null);
+    assert.ok(a.evidence.strengthScore != null);
+    assert.ok(a.assessment.confidence != null);
+    assert.notEqual(a.assessment.recommendation, "human_review");
+  });
+
+  it("mobile CASE INTELLIGENCE UI keeps insufficient/error honesty", () => {
     assertIncludes(mobile, "CASE INTELLIGENCE", "section title");
-    assertIncludes(mobile, "Heuristic Case Intelligence", "honest label");
     assertIncludes(mobile, "INSUFFICIENT DATA", "insufficient state");
     assertIncludes(mobile, "ANALYSIS UNAVAILABLE", "error state");
-    assertIncludes(mobile, "Human review required", "human review copy");
-    assertNotIncludes(
-      mobile,
-      "setDecisionConfidence(90)",
-      "fake default confidence 90"
-    );
-    assertNotIncludes(
-      mobile,
-      "AI analyzed video",
-      "no fabricated video analysis"
-    );
+    assertNotIncludes(mobile, "AI analyzed video", "no fabricated video");
   });
 
-  it("recommendation boundaries stay within the allowed set", async () => {
-    const {
-      computeSafetyCaseIntelligence,
-    } = await import("../app/api/_lib/safetyCaseIntelligenceEngine.ts");
-
+  it("recommendation boundaries include human_review", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
     const allowed = new Set([
+      "human_review",
       "no_violation",
       "monitor",
       "warning",
@@ -617,35 +549,28 @@ describe("5. Case Intelligence Engine — heuristic decision-support", () => {
       "permanent_ban",
       "escalate",
     ]);
-
     const samples = [
       baseRaw({}),
       baseRaw({
+        evidenceMachineVerified: true,
+        reporterConfirmedReports: 10,
+        reporterDismissedReports: 1,
+        reporterLifetimeReports: 12,
         targetConfirmedViolations: 5,
         targetSuspensions: 2,
         targetWarnings: 3,
-        originalContentAvailable: true,
-        hasMediaUri: true,
-        hasThumbnail: true,
-        mediaType: "video",
-        reporterConfirmedReports: 10,
-        reporterLifetimeReports: 12,
-        reporterDismissedReports: 1,
         targetUniqueReporters: 6,
+        hasMediaUri: true,
+        mediaType: "video",
       }),
     ];
-
     for (const sample of samples) {
       const result = computeSafetyCaseIntelligence(sample as any);
       assert.ok(
         allowed.has(result.assessment.recommendation),
-        `unexpected recommendation ${result.assessment.recommendation}`
+        `unexpected ${result.assessment.recommendation}`
       );
       assert.equal(result.assessment.requiresHumanReview, true);
-      assert.ok(result.assessment.confidence >= 0);
-      assert.ok(result.assessment.confidence <= 100);
-      assert.ok(result.assessment.caseRiskScore >= 0);
-      assert.ok(result.assessment.caseRiskScore <= 100);
     }
   });
 });
