@@ -738,9 +738,21 @@ async function hydrateSafetyCaseReport(
 
   /*
    * Case Intelligence is required on every report-detail GET.
-   * INPUT/READY/FAILED are logged in this route so Vercel shows
-   * them beside KRISTO_SAFETY_CASE_HYDRATED in the same request.
+   * Forensic logs prove whether the DB function is entered.
    */
+  console.log("KRISTO_CASE_BEFORE_INTELLIGENCE_CALL", {
+    reportId: intelligenceReportId,
+    reporterUserId: intelligenceReporterUserId,
+    targetUserId: intelligenceTargetUserId,
+    hasDbFn:
+      typeof dbGetSafetyCaseIntelligence === "function",
+    dbFnName:
+      typeof dbGetSafetyCaseIntelligence === "function"
+        ? dbGetSafetyCaseIntelligence.name ||
+          "dbGetSafetyCaseIntelligence"
+        : null,
+  });
+
   console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_INPUT", {
     reportId: intelligenceReportId,
     reporterUserId: intelligenceReporterUserId,
@@ -777,6 +789,26 @@ async function hydrateSafetyCaseReport(
       hasMediaUri: Boolean(mediaUri),
     });
 
+    console.log("KRISTO_CASE_AFTER_INTELLIGENCE_CALL", {
+      reportId: intelligenceReportId,
+      reporterUserId: intelligenceReporterUserId,
+      targetUserId: intelligenceTargetUserId,
+      status: caseIntelligence?.status ?? null,
+      hasCaseIntelligence: Boolean(caseIntelligence),
+      credibilityScore:
+        caseIntelligence?.reporter?.credibilityScore ?? null,
+      targetRiskScore:
+        caseIntelligence?.target?.riskScore ?? null,
+      evidenceStrengthScore:
+        caseIntelligence?.evidence?.strengthScore ?? null,
+      caseRiskScore:
+        caseIntelligence?.assessment?.caseRiskScore ?? null,
+      confidence:
+        caseIntelligence?.assessment?.confidence ?? null,
+      recommendation:
+        caseIntelligence?.assessment?.recommendation ?? null,
+    });
+
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_READY", {
       reportId: intelligenceReportId,
       reporterUserId: intelligenceReporterUserId,
@@ -791,6 +823,16 @@ async function hydrateSafetyCaseReport(
         caseIntelligence?.assessment?.confidence ?? null,
     });
   } catch (error: any) {
+    console.log("KRISTO_CASE_AFTER_INTELLIGENCE_CALL", {
+      reportId: intelligenceReportId,
+      reporterUserId: intelligenceReporterUserId,
+      targetUserId: intelligenceTargetUserId,
+      status: "error",
+      hasCaseIntelligence: false,
+      error: String(
+        error?.message || "hydrate_case_intelligence_failed"
+      ),
+    });
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_FAILED", {
       reportId: intelligenceReportId,
       reporterUserId: intelligenceReporterUserId,

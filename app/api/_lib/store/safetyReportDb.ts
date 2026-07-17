@@ -4655,6 +4655,16 @@ export async function dbGetSafetyCaseIntelligence(input: {
   hasMediaUri?: boolean;
 }): Promise<SafetyCaseIntelligence> {
   // First statement — proves this function was entered.
+  console.log("KRISTO_CASE_DB_FUNCTION_ENTERED", {
+    reportId: input?.report?.id ?? null,
+    reporterUserId: input?.report?.reporterUserId ?? null,
+    targetUserId:
+      input?.report?.targetOwnerUserId ??
+      input?.report?.reportedUserId ??
+      null,
+    module: "safetyReportDb.dbGetSafetyCaseIntelligence",
+  });
+
   console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_INPUT", {
     reportId: input?.report?.id ?? null,
     reporterUserId: input?.report?.reporterUserId ?? null,
@@ -4674,6 +4684,8 @@ export async function dbGetSafetyCaseIntelligence(input: {
     report?.targetOwnerUserId || report?.reportedUserId
   );
   const sourceId = safeText(report?.sourceId);
+
+  let exitStatus: string = "unknown";
 
   try {
     await ensureSafetyReportSchema();
@@ -5372,6 +5384,7 @@ export async function dbGetSafetyCaseIntelligence(input: {
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_FACTS", facts);
 
     const intelligence = computeSafetyCaseIntelligence(raw);
+    exitStatus = intelligence.status;
 
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_RESULT", {
       reportId: reportId || null,
@@ -5395,11 +5408,20 @@ export async function dbGetSafetyCaseIntelligence(input: {
       recommendation: intelligence.assessment?.recommendation ?? null,
     });
 
+    console.log("KRISTO_CASE_DB_FUNCTION_EXIT", {
+      reportId: reportId || null,
+      reporterUserId: reporterUserId || null,
+      targetUserId: ownerUserId || null,
+      status: exitStatus,
+      ok: true,
+    });
+
     return intelligence;
   } catch (error: any) {
     const message = safeText(
       error?.message || "case_intelligence_query_failed"
     );
+    exitStatus = "error";
 
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_FAILED", {
       reportId: reportId || null,
@@ -5408,6 +5430,15 @@ export async function dbGetSafetyCaseIntelligence(input: {
       stage: "case_intelligence",
       error: message,
       stack: String(error?.stack || "") || null,
+    });
+
+    console.log("KRISTO_CASE_DB_FUNCTION_EXIT", {
+      reportId: reportId || null,
+      reporterUserId: reporterUserId || null,
+      targetUserId: ownerUserId || null,
+      status: exitStatus,
+      ok: false,
+      error: message,
     });
 
     return {

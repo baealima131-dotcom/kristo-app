@@ -323,6 +323,26 @@ describe("5. Case Intelligence Engine — real-data gates only", () => {
       "KRISTO_SAFETY_CASE_INTELLIGENCE_RESULT",
       "result log"
     );
+    assertIncludes(
+      decisionDb,
+      "KRISTO_CASE_DB_FUNCTION_ENTERED",
+      "db enter forensic"
+    );
+    assertIncludes(
+      decisionDb,
+      "KRISTO_CASE_DB_FUNCTION_EXIT",
+      "db exit forensic"
+    );
+    assertIncludes(
+      route,
+      "KRISTO_CASE_BEFORE_INTELLIGENCE_CALL",
+      "route before call"
+    );
+    assertIncludes(
+      route,
+      "KRISTO_CASE_AFTER_INTELLIGENCE_CALL",
+      "route after call"
+    );
     assertIncludes(route, "dbGetSafetyCaseIntelligence", "route import/use");
     assertIncludes(engine, 'recommendation: "human_review"', "human_review");
     assertIncludes(engine, "credibilityScore: number | null", "nullable cred");
