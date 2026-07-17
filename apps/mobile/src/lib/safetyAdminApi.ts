@@ -456,11 +456,28 @@ export type SafetySupervisorDashboardResponse = {
 };
 
 
+export type SafetyCaseViewerMode =
+  | "supervisor"
+  | "agent";
+
+export type SafetyCasePermissions = {
+  canInvestigate: boolean;
+  canAssignAgent: boolean;
+  canEscalate: boolean;
+  canResolve: boolean;
+};
+
 export async function fetchSafetySupervisorReport(
   reportId: string
 ): Promise<{
-  report: SafetyReportSummary;
-  agents: SafetySupervisorDashboardResponse["agents"];
+  viewerMode:
+    SafetyCaseViewerMode;
+  permissions:
+    SafetyCasePermissions;
+  report:
+    SafetyReportSummary;
+  agents:
+    SafetySupervisorDashboardResponse["agents"];
 }> {
   const normalizedId =
     String(reportId || "").trim();
@@ -495,12 +512,42 @@ export async function fetchSafetySupervisorReport(
     );
   }
 
+  const viewerMode:
+    SafetyCaseViewerMode =
+      response?.viewerMode ===
+        "agent"
+        ? "agent"
+        : "supervisor";
+
   return {
+    viewerMode,
+
+    permissions: {
+      canInvestigate:
+        response?.permissions
+          ?.canInvestigate !== false,
+
+      canAssignAgent:
+        response?.permissions
+          ?.canAssignAgent === true,
+
+      canEscalate:
+        response?.permissions
+          ?.canEscalate !== false,
+
+      canResolve:
+        response?.permissions
+          ?.canResolve !== false,
+    },
+
     report:
-      response.report as SafetyReportSummary,
+      response.report as
+        SafetyReportSummary,
 
     agents:
-      Array.isArray(response.agents)
+      Array.isArray(
+        response.agents
+      )
         ? response.agents
         : [],
   };

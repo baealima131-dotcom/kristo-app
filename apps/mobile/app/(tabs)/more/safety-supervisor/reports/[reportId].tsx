@@ -32,6 +32,8 @@ import {
 import {
   assignSafetyReportToAgent,
   fetchSafetySupervisorReport,
+  type SafetyCasePermissions,
+  type SafetyCaseViewerMode,
   type SafetyReportSummary,
   type SafetySupervisorDashboardResponse,
 } from "@/src/lib/safetyAdminApi";
@@ -111,6 +113,25 @@ SafetySupervisorReportDetailsScreen() {
   >([]);
 
   const [
+    viewerMode,
+    setViewerMode,
+  ] = React.useState<
+    SafetyCaseViewerMode
+  >("supervisor");
+
+  const [
+    permissions,
+    setPermissions,
+  ] = React.useState<
+    SafetyCasePermissions
+  >({
+    canInvestigate: false,
+    canAssignAgent: false,
+    canEscalate: false,
+    canResolve: false,
+  });
+
+  const [
     loading,
     setLoading,
   ] = React.useState(true);
@@ -149,8 +170,21 @@ SafetySupervisorReportDetailsScreen() {
             reportId
           );
 
-        setReport(result.report);
-        setAgents(result.agents);
+        setReport(
+          result.report
+        );
+
+        setAgents(
+          result.agents
+        );
+
+        setViewerMode(
+          result.viewerMode
+        );
+
+        setPermissions(
+          result.permissions
+        );
       } catch (nextError: any) {
         setError(
           String(
@@ -168,6 +202,16 @@ SafetySupervisorReportDetailsScreen() {
       void load();
     }, [load])
   );
+
+  React.useEffect(() => {
+    if (
+      viewerMode === "agent"
+    ) {
+      setShowAgentPicker(
+        false
+      );
+    }
+  }, [viewerMode]);
 
   const assignedAgent =
     agents.find(
@@ -277,6 +321,13 @@ SafetySupervisorReportDetailsScreen() {
       ]
     );
 
+  const isAgentView =
+    viewerMode === "agent";
+
+  const canAssignAgent =
+    viewerMode === "supervisor" &&
+    permissions.canAssignAgent;
+
   const critical =
     report?.priority === "critical" ||
     report?.priority === "high";
@@ -322,7 +373,9 @@ SafetySupervisorReportDetailsScreen() {
           </Text>
 
           <Text style={styles.headerSub}>
-            Investigation workspace
+            {isAgentView
+              ? "Agent investigation"
+              : "Investigation workspace"}
           </Text>
         </View>
 
@@ -627,66 +680,73 @@ SafetySupervisorReportDetailsScreen() {
 
             <View style={{ flex: 1 }}>
               <Text style={styles.assignmentTitle}>
-                {assignedAgent
-                  ? assignedAgent.kristoId ||
-                    assignedAgent.userId
-                  : "No agent assigned"}
+                {isAgentView
+                  ? "Assigned to you"
+                  : assignedAgent
+                    ? assignedAgent.kristoId ||
+                      assignedAgent.userId
+                    : "No agent assigned"}
               </Text>
 
               <Text style={styles.assignmentMeta}>
-                {assignedAgent
-                  ? `${assignedAgent.open} open • ${assignedAgent.inReview} in review • ${assignedAgent.resolved} resolved`
-                  : `${activeAgents.length} active agents available`}
+                {isAgentView
+                  ? "This case is assigned to your Safety Agent account."
+                  : assignedAgent
+                    ? `${assignedAgent.open} open • ${assignedAgent.inReview} in review • ${assignedAgent.resolved} resolved`
+                    : `${activeAgents.length} active agents available`}
               </Text>
             </View>
 
-            <Pressable
-              disabled={
-                assigningAgentUserId !==
-                  "" ||
-                report.status ===
-                  "resolved" ||
-                report.status ===
-                  "dismissed"
-              }
-              onPress={() =>
-                setShowAgentPicker(
-                  (current) =>
-                    !current
-                )
-              }
-              style={({ pressed }) => [
-                styles.assignAgentButton,
-                pressed && {
-                  opacity: 0.75,
-                },
-              ]}
-            >
-              <Ionicons
-                name={
-                  showAgentPicker
-                    ? "chevron-up"
-                    : assignedAgent
-                      ? "swap-horizontal-outline"
-                      : "person-add-outline"
+            {canAssignAgent ? (
+              <Pressable
+                disabled={
+                  assigningAgentUserId !==
+                    "" ||
+                  report.status ===
+                    "resolved" ||
+                  report.status ===
+                    "dismissed"
                 }
-                size={16}
-                color="#07111F"
-              />
-
-              <Text
-                style={
-                  styles.assignAgentButtonText
+                onPress={() =>
+                  setShowAgentPicker(
+                    (current) =>
+                      !current
+                  )
                 }
+                style={({ pressed }) => [
+                  styles.assignAgentButton,
+                  pressed && {
+                    opacity: 0.75,
+                  },
+                ]}
               >
-                {assignedAgent
-                  ? "Change"
-                  : "Assign"}
-              </Text>
-            </Pressable>
+                <Ionicons
+                  name={
+                    showAgentPicker
+                      ? "chevron-up"
+                      : assignedAgent
+                        ? "swap-horizontal-outline"
+                        : "person-add-outline"
+                  }
+                  size={16}
+                  color="#07111F"
+                />
+
+                <Text
+                  style={
+                    styles.assignAgentButtonText
+                  }
+                >
+                  {assignedAgent
+                    ? "Change"
+                    : "Assign"}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
 
-          {showAgentPicker ? (
+          {canAssignAgent &&
+          showAgentPicker ? (
             <View style={styles.agentPicker}>
               <View
                 style={
