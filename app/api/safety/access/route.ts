@@ -47,8 +47,14 @@ export async function GET(
         "Safety_Agent"
     );
 
+  /*
+   * A live supervisor-agent relationship is the
+   * operational Safety Agent authority.
+   *
+   * Invitation acceptance is not required once a
+   * supervisor has registered and activated the agent.
+   */
   const isSafetyAgent =
-    hasSafetyAgentRole &&
     hasActiveSafetyAgentRelationship;
 
   console.log(
@@ -62,6 +68,11 @@ export async function GET(
       hasActiveSafetyAgentRelationship,
 
       isSafetyAgent,
+
+      agentAccessSource:
+        hasActiveSafetyAgentRelationship
+          ? "active_supervisor_relationship"
+          : "none",
     }
   );
 

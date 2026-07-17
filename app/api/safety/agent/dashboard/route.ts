@@ -8,11 +8,8 @@ import {
 } from "@/app/api/_lib/rbac";
 
 import {
-  dbHasSafetyRole,
-} from "@/app/api/_lib/store/safetyDb";
-
-import {
   dbGetSafetyAgentDashboard,
+  dbHasActiveSafetyAgentRelationship,
 } from "@/app/api/_lib/store/safetyReportDb";
 
 export const runtime = "nodejs";
@@ -50,9 +47,8 @@ async function requireSafetyAgent(
   }
 
   const allowed =
-    await dbHasSafetyRole(
-      agentUserId,
-      "Safety_Agent"
+    await dbHasActiveSafetyAgentRelationship(
+      agentUserId
     );
 
   if (!allowed) {
@@ -60,7 +56,7 @@ async function requireSafetyAgent(
       {
         ok: false,
         error:
-          "Safety Agent access required.",
+          "An active Safety Agent assignment is required.",
       },
       {
         status: 403,
