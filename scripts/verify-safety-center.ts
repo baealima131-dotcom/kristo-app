@@ -550,8 +550,49 @@ describe("5. Case Intelligence Engine — real-data gates only", () => {
   it("mobile CASE INTELLIGENCE UI keeps insufficient/error honesty", () => {
     assertIncludes(mobile, "CASE INTELLIGENCE", "section title");
     assertIncludes(mobile, "INSUFFICIENT DATA", "insufficient state");
+    assertIncludes(mobile, "HUMAN REVIEW", "human review action");
+    assertIncludes(mobile, "ACTIVE REPORTS", "active reports statistic");
+    assertIncludes(mobile, "UNIQUE REPORTERS", "unique reporters statistic");
+    assertIncludes(
+      mobile,
+      "No verified evidence analysis",
+      "no verified evidence"
+    );
     assertIncludes(mobile, "ANALYSIS UNAVAILABLE", "error state");
     assertNotIncludes(mobile, "AI analyzed video", "no fabricated video");
+    assertNotIncludes(mobile, "aiWeightedReportScore", "no legacy weighted score");
+    assertNotIncludes(mobile, "aiWeightedReportPercent", "no legacy percent");
+    assertNotIncludes(mobile, "reporterVoteWeightPercent", "no legacy vote weight");
+    assertNotIncludes(mobile, "aiActionThreshold", "no legacy threshold");
+    assertNotIncludes(mobile, "aiActionRequired", "no legacy action flag");
+    assertNotIncludes(mobile, "legacySignals", "UI ignores legacySignals");
+    assertNotIncludes(mobile, "AI confidence", "no hero AI confidence");
+  });
+
+  it("report detail nests legacy AI fields under legacySignals only", () => {
+    assertIncludes(route, "legacySignals:", "legacySignals nest");
+    assertIncludes(
+      route,
+      "aiWeightedReportScore: safeWeightedScore",
+      "legacy weighted score nested"
+    );
+    assertIncludes(
+      route,
+      "reporterVoteWeightPercent:",
+      "legacy vote weight nested"
+    );
+    assertIncludes(route, "hasLegacySignals:", "hydrated log notes legacy nest");
+    // Must not re-export legacy fields at the hydrated root.
+    assertNotIncludes(
+      route,
+      "aiWeightedReportScore: safeWeightedScore,\n    aiWeightedReportPercent",
+      "legacy fields stay inside legacySignals object"
+    );
+    // Confirm the nesting pattern: legacySignals { ... aiWeighted... }
+    const nestedBlock = route.includes(
+      "legacySignals: {\n      aiIntelligenceAvailable:"
+    );
+    assert.equal(nestedBlock, true, "legacySignals opens before AI fields");
   });
 
   it("recommendation boundaries include human_review", async () => {

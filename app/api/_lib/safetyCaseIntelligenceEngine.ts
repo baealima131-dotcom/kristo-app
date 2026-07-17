@@ -72,6 +72,7 @@ export type SafetyCaseIntelligence = {
     riskScore: number | null;
     totalReports: number;
     uniqueReporters: number;
+    activeReports: number;
     confirmedViolations: number;
     warnings: number;
     removals: number;
@@ -835,6 +836,7 @@ function emptyIntelligence(
       riskScore: null,
       totalReports: 0,
       uniqueReporters: 0,
+      activeReports: 0,
       confirmedViolations: 0,
       warnings: 0,
       removals: 0,
@@ -982,6 +984,7 @@ export function computeSafetyCaseIntelligence(
         riskScore: target.riskScore,
         totalReports: nonNegInt(input.targetTotalReports),
         uniqueReporters: nonNegInt(input.targetUniqueReporters),
+        activeReports: nonNegInt(input.targetActiveReports),
         confirmedViolations: nonNegInt(input.targetConfirmedViolations),
         warnings: nonNegInt(input.targetWarnings),
         removals: nonNegInt(input.targetRemovals),
@@ -1082,6 +1085,7 @@ export function computeSafetyCaseIntelligence(
       riskScore: target.riskScore,
       totalReports: nonNegInt(input.targetTotalReports),
       uniqueReporters: nonNegInt(input.targetUniqueReporters),
+      activeReports: nonNegInt(input.targetActiveReports),
       confirmedViolations: nonNegInt(input.targetConfirmedViolations),
       warnings: nonNegInt(input.targetWarnings),
       removals: nonNegInt(input.targetRemovals),

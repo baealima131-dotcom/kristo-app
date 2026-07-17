@@ -1134,16 +1134,11 @@ SafetySupervisorReportDetailsScreen() {
 
               <View style={styles.heroMetric}>
                 <Text style={styles.heroMetricValue}>
-                  {report.aiConfidence ??
-                    "—"}
-                  {typeof report.aiConfidence ===
-                  "number"
-                    ? "%"
-                    : ""}
+                  {formatLabel(report.priority)}
                 </Text>
 
                 <Text style={styles.heroMetricLabel}>
-                  AI confidence
+                  Priority
                 </Text>
               </View>
 
@@ -1358,16 +1353,58 @@ SafetySupervisorReportDetailsScreen() {
             const status =
               intel?.status ||
               (report ? "error" : "loading");
-            const ready =
-              status === "ready" && Boolean(intel);
+            const gatesReady =
+              status === "ready" &&
+              Boolean(intel) &&
+              typeof intel!.assessment.caseRiskScore ===
+                "number" &&
+              typeof intel!.assessment.confidence ===
+                "number" &&
+              typeof intel!.evidence.strengthScore ===
+                "number" &&
+              typeof intel!.target.riskScore === "number" &&
+              intel!.assessment.recommendation !==
+                "human_review";
             const insufficient =
-              status === "insufficient_data";
+              status === "insufficient_data" ||
+              (status === "ready" && !gatesReady);
             const errored =
               status === "error" ||
               (Boolean(report) && !intel);
             const loading = !report;
 
-            const badgeLabel = ready
+            const activeReports = Math.max(
+              0,
+              Number(
+                intel?.target?.activeReports ??
+                  report?.targetActiveReportCount ??
+                  0
+              ) || 0
+            );
+            const uniqueReporters = Math.max(
+              0,
+              Number(
+                intel?.target?.uniqueReporters ??
+                  report?.targetUniqueReporterCount ??
+                  0
+              ) || 0
+            );
+            const confirmedViolations = Math.max(
+              0,
+              Number(
+                intel?.target?.confirmedViolations ?? 0
+              ) || 0
+            );
+            const reportVolume = Math.max(
+              0,
+              Number(
+                intel?.target?.totalReports ??
+                  report?.targetReportCount ??
+                  0
+              ) || 0
+            );
+
+            const badgeLabel = gatesReady
               ? String(
                   intel!.assessment.signalLevel || "low"
                 )
@@ -1379,7 +1416,7 @@ SafetySupervisorReportDetailsScreen() {
                   ? "ANALYSIS UNAVAILABLE"
                   : "LOADING";
 
-            const badgeColor = ready
+            const badgeColor = gatesReady
               ? intel!.assessment.signalLevel === "critical"
                 ? RED
                 : intel!.assessment.signalLevel === "high"
@@ -1401,7 +1438,7 @@ SafetySupervisorReportDetailsScreen() {
             const scoreOrDash = (
               value: number | null | undefined
             ) =>
-              ready && typeof value === "number"
+              gatesReady && typeof value === "number"
                 ? String(Math.round(value))
                 : "—";
 
@@ -1409,7 +1446,7 @@ SafetySupervisorReportDetailsScreen() {
               <View
                 style={[
                   styles.aiSignalCard,
-                  ready &&
+                  gatesReady &&
                   (
                     intel!.assessment.signalLevel ===
                       "critical" ||
@@ -1424,7 +1461,7 @@ SafetySupervisorReportDetailsScreen() {
                     <View
                       style={[
                         styles.aiSignalBrandIcon,
-                        ready &&
+                        gatesReady &&
                         intel!.assessment.signalLevel ===
                           "critical"
                           ? styles.aiSignalBrandIconAction
@@ -1435,7 +1472,7 @@ SafetySupervisorReportDetailsScreen() {
                         name="analytics-outline"
                         size={22}
                         color={
-                          ready &&
+                          gatesReady &&
                           intel!.assessment.signalLevel ===
                             "critical"
                             ? RED
@@ -1500,15 +1537,82 @@ SafetySupervisorReportDetailsScreen() {
                 ) : null}
 
                 {insufficient ? (
-                  <Text style={styles.aiDecisionNotice}>
-                    INSUFFICIENT DATA — reporter/target history
-                    signals are not complete enough for a
-                    durable heuristic recommendation. Human
-                    review is required.
-                  </Text>
+                  <>
+                    <View style={styles.aiScoreRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.aiThresholdLabel}>
+                          REQUIRED ACTION
+                        </Text>
+                        <Text style={styles.aiScoreValue}>
+                          HUMAN REVIEW
+                        </Text>
+                        <Text style={styles.aiScorePercent}>
+                          No enforcement recommendation until
+                          minimum data gates pass
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.reportSignalMetrics}>
+                      <View style={styles.reportSignalMetric}>
+                        <Text style={styles.reportSignalMetricValue}>
+                          {activeReports}
+                        </Text>
+                        <Text style={styles.reportSignalMetricLabel}>
+                          ACTIVE REPORTS
+                        </Text>
+                      </View>
+                      <View style={styles.reportSignalDivider} />
+                      <View style={styles.reportSignalMetric}>
+                        <Text style={styles.reportSignalMetricValue}>
+                          {uniqueReporters}
+                        </Text>
+                        <Text style={styles.reportSignalMetricLabel}>
+                          UNIQUE REPORTERS
+                        </Text>
+                      </View>
+                      <View style={styles.reportSignalDivider} />
+                      <View style={styles.reportSignalMetric}>
+                        <Text style={styles.reportSignalMetricValue}>
+                          {confirmedViolations}
+                        </Text>
+                        <Text style={styles.reportSignalMetricLabel}>
+                          CONFIRMED VIOLATIONS
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.aiIdentityRow}>
+                      <View style={styles.aiIdentityItem}>
+                        <Text style={styles.aiIdentityLabel}>
+                          REPORT VOLUME
+                        </Text>
+                        <Text style={styles.aiIdentityValue}>
+                          {reportVolume}
+                        </Text>
+                      </View>
+                      <View style={styles.aiIdentityDivider} />
+                      <View style={styles.aiIdentityItem}>
+                        <Text style={styles.aiIdentityLabel}>
+                          EVIDENCE ANALYSIS
+                        </Text>
+                        <Text style={styles.aiIdentityValue}>
+                          No verified evidence analysis
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.aiDecisionNotice}>
+                      INSUFFICIENT DATA — no score, percent,
+                      confidence, or enforcement recommendation
+                      until minimum data gates pass. Report
+                      volume is a supporting statistic only.
+                      Human review is required.
+                    </Text>
+                  </>
                 ) : null}
 
-                {ready ? (
+                {gatesReady ? (
                   <>
                     <View style={styles.aiScoreRow}>
                       <View style={{ flex: 1 }}>
@@ -1522,12 +1626,9 @@ SafetySupervisorReportDetailsScreen() {
                         </Text>
                         <Text style={styles.aiScorePercent}>
                           Heuristic confidence{" "}
-                          {typeof intel!.assessment.confidence ===
-                          "number"
-                            ? `${Math.round(
-                                intel!.assessment.confidence
-                              )}%`
-                            : "n/a"}
+                          {`${Math.round(
+                            intel!.assessment.confidence as number
+                          )}%`}
                         </Text>
                       </View>
 
@@ -1536,12 +1637,10 @@ SafetySupervisorReportDetailsScreen() {
                           CASE RISK
                         </Text>
                         <Text style={styles.aiThresholdValue}>
-                          {typeof intel!.assessment.caseRiskScore ===
-                          "number"
-                            ? Math.round(
-                                intel!.assessment.caseRiskScore
-                              )
-                            : "—"}
+                          {Math.round(
+                            intel!.assessment
+                              .caseRiskScore as number
+                          )}
                           <Text style={styles.aiThresholdMaximum}>
                             /100
                           </Text>
@@ -1558,10 +1657,8 @@ SafetySupervisorReportDetailsScreen() {
                               100,
                               Math.max(
                                 0,
-                                typeof intel!.assessment
-                                  .caseRiskScore === "number"
-                                  ? intel!.assessment.caseRiskScore
-                                  : 0
+                                intel!.assessment
+                                  .caseRiskScore as number
                               )
                             )}%`,
                             backgroundColor: badgeColor,
@@ -1692,45 +1789,12 @@ SafetySupervisorReportDetailsScreen() {
                       )}
                     </View>
 
-                    {intel!.assessment.aggravatingFactors
-                      .length ? (
-                      <View style={{ marginTop: 10, gap: 4 }}>
-                        <Text style={styles.aiThresholdLabel}>
-                          AGGRAVATING FACTORS
-                        </Text>
-                        <Text style={styles.aiVoteText}>
-                          {intel!.assessment.aggravatingFactors
-                            .map((item) =>
-                              item.replace(/_/g, " ")
-                            )
-                            .join(" · ")}
-                        </Text>
-                      </View>
-                    ) : null}
-
-                    {intel!.assessment.mitigatingFactors
-                      .length ? (
-                      <View style={{ marginTop: 10, gap: 4 }}>
-                        <Text style={styles.aiThresholdLabel}>
-                          MITIGATING FACTORS
-                        </Text>
-                        <Text style={styles.aiVoteText}>
-                          {intel!.assessment.mitigatingFactors
-                            .map((item) =>
-                              item.replace(/_/g, " ")
-                            )
-                            .join(" · ")}
-                        </Text>
-                      </View>
-                    ) : null}
-
                     <Text style={styles.aiDecisionNotice}>
                       Human review required. Heuristic Case
                       Intelligence is decision-support only and
                       does not auto-enforce. Report volume is a
                       supporting statistic, not the main
-                      severity score. No automated video/audio
-                      content classifier was used.
+                      severity score.
                     </Text>
                   </>
                 ) : null}

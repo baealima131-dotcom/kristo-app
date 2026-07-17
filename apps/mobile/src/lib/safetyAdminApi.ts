@@ -385,6 +385,7 @@ export type SafetyCaseIntelligence = {
     riskScore: number | null;
     totalReports: number;
     uniqueReporters: number;
+    activeReports?: number;
     confirmedViolations: number;
     warnings: number;
     removals: number;
@@ -475,27 +476,19 @@ export type SafetyReportSummary = {
   targetResolvedReportCount?: number;
   targetDismissedReportCount?: number;
 
-  aiIntelligenceAvailable?: boolean;
-  aiWeightedReportScore?: number | null;
-  aiWeightedReportPercent?: number | null;
-  aiActionThreshold?: number;
-  aiActionRequired?: boolean;
-
-  aiSignalLevel?:
-    | "calculating"
-    | "low"
-    | "monitor"
-    | "review"
-    | "action_required";
-
-  aiReportRecommendation?:
-    | "calculating"
-    | "monitor"
-    | "review_evidence"
-    | "agent_action_required";
-
   reporterLifetimeReportCount?: number | null;
-  reporterVoteWeightPercent?: number | null;
+
+  /** Deprecated weighted-signal payload — not used by Investigation Center. */
+  legacySignals?: {
+    aiIntelligenceAvailable?: boolean;
+    aiWeightedReportScore?: number | null;
+    aiWeightedReportPercent?: number | null;
+    aiActionThreshold?: number;
+    aiActionRequired?: boolean;
+    aiSignalLevel?: string;
+    aiReportRecommendation?: string;
+    reporterVoteWeightPercent?: number | null;
+  } | null;
 
   caseIntelligence?: SafetyCaseIntelligence | null;
 
@@ -537,15 +530,6 @@ export type SafetyReportSummary = {
     | "supervisor"
     | "system_admin";
   decisionAt?: string;
-  aiRecommendation?:
-    | "no_violation"
-    | "warning"
-    | "remove_content"
-    | "restrict_account"
-    | "suspend_account"
-    | "permanent_ban"
-    | "escalate";
-  aiConfidence?: number;
 
   createdAt: string;
   updatedAt: string;

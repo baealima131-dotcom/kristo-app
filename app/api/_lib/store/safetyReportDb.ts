@@ -5466,6 +5466,7 @@ export async function dbGetSafetyCaseIntelligence(input: {
         riskScore: null,
         totalReports: 0,
         uniqueReporters: 0,
+        activeReports: 0,
         confirmedViolations: 0,
         warnings: 0,
         removals: 0,

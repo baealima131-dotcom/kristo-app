@@ -873,6 +873,7 @@ async function hydrateSafetyCaseReport(
         riskScore: null,
         totalReports: 0,
         uniqueReporters: 0,
+        activeReports: 0,
         confirmedViolations: 0,
         warnings: 0,
         removals: 0,
@@ -1196,42 +1197,28 @@ async function hydrateSafetyCaseReport(
           ?.dismissedReports || 0
       ),
 
-    aiIntelligenceAvailable:
-      intelligenceAvailable,
-
-    aiWeightedReportScore:
-      safeWeightedScore,
-
-    aiWeightedReportPercent:
-      safeWeightedPercent,
-
-    aiActionThreshold:
-      safeActionThreshold,
-
-    aiActionRequired:
-      safeActionRequired,
-
-    aiSignalLevel:
-      safeSignalLevel,
-
-    aiReportRecommendation:
-      safeReportRecommendation,
-
     reporterLifetimeReportCount:
-      caseIntelligence.status === "ready"
-        ? caseIntelligence.reporter.lifetimeReports
-        : intelligenceAvailable
-          ? targetRiskAssessment
-              ?.currentReporterLifetimeReports ??
-            null
-          : null,
+      caseIntelligence?.reporter?.lifetimeReports ??
+      null,
 
-    reporterVoteWeightPercent:
-      intelligenceAvailable
+    /*
+     * Legacy weighted-signal fields are kept only for
+     * backward-compatible clients. Investigation Center and
+     * Case Intelligence must not read these for decisions.
+     */
+    legacySignals: {
+      aiIntelligenceAvailable: intelligenceAvailable,
+      aiWeightedReportScore: safeWeightedScore,
+      aiWeightedReportPercent: safeWeightedPercent,
+      aiActionThreshold: safeActionThreshold,
+      aiActionRequired: safeActionRequired,
+      aiSignalLevel: safeSignalLevel,
+      aiReportRecommendation: safeReportRecommendation,
+      reporterVoteWeightPercent: intelligenceAvailable
         ? targetRiskAssessment
-            ?.currentReporterVoteWeightPercent ??
-          null
+            ?.currentReporterVoteWeightPercent ?? null
         : null,
+    },
   };
 
   // Attach last so spread/helpers cannot overwrite Case Intelligence.
@@ -1300,21 +1287,7 @@ async function hydrateSafetyCaseReport(
       caseRecommendation:
         hydrated.caseIntelligence?.assessment
           ?.recommendation,
-      aiWeightedReportScore:
-        hydrated
-          .aiWeightedReportScore,
-      aiWeightedReportPercent:
-        hydrated
-          .aiWeightedReportPercent,
-      reporterVoteWeightPercent:
-        hydrated
-          .reporterVoteWeightPercent,
-      aiActionThreshold:
-        hydrated
-          .aiActionThreshold,
-      aiActionRequired:
-        hydrated
-          .aiActionRequired,
+      hasLegacySignals: Boolean(hydrated.legacySignals),
     }
   );
 
