@@ -9,10 +9,6 @@ import {
   isVercelRuntime,
 } from "@/app/api/_lib/store/authDb";
 
-import {
-  getProfile,
-} from "@/app/api/auth/_lib/profile";
-
 neonConfig.fetchConnectionCache = true;
 
 export type SafetyReportStatus =
@@ -95,6 +91,18 @@ export type SafetyReportRecord = {
   resolvedAt?: string;
 };
 
+
+export type SafetyAgentDashboard = {
+  counts: {
+    totalAssigned: number;
+    open: number;
+    inReview: number;
+    resolved: number;
+    highPriority: number;
+  };
+  reports: SafetyReportRecord[];
+};
+
 export type SafetySupervisorDashboard = {
   counts: {
     assigned: number;
@@ -110,9 +118,6 @@ export type SafetySupervisorDashboard = {
   agents: Array<{
     userId: string;
     kristoId?: string;
-    displayName?: string;
-    avatarUrl?: string;
-    avatarUri?: string;
     churchId: string;
     status: "active" | "pending" | "paused";
     open: number;
@@ -1638,6 +1643,121 @@ dbHasActiveSafetyAgentRelationship(
 }
 
 
+
+export async function
+dbGetSafetyAgentDashboard(
+  agentUserIdInput: string
+): Promise<SafetyAgentDashboard> {
+  await ensureSafetyReportStoreReady();
+
+  const sql = getSql();
+
+  const agentUserId =
+    String(
+      agentUserIdInput || ""
+    ).trim();
+
+  if (!agentUserId) {
+    throw new Error(
+      "Safety Agent user ID is required."
+    );
+  }
+
+  const rows = (await sql`
+    SELECT
+      id,
+      report_code,
+      reporter_user_id,
+      reporter_kristo_id,
+      reported_user_id,
+      reported_kristo_id,
+      church_id,
+      source_type,
+      source_id,
+      source_room_id,
+      source_message_id,
+      target_type,
+      target_id,
+      target_title,
+      target_subtitle,
+      target_preview,
+      target_owner_user_id,
+      target_owner_kristo_id,
+      target_owner_name,
+      target_owner_avatar_uri,
+      target_media_type,
+      target_thumbnail_uri,
+      category,
+      reason,
+      description,
+      priority,
+      status,
+      assigned_supervisor_user_id,
+      assigned_agent_user_id,
+      created_at,
+      updated_at,
+      assigned_at,
+      resolved_at
+    FROM kristo_safety_reports
+    WHERE assigned_agent_user_id =
+      ${agentUserId}
+    ORDER BY
+      CASE status
+        WHEN 'in_review' THEN 1
+        WHEN 'assigned' THEN 2
+        WHEN 'open' THEN 3
+        WHEN 'escalated' THEN 4
+        WHEN 'resolved' THEN 5
+        ELSE 6
+      END,
+      CASE priority
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3
+        ELSE 4
+      END,
+      updated_at DESC
+  `) as SafetyReportRow[];
+
+  const reports =
+    rows.map(rowToReport);
+
+  return {
+    counts: {
+      totalAssigned:
+        reports.length,
+
+      open:
+        reports.filter(
+          (report) =>
+            report.status === "open" ||
+            report.status === "assigned"
+        ).length,
+
+      inReview:
+        reports.filter(
+          (report) =>
+            report.status === "in_review"
+        ).length,
+
+      resolved:
+        reports.filter(
+          (report) =>
+            report.status === "resolved"
+        ).length,
+
+      highPriority:
+        reports.filter(
+          (report) =>
+            report.priority === "critical" ||
+            report.priority === "high"
+        ).length,
+    },
+
+    reports,
+  };
+}
+
 export async function dbGetSafetySupervisorDashboard(
   supervisorUserId: string
 ): Promise<SafetySupervisorDashboard> {
@@ -1748,25 +1868,14 @@ export async function dbGetSafetySupervisorDashboard(
             agentUserId
         );
 
-      const profile =
-        agentUserId
-          ? await getProfile(
-              agentUserId
-            ).catch(() => null)
-          : null;
-
-      const displayName =
-        String(
-          profile?.fullName ||
-            agentKristoId ||
-            agentUserId
-        ).trim();
-
-      const avatarUrl =
-        String(
-          profile?.avatarUrl || ""
-        ).trim();
-
+      /*
+       * Resolve the agent's canonical profile.
+       *
+       * Some legacy Safety Agent rows can contain
+       * a linked user ID that does not directly match
+       * the kristo_profiles.user_id key. Kristo ID is
+       * therefore the reliable secondary identity key.
+       */
       return {
         userId:
           agentUserId,
@@ -1774,20 +1883,7 @@ export async function dbGetSafetySupervisorDashboard(
         kristoId:
           agentKristoId ||
           undefined,
-
-        displayName:
-          displayName ||
-          undefined,
-
-        avatarUrl:
-          avatarUrl ||
-          undefined,
-
-        avatarUri:
-          avatarUrl ||
-          undefined,
-
-        churchId:
+churchId:
           String(
             agent.church_id || ""
           ).trim(),

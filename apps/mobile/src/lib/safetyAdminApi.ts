@@ -416,6 +416,18 @@ export type SafetyReportSummary = {
   updatedAt: string;
 };
 
+
+export type SafetyAgentDashboardResponse = {
+  counts: {
+    totalAssigned: number;
+    open: number;
+    inReview: number;
+    resolved: number;
+    highPriority: number;
+  };
+  reports: SafetyReportSummary[];
+};
+
 export type SafetySupervisorDashboardResponse = {
   counts: {
     assigned: number;
@@ -431,9 +443,6 @@ export type SafetySupervisorDashboardResponse = {
   agents: Array<{
     userId: string;
     kristoId?: string;
-    displayName?: string;
-    avatarUrl?: string;
-    avatarUri?: string;
     churchId: string;
     status:
       | "active"
@@ -1175,5 +1184,71 @@ assignSafetyReportsToSupervisorByQuantity(
 
     dashboard:
       response?.dashboard || null,
+  };
+}
+
+
+export async function
+fetchSafetyAgentDashboard():
+Promise<SafetyAgentDashboardResponse> {
+  const response: any =
+    await apiGet(
+      "/api/safety/agent/dashboard",
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  if (
+    !response ||
+    response.ok === false
+  ) {
+    throw new Error(
+      String(
+        response?.error ||
+          "Could not load your assigned safety reports."
+      )
+    );
+  }
+
+  return {
+    counts: {
+      totalAssigned:
+        Number(
+          response?.counts
+            ?.totalAssigned
+        ) || 0,
+
+      open:
+        Number(
+          response?.counts?.open
+        ) || 0,
+
+      inReview:
+        Number(
+          response?.counts
+            ?.inReview
+        ) || 0,
+
+      resolved:
+        Number(
+          response?.counts
+            ?.resolved
+        ) || 0,
+
+      highPriority:
+        Number(
+          response?.counts
+            ?.highPriority
+        ) || 0,
+    },
+
+    reports:
+      Array.isArray(
+        response?.reports
+      )
+        ? response.reports
+        : [],
   };
 }

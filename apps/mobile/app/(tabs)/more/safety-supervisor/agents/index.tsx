@@ -3,7 +3,6 @@ import React from "react";
 import {
   ActivityIndicator,
   Alert,
-  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -50,100 +49,6 @@ const BLUE = "#93C5FD";
 const GREEN = "#6EE7B7";
 const PURPLE = "#C4B5FD";
 
-
-function getAgentInitial(
-  displayName?: string,
-  kristoId?: string,
-  userId?: string
-) {
-  const source =
-    String(
-      displayName ||
-        kristoId ||
-        userId ||
-        "A"
-    ).trim();
-
-  const cleaned =
-    source.replace(
-      /[^A-Za-z0-9]/g,
-      ""
-    );
-
-  return (
-    cleaned
-      .slice(0, 1)
-      .toUpperCase() || "A"
-  );
-}
-
-function SafetyAgentAvatar({
-  displayName,
-  kristoId,
-  userId,
-  avatarUri,
-}: {
-  displayName?: string;
-  kristoId?: string;
-  userId?: string;
-  avatarUri?: string;
-}) {
-  const resolvedAvatarUri =
-    String(
-      avatarUri || ""
-    ).trim();
-
-  return (
-    <View
-      style={
-        styles.agentAvatarShell
-      }
-    >
-      {resolvedAvatarUri ? (
-        <Image
-          source={{
-            uri: resolvedAvatarUri,
-          }}
-          resizeMode="cover"
-          style={
-            styles.agentAvatarImage
-          }
-        />
-      ) : (
-        <LinearGradient
-          colors={[
-            "#FDE68A",
-            "#F4D06F",
-            "#B7791F",
-          ]}
-          start={{
-            x: 0.15,
-            y: 0,
-          }}
-          end={{
-            x: 0.85,
-            y: 1,
-          }}
-          style={
-            styles.agentAvatarFallback
-          }
-        >
-          <Text
-            style={
-              styles.agentAvatarInitial
-            }
-          >
-            {getAgentInitial(
-              displayName,
-              kristoId,
-              userId
-            )}
-          </Text>
-        </LinearGradient>
-      )}
-    </View>
-  );
-}
 
 export default function
 SafetySupervisorAgentsScreen() {
@@ -207,6 +112,13 @@ SafetySupervisorAgentsScreen() {
     removingAgentKey,
     setRemovingAgentKey,
   ] = React.useState("");
+
+  const [
+    detailsAgent,
+    setDetailsAgent,
+  ] = React.useState<
+    SafetySupervisorAgent | null
+  >(null);
 
   const [
     availableReportCount,
@@ -362,23 +274,7 @@ SafetySupervisorAgentsScreen() {
         agent:
           SafetySupervisorAgent
       ) => {
-        Alert.alert(
-          agent.displayName ||
-            agent.kristoId ||
-            "Safety Agent",
-          [
-            `Kristo ID: ${
-              agent.kristoId ||
-              agent.userId
-            }`,
-            `Church: ${agent.churchId}`,
-            `Status: ${agent.status.toUpperCase()}`,
-            `Assigned: ${agent.totalAssigned}`,
-            `Open: ${agent.open}`,
-            `In review: ${agent.inReview}`,
-            `Resolved: ${agent.resolved}`,
-          ].join("\n")
-        );
+        setDetailsAgent(agent);
       },
       []
     );
@@ -397,7 +293,6 @@ SafetySupervisorAgentsScreen() {
         Alert.alert(
           "Remove Safety Agent?",
           `${
-            agent.displayName ||
             agent.kristoId ||
             agent.userId
           } will be removed from your investigation team.`,
@@ -572,7 +467,6 @@ SafetySupervisorAgentsScreen() {
         );
 
         const agentName =
-          assignmentAgent.displayName ||
           assignmentAgent.kristoId ||
           assignmentAgent.userId;
 
@@ -865,21 +759,19 @@ SafetySupervisorAgentsScreen() {
                         styles.agentCardTop
                       }
                     >
-                      <SafetyAgentAvatar
-                        displayName={
-                          agent.displayName
+                      <View
+                        style={
+                          styles.agentAvatarShell
                         }
-                        kristoId={
-                          agent.kristoId
-                        }
-                        userId={
-                          agent.userId
-                        }
-                        avatarUri={
-                          agent.avatarUri ||
-                          agent.avatarUrl
-                        }
-                      />
+                      >
+                        <Text
+                          style={
+                            styles.agentAvatarInitial
+                          }
+                        >
+                          K
+                        </Text>
+                      </View>
 
                       <View
                         style={
@@ -890,17 +782,6 @@ SafetySupervisorAgentsScreen() {
                           numberOfLines={1}
                           style={
                             styles.agentName
-                          }
-                        >
-                          {agent.displayName ||
-                            agent.kristoId ||
-                            agent.userId}
-                        </Text>
-
-                        <Text
-                          numberOfLines={1}
-                          style={
-                            styles.agentKristoId
                           }
                         >
                           {agent.kristoId ||
@@ -1303,6 +1184,444 @@ SafetySupervisorAgentsScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+
+      <Modal
+        visible={Boolean(detailsAgent)}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() =>
+          setDetailsAgent(null)
+        }
+      >
+        <View
+          style={
+            styles.detailsModalRoot
+          }
+        >
+          <Pressable
+            style={
+              StyleSheet.absoluteFill
+            }
+            onPress={() =>
+              setDetailsAgent(null)
+            }
+          />
+
+          {detailsAgent ? (
+            <View
+              style={
+                styles.detailsModalCard
+              }
+            >
+              <View
+                style={
+                  styles.detailsModalHandle
+                }
+              />
+
+              <View
+                style={
+                  styles.detailsHeader
+                }
+              >
+                <View
+                  style={
+                    styles.detailsAgentIcon
+                  }
+                >
+                  <Text
+                    style={
+                      styles.detailsAgentInitial
+                    }
+                  >
+                    K
+                  </Text>
+                </View>
+
+                <View
+                  style={{ flex: 1 }}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={
+                      styles.detailsTitle
+                    }
+                  >
+                    {detailsAgent.kristoId ||
+                      detailsAgent.userId}
+                  </Text>
+
+                  <Text
+                    numberOfLines={1}
+                    style={
+                      styles.detailsChurch
+                    }
+                  >
+                    {detailsAgent.churchId}
+                  </Text>
+                </View>
+
+                <View
+                  style={[
+                    styles.detailsStatusBadge,
+                    detailsAgent.status !==
+                      "active" &&
+                      styles.detailsStatusBadgeInactive,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.detailsStatusDot,
+                      detailsAgent.status !==
+                        "active" &&
+                        styles.detailsStatusDotInactive,
+                    ]}
+                  />
+
+                  <Text
+                    style={[
+                      styles.detailsStatusText,
+                      detailsAgent.status !==
+                        "active" &&
+                        styles.detailsStatusTextInactive,
+                    ]}
+                  >
+                    {detailsAgent.status.toUpperCase()}
+                  </Text>
+                </View>
+              </View>
+
+              <View
+                style={
+                  styles.detailsIdentityCard
+                }
+              >
+                <View
+                  style={
+                    styles.detailsIdentityRow
+                  }
+                >
+                  <View
+                    style={
+                      styles.detailsIdentityIcon
+                    }
+                  >
+                    <Ionicons
+                      name="finger-print-outline"
+                      size={18}
+                      color={BLUE}
+                    />
+                  </View>
+
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={
+                        styles.detailsIdentityLabel
+                      }
+                    >
+                      KRISTO ID
+                    </Text>
+
+                    <Text
+                      selectable
+                      style={
+                        styles.detailsIdentityValue
+                      }
+                    >
+                      {detailsAgent.kristoId ||
+                        detailsAgent.userId}
+                    </Text>
+                  </View>
+                </View>
+
+                <View
+                  style={
+                    styles.detailsIdentityDivider
+                  }
+                />
+
+                <View
+                  style={
+                    styles.detailsIdentityRow
+                  }
+                >
+                  <View
+                    style={
+                      styles.detailsIdentityIcon
+                    }
+                  >
+                    <Ionicons
+                      name="business-outline"
+                      size={18}
+                      color={GOLD}
+                    />
+                  </View>
+
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={
+                        styles.detailsIdentityLabel
+                      }
+                    >
+                      CHURCH ID
+                    </Text>
+
+                    <Text
+                      selectable
+                      style={
+                        styles.detailsIdentityValue
+                      }
+                    >
+                      {detailsAgent.churchId}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              <Text
+                style={
+                  styles.detailsSectionTitle
+                }
+              >
+                Investigation workload
+              </Text>
+
+              <View
+                style={
+                  styles.detailsStatsGrid
+                }
+              >
+                {[
+                  {
+                    label: "Assigned",
+                    value:
+                      detailsAgent.totalAssigned,
+                    color: GOLD,
+                    icon:
+                      "file-tray-full-outline",
+                  },
+                  {
+                    label: "Open",
+                    value:
+                      detailsAgent.open,
+                    color: BLUE,
+                    icon:
+                      "flag-outline",
+                  },
+                  {
+                    label: "In Review",
+                    value:
+                      detailsAgent.inReview,
+                    color: PURPLE,
+                    icon:
+                      "search-outline",
+                  },
+                  {
+                    label: "Resolved",
+                    value:
+                      detailsAgent.resolved,
+                    color: GREEN,
+                    icon:
+                      "checkmark-done-outline",
+                  },
+                ].map((item) => (
+                  <View
+                    key={item.label}
+                    style={
+                      styles.detailsStatCard
+                    }
+                  >
+                    <Ionicons
+                      name={item.icon as any}
+                      size={19}
+                      color={item.color}
+                    />
+
+                    <Text
+                      style={[
+                        styles.detailsStatValue,
+                        {
+                          color:
+                            item.color,
+                        },
+                      ]}
+                    >
+                      {item.value}
+                    </Text>
+
+                    <Text
+                      style={
+                        styles.detailsStatLabel
+                      }
+                    >
+                      {item.label}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+
+              <View
+                style={
+                  styles.detailsProgressCard
+                }
+              >
+                <View
+                  style={
+                    styles.detailsProgressHeader
+                  }
+                >
+                  <Text
+                    style={
+                      styles.detailsProgressTitle
+                    }
+                  >
+                    Resolution progress
+                  </Text>
+
+                  <Text
+                    style={
+                      styles.detailsProgressPercent
+                    }
+                  >
+                    {detailsAgent.totalAssigned > 0
+                      ? Math.round(
+                          (
+                            detailsAgent.resolved /
+                            detailsAgent.totalAssigned
+                          ) * 100
+                        )
+                      : 0}
+                    %
+                  </Text>
+                </View>
+
+                <View
+                  style={
+                    styles.detailsProgressTrack
+                  }
+                >
+                  <View
+                    style={[
+                      styles.detailsProgressFill,
+                      {
+                        width: `${
+                          detailsAgent.totalAssigned > 0
+                            ? Math.min(
+                                100,
+                                Math.round(
+                                  (
+                                    detailsAgent.resolved /
+                                    detailsAgent.totalAssigned
+                                  ) * 100
+                                )
+                              )
+                            : 0
+                        }%`,
+                      },
+                    ]}
+                  />
+                </View>
+
+                <Text
+                  style={
+                    styles.detailsProgressCaption
+                  }
+                >
+                  {detailsAgent.resolved} of{" "}
+                  {detailsAgent.totalAssigned} assigned reports completed
+                </Text>
+              </View>
+
+              <View
+                style={[
+                  styles.detailsInsightCard,
+                  detailsAgent.open >= 5 &&
+                    styles.detailsInsightWarning,
+                  detailsAgent.totalAssigned > 0 &&
+                    detailsAgent.open === 0 &&
+                    detailsAgent.inReview === 0 &&
+                    styles.detailsInsightSuccess,
+                ]}
+              >
+                <Ionicons
+                  name={
+                    detailsAgent.open >= 5
+                      ? "warning-outline"
+                      : detailsAgent.totalAssigned > 0 &&
+                          detailsAgent.open === 0 &&
+                          detailsAgent.inReview === 0
+                        ? "checkmark-circle-outline"
+                        : "sparkles-outline"
+                  }
+                  size={22}
+                  color={
+                    detailsAgent.open >= 5
+                      ? "#FB7185"
+                      : detailsAgent.totalAssigned > 0 &&
+                          detailsAgent.open === 0 &&
+                          detailsAgent.inReview === 0
+                        ? GREEN
+                        : GOLD
+                  }
+                />
+
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={
+                      styles.detailsInsightTitle
+                    }
+                  >
+                    Smart workload insight
+                  </Text>
+
+                  <Text
+                    style={
+                      styles.detailsInsightText
+                    }
+                  >
+                    {detailsAgent.totalAssigned === 0
+                      ? "This agent currently has no assigned reports and is ready to receive new work."
+                      : detailsAgent.open >= 5
+                        ? "This agent has a heavy open workload. Review capacity before assigning more reports."
+                        : detailsAgent.inReview > 0
+                          ? `${detailsAgent.inReview} report${
+                              detailsAgent.inReview === 1
+                                ? ""
+                                : "s"
+                            } currently under investigation.`
+                          : detailsAgent.open > 0
+                            ? `${detailsAgent.open} open report${
+                                detailsAgent.open === 1
+                                  ? ""
+                                  : "s"
+                              } waiting for investigation.`
+                            : "All currently assigned reports have been completed."}
+                  </Text>
+                </View>
+              </View>
+
+              <Pressable
+                onPress={() =>
+                  setDetailsAgent(null)
+                }
+                style={
+                  styles.detailsDoneButton
+                }
+              >
+                <Text
+                  style={
+                    styles.detailsDoneText
+                  }
+                >
+                  Done
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -1579,33 +1898,328 @@ const styles =
       fontWeight: "900",
     },
 
+
+    detailsModalRoot: {
+      flex: 1,
+      paddingHorizontal: 18,
+      justifyContent: "center",
+      backgroundColor:
+        "rgba(2,6,16,0.76)",
+    },
+
+    detailsModalCard: {
+      width: "100%",
+      maxHeight: "88%",
+      padding: 20,
+      borderRadius: 30,
+      backgroundColor: "#101522",
+      borderWidth: 1,
+      borderColor:
+        "rgba(244,208,111,0.24)",
+      shadowColor: "#000000",
+      shadowOpacity: 0.38,
+      shadowRadius: 28,
+      shadowOffset: {
+        width: 0,
+        height: 16,
+      },
+      elevation: 18,
+    },
+
+    detailsModalHandle: {
+      width: 46,
+      height: 5,
+      borderRadius: 999,
+      alignSelf: "center",
+      marginBottom: 18,
+      backgroundColor:
+        "rgba(255,255,255,0.18)",
+    },
+
+    detailsHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+    },
+
+    detailsAgentIcon: {
+      width: 54,
+      height: 54,
+      borderRadius: 18,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor:
+        "rgba(244,208,111,0.92)",
+      borderWidth: 2,
+      borderColor:
+        "rgba(244,208,111,0.30)",
+    },
+
+    detailsAgentInitial: {
+      color: "#07111F",
+      fontSize: 24,
+      fontWeight: "900",
+    },
+
+    detailsTitle: {
+      color: TEXT,
+      fontSize: 20,
+      fontWeight: "900",
+    },
+
+    detailsChurch: {
+      marginTop: 4,
+      color: MUTED,
+      fontSize: 11,
+      fontWeight: "800",
+    },
+
+    detailsStatusBadge: {
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      borderRadius: 999,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      backgroundColor:
+        "rgba(110,231,183,0.10)",
+    },
+
+    detailsStatusBadgeInactive: {
+      backgroundColor:
+        "rgba(244,208,111,0.10)",
+    },
+
+    detailsStatusDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+      backgroundColor: GREEN,
+    },
+
+    detailsStatusDotInactive: {
+      backgroundColor: GOLD,
+    },
+
+    detailsStatusText: {
+      color: GREEN,
+      fontSize: 8,
+      fontWeight: "900",
+    },
+
+    detailsStatusTextInactive: {
+      color: GOLD,
+    },
+
+    detailsIdentityCard: {
+      marginTop: 18,
+      padding: 15,
+      borderRadius: 21,
+      backgroundColor:
+        "rgba(255,255,255,0.045)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(255,255,255,0.09)",
+    },
+
+    detailsIdentityRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 11,
+    },
+
+    detailsIdentityIcon: {
+      width: 38,
+      height: 38,
+      borderRadius: 13,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor:
+        "rgba(255,255,255,0.045)",
+    },
+
+    detailsIdentityLabel: {
+      color:
+        "rgba(255,255,255,0.42)",
+      fontSize: 8,
+      fontWeight: "900",
+      letterSpacing: 0.7,
+    },
+
+    detailsIdentityValue: {
+      marginTop: 3,
+      color: TEXT,
+      fontSize: 13,
+      fontWeight: "900",
+    },
+
+    detailsIdentityDivider: {
+      height: 1,
+      marginVertical: 12,
+      backgroundColor:
+        "rgba(255,255,255,0.07)",
+    },
+
+    detailsSectionTitle: {
+      marginTop: 19,
+      marginBottom: 10,
+      color: TEXT,
+      fontSize: 15,
+      fontWeight: "900",
+    },
+
+    detailsStatsGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 9,
+    },
+
+    detailsStatCard: {
+      width: "48.5%",
+      minHeight: 91,
+      padding: 13,
+      borderRadius: 18,
+      backgroundColor:
+        "rgba(255,255,255,0.045)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(255,255,255,0.08)",
+    },
+
+    detailsStatValue: {
+      marginTop: 7,
+      fontSize: 22,
+      fontWeight: "900",
+    },
+
+    detailsStatLabel: {
+      marginTop: 2,
+      color: MUTED,
+      fontSize: 9,
+      fontWeight: "800",
+    },
+
+    detailsProgressCard: {
+      marginTop: 12,
+      padding: 14,
+      borderRadius: 18,
+      backgroundColor:
+        "rgba(147,197,253,0.055)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(147,197,253,0.13)",
+    },
+
+    detailsProgressHeader: {
+      flexDirection: "row",
+      justifyContent:
+        "space-between",
+      alignItems: "center",
+    },
+
+    detailsProgressTitle: {
+      color: TEXT,
+      fontSize: 11,
+      fontWeight: "900",
+    },
+
+    detailsProgressPercent: {
+      color: BLUE,
+      fontSize: 13,
+      fontWeight: "900",
+    },
+
+    detailsProgressTrack: {
+      height: 8,
+      marginTop: 11,
+      overflow: "hidden",
+      borderRadius: 999,
+      backgroundColor:
+        "rgba(255,255,255,0.08)",
+    },
+
+    detailsProgressFill: {
+      height: "100%",
+      borderRadius: 999,
+      backgroundColor: BLUE,
+    },
+
+    detailsProgressCaption: {
+      marginTop: 8,
+      color: MUTED,
+      fontSize: 9,
+      fontWeight: "700",
+    },
+
+    detailsInsightCard: {
+      marginTop: 12,
+      padding: 14,
+      borderRadius: 18,
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 10,
+      backgroundColor:
+        "rgba(244,208,111,0.065)",
+      borderWidth: 1,
+      borderColor:
+        "rgba(244,208,111,0.17)",
+    },
+
+    detailsInsightWarning: {
+      backgroundColor:
+        "rgba(251,113,133,0.07)",
+      borderColor:
+        "rgba(251,113,133,0.18)",
+    },
+
+    detailsInsightSuccess: {
+      backgroundColor:
+        "rgba(110,231,183,0.07)",
+      borderColor:
+        "rgba(110,231,183,0.18)",
+    },
+
+    detailsInsightTitle: {
+      color: TEXT,
+      fontSize: 11,
+      fontWeight: "900",
+    },
+
+    detailsInsightText: {
+      marginTop: 4,
+      color: MUTED,
+      fontSize: 9,
+      lineHeight: 14,
+      fontWeight: "700",
+    },
+
+    detailsDoneButton: {
+      minHeight: 52,
+      marginTop: 16,
+      borderRadius: 17,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: GOLD,
+    },
+
+    detailsDoneText: {
+      color: "#07111F",
+      fontSize: 13,
+      fontWeight: "900",
+    },
+
     agentAvatarShell: {
       width: 52,
       height: 52,
       borderRadius: 18,
-      padding: 2,
-      overflow: "hidden",
-      flexShrink: 0,
-      backgroundColor:
-        "rgba(244,208,111,0.10)",
-      borderWidth: 1,
-      borderColor:
-        "rgba(244,208,111,0.26)",
-    },
-
-    agentAvatarImage: {
-      width: "100%",
-      height: "100%",
-      borderRadius: 15,
-      backgroundColor:
-        "rgba(255,255,255,0.06)",
-    },
-
-    agentAvatarFallback: {
-      flex: 1,
-      borderRadius: 15,
       alignItems: "center",
       justifyContent: "center",
+      flexShrink: 0,
+      backgroundColor:
+        "rgba(244,208,111,0.92)",
+      borderWidth: 2,
+      borderColor:
+        "rgba(244,208,111,0.32)",
     },
 
     agentAvatarInitial: {
