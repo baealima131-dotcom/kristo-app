@@ -376,3 +376,29 @@ export function computeCrossCasePatternSignals(
   }
   return signals;
 }
+
+/** Versioned wrapper for exposing cross-case signals on a backend contract. */
+export type SafetyCrossCaseGraphResult = {
+  version: string;
+  signals: SafetyCrossCasePatternSignal[];
+};
+
+/** Build the versioned cross-case graph result from raw case rows. */
+export function buildCrossCaseGraphResult(
+  rows: CrossCaseRow[]
+): SafetyCrossCaseGraphResult {
+  return {
+    version: SAFETY_CROSS_CASE_SIGNALS_VERSION,
+    signals: computeCrossCasePatternSignals(rows),
+  };
+}
+
+/** Wrap already-computed signals in the versioned result envelope. */
+export function crossCaseGraphResultFromSignals(
+  signals: SafetyCrossCasePatternSignal[]
+): SafetyCrossCaseGraphResult {
+  return {
+    version: SAFETY_CROSS_CASE_SIGNALS_VERSION,
+    signals: Array.isArray(signals) ? signals : [],
+  };
+}

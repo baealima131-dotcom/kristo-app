@@ -2781,3 +2781,183 @@ describe("14. Evidence Intelligence + Privacy contracts (Phase 2B)", () => {
     );
   });
 });
+
+describe("15. Phase 2 integration + regression (Commit #7)", () => {
+  const engine = read("app/api/_lib/safetyCaseIntelligenceEngine.ts");
+  const reportDb = read("app/api/_lib/store/safetyReportDb.ts");
+  const historyDb = read(
+    "app/api/_lib/store/safetyIntelligenceHistoryDb.ts"
+  );
+  const mobileApi = read("apps/mobile/src/lib/safetyAdminApi.ts");
+
+  it("contract exposes all Phase 2 additive nullable blocks", () => {
+    assertIncludes(engine, "outcomeLearning?: SafetyCaseOutcomeLearning", "outcome block");
+    assertIncludes(engine, "supervisorReliability?: SafetySupervisorReliability", "reliability block");
+    assertIncludes(engine, "crossCaseGraph?: SafetyCrossCaseGraphResult", "cross-case block");
+    assertIncludes(engine, "calibration?: SafetyConfidenceCalibration", "calibration block");
+    assertIncludes(engine, "evidenceIntelligence?: SafetyEvidenceClassifierResult", "evidence block");
+  });
+
+  it("loader attaches every Phase 2 block with isolated failure logging", () => {
+    assertIncludes(reportDb, "computeOutcomeLearningMetadata", "outcome loaded");
+    assertIncludes(reportDb, "intelligence.outcomeLearning =", "outcome attached");
+    assertIncludes(reportDb, "intelligence.calibration =", "calibration attached");
+    assertIncludes(reportDb, "intelligence.evidenceIntelligence =", "evidence attached");
+    assertIncludes(reportDb, "intelligence.supervisorReliability =", "reliability attached");
+    assertIncludes(reportDb, "intelligence.crossCaseGraph =", "cross-case attached");
+    assertIncludes(reportDb, "KRISTO_SAFETY_OUTCOME_LEARNING_FAILED", "outcome log");
+    assertIncludes(reportDb, "KRISTO_SAFETY_SUPERVISOR_RELIABILITY_FAILED", "reliability log");
+    assertIncludes(reportDb, "KRISTO_SAFETY_CROSS_CASE_GRAPH_FAILED", "cross-case log");
+    assertIncludes(reportDb, "KRISTO_SAFETY_CONFIDENCE_CALIBRATION_FAILED", "calibration log");
+    assertIncludes(reportDb, "KRISTO_SAFETY_EVIDENCE_INTELLIGENCE_FAILED", "evidence log");
+    assertIncludes(reportDb, "Promise.allSettled", "isolated optional loads");
+  });
+
+  it("supervisor reliability only loads when a decider exists", () => {
+    assertIncludes(
+      reportDb,
+      "dbGetSafetySupervisorReliability({ supervisorUserId })",
+      "reliability gated on decider"
+    );
+  });
+
+  it("analytics aggregates are NOT loaded on report detail GET", () => {
+    assertNotIncludes(
+      reportDb,
+      "dbGetSafetyAnalyticsAggregates",
+      "analytics stays a dashboard utility"
+    );
+  });
+
+  it("outcome severity metadata is versioned", async () => {
+    const { computeOutcomeLearningMetadata, SAFETY_SEVERITY_MAP_VERSION } =
+      await import("../app/api/_lib/safetyOutcomeLearning.ts");
+    const m = computeOutcomeLearningMetadata({
+      decisionType: "warning",
+      category: "harassment",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      decisionAt: "2026-01-01T01:00:00.000Z",
+      investigatorConfidence: null,
+    });
+    assert.equal(m.severityMapVersion, SAFETY_SEVERITY_MAP_VERSION);
+    assert.equal(typeof m.severityScore, "number");
+    assert.equal(m.appealFiled, false);
+    assert.equal(m.finalOutcomeWeight, null);
+  });
+
+  it("supervisor facts never generate a reliability score", async () => {
+    const { supervisorReliabilityFromAggregate } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const r = supervisorReliabilityFromAggregate({
+      supervisorUserId: "sup1",
+      finalizedDecisionCount: 25,
+      warningCount: 10,
+      removalCount: 5,
+      restrictionCount: 3,
+      suspensionCount: 4,
+      permanentBanCount: 1,
+      noViolationCount: 2,
+      averageResolutionMinutes: 42,
+      appealCount: 0,
+      reversedDecisionCount: 0,
+    });
+    assert.equal(r.reliabilityScore, null);
+    assert.equal(r.falsePositiveCount, null);
+    assert.equal(r.falseNegativeCount, null);
+    assert.equal(r.agreementCount, null);
+  });
+
+  it("cross-case graph result is versioned and confidence stays null", async () => {
+    const { buildCrossCaseGraphResult, crossCaseGraphResultFromSignals } =
+      await import("../app/api/_lib/safetyCrossCaseGraph.ts");
+    const built = buildCrossCaseGraphResult([
+      { reportId: "a", reporterUserId: "r1", targetOwnerUserId: "t1", category: "spam", createdAt: "2026-01-01T00:00:00.000Z" },
+      { reportId: "b", reporterUserId: "r1", targetOwnerUserId: "t1", category: "spam", createdAt: "2026-01-01T01:00:00.000Z" },
+      { reportId: "c", reporterUserId: "r1", targetOwnerUserId: "t1", category: "spam", createdAt: "2026-01-01T02:00:00.000Z" },
+    ] as any);
+    assert.equal(built.version, "v1");
+    assert.ok(Array.isArray(built.signals));
+    for (const s of built.signals) assert.equal(s.confidence, null);
+    const wrapped = crossCaseGraphResultFromSignals(built.signals);
+    assert.equal(wrapped.version, "v1");
+  });
+
+  it("calibration remains insufficient_data without a provider", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(
+      "../app/api/_lib/safetyConfidenceCalibration.ts"
+    );
+    const r = computeSafetyConfidenceCalibration({
+      reporterFinalizedCases: 5,
+      targetFinalizedCases: 5,
+      uniqueReporterCount: 4,
+      evidenceMachineVerified: false,
+      evidenceProvider: null,
+      evidenceProviderVersion: null,
+      evidenceAnalyzedAt: null,
+      hasOriginalEvidence: true,
+      hasSnapshotEvidence: true,
+      hasHistoricalOutcomeCoverage: true,
+    });
+    assert.equal(r.confidenceLevel, "insufficient_data");
+    assert.equal(r.confidence, null);
+  });
+
+  it("no provider => evidence unverified with no_provider limitation", async () => {
+    const { emptyEvidenceClassifierResult } = await import(
+      "../app/api/_lib/safetyEvidenceIntelligence.ts"
+    );
+    const e = emptyEvidenceClassifierResult();
+    assert.equal(e.machineVerified, false);
+    assert.ok(
+      e.limitations.includes("no_evidence_classifier_provider_connected")
+    );
+  });
+
+  it("no device/IP/location capture in any Phase 2 loader path", () => {
+    assertNotIncludes(reportDb, "reporter_device_hash =", "no device write");
+    assertNotIncludes(reportDb, "reporter_ip_hash =", "no ip write");
+    assertNotIncludes(reportDb, "reporter_geo_coarse =", "no geo write");
+    assertNotIncludes(historyDb, "reporter_device_hash =", "no device write db");
+    assertNotIncludes(historyDb, "reporter_ip_hash =", "no ip write db");
+    assertNotIncludes(historyDb, "reporter_geo_coarse =", "no geo write db");
+  });
+
+  it("requiresHumanReview stays hardcoded true (recommendation unchanged)", () => {
+    assertIncludes(engine, "requiresHumanReview: true", "human review true");
+  });
+
+  it("no legacy AI fields leak back into Case Intelligence contract", () => {
+    assertNotIncludes(engine, "aiWeightedReportScore", "no legacy weighted score");
+    assertNotIncludes(engine, "aiWeightedReportPercent", "no legacy percent");
+    assertNotIncludes(engine, "reporterVoteWeightPercent", "no legacy vote weight");
+    assertNotIncludes(engine, "aiActionThreshold", "no legacy threshold");
+    assertNotIncludes(engine, "aiActionRequired", "no legacy action flag");
+  });
+
+  it("mobile mirror carries all Phase 2 nullable blocks (older clients safe)", () => {
+    assertIncludes(mobileApi, "outcomeLearning?:", "mobile outcome");
+    assertIncludes(mobileApi, "supervisorReliability?:", "mobile reliability");
+    assertIncludes(mobileApi, "crossCaseGraph?:", "mobile cross-case");
+    assertIncludes(mobileApi, "calibration?:", "mobile calibration");
+    assertIncludes(mobileApi, "evidenceIntelligence?:", "mobile evidence");
+  });
+
+  it("ledger failure isolation helper unchanged", async () => {
+    const { decisionSurvivesLedgerFailure } = await import(
+      "../app/api/_lib/safetyIntelligenceHistory.ts"
+    );
+    assert.equal(decisionSurvivesLedgerFailure(true, false), true);
+    assert.equal(decisionSurvivesLedgerFailure(true, true), true);
+    assert.equal(decisionSurvivesLedgerFailure(false, true), false);
+  });
+
+  it("v1/v2 backfill markers remain versioned/idempotent", async () => {
+    const { SAFETY_INTEL_BACKFILL_META_KEY } = await import(
+      "../app/api/_lib/safetyIntelligenceHistory.ts"
+    );
+    assert.equal(SAFETY_INTEL_BACKFILL_META_KEY, "intelligence_events_backfill_v1");
+    assertIncludes(historyDb, "intelligence_events_backfill_v2", "v2 backfill key present");
+    assertIncludes(historyDb, "ON CONFLICT (report_id, event_kind, outcome_type)", "idempotent ledger insert");
+  });
+});

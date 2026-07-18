@@ -10,10 +10,29 @@
 import type { SafetyIntelligenceTimelines } from "./safetyIntelligenceHistory.ts";
 import type { SafetyConfidenceCalibration } from "./safetyConfidenceCalibration.ts";
 import type { SafetyEvidenceClassifierResult } from "./safetyEvidenceIntelligence.ts";
+import type { SafetySupervisorReliability } from "./safetySupervisorReliability.ts";
+import type { SafetyCrossCaseGraphResult } from "./safetyCrossCaseGraph.ts";
 
 export type { SafetyIntelligenceTimelines };
 export type { SafetyConfidenceCalibration };
 export type { SafetyEvidenceClassifierResult };
+export type { SafetySupervisorReliability };
+export type { SafetyCrossCaseGraphResult };
+
+/**
+ * Outcome-learning facts surfaced on the Case Intelligence contract.
+ * Mirrors SafetyOutcomeLearningMetadata but excludes evidenceUrlHash (the hash
+ * is a storage/linking detail and is never exposed in the response).
+ */
+export type SafetyCaseOutcomeLearning = {
+  severityScore: number | null;
+  severityMapVersion: string | null;
+  resolutionMinutes: number | null;
+  investigatorConfidence: number | null;
+  appealFiled: boolean;
+  appealOutcome: string | null;
+  finalOutcomeWeight: number | null;
+};
 
 function emptySafetyIntelligenceTimelines(): SafetyIntelligenceTimelines {
   return {
@@ -160,6 +179,12 @@ export type SafetyCaseIntelligence = {
    * the recommendation.
    */
   evidenceIntelligence?: SafetyEvidenceClassifierResult;
+  /** Outcome-learning facts for the current finalized report (API/data only). */
+  outcomeLearning?: SafetyCaseOutcomeLearning;
+  /** Supervisor reliability facts for the decider (API/data only; null score). */
+  supervisorReliability?: SafetySupervisorReliability;
+  /** Cross-case pattern signals for the target scope (leads, not proof). */
+  crossCaseGraph?: SafetyCrossCaseGraphResult;
 };
 
 /**

@@ -20,8 +20,16 @@ import {
   emptyEvidenceClassifierResult,
 } from "@/app/api/_lib/safetyEvidenceIntelligence";
 import {
+  computeOutcomeLearningMetadata,
+} from "@/app/api/_lib/safetyOutcomeLearning";
+import {
+  crossCaseGraphResultFromSignals,
+} from "@/app/api/_lib/safetyCrossCaseGraph";
+import {
   applyTimelinesToCaseIntelligenceRaw,
+  dbGetSafetyCrossCaseSignals,
   dbGetSafetyIntelligenceTimelines,
+  dbGetSafetySupervisorReliability,
   dbRecordSafetyIntelligenceFromDecision,
   emptySafetyIntelligenceTimelines,
   ensureSafetyIntelligenceHistoryReady,
@@ -5461,37 +5469,121 @@ export async function dbGetSafetyCaseIntelligence(input: {
     exitStatus = intelligence.status;
 
     /*
-     * Honest confidence calibration (additive facts only — does NOT influence
-     * recommendation logic and does not consume cross-case signals yet).
-     * Evidence is unverified today (no provider), so this degrades to
-     * insufficient_data with confidence null.
+     * Phase 2 intelligence blocks — ADDITIVE and FAILURE-ISOLATED.
+     *
+     * Every block is optional and nullable; a failure in any one of them must
+     * never fail report detail or change status/scores/recommendation. No
+     * analytics aggregates are loaded here (that stays a dashboard utility).
+     * Missing facts stay null — nothing is fabricated.
      */
     const reporterFinalizedCases =
       raw.reporterConfirmedReports + raw.reporterDismissedReports;
     const targetFinalizedCases =
       raw.targetConfirmedViolations + raw.targetDismissedReports;
-    intelligence.calibration = computeSafetyConfidenceCalibration({
-      reporterFinalizedCases,
-      targetFinalizedCases,
-      uniqueReporterCount: raw.targetUniqueReporters,
-      evidenceMachineVerified: raw.evidenceMachineVerified === true,
-      evidenceProvider: null,
-      evidenceProviderVersion: null,
-      evidenceAnalyzedAt: null,
-      hasOriginalEvidence: raw.originalContentAvailable === true,
-      hasSnapshotEvidence: Boolean(
-        raw.hasThumbnail || raw.hasPreview || raw.hasMediaUri
-      ),
-      hasHistoricalOutcomeCoverage:
-        reporterFinalizedCases > 0 || targetFinalizedCases > 0,
-    });
+
+    // Outcome learning metadata from the current finalized report fact (sync).
+    try {
+      const outcome = computeOutcomeLearningMetadata({
+        decisionType: report?.decisionType,
+        category: report?.category ?? raw.category,
+        createdAt: report?.createdAt,
+        decisionAt: report?.decisionAt,
+        investigatorConfidence: report?.decisionConfidence,
+      });
+      intelligence.outcomeLearning = {
+        severityScore: outcome.severityScore,
+        severityMapVersion: outcome.severityMapVersion,
+        resolutionMinutes: outcome.resolutionMinutes,
+        investigatorConfidence: outcome.investigatorConfidence,
+        appealFiled: outcome.appealFiled,
+        appealOutcome: outcome.appealOutcome,
+        finalOutcomeWeight: outcome.finalOutcomeWeight,
+      };
+    } catch (blockError: any) {
+      console.log("KRISTO_SAFETY_OUTCOME_LEARNING_FAILED", {
+        reportId: reportId || null,
+        error: safeText(blockError?.message || "outcome_learning_failed"),
+      });
+    }
+
+    // Honest confidence calibration from real facts (sync). Evidence is
+    // unverified today (no provider) so this degrades to insufficient_data.
+    try {
+      intelligence.calibration = computeSafetyConfidenceCalibration({
+        reporterFinalizedCases,
+        targetFinalizedCases,
+        uniqueReporterCount: raw.targetUniqueReporters,
+        evidenceMachineVerified: raw.evidenceMachineVerified === true,
+        evidenceProvider: null,
+        evidenceProviderVersion: null,
+        evidenceAnalyzedAt: null,
+        hasOriginalEvidence: raw.originalContentAvailable === true,
+        hasSnapshotEvidence: Boolean(
+          raw.hasThumbnail || raw.hasPreview || raw.hasMediaUri
+        ),
+        hasHistoricalOutcomeCoverage:
+          reporterFinalizedCases > 0 || targetFinalizedCases > 0,
+      });
+    } catch (blockError: any) {
+      console.log("KRISTO_SAFETY_CONFIDENCE_CALIBRATION_FAILED", {
+        reportId: reportId || null,
+        error: safeText(blockError?.message || "calibration_failed"),
+      });
+    }
+
+    // Evidence intelligence contract (Phase 2B). No classifier provider is
+    // connected, so this is the unverified all-null result (sync).
+    try {
+      intelligence.evidenceIntelligence = emptyEvidenceClassifierResult();
+    } catch (blockError: any) {
+      console.log("KRISTO_SAFETY_EVIDENCE_INTELLIGENCE_FAILED", {
+        reportId: reportId || null,
+        error: safeText(blockError?.message || "evidence_intelligence_failed"),
+      });
+    }
 
     /*
-     * Evidence Intelligence contract (Phase 2B). No classifier provider is
-     * connected, so this is the unverified all-null result. Calibration keeps
-     * seeing the evidence gate as false; recommendation logic is unchanged.
+     * Async optional blocks in parallel — supervisor reliability (only when a
+     * decider exists) and cross-case signals (target/owner scope). allSettled
+     * so one rejection cannot fail the other or the report detail.
      */
-    intelligence.evidenceIntelligence = emptyEvidenceClassifierResult();
+    const supervisorUserId = safeText(report?.decidedByUserId);
+    const [reliabilityResult, crossCaseResult] = await Promise.allSettled([
+      supervisorUserId
+        ? dbGetSafetySupervisorReliability({ supervisorUserId })
+        : Promise.resolve(null),
+      dbGetSafetyCrossCaseSignals({
+        targetType,
+        targetId,
+        targetOwnerUserId: ownerUserId,
+      }),
+    ]);
+
+    if (reliabilityResult.status === "fulfilled") {
+      if (reliabilityResult.value) {
+        intelligence.supervisorReliability = reliabilityResult.value;
+      }
+    } else {
+      console.log("KRISTO_SAFETY_SUPERVISOR_RELIABILITY_FAILED", {
+        reportId: reportId || null,
+        error: safeText(
+          reliabilityResult.reason?.message || "supervisor_reliability_failed"
+        ),
+      });
+    }
+
+    if (crossCaseResult.status === "fulfilled") {
+      intelligence.crossCaseGraph = crossCaseGraphResultFromSignals(
+        crossCaseResult.value
+      );
+    } else {
+      console.log("KRISTO_SAFETY_CROSS_CASE_GRAPH_FAILED", {
+        reportId: reportId || null,
+        error: safeText(
+          crossCaseResult.reason?.message || "cross_case_graph_failed"
+        ),
+      });
+    }
 
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_RESULT", {
       reportId: reportId || null,

@@ -516,6 +516,46 @@ export type SafetyCaseIntelligence = {
     machineVerified?: boolean;
     limitations?: string[];
   } | null;
+  outcomeLearning?: {
+    severityScore?: number | null;
+    severityMapVersion?: string | null;
+    resolutionMinutes?: number | null;
+    investigatorConfidence?: number | null;
+    appealFiled?: boolean;
+    appealOutcome?: string | null;
+    finalOutcomeWeight?: number | null;
+  } | null;
+  supervisorReliability?: {
+    supervisorUserId?: string;
+    finalizedDecisionCount?: number;
+    warningCount?: number;
+    removalCount?: number;
+    restrictionCount?: number;
+    suspensionCount?: number;
+    permanentBanCount?: number;
+    noViolationCount?: number;
+    averageResolutionMinutes?: number | null;
+    appealCount?: number;
+    reversedDecisionCount?: number;
+    agreementCount?: number | null;
+    falsePositiveCount?: number | null;
+    falseNegativeCount?: number | null;
+    reliabilityScore?: number | null;
+    status?: "ready" | "insufficient_data";
+    limitations?: string[];
+  } | null;
+  crossCaseGraph?: {
+    version?: string;
+    signals?: Array<{
+      type?: string;
+      confidence?: number | null;
+      severity?: "low" | "medium" | "high";
+      supportingCaseIds?: string[];
+      supportingCount?: number;
+      explanation?: string;
+      limitations?: string[];
+    }>;
+  } | null;
 };
 
 export type SafetyReportSummary = {
