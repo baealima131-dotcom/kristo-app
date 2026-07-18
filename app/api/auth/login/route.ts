@@ -13,6 +13,9 @@ import {
   touchUser,
   updateUserPersist,
 } from "@/app/api/auth/_lib/session";
+import {
+  assertSafetyAllowsAuthentication,
+} from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
 
@@ -75,6 +78,14 @@ export async function POST(req: Request) {
     const need = forceOtp ? "otp" : requiredAuthForUser(user);
 
     if (need === "password" || need === "none") {
+      const safetyBlock =
+        await assertSafetyAllowsAuthentication(
+          user.id
+        );
+      if (safetyBlock) {
+        return safetyBlock;
+      }
+
       const sess = createSession(user.id);
       await touchUser(user.id);
       let res = NextResponse.json({ ok: true, userId: user.id, mode: "password" });
@@ -123,6 +134,14 @@ export async function POST(req: Request) {
 
     const v = verifyChallenge(challengeId, code);
     if (!v.ok) return NextResponse.json(v, { status: 400 });
+
+    const safetyBlock =
+      await assertSafetyAllowsAuthentication(
+        v.userId
+      );
+    if (safetyBlock) {
+      return safetyBlock;
+    }
 
     const user = await getUserById(v.userId);
     if (user) {

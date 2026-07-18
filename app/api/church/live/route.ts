@@ -11,6 +11,9 @@ import {
 import { createNotification } from "@/app/api/_lib/notifications";
 import { requireChurchSubscriptionActive } from "@/app/api/_lib/churchSubscription";
 import { endChurchLiveSessionsForSchedule } from "@/app/api/_lib/churchLiveControl";
+import {
+  assertSafetyEnforcementAllows,
+} from "@/app/api/_lib/rbac";
 
 import { evaluateLiveMediaAuthority } from "@/lib/liveMediaAuthority";
 
@@ -266,6 +269,15 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
+  const safetyBlocked =
+    await assertSafetyEnforcementAllows(
+      a.userId,
+      req.method
+    );
+  if (safetyBlocked) {
+    return safetyBlocked;
+  }
+
   const url = new URL(req.url);
   const lite = url.searchParams.get("lite") === "1";
   const queryLiveId = String(url.searchParams.get("liveId") || "").trim();
@@ -308,6 +320,15 @@ export async function POST(req: Request) {
   const a = auth(req);
   if (!a.userId || !a.churchId) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  const safetyBlocked =
+    await assertSafetyEnforcementAllows(
+      a.userId,
+      req.method
+    );
+  if (safetyBlocked) {
+    return safetyBlocked;
   }
 
   if (!isPastor(a.role)) {
@@ -406,6 +427,15 @@ export async function PATCH(req: Request) {
   const a = auth(req);
   if (!a.userId || !a.churchId) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  const safetyBlocked =
+    await assertSafetyEnforcementAllows(
+      a.userId,
+      req.method
+    );
+  if (safetyBlocked) {
+    return safetyBlocked;
   }
 
   const body = await req.json().catch(() => ({}));

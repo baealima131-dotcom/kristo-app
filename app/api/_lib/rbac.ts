@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+import {
+  dbGetActiveSafetyAccountEnforcement,
+} from "@/app/api/_lib/store/safetyReportDb";
+
 import { getViewer } from "@/app/api/_lib/auth";
 import {
   getActiveMembership,
@@ -180,15 +184,224 @@ export function requireRole(ctx: GuardContext, roles: Role[]): GuardContext | Ne
   );
 }
 
+/**
+ * Enforce Safety account blocks on every authenticated request path.
+ * Permanent ban / suspend → block all methods.
+ * Restrict → block write methods only (post, comment, message, live, upload, etc.).
+ * Expired suspend/restrict rows are marked expired inside the lookup.
+ *
+ * Exported so header-only routes (room-messages, live, livekit, uploads)
+ * can reuse the same canonical assertion after resolving identity their
+ * own way — without inventing a second enforcement implementation.
+ */
+export async function assertSafetyEnforcementAllows(
+  userId: string,
+  method: string
+): Promise<NextResponse | null> {
+  const enforcement =
+    await dbGetActiveSafetyAccountEnforcement(
+      userId
+    );
+
+  if (enforcement.permanentBan) {
+    console.log(
+      JSON.stringify({
+        scope: "kristo_safety",
+        event: "auth_blocked",
+        code: "SAFETY_PERMANENT_BAN",
+        userId,
+        reportId:
+          enforcement.permanentBan.reportId,
+        at: new Date().toISOString(),
+      })
+    );
+
+    return json(
+      {
+        ok: false,
+        error:
+          "This Kristo account has been permanently banned.",
+        details: {
+          code: "SAFETY_PERMANENT_BAN",
+          reportId:
+            enforcement.permanentBan.reportId,
+        },
+      } satisfies ApiErr,
+      { status: 403 }
+    );
+  }
+
+  if (enforcement.suspension) {
+    console.log(
+      JSON.stringify({
+        scope: "kristo_safety",
+        event: "auth_blocked",
+        code: "SAFETY_ACCOUNT_SUSPENDED",
+        userId,
+        reportId:
+          enforcement.suspension.reportId,
+        expiresAt:
+          enforcement.suspension.expiresAt ||
+          null,
+        at: new Date().toISOString(),
+      })
+    );
+
+    return json(
+      {
+        ok: false,
+        error:
+          "This Kristo account is temporarily suspended.",
+        details: {
+          code: "SAFETY_ACCOUNT_SUSPENDED",
+          expiresAt:
+            enforcement.suspension.expiresAt ||
+            null,
+          reportId:
+            enforcement.suspension.reportId,
+        },
+      } satisfies ApiErr,
+      { status: 403 }
+    );
+  }
+
+  const normalizedMethod = String(method || "GET")
+    .trim()
+    .toUpperCase();
+
+  const writeRequest =
+    normalizedMethod !== "GET" &&
+    normalizedMethod !== "HEAD" &&
+    normalizedMethod !== "OPTIONS";
+
+  if (writeRequest && enforcement.restriction) {
+    console.log(
+      JSON.stringify({
+        scope: "kristo_safety",
+        event: "auth_blocked",
+        code: "SAFETY_ACCOUNT_RESTRICTED",
+        userId,
+        method: normalizedMethod,
+        reportId:
+          enforcement.restriction.reportId,
+        expiresAt:
+          enforcement.restriction.expiresAt ||
+          null,
+        at: new Date().toISOString(),
+      })
+    );
+
+    return json(
+      {
+        ok: false,
+        error:
+          "This Kristo account is temporarily restricted to read-only access.",
+        details: {
+          code: "SAFETY_ACCOUNT_RESTRICTED",
+          expiresAt:
+            enforcement.restriction.expiresAt ||
+            null,
+          reportId:
+            enforcement.restriction.reportId,
+        },
+      } satisfies ApiErr,
+      { status: 403 }
+    );
+  }
+
+  return null;
+}
+
+/** Block sign-in / token issue for banned or suspended accounts only. */
+export async function assertSafetyAllowsAuthentication(
+  userId: string
+): Promise<NextResponse | null> {
+  const enforcement =
+    await dbGetActiveSafetyAccountEnforcement(
+      userId
+    );
+
+  if (enforcement.permanentBan) {
+    return json(
+      {
+        ok: false,
+        error:
+          "This Kristo account has been permanently banned.",
+        details: {
+          code: "SAFETY_PERMANENT_BAN",
+          reportId:
+            enforcement.permanentBan.reportId,
+        },
+      } satisfies ApiErr,
+      { status: 403 }
+    );
+  }
+
+  if (enforcement.suspension) {
+    return json(
+      {
+        ok: false,
+        error:
+          "This Kristo account is temporarily suspended.",
+        details: {
+          code: "SAFETY_ACCOUNT_SUSPENDED",
+          expiresAt:
+            enforcement.suspension.expiresAt ||
+            null,
+          reportId:
+            enforcement.suspension.reportId,
+        },
+      } satisfies ApiErr,
+      { status: 403 }
+    );
+  }
+
+  return null;
+}
+
 /** ✅ Use this for endpoints that only require login (no church yet) */
-export async function guardAuth(req: NextRequest): Promise<AuthOnlyContext | NextResponse> {
-  return requireAuthOnly(req);
+export async function guardAuth(
+  req: NextRequest
+): Promise<
+  AuthOnlyContext |
+  NextResponse
+> {
+  const auth =
+    await requireAuthOnly(req);
+
+  if (
+    auth instanceof NextResponse
+  ) {
+    return auth;
+  }
+
+  const blocked =
+    await assertSafetyEnforcementAllows(
+      auth.viewer.userId,
+      req.method
+    );
+
+  if (blocked) {
+    return blocked;
+  }
+
+  return auth;
 }
 
 /** ✅ Use this for church-scoped endpoints (Active membership required) */
 export async function guard(req: NextRequest, roles?: Role[]): Promise<GuardContext | NextResponse> {
   const ctxOrRes = await requireActiveMembership(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+
+  const blocked =
+    await assertSafetyEnforcementAllows(
+      ctxOrRes.viewer.userId,
+      req.method
+    );
+
+  if (blocked) {
+    return blocked;
+  }
 
   if (roles && roles.length > 0) {
     const roleOrRes = requireRole(ctxOrRes, roles);

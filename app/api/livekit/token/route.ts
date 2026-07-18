@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
+import {
+  assertSafetyEnforcementAllows,
+} from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
 
@@ -34,6 +37,31 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const roomName = String(body.roomName || body.liveId || `church-live-${a.churchId}`).trim();
 
+    const wantsPublish = body.canPublish === true;
+    const headerMayPublish =
+      String(req.headers.get("x-kristo-live-may-publish") || "").trim() === "1";
+    const allowedToPublish =
+      wantsPublish &&
+      (canPublish(a.role) || headerMayPublish);
+
+    /*
+     * Suspended / permanently banned: block every token (read as
+     * "POST" so all methods are denied by the canonical gate).
+     * Restricted: block publish-capable tokens only; allow an
+     * explicit viewer-only (subscribe) token so lite viewing is
+     * not cut off. Publish is never granted from client claims alone.
+     */
+    const safetyMethod =
+      allowedToPublish ? "POST" : "GET";
+    const safetyBlocked =
+      await assertSafetyEnforcementAllows(
+        a.userId,
+        safetyMethod
+      );
+    if (safetyBlocked) {
+      return safetyBlocked;
+    }
+
     const apiKey = process.env.LIVEKIT_API_KEY;
     const apiSecret = process.env.LIVEKIT_API_SECRET;
     const livekitUrl = process.env.LIVEKIT_URL;
@@ -55,11 +83,6 @@ export async function POST(req: Request) {
       identity: String(body.identity || a.userId),
       name: String(body.name || a.userId || a.role || "Kristo User"),
     });
-
-    const wantsPublish = body.canPublish === true;
-    const headerMayPublish =
-      String(req.headers.get("x-kristo-live-may-publish") || "").trim() === "1";
-    const allowedToPublish = wantsPublish && (canPublish(a.role) || headerMayPublish);
 
     console.log("KRISTO_LIVEKIT_TOKEN_REQUEST", {
       userId: a.userId,

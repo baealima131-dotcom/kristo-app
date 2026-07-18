@@ -6,6 +6,9 @@ import {
   uploadBufferToStorage,
 } from "@/app/api/_lib/media/objectStorage";
 import { isServerlessRuntime } from "@/app/api/_lib/profileAvatarUpload";
+import {
+  assertSafetyEnforcementAllows,
+} from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
 
@@ -51,6 +54,15 @@ export async function POST(req: Request) {
     const { churchId, userId } = getHeaders(req);
     if (!churchId || !userId) {
       return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
+    }
+
+    const safetyBlocked =
+      await assertSafetyEnforcementAllows(
+        userId,
+        req.method
+      );
+    if (safetyBlocked) {
+      return safetyBlocked;
     }
 
     const contentType = req.headers.get("content-type") || "";

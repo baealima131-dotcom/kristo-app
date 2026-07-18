@@ -4,6 +4,9 @@ import path from "path";
 import {
   requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
+import {
+  assertSafetyEnforcementAllows,
+} from "@/app/api/_lib/rbac";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import {
@@ -275,6 +278,15 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
   }
 
+  const safetyBlocked =
+    await assertSafetyEnforcementAllows(
+      userId,
+      req.method
+    );
+  if (safetyBlocked) {
+    return safetyBlocked;
+  }
+
   if (!roomId) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
   }
@@ -438,6 +450,15 @@ export async function POST(req: Request) {
 
   if (!churchId || !userId) {
     return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
+  }
+
+  const safetyBlocked =
+    await assertSafetyEnforcementAllows(
+      userId,
+      req.method
+    );
+  if (safetyBlocked) {
+    return safetyBlocked;
   }
 
   const body = await req.json().catch(() => null);
@@ -844,6 +865,15 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
   }
 
+  const safetyBlocked =
+    await assertSafetyEnforcementAllows(
+      userId,
+      req.method
+    );
+  if (safetyBlocked) {
+    return safetyBlocked;
+  }
+
   const body = await req.json().catch(() => null);
   const roomId = String(body?.roomId || "").trim();
   const messageId = String(body?.messageId || "").trim();
@@ -1193,6 +1223,15 @@ export async function DELETE(req: Request) {
 
   if (!churchId || !userId) {
     return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
+  }
+
+  const safetyBlocked =
+    await assertSafetyEnforcementAllows(
+      userId,
+      req.method
+    );
+  if (safetyBlocked) {
+    return safetyBlocked;
   }
 
   const body = await req.json().catch(() => null);
