@@ -130,6 +130,7 @@ import {
   updateDirectMessageConversationSetting,
   type DirectMessageConversationSettings,
 } from "@/src/lib/directMessagesApi";
+import { buildDmMembershipLabel } from "@/src/lib/dmMembershipLabel";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
 import { createPrivateCallToUser } from "@/src/lib/privateCallService";
 import {
@@ -9057,41 +9058,58 @@ const displayHeaderTitle = assignmentDisplayTitle;
   const dmMembershipSummary = useMemo(() => {
     const profile =
       dmPeerMembershipProfile &&
-      typeof dmPeerMembershipProfile ===
-        "object"
+      typeof dmPeerMembershipProfile === "object"
         ? dmPeerMembershipProfile
         : {};
 
+    const headers = getKristoHeaders() as Record<string, string>;
+    // Viewer church must come from the authenticated session — never from
+    // DM storage/thread churchId (that is often the peer's church).
     const viewerChurchId = String(
-      churchId ||
-        getKristoHeaders()[
-          "x-kristo-church-id"
-        ] ||
+      dmConversationSettings?.viewerChurchId ||
+        headers["x-kristo-church-id"] ||
+        headers["X-Kristo-Church-Id"] ||
+        auth?.churchId ||
         ""
     ).trim();
 
     const peerChurchId = String(
-      profile.churchId ||
+      dmConversationSettings?.peerChurchId ||
+        profile.churchId ||
         profile.currentChurchId ||
-        profile.activeMembership
-          ?.churchId ||
+        profile.activeMembership?.churchId ||
         ""
     ).trim();
 
-    const sameChurch =
-      Boolean(viewerChurchId) &&
-      Boolean(peerChurchId) &&
-      viewerChurchId === peerChurchId;
-
-    const verifiedRole = String(
-      profile.churchRole ||
+    const peerChurchRole = String(
+      dmConversationSettings?.peerChurchRole ||
+        profile.churchRole ||
         profile.role ||
-        profile.activeMembership
-          ?.churchRole ||
-        profile.activeMembership
-          ?.role ||
+        profile.activeMembership?.churchRole ||
+        profile.activeMembership?.role ||
         ""
     ).trim();
+
+    const peerChurchName = String(
+      dmConversationSettings?.peerChurchName ||
+        profile.churchName ||
+        profile.activeMembership?.churchName ||
+        ""
+    ).trim();
+
+    const sharesActiveChurch =
+      typeof dmConversationSettings?.sharesActiveChurch === "boolean"
+        ? dmConversationSettings.sharesActiveChurch
+        : null;
+
+    const label = buildDmMembershipLabel({
+      loading: dmPeerMembershipLoading && !dmConversationSettings,
+      sharesActiveChurch,
+      viewerChurchId,
+      peerChurchId,
+      peerChurchName,
+      peerChurchRole,
+    });
 
     const name =
       String(
@@ -9101,36 +9119,40 @@ const displayHeaderTitle = assignmentDisplayTitle;
           "Member"
       ).trim() || "Member";
 
+    const viewerUserId = String(
+      effectiveAuthUserId ||
+        headers["x-kristo-user-id"] ||
+        headers["X-Kristo-User-Id"] ||
+        ""
+    ).trim();
+
+    console.log("KRISTO_DM_SETTINGS_MEMBERSHIP_LABEL", {
+      viewerUserId,
+      peerUserId: dmPeerUserId,
+      viewerChurchId: label.viewerChurchId,
+      peerChurchId: label.peerChurchId,
+      sharesActiveChurch: label.sharesActiveChurch,
+      peerChurchRole: label.peerChurchRole,
+      renderedLabel: label.renderedLabel,
+    });
+
     return {
       name,
-
-      role:
-        sameChurch
-          ? verifiedRole || "Member"
-          : "Guest",
-
-      status:
-        dmPeerMembershipLoading
-          ? "Checking church membership..."
-          : sameChurch
-            ? "Member of your church"
-            : "Not a member of your church",
-
-      pill:
-        dmPeerMembershipLoading
-          ? "Checking"
-          : sameChurch
-            ? verifiedRole || "Member"
-            : "Guest",
-
-      viewerChurchId,
-      peerChurchId,
-      sameChurch,
+      role: label.role,
+      status: label.status,
+      pill: label.pill,
+      renderedLabel: label.renderedLabel,
+      viewerChurchId: label.viewerChurchId,
+      peerChurchId: label.peerChurchId,
+      sameChurch: label.sameChurch,
     };
   }, [
     dmPeerMembershipProfile,
     dmPeerMembershipLoading,
-    churchId,
+    dmConversationSettings,
+    dmPeerUserId,
+    effectiveAuthUserId,
+    auth?.churchId,
     headerTitle,
   ]);
 
@@ -15304,16 +15326,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
                         <Text
                           style={t.menuPresencePillText}
-                          numberOfLines={1}
+                          numberOfLines={2}
                         >
                           {
                             dmMembershipSummary
-                              .status
-                          }
-                          {"  •  Role: "}
-                          {
-                            dmMembershipSummary
-                              .role
+                              .renderedLabel
                           }
                         </Text>
                       </Animated.View>

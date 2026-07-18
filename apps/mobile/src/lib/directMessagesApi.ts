@@ -253,6 +253,11 @@ export type DirectMessageConversationSettings = {
   isRequestReceiver?: boolean;
   canAcceptDecline?: boolean;
   canRestartRequest?: boolean;
+  viewerChurchId?: string;
+  peerChurchId?: string;
+  sharesActiveChurch?: boolean;
+  peerChurchName?: string;
+  peerChurchRole?: string;
 };
 
 /** Canonical cross-church DM request outbound limit (must match backend). */

@@ -90,6 +90,14 @@ export type DirectMessageConversationSettings = {
   canAcceptDecline: boolean;
   /** Declined (and not blocked): viewer may start a fresh invitation. */
   canRestartRequest: boolean;
+  /** Viewer's active membership church — never DM storageChurchId. */
+  viewerChurchId: string;
+  /** Peer's active membership church — never inferred from role alone. */
+  peerChurchId: string;
+  /** Proven Active membership intersection only. */
+  sharesActiveChurch: boolean;
+  peerChurchName: string;
+  peerChurchRole: string;
 };
 
 export type {
@@ -844,9 +852,24 @@ export async function getDirectMessageConversationSettings(args: {
 
   const blockedByMe = record.blockedByUserId?.[userId] === true;
   const blockedByPeer = record.blockedByUserId?.[peerUserId] === true;
-  const shareActiveChurch = Boolean(
-    await usersShareActiveChurch(userId, peerUserId)
-  );
+  const [viewerMembership, peerMembership, sharedChurchId] =
+    await Promise.all([
+      getActiveMembership(userId).catch(() => null),
+      getActiveMembership(peerUserId).catch(() => null),
+      usersShareActiveChurch(userId, peerUserId).catch(() => null),
+    ]);
+  const shareActiveChurch = Boolean(sharedChurchId);
+  const viewerChurchId = String(
+    viewerMembership?.churchId || ""
+  ).trim();
+  const peerChurchId = String(peerMembership?.churchId || "").trim();
+  const peerChurchRole = String(
+    peerMembership?.churchRole || ""
+  ).trim();
+  const peerChurch = peerChurchId
+    ? await getChurchById(peerChurchId).catch(() => null)
+    : null;
+  const peerChurchName = String(peerChurch?.name || "").trim();
   const relationshipStatus = resolveDmRelationshipStatus({
     record,
     viewerUserId: userId,
@@ -914,6 +937,12 @@ export async function getDirectMessageConversationSettings(args: {
     isRequestReceiver,
     canAcceptDecline,
     canRestartRequest,
+    // Membership labeling — independent of DM storageChurchId / accepted status.
+    viewerChurchId,
+    peerChurchId,
+    sharesActiveChurch: shareActiveChurch,
+    peerChurchName,
+    peerChurchRole,
   };
 }
 
