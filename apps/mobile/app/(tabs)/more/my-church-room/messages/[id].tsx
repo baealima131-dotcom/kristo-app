@@ -6740,9 +6740,6 @@ export default function MessageThreadScreen() {
     kristoSession?.profile ||
     kristoSession ||
     {};
-  const churchId = String(
-    auth?.churchId
-  );
   const baseUrl = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
   const effectiveAuthUserId = String(auth?.userId || "");
   const effectiveAuthRole = String(auth?.role || "Member");
@@ -6750,7 +6747,14 @@ export default function MessageThreadScreen() {
   const insets = useSafeAreaInsets();
   const tabBarH = useBottomTabBarHeight();
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string; title?: string; sub?: string; openMenu?: string; returnToken?: string; tab?: string; source?: string; backTo?: string; missionTitle?: string; missionUnlocked?: string; missionLive?: string; roomKind?: string; assignmentTitle?: string; assignmentSubtitle?: string; assignmentRole?: string; assignmentStatus?: string; assignmentInitials?: string; avatar?: string }>();
+  const params = useLocalSearchParams<{ id?: string; title?: string; sub?: string; openMenu?: string; returnToken?: string; tab?: string; source?: string; backTo?: string; missionTitle?: string; missionUnlocked?: string; missionLive?: string; roomKind?: string; assignmentTitle?: string; assignmentSubtitle?: string; assignmentRole?: string; assignmentStatus?: string; assignmentInitials?: string; avatar?: string; churchId?: string; peerUserId?: string }>();
+  const [dmThreadChurchId, setDmThreadChurchId] = useState("");
+  const churchId = String(
+    dmThreadChurchId ||
+      (params as any)?.churchId ||
+      auth?.churchId ||
+      ""
+  ).trim();
 
   function handleThreadBack() {
     router.replace("/(tabs)/profile/messages" as any);
@@ -8301,6 +8305,10 @@ export default function MessageThreadScreen() {
 
         if (alive) {
           setDmConversationSettings(settings);
+          const canonicalChurchId = String(settings.churchId || "").trim();
+          if (canonicalChurchId) {
+            setDmThreadChurchId(canonicalChurchId);
+          }
         }
       } catch (error: any) {
         console.log("KRISTO_DM_SETTINGS_LOAD_FAILED", {
@@ -9491,9 +9499,27 @@ const displayHeaderTitle = assignmentDisplayTitle;
     })();
   }
 
+  const dmRequestPending =
+    isPersonToPersonDm &&
+    dmConversationSettings?.relationshipStatus === "request_pending";
+  const dmRequestDeclined =
+    isPersonToPersonDm &&
+    dmConversationSettings?.relationshipStatus === "declined";
+  const dmRelationshipBlocked =
+    isPersonToPersonDm &&
+    (dmConversationSettings?.blocked === true ||
+      dmConversationSettings?.relationshipStatus === "blocked");
+  const dmComposerLocked =
+    dmRelationshipBlocked ||
+    dmRequestDeclined ||
+    (dmRequestPending && dmConversationSettings?.canSend === false);
+
   const canSend = useMemo(
-    () => !attachUploading && (String(draft || "").trim().length > 0 || pending.length > 0),
-    [draft, pending, attachUploading]
+    () =>
+      !attachUploading &&
+      !dmComposerLocked &&
+      (String(draft || "").trim().length > 0 || pending.length > 0),
+    [draft, pending, attachUploading, dmComposerLocked]
   );
 
   async function onSend() {
@@ -9584,6 +9610,15 @@ const displayHeaderTitle = assignmentDisplayTitle;
       );
 
       if (!postRes?.ok) {
+        const code = String(postRes?.code || "").trim();
+        if (code === "DM_REQUEST_MESSAGE_LIMIT_REACHED") {
+          throw new Error(
+            String(
+              postRes?.error ||
+                "This message request has reached its 7-message limit. Wait for the recipient to accept the conversation."
+            )
+          );
+        }
         throw new Error(String(postRes?.error || "Failed to send message"));
       }
 
@@ -9601,6 +9636,18 @@ const displayHeaderTitle = assignmentDisplayTitle;
       // Bust the media-room cache and force a fresh GET so the just-saved
       // message isn't hidden by a stale cache:0 poll right after sending.
       forceReloadRoomMessages();
+
+      if (isPersonToPersonDm && backendRoomId) {
+        try {
+          const settings = await fetchDirectMessageConversationSettings({
+            roomId: backendRoomId,
+            churchId,
+          });
+          setDmConversationSettings(settings);
+        } catch {
+          // Settings refresh is best-effort after send.
+        }
+      }
     } catch (e: any) {
       deleteMessage(threadId, optimisticId);
 
@@ -9914,6 +9961,8 @@ const displayHeaderTitle = assignmentDisplayTitle;
       | "unblock"
       | "clear"
       | "delete"
+      | "accept"
+      | "decline"
   ) {
     if (!isPersonToPersonDm || !backendRoomId || dmSettingsBusy) {
       return;
@@ -9930,6 +9979,10 @@ const displayHeaderTitle = assignmentDisplayTitle;
         });
 
       setDmConversationSettings(settings);
+      const canonicalChurchId = String(settings.churchId || "").trim();
+      if (canonicalChurchId) {
+        setDmThreadChurchId(canonicalChurchId);
+      }
 
       console.log("KRISTO_DM_SETTING_APPLIED", {
         roomId: backendRoomId,
@@ -13928,6 +13981,122 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           </ScrollView>
         ) : null}
 
+        {isPersonToPersonDm &&
+        (dmRequestPending ||
+          dmRequestDeclined ||
+          dmRelationshipBlocked) ? (
+          <View
+            style={{
+              marginHorizontal: 14,
+              marginBottom: 10,
+              paddingVertical: 12,
+              paddingHorizontal: 14,
+              borderRadius: 14,
+              backgroundColor: "rgba(244,208,111,0.08)",
+              borderWidth: 1,
+              borderColor: "rgba(244,208,111,0.24)",
+              gap: 8,
+            }}
+          >
+            <Text
+              style={{
+                color: GOLD_SOLID,
+                fontSize: 13,
+                fontWeight: "800",
+              }}
+            >
+              {dmRelationshipBlocked
+                ? "Conversation blocked"
+                : dmRequestDeclined
+                  ? "Message request declined"
+                  : dmConversationSettings?.canAcceptDecline
+                    ? `Message request from ${String(title || "Member").trim() || "Member"}`
+                    : "Message request"}
+            </Text>
+            <Text
+              style={{
+                color: "rgba(255,255,255,0.78)",
+                fontSize: 12,
+                lineHeight: 17,
+              }}
+            >
+              {dmRelationshipBlocked
+                ? "Messages cannot be sent in this blocked conversation."
+                : dmRequestDeclined
+                  ? "The recipient declined this request. You cannot send more messages until they accept."
+                  : dmConversationSettings?.canAcceptDecline
+                    ? "Accept to open a normal conversation, or decline / block this request."
+                    : `The recipient has not accepted this conversation yet.\n${Math.min(
+                        Number(dmConversationSettings?.outgoingMessageCount || 0),
+                        Number(dmConversationSettings?.outgoingMessageLimit || 7)
+                      )} of ${Number(dmConversationSettings?.outgoingMessageLimit || 7)} messages used.`}
+            </Text>
+            {dmConversationSettings?.canAcceptDecline ? (
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
+                <Pressable
+                  disabled={dmSettingsBusy}
+                  onPress={() => void applyDmConversationSetting("accept")}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 10,
+                    borderRadius: 10,
+                    backgroundColor: GOLD_SOLID,
+                    alignItems: "center",
+                  }}
+                >
+                  <Text style={{ color: "#111", fontWeight: "800", fontSize: 13 }}>
+                    Accept
+                  </Text>
+                </Pressable>
+                <Pressable
+                  disabled={dmSettingsBusy}
+                  onPress={() => void applyDmConversationSetting("decline")}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 10,
+                    borderRadius: 10,
+                    backgroundColor: "rgba(255,255,255,0.08)",
+                    alignItems: "center",
+                  }}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>
+                    Decline
+                  </Text>
+                </Pressable>
+                <Pressable
+                  disabled={dmSettingsBusy}
+                  onPress={() => void applyDmConversationSetting("block")}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 10,
+                    borderRadius: 10,
+                    backgroundColor: "rgba(255,107,114,0.18)",
+                    alignItems: "center",
+                  }}
+                >
+                  <Text style={{ color: "#FF6B72", fontWeight: "700", fontSize: 13 }}>
+                    Block
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {dmRequestPending &&
+            !dmConversationSettings?.canAcceptDecline &&
+            dmConversationSettings?.canSend === false ? (
+              <Text
+                style={{
+                  color: "rgba(255,255,255,0.62)",
+                  fontSize: 12,
+                  lineHeight: 17,
+                }}
+              >
+                You’ve reached the 7-message limit. Wait for the recipient to
+                accept.
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+
         {isMessagingDisabledV1 ? (
           <View
             style={{
@@ -13959,11 +14128,27 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           </View>
         ) : (
           <View style={[s.composer, { marginBottom: tabBarH + 8 }]}>
-            <Pressable onPress={pickImage} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
+            <Pressable
+              onPress={pickImage}
+              disabled={dmComposerLocked}
+              style={({ pressed }) => [
+                s.cBtn,
+                pressed ? s.cBtnPressed : null,
+                dmComposerLocked ? { opacity: 0.4 } : null,
+              ]}
+            >
               <Ionicons name="image" size={18} color={GOLD_SOLID} />
             </Pressable>
 
-            <Pressable onPress={pickFile} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
+            <Pressable
+              onPress={pickFile}
+              disabled={dmComposerLocked}
+              style={({ pressed }) => [
+                s.cBtn,
+                pressed ? s.cBtnPressed : null,
+                dmComposerLocked ? { opacity: 0.4 } : null,
+              ]}
+            >
               <Ionicons name="attach" size={18} color={GOLD_SOLID} />
             </Pressable>
 
@@ -13981,7 +14166,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 blurOnSubmit={false}
                 value={draft}
                 onChangeText={setDraft}
-                placeholder="Type a message..."
+                editable={!dmComposerLocked}
+                placeholder={
+                  dmComposerLocked
+                    ? dmRelationshipBlocked
+                      ? "Conversation blocked"
+                      : "Waiting for acceptance..."
+                    : "Type a message..."
+                }
                 autoFocus={false}
                 placeholderTextColor="rgba(255,255,255,0.45)"
                 style={t.input}
@@ -13992,15 +14184,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
             <Pressable
               onPress={onSend}
-              disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading}
+              disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading || dmComposerLocked}
               style={({ pressed }) => [
                 s.sendBtn,
-                !canSend || (isMinistryThread && isSuspended) || attachUploading ? s.sendBtnDisabled : null,
-                canSend && !(isMinistryThread && isSuspended) && !attachUploading ? s.sendBtnActive : null,
-                pressed && canSend && !(isMinistryThread && isSuspended) && !attachUploading ? ({ transform: [{ scale: 0.97 }], opacity: 0.94 } as ViewStyle) : null,
+                !canSend || (isMinistryThread && isSuspended) || attachUploading || dmComposerLocked ? s.sendBtnDisabled : null,
+                canSend && !(isMinistryThread && isSuspended) && !attachUploading && !dmComposerLocked ? s.sendBtnActive : null,
+                pressed && canSend && !(isMinistryThread && isSuspended) && !attachUploading && !dmComposerLocked ? ({ transform: [{ scale: 0.97 }], opacity: 0.94 } as ViewStyle) : null,
               ]}
             >
-              <Ionicons name="send" size={16} color={canSend && !(isMinistryThread && isSuspended) && !attachUploading ? "#FFFFFF" : "rgba(255,255,255,0.30)"} />
+              <Ionicons name="send" size={16} color={canSend && !(isMinistryThread && isSuspended) && !attachUploading && !dmComposerLocked ? "#FFFFFF" : "rgba(255,255,255,0.30)"} />
             </Pressable>
           </View>
         )}

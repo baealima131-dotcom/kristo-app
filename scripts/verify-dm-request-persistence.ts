@@ -1,0 +1,154 @@
+/**
+ * Integration-style durability test for DM request relationship + quota.
+ *
+ * Uses the durable relationship store:
+ * - Neon/Postgres when DATABASE_URL is set
+ * - local data/ JSON when DATABASE_URL is absent (dev only)
+ * - Vercel without DATABASE_URL hard-fails (no /tmp fallback)
+ *
+ * Run (tsx resolves @/ path aliases):
+ *   npx --yes tsx --test scripts/verify-dm-request-persistence.ts
+ */
+import assert from "node:assert/strict";
+import { describe, it, before, after } from "node:test";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { config as loadEnv } from "dotenv";
+
+loadEnv({ path: join(process.cwd(), ".env.local") });
+loadEnv({ path: join(process.cwd(), ".env") });
+
+const ROOM_ID = "dm:audit_user_a::audit_user_b";
+const SENDER = "audit_user_a";
+const RECEIVER = "audit_user_b";
+const CHURCH = "audit_church_storage";
+
+async function loadDb() {
+  return import("@/app/api/_lib/store/directMessageRelationshipDb");
+}
+
+describe("DM request durable persistence", () => {
+  let db: Awaited<ReturnType<typeof loadDb>>;
+
+  before(async () => {
+    db = await loadDb();
+    await db.deleteDirectMessageRelationshipForTests(ROOM_ID);
+  });
+
+  after(async () => {
+    await db.deleteDirectMessageRelationshipForTests(ROOM_ID);
+  });
+
+  it("persists request + quota across module reload (cold-start simulation)", async () => {
+    const backend = db.getDirectMessageRelationshipPersistenceBackend();
+    assert.ok(
+      backend === "neon-postgres" || backend === "local-json-data-dir",
+      `unexpected backend: ${backend}`
+    );
+
+    const created = await db.upsertDirectMessageRelationship({
+      roomId: ROOM_ID,
+      storageChurchId: CHURCH,
+      participantUserIds: [SENDER, RECEIVER],
+      requestStatus: "pending",
+      requestInitiatorUserId: SENDER,
+      sameChurchAtCreation: false,
+    });
+    assert.equal(created.requestStatus, "pending");
+    assert.equal(created.requestInitiatorUserId, SENDER);
+    assert.equal(created.initiatorOutboundCount, 0);
+
+    for (let i = 1; i <= 6; i += 1) {
+      const claim = await db.claimInitiatorOutboundSlotAtomic({
+        roomId: ROOM_ID,
+        senderUserId: SENDER,
+        limit: 7,
+      });
+      assert.equal(claim.ok, true, `claim ${i}`);
+      if (claim.ok) assert.equal(claim.count, i);
+    }
+
+    // Simulate new process / cold start: re-import module with cache bust.
+    const bust = `${pathToFileURL(
+      join(process.cwd(), "app/api/_lib/store/directMessageRelationshipDb.ts")
+    ).href}?t=${Date.now()}`;
+    const reloaded = await import(bust);
+
+    const afterReload = await reloaded.getDirectMessageRelationshipByRoomId(
+      ROOM_ID
+    );
+    assert.ok(afterReload, "relationship must survive reload");
+    assert.equal(afterReload.initiatorOutboundCount, 6);
+    assert.equal(afterReload.requestStatus, "pending");
+
+    const seventh = await reloaded.claimInitiatorOutboundSlotAtomic({
+      roomId: ROOM_ID,
+      senderUserId: SENDER,
+      limit: 7,
+    });
+    assert.equal(seventh.ok, true);
+    if (seventh.ok) assert.equal(seventh.count, 7);
+
+    const eighth = await reloaded.claimInitiatorOutboundSlotAtomic({
+      roomId: ROOM_ID,
+      senderUserId: SENDER,
+      limit: 7,
+    });
+    assert.equal(eighth.ok, false);
+    if (!eighth.ok) {
+      assert.equal(eighth.code, "DM_REQUEST_MESSAGE_LIMIT_REACHED");
+    }
+
+    const accepted = await reloaded.updateDirectMessageRelationshipStatus({
+      roomId: ROOM_ID,
+      actorUserId: RECEIVER,
+      action: "accept",
+    });
+    assert.equal(accepted.ok, true);
+
+    const bust2 = `${pathToFileURL(
+      join(process.cwd(), "app/api/_lib/store/directMessageRelationshipDb.ts")
+    ).href}?t=${Date.now() + 1}`;
+    const reloaded2 = await import(bust2);
+    const afterAccept = await reloaded2.getDirectMessageRelationshipByRoomId(
+      ROOM_ID
+    );
+    assert.ok(afterAccept);
+    assert.equal(afterAccept.requestStatus, "accepted");
+    assert.equal(afterAccept.initiatorOutboundCount, 7);
+
+    await reloaded2.deleteDirectMessageRelationshipForTests(ROOM_ID);
+    await reloaded2.upsertDirectMessageRelationship({
+      roomId: ROOM_ID,
+      storageChurchId: CHURCH,
+      participantUserIds: [SENDER, RECEIVER],
+      requestStatus: "pending",
+      requestInitiatorUserId: SENDER,
+      sameChurchAtCreation: false,
+    });
+    const selfAccept = await reloaded2.updateDirectMessageRelationshipStatus({
+      roomId: ROOM_ID,
+      actorUserId: SENDER,
+      action: "accept",
+    });
+    assert.equal(selfAccept.ok, false);
+    if (!selfAccept.ok) {
+      assert.equal(selfAccept.code, "DM_REQUEST_RECEIVER_ONLY");
+    }
+
+    const dup = await reloaded2.upsertDirectMessageRelationship({
+      roomId: ROOM_ID,
+      storageChurchId: "other_church_attempt",
+      participantUserIds: [SENDER, RECEIVER],
+      requestStatus: "pending",
+      requestInitiatorUserId: SENDER,
+      sameChurchAtCreation: false,
+    });
+    assert.equal(dup.storageChurchId, CHURCH);
+
+    console.log("KRISTO_DM_REQUEST_PERSISTENCE_BACKEND", {
+      backend: reloaded2.getDirectMessageRelationshipPersistenceBackend(),
+      roomId: ROOM_ID,
+    });
+  });
+});

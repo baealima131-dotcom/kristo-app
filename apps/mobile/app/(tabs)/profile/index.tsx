@@ -43,6 +43,7 @@ import { shouldPauseBackgroundProfileRefresh } from "@/src/lib/mediaScheduleFlow
 import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { openDirectMessageThread } from "@/src/lib/directMessagesApi";
 import { getPaymentsState, subscribePayments } from "../../../src/store/paymentsStore";
 import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
@@ -595,6 +596,7 @@ export default function MeScreen() {
   const inviteDisplayCount = inviteItems.length;
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
   const [inviteBusy, setInviteBusy] = useState<"accept" | "reject" | "">("");
+  const [messageBusy, setMessageBusy] = useState(false);
   const [previewLimitModalOpen, setPreviewLimitModalOpen] = useState(false);
   const [identityModal, setIdentityModal] = useState<{ label: string; value: string } | null>(null);
   const [claimedModalOpen, setClaimedModalOpen] = useState(false);
@@ -651,9 +653,22 @@ export default function MeScreen() {
 
   const externalProfileMatchesTarget =
     !isExternalUserProfile ||
+    !externalTargetUserId ||
+    String(profile?.userId || "").trim() ===
+      externalTargetUserId ||
+    String(profile?.userId || "")
+      .trim()
+      .toUpperCase() ===
+      externalTargetUserId.toUpperCase() ||
     String(
-      profile?.userId || ""
-    ).trim() === externalTargetUserId;
+      (profile as any)?.kristoId ||
+        (profile as any)?.publicKristoId ||
+        (profile as any)?.userCode ||
+        ""
+    )
+      .trim()
+      .toUpperCase() ===
+      externalTargetUserId.toUpperCase();
 
   const targetExternalProfile =
     isExternalUserProfile &&
@@ -922,17 +937,16 @@ export default function MeScreen() {
             nextProfile.userId || ""
           ).trim();
 
-        if (
-          responseUserId &&
-          responseUserId !==
-            externalTargetUserId
-        ) {
+        // Accept canonical resolution: route may pass userId or Kristo code;
+        // API returns durable userId. Only reject empty identities.
+        if (!responseUserId) {
           console.warn(
             "KRISTO_EXTERNAL_PROFILE_RESPONSE_REJECTED",
             {
               targetUserId:
                 externalTargetUserId,
               responseUserId,
+              reason: "missing_user_id",
             }
           );
           return;
@@ -2585,19 +2599,79 @@ const user = {
                     {
                       flex: 1,
                       width: "100%",
+                      opacity: messageBusy ? 0.7 : 1,
                     },
                   ]}
-                  onPress={() => {
-                    console.log(
-                      "PROFILE_EXTERNAL_MESSAGE_ONLY",
-                      {
-                        targetUserId:
-                          user.backendUserId ||
-                          userId,
-                      }
-                    );
+                  disabled={messageBusy}
+                  onPress={async () => {
+                    const targetUserId = String(
+                      user.backendUserId || userId || ""
+                    ).trim();
+                    const selfId = String(
+                      session?.userId || sessionUserId || ""
+                    ).trim();
 
-                    router.back();
+                    console.log("PROFILE_EXTERNAL_MESSAGE_OPEN", {
+                      targetUserId,
+                      selfId,
+                    });
+
+                    if (!targetUserId) {
+                      Alert.alert(
+                        "Message",
+                        "This profile is missing a user id."
+                      );
+                      return;
+                    }
+
+                    if (selfId && targetUserId === selfId) {
+                      Alert.alert(
+                        "Message",
+                        "You cannot message yourself."
+                      );
+                      return;
+                    }
+
+                    setMessageBusy(true);
+                    try {
+                      const thread = await openDirectMessageThread({
+                        targetUserId,
+                        churchId: String(
+                          viewedProfileParams.churchId ||
+                            session?.churchId ||
+                            user.churchId ||
+                            ""
+                        ).trim() || undefined,
+                      });
+
+                      router.push({
+                        pathname: "/(tabs)/profile/messages/[id]",
+                        params: {
+                          id: thread.roomId,
+                          title: thread.title || user.name || "Member",
+                          sub: thread.subtitle || "Direct message",
+                          avatar: thread.avatarUri || user.avatar || "",
+                          roomKind: "direct",
+                          peerUserId: thread.peerUserId || targetUserId,
+                          churchId: thread.churchId,
+                        },
+                      } as any);
+                    } catch (error: any) {
+                      const msg = String(
+                        error?.message || error || "Could not open conversation."
+                      );
+                      const blocked =
+                        /blocked/i.test(msg) ||
+                        msg === "conversation_blocked";
+                      Alert.alert(
+                        blocked ? "Conversation blocked" : "Message",
+                        blocked
+                          ? "Messaging is unavailable for this conversation."
+                          : msg
+                      );
+                    } finally {
+                      setMessageBusy(false);
+                    }
                   }}
                   accessibilityRole="button"
                   accessibilityLabel={`Message ${user.name}`}

@@ -176,6 +176,13 @@ export async function markDirectMessageThreadRead(args: {
   ).catch(() => null);
 }
 
+export type DmRelationshipStatus =
+  | "same_church"
+  | "request_pending"
+  | "accepted"
+  | "declined"
+  | "blocked";
+
 export type DirectMessageConversationSettings = {
   roomId: string;
   churchId: string;
@@ -186,6 +193,13 @@ export type DirectMessageConversationSettings = {
   blocked: boolean;
   clearedAt: number;
   deletedAt: number;
+  relationshipStatus?: DmRelationshipStatus;
+  outgoingMessageCount?: number;
+  outgoingMessageLimit?: number;
+  remainingMessages?: number;
+  canSend?: boolean;
+  isRequestInitiator?: boolean;
+  canAcceptDecline?: boolean;
 };
 
 export async function fetchDirectMessageConversationSettings(
@@ -228,7 +242,9 @@ export async function updateDirectMessageConversationSetting(
       | "unblock"
       | "clear"
       | "delete"
-      | "restore";
+      | "restore"
+      | "accept"
+      | "decline";
   }
 ): Promise<DirectMessageConversationSettings> {
   const res: any = await apiPatch(
