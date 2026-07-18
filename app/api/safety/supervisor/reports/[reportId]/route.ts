@@ -2401,13 +2401,24 @@ export async function PATCH(
       }
     );
   } catch (error: any) {
-    const message =
+    const rawMessage =
       String(
         error?.message ||
         "Could not issue this decision."
       );
 
+    const escalatedAgentLock =
+      rawMessage.includes(
+        "SAFETY_ESCALATED_AWAITING_SUPERVISOR"
+      );
+
+    const message =
+      escalatedAgentLock
+        ? "This escalated case awaits Supervisor review. Agents cannot issue another decision."
+        : rawMessage;
+
     const forbidden =
+      escalatedAgentLock ||
       message.includes(
         "not assigned"
       ) ||
@@ -2424,6 +2435,14 @@ export async function PATCH(
       {
         ok: false,
         error: message,
+        ...(escalatedAgentLock
+          ? {
+              details: {
+                code:
+                  "SAFETY_ESCALATED_AWAITING_SUPERVISOR",
+              },
+            }
+          : {}),
       },
       {
         status:

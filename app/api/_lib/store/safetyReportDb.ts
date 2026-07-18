@@ -3728,6 +3728,22 @@ export async function dbIssueSafetyReportDecision(
     );
   }
 
+  /*
+   * Escalation transfers final-decision authority to the
+   * assigned Safety Supervisor. Agents must not issue another
+   * decision (including a second escalate) once the case is
+   * escalated. Supervisors retain an explicit authorized path
+   * to issue the final decision on the same report.
+   */
+  if (
+    existing.status === "escalated" &&
+    actorRole === "agent"
+  ) {
+    throw new Error(
+      "SAFETY_ESCALATED_AWAITING_SUPERVISOR: This escalated case awaits Supervisor review. Agents cannot issue another decision."
+    );
+  }
+
   const isAssignedAgent =
     String(
       existing.assigned_agent_user_id || ""

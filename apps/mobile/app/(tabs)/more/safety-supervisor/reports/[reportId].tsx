@@ -43,6 +43,7 @@ import {
   type SafetyReportSummary,
   type SafetySupervisorDashboardResponse,
 } from "@/src/lib/safetyAdminApi";
+import { resolveApiBase } from "@/src/lib/kristoEnv";
 
 const BG = "#07111F";
 const GOLD = "#F4D06F";
@@ -492,6 +493,17 @@ SafetySupervisorReportDetailsScreen() {
         option:
           DecisionOption
       ) => {
+        console.log(
+          "KRISTO_SAFETY_DECISION_OPTION_PRESS",
+          {
+            reportId,
+            optionType: option.type,
+            reportStatus: report?.status,
+            viewerMode,
+            canResolve: permissions.canResolve,
+          }
+        );
+
         const completed =
           report?.status ===
             "resolved" ||
@@ -499,6 +511,18 @@ SafetySupervisorReportDetailsScreen() {
             "dismissed";
 
         if (completed) {
+          return;
+        }
+
+        if (
+          report?.status ===
+            "escalated" &&
+          viewerMode === "agent"
+        ) {
+          Alert.alert(
+            "Awaiting Supervisor review",
+            "This escalated case awaits Supervisor review. Agents cannot issue another decision."
+          );
           return;
         }
 
@@ -516,6 +540,13 @@ SafetySupervisorReportDetailsScreen() {
         setSelectedDecision(
           option.type
         );
+        console.log(
+          "KRISTO_SAFETY_DECISION_MODAL_OPEN_REQUESTED",
+          {
+            reportId,
+            optionType: option.type,
+          }
+        );
         setDecisionReason("");
         setDecisionNotes("");
         setDecisionConfidence(null);
@@ -532,13 +563,55 @@ SafetySupervisorReportDetailsScreen() {
       ]
     );
 
+  React.useEffect(() => {
+    console.log(
+      "KRISTO_SAFETY_DECISION_MODAL_STATE",
+      {
+        reportId,
+        selectedDecision,
+        visible:
+          selectedDecision !== null,
+      }
+    );
+  }, [
+    reportId,
+    selectedDecision,
+  ]);
+
   const submitDecision =
     React.useCallback(async () => {
+      console.log(
+        "KRISTO_SAFETY_DECISION_SUBMIT_PRESS",
+        {
+          reportId,
+          selectedDecision,
+          issuingDecision,
+          reasonLength:
+            decisionReason.trim()
+              .length,
+          durationDays:
+            decisionDurationDays,
+          confidence:
+            decisionConfidence,
+          apiBase: resolveApiBase(),
+        }
+      );
+
       if (
         !selectedDecision ||
         !reportId ||
         issuingDecision
       ) {
+        console.log(
+          "KRISTO_SAFETY_DECISION_SUBMIT_BLOCKED",
+          {
+            reason: !selectedDecision
+              ? "missing_selected_decision"
+              : !reportId
+                ? "missing_report_id"
+                : "already_issuing",
+          }
+        );
         return;
       }
 
@@ -546,6 +619,12 @@ SafetySupervisorReportDetailsScreen() {
         decisionReason.trim();
 
       if (reason.length < 8) {
+        console.log(
+          "KRISTO_SAFETY_DECISION_SUBMIT_BLOCKED",
+          {
+            reason: "reason_too_short",
+          }
+        );
         Alert.alert(
           "Decision reason required",
           "Enter a clear reason containing at least 8 characters."
@@ -565,6 +644,12 @@ SafetySupervisorReportDetailsScreen() {
           ?.requiresDuration &&
         decisionDurationDays < 1
       ) {
+        console.log(
+          "KRISTO_SAFETY_DECISION_SUBMIT_BLOCKED",
+          {
+            reason: "invalid_duration",
+          }
+        );
         Alert.alert(
           "Duration required",
           "Choose how many days this restriction should remain active."
@@ -575,6 +660,14 @@ SafetySupervisorReportDetailsScreen() {
       setIssuingDecision(true);
 
       try {
+        console.log(
+          "KRISTO_SAFETY_DECISION_API_CALL_START",
+          {
+            reportId,
+            selectedDecision,
+            apiBase: resolveApiBase(),
+          }
+        );
         const result =
           await issueSafetyReportDecision(
             {
@@ -596,6 +689,22 @@ SafetySupervisorReportDetailsScreen() {
                   : undefined,
             }
           );
+
+        console.log(
+          "KRISTO_SAFETY_DECISION_UI_SUCCESS",
+          {
+            reportId,
+            selectedDecision,
+            reportStatus:
+              result.report.status,
+            enforcementType:
+              result.enforcement
+                ?.type,
+            enforcementApplied:
+              result.enforcement
+                ?.applied,
+          }
+        );
 
         setReport(
           result.report
@@ -634,6 +743,17 @@ SafetySupervisorReportDetailsScreen() {
       } catch (
         nextError: any
       ) {
+        console.log(
+          "KRISTO_SAFETY_DECISION_UI_ERROR",
+          {
+            reportId,
+            selectedDecision,
+            message: String(
+              nextError?.message ||
+                nextError
+            ),
+          }
+        );
         Alert.alert(
           "Could not issue decision",
           String(
@@ -2375,7 +2495,8 @@ SafetySupervisorReportDetailsScreen() {
               ) : report.status ===
                 "escalated" &&
                 report.decisionType ===
-                  "escalate" ? (
+                  "escalate" &&
+                isAgentView ? (
                 <View style={styles.escalatedReceipt}>
                   <Ionicons
                     name="arrow-up-circle-outline"
@@ -2396,6 +2517,30 @@ SafetySupervisorReportDetailsScreen() {
                 </View>
               ) : (
                 <>
+                  {report.status ===
+                    "escalated" &&
+                  report.decisionType ===
+                    "escalate" ? (
+                    <View style={styles.escalatedReceipt}>
+                      <Ionicons
+                        name="arrow-up-circle-outline"
+                        size={28}
+                        color={PURPLE}
+                      />
+
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.escalatedReceiptTitle}>
+                          Escalated — Supervisor review
+                        </Text>
+
+                        <Text style={styles.escalatedReceiptText}>
+                          {report.decisionReason ||
+                            "An agent escalated this case. Issue the final Safety decision below."}
+                        </Text>
+                      </View>
+                    </View>
+                  ) : null}
+
                   <View style={styles.decisionIntroCard}>
                     <View style={styles.decisionIntroIcon}>
                       <Ionicons
@@ -2656,9 +2801,23 @@ SafetySupervisorReportDetailsScreen() {
                 value={
                   decisionReason
                 }
-                onChangeText={
-                  setDecisionReason
-                }
+                onChangeText={(
+                  value
+                ) => {
+                  console.log(
+                    "KRISTO_SAFETY_DECISION_REASON_CHANGED",
+                    {
+                      reportId,
+                      selectedDecision,
+                      length:
+                        value.trim()
+                          .length,
+                    }
+                  );
+                  setDecisionReason(
+                    value
+                  );
+                }}
                 placeholder="Explain the facts, evidence and policy basis for this decision…"
                 placeholderTextColor="rgba(255,255,255,0.28)"
                 multiline
