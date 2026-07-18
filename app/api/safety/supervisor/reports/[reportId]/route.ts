@@ -12,6 +12,10 @@ import {
 } from "@/app/api/_lib/store/safetyDb";
 
 import {
+  resolveLegacyDirectMessageTargetUserId,
+} from "@/app/api/_lib/safetyDirectMessageIdentity";
+
+import {
   getProfile,
   getProfileByUserCode,
 } from "@/app/api/auth/_lib/profile";
@@ -642,40 +646,10 @@ async function hydrateSafetyCaseReport(
     }
   );
 
-  const directMessageRoomId =
-    report?.sourceType ===
-    "direct_message"
-      ? firstText(
-          report?.sourceRoomId,
-          report?.sourceId
-        )
-      : "";
-
-  const directMessageParticipants =
-    directMessageRoomId.startsWith(
-      "dm:"
-    )
-      ? directMessageRoomId
-          .slice(3)
-          .split("::")
-          .map((value: unknown) =>
-            String(value || "").trim()
-          )
-          .filter(Boolean)
-      : [];
-
   const directMessageOwnerUserId =
-    directMessageParticipants.length === 2
-      ? (
-          directMessageParticipants.find(
-            (userId: string) =>
-              userId !==
-              firstText(
-                report?.reporterUserId
-              )
-          ) || ""
-        )
-      : "";
+    resolveLegacyDirectMessageTargetUserId(
+      report
+    );
 
   const liveOwnerUserId =
     firstText(
@@ -1969,7 +1943,7 @@ export async function PATCH(
         .trim()
         .toLowerCase();
 
-    const targetUserId =
+    const explicitTargetUserId =
       String(
         currentReport
           .targetOwnerUserId ||
@@ -1977,7 +1951,16 @@ export async function PATCH(
         ""
       ).trim();
 
-    const targetKristoId =
+    const legacyDirectMessageTargetUserId =
+      resolveLegacyDirectMessageTargetUserId(
+        currentReport
+      );
+
+    const targetUserId =
+      explicitTargetUserId ||
+      legacyDirectMessageTargetUserId;
+
+    let targetKristoId =
       String(
         currentReport
           .targetOwnerKristoId ||
@@ -1986,6 +1969,29 @@ export async function PATCH(
       )
         .trim()
         .toUpperCase();
+
+    /*
+     * When identity was recovered from the legacy DM room,
+     * resolve the canonical Kristo ID from the target profile
+     * exactly as the owner-profile resolution does elsewhere.
+     */
+    if (
+      !targetKristoId &&
+      targetUserId &&
+      targetUserId ===
+        legacyDirectMessageTargetUserId
+    ) {
+      const recoveredTargetProfile =
+        await resolveSafetyProfile(
+          targetUserId,
+          ""
+        );
+
+      targetKristoId =
+        resolveProfileKristoId(
+          recoveredTargetProfile
+        );
+    }
 
     const targetType =
       String(
@@ -2131,6 +2137,35 @@ export async function PATCH(
         "suspend_account" ||
       decisionType ===
         "permanent_ban";
+
+    console.log(
+      "KRISTO_SAFETY_DECISION_TARGET_RESOLUTION",
+      {
+        reportId,
+        sourceType:
+          String(
+            currentReport.sourceType || ""
+          )
+            .trim()
+            .toLowerCase(),
+        explicitTargetUserId:
+          explicitTargetUserId || null,
+        legacyDirectMessageTargetUserId:
+          legacyDirectMessageTargetUserId ||
+          null,
+        resolvedTargetUserId:
+          targetUserId || null,
+        sourceRoomId:
+          firstText(
+            currentReport.sourceRoomId,
+            currentReport.sourceId
+          ) || null,
+        reporterUserId:
+          firstText(
+            currentReport.reporterUserId
+          ) || null,
+      }
+    );
 
     if (
       accountDecision &&

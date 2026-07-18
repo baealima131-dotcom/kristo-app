@@ -2961,3 +2961,155 @@ describe("15. Phase 2 integration + regression (Commit #7)", () => {
     assertIncludes(historyDb, "ON CONFLICT (report_id, event_kind, outcome_type)", "idempotent ledger insert");
   });
 });
+
+describe("16. Legacy direct-message decision target recovery", () => {
+  const route = read(
+    "app/api/safety/supervisor/reports/[reportId]/route.ts"
+  );
+
+  it("recovers the reported peer (userB) from dm:userA::userB", async () => {
+    const { resolveLegacyDirectMessageTargetUserId } = await import(
+      "../app/api/_lib/safetyDirectMessageIdentity.ts"
+    );
+    assert.equal(
+      resolveLegacyDirectMessageTargetUserId({
+        sourceType: "direct_message",
+        sourceRoomId: "dm:userA::userB",
+        reporterUserId: "userA",
+        reportedUserId: null,
+        targetOwnerUserId: null,
+      }),
+      "userB"
+    );
+    // Reporter is the other participant => returns the peer.
+    assert.equal(
+      resolveLegacyDirectMessageTargetUserId({
+        sourceType: "direct_message",
+        sourceRoomId: "dm:userA::userB",
+        reporterUserId: "userB",
+      }),
+      "userA"
+    );
+    // Falls back to sourceId when sourceRoomId is empty.
+    assert.equal(
+      resolveLegacyDirectMessageTargetUserId({
+        sourceType: "direct_message",
+        sourceRoomId: "",
+        sourceId: "dm:userA::userB",
+        reporterUserId: "userA",
+      }),
+      "userB"
+    );
+  });
+
+  it("returns '' for malformed, ambiguous, or non-participant rooms", async () => {
+    const { resolveLegacyDirectMessageTargetUserId } = await import(
+      "../app/api/_lib/safetyDirectMessageIdentity.ts"
+    );
+    // Only one participant.
+    assert.equal(
+      resolveLegacyDirectMessageTargetUserId({
+        sourceType: "direct_message",
+        sourceRoomId: "dm:userA",
+        reporterUserId: "userA",
+      }),
+      ""
+    );
+    // Not a dm room at all.
+    assert.equal(
+      resolveLegacyDirectMessageTargetUserId({
+        sourceType: "direct_message",
+        sourceRoomId: "room:userA::userB",
+        reporterUserId: "userA",
+      }),
+      ""
+    );
+    // Three participants (ambiguous).
+    assert.equal(
+      resolveLegacyDirectMessageTargetUserId({
+        sourceType: "direct_message",
+        sourceRoomId: "dm:userA::userB::userC",
+        reporterUserId: "userA",
+      }),
+      ""
+    );
+    // Reporter is not one of the two participants.
+    assert.equal(
+      resolveLegacyDirectMessageTargetUserId({
+        sourceType: "direct_message",
+        sourceRoomId: "dm:userX::userY",
+        reporterUserId: "userA",
+      }),
+      ""
+    );
+    // Non direct-message reports never use this recovery.
+    assert.equal(
+      resolveLegacyDirectMessageTargetUserId({
+        sourceType: "church_feed",
+        sourceRoomId: "dm:userA::userB",
+        reporterUserId: "userA",
+      }),
+      ""
+    );
+  });
+
+  it("uses ONE shared helper in both GET hydration and PATCH resolution", () => {
+    assertIncludes(
+      route,
+      'from "@/app/api/_lib/safetyDirectMessageIdentity"',
+      "route imports shared DM identity helper"
+    );
+    // No second inline parser duplicated in the route.
+    assertNotIncludes(
+      route,
+      ".slice(3)\n          .split(\"::\")",
+      "no duplicated inline dm parser in route"
+    );
+    assertIncludes(
+      route,
+      "const directMessageOwnerUserId =\n    resolveLegacyDirectMessageTargetUserId(",
+      "GET hydration uses shared helper"
+    );
+    assertIncludes(
+      route,
+      "const legacyDirectMessageTargetUserId =\n      resolveLegacyDirectMessageTargetUserId(",
+      "PATCH resolution uses shared helper"
+    );
+  });
+
+  it("PATCH precedence: explicit target first, then legacy DM recovery", () => {
+    assertIncludes(
+      route,
+      "const targetUserId =\n      explicitTargetUserId ||\n      legacyDirectMessageTargetUserId;",
+      "explicit target precedes legacy DM recovery"
+    );
+    // 409 identity guard is preserved for unresolved targets.
+    assertIncludes(
+      route,
+      "The reported account identity could not be resolved.",
+      "existing 409 guard remains"
+    );
+    assertIncludes(
+      route,
+      "KRISTO_SAFETY_DECISION_TARGET_RESOLUTION",
+      "target resolution diagnostic present"
+    );
+  });
+
+  it("resolved account target flows into atomic enforcement write + 200", () => {
+    // A resolved targetUserId proceeds to the atomic decision writer
+    // with account enforcement, which creates the enforcement row and
+    // the route returns ok:true (HTTP 200).
+    assertIncludes(
+      route,
+      "dbIssueSafetyReportDecision",
+      "route calls atomic decision writer"
+    );
+    assertIncludes(
+      route,
+      "accountEnforcement:\n            accountDecision",
+      "account enforcement passed for account decisions"
+    );
+    assertIncludes(route, "ok: true", "route returns ok:true on success");
+  });
+});
