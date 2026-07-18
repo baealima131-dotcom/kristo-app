@@ -1,14 +1,18 @@
 import React from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Image,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import {
+  useFocusEffect,
   useLocalSearchParams,
   useRouter,
 } from "expo-router";
@@ -33,6 +37,78 @@ const TEXT = "#FFFFFF";
 const MUTED =
   "rgba(255,255,255,0.60)";
 
+type Tone =
+  | "amber"
+  | "blue"
+  | "green"
+  | "orange"
+  | "red"
+  | "neutral";
+
+const TONES: Record<
+  Tone,
+  {
+    fg: string;
+    bg: string;
+    border: string;
+  }
+> = {
+  amber: {
+    fg: GOLD,
+    bg: "rgba(244,208,111,0.13)",
+    border: "rgba(244,208,111,0.38)",
+  },
+  blue: {
+    fg: "#93C5FD",
+    bg: "rgba(147,197,253,0.13)",
+    border: "rgba(147,197,253,0.34)",
+  },
+  green: {
+    fg: "#6EE7B7",
+    bg: "rgba(110,231,183,0.13)",
+    border: "rgba(110,231,183,0.34)",
+  },
+  orange: {
+    fg: "#FBBF24",
+    bg: "rgba(251,191,36,0.13)",
+    border: "rgba(251,191,36,0.34)",
+  },
+  red: {
+    fg: "#FB7185",
+    bg: "rgba(251,113,133,0.13)",
+    border: "rgba(251,113,133,0.34)",
+  },
+  neutral: {
+    fg: "rgba(255,255,255,0.82)",
+    bg: "rgba(255,255,255,0.06)",
+    border: "rgba(255,255,255,0.16)",
+  },
+};
+
+type DecisionType =
+  NonNullable<
+    SafetyReportSummary["decisionType"]
+  >;
+
+const ENFORCEMENT_DECISIONS: DecisionType[] =
+  [
+    "warning",
+    "remove_content",
+    "restrict_account",
+    "suspend_account",
+    "permanent_ban",
+  ];
+
+function isEnforcementDecision(
+  decisionType?: DecisionType
+): boolean {
+  return Boolean(
+    decisionType &&
+      ENFORCEMENT_DECISIONS.includes(
+        decisionType
+      )
+  );
+}
 
 function safeSafetyImageUri(
   value: unknown
@@ -55,6 +131,72 @@ function safeSafetyImageUri(
   return supported
     ? uri
     : "";
+}
+
+function formatDateTime(
+  value?: string
+) {
+  const raw =
+    String(value || "").trim();
+
+  if (!raw) {
+    return "";
+  }
+
+  const parsed = new Date(raw);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  return parsed.toLocaleString();
+}
+
+function formatDate(value?: string) {
+  const raw =
+    String(value || "").trim();
+
+  if (!raw) {
+    return "";
+  }
+
+  const parsed = new Date(raw);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  return parsed.toLocaleDateString();
+}
+
+function computeEndsDate(
+  report: SafetyReportSummary
+) {
+  const raw =
+    String(
+      report.decisionAt || ""
+    ).trim();
+
+  const days = Number(
+    report.decisionDurationDays || 0
+  );
+
+  if (!raw || !days || days <= 0) {
+    return "";
+  }
+
+  const start = new Date(raw);
+
+  if (Number.isNaN(start.getTime())) {
+    return "";
+  }
+
+  const end = new Date(
+    start.getTime() +
+      days * 24 * 60 * 60 * 1000
+  );
+
+  return end.toLocaleDateString();
 }
 
 function targetTypeLabel(
@@ -133,30 +275,551 @@ function readableCategory(
     );
 }
 
-function statusLabel(
-  status: SafetyReportSummary["status"]
-) {
-  if (status === "open") {
-    return "Submitted";
-  }
-
-  if (status === "assigned") {
-    return "Assigned";
-  }
-
-  if (status === "in_review") {
-    return "In Review";
-  }
+/*
+ * Large case status badge driven purely from backend state.
+ */
+function caseStatusBadge(
+  report: SafetyReportSummary
+): {
+  label: string;
+  tone: Tone;
+  icon: keyof typeof Ionicons.glyphMap;
+} {
+  const status = report.status;
+  const decision = report.decisionType;
 
   if (status === "resolved") {
-    return "Resolved";
+    if (decision === "no_violation") {
+      return {
+        label: "Closed — No Violation",
+        tone: "neutral",
+        icon: "checkmark-circle-outline",
+      };
+    }
+
+    if (
+      isEnforcementDecision(decision)
+    ) {
+      return {
+        label: "Action Taken",
+        tone: "green",
+        icon: "shield-checkmark",
+      };
+    }
+
+    return {
+      label: "Case Closed",
+      tone: "neutral",
+      icon: "checkmark-done-outline",
+    };
+  }
+
+  if (status === "dismissed") {
+    return {
+      label: "Closed — No Violation",
+      tone: "neutral",
+      icon: "checkmark-circle-outline",
+    };
   }
 
   if (status === "escalated") {
-    return "Escalated";
+    return {
+      label:
+        "Escalated for Further Review",
+      tone: "orange",
+      icon: "alert-circle-outline",
+    };
   }
 
-  return "Closed";
+  if (
+    status === "in_review" ||
+    status === "enforcement_pending" ||
+    status === "recovery_required"
+  ) {
+    return {
+      label: "Under Investigation",
+      tone: "blue",
+      icon: "search-outline",
+    };
+  }
+
+  if (status === "assigned") {
+    return {
+      label: "Assigned to Safety Team",
+      tone: "blue",
+      icon: "people-outline",
+    };
+  }
+
+  return {
+    label: "Waiting for Review",
+    tone: "amber",
+    icon: "hourglass-outline",
+  };
+}
+
+/*
+ * Human-facing outcome for the actual decision.
+ */
+function decisionOutcome(
+  decisionType?: DecisionType
+): {
+  label: string;
+  tone: Tone;
+  icon: keyof typeof Ionicons.glyphMap;
+} | null {
+  if (!decisionType) {
+    return null;
+  }
+
+  if (decisionType === "no_violation") {
+    return {
+      label: "No Violation",
+      tone: "green",
+      icon: "checkmark-circle",
+    };
+  }
+
+  if (decisionType === "warning") {
+    return {
+      label: "Warning Issued",
+      tone: "amber",
+      icon: "warning",
+    };
+  }
+
+  if (
+    decisionType === "remove_content"
+  ) {
+    return {
+      label: "Content Removed",
+      tone: "orange",
+      icon: "trash",
+    };
+  }
+
+  if (
+    decisionType === "restrict_account"
+  ) {
+    return {
+      label: "Account Restricted",
+      tone: "orange",
+      icon: "lock-closed",
+    };
+  }
+
+  if (
+    decisionType === "suspend_account"
+  ) {
+    return {
+      label: "Account Suspended",
+      tone: "orange",
+      icon: "pause-circle",
+    };
+  }
+
+  if (
+    decisionType === "permanent_ban"
+  ) {
+    return {
+      label: "Permanent Ban",
+      tone: "red",
+      icon: "ban",
+    };
+  }
+
+  if (decisionType === "escalate") {
+    return {
+      label:
+        "Escalated for Further Review",
+      tone: "blue",
+      icon: "arrow-up-circle",
+    };
+  }
+
+  return null;
+}
+
+function reviewerRoleLabel(
+  role?: SafetyReportSummary["decidedByRole"]
+) {
+  if (role === "supervisor") {
+    return "a Safety Supervisor";
+  }
+
+  if (role === "agent") {
+    return "a Safety Agent";
+  }
+
+  if (role === "system_admin") {
+    return "a Safety Administrator";
+  }
+
+  return "the Kristo Safety Team";
+}
+
+type TimelineStep = {
+  key: string;
+  label: string;
+  subtitle?: string;
+  timestamp?: string;
+  icon: keyof typeof Ionicons.glyphMap;
+};
+
+/*
+ * Reporter-safe lifecycle. Only completed steps proven by backend
+ * fields are shown. Timestamps are attached only when the API
+ * actually provides them (createdAt / assignedAt / decisionAt /
+ * resolvedAt). AI screening and human-review steps appear only when
+ * the reporter allowlist derived flags prove they occurred.
+ */
+const CANONICAL_STAGE_COUNT = 6;
+
+function buildTimeline(
+  report: SafetyReportSummary
+): TimelineStep[] {
+  const steps: TimelineStep[] = [];
+
+  const underInvestigation =
+    report.status === "in_review" ||
+    report.status ===
+      "enforcement_pending" ||
+    report.status ===
+      "recovery_required";
+
+  const caseClosed =
+    report.status === "resolved" ||
+    report.status === "dismissed";
+
+  steps.push({
+    key: "submitted",
+    label: "Report Submitted",
+    timestamp: report.createdAt,
+    icon: "create-outline",
+  });
+
+  if (report.aiScreeningCompleted) {
+    steps.push({
+      key: "ai",
+      label: "AI Initial Screening",
+      subtitle:
+        "Automated screening completed",
+      icon: "sparkles-outline",
+    });
+  }
+
+  if (report.assignedToSafetyTeam) {
+    steps.push({
+      key: "assigned",
+      label: "Assigned to Safety Team",
+      timestamp: report.assignedAt,
+      icon: "people-outline",
+    });
+  }
+
+  if (
+    underInvestigation ||
+    report.status === "escalated" ||
+    caseClosed
+  ) {
+    steps.push({
+      key: "in_review",
+      label: "Under Investigation",
+      icon: "search-outline",
+    });
+  }
+
+  if (report.status === "escalated") {
+    steps.push({
+      key: "escalated",
+      label:
+        "Escalated for Further Review",
+      timestamp:
+        report.decisionAt ||
+        report.updatedAt,
+      icon: "arrow-up-circle-outline",
+    });
+  }
+
+  if (
+    report.decisionType &&
+    report.decisionType !== "escalate"
+  ) {
+    steps.push({
+      key: "decision",
+      label: "Decision Issued",
+      timestamp: report.decisionAt,
+      icon: "hammer-outline",
+    });
+  }
+
+  if (caseClosed) {
+    steps.push({
+      key: "closed",
+      label:
+        report.status === "dismissed" ||
+        report.decisionType ===
+          "no_violation"
+          ? "Closed — No Violation"
+          : "Case Closed",
+      timestamp:
+        report.resolvedAt ||
+        report.decisionAt,
+      icon: "checkmark-done-outline",
+    });
+  }
+
+  return steps;
+}
+
+function enforcementDetails(
+  report: SafetyReportSummary
+): {
+  title: string;
+  tone: Tone;
+  rows: { label: string; value: string }[];
+  statusLabel: string;
+} | null {
+  const decision = report.decisionType;
+
+  if (
+    !isEnforcementDecision(decision)
+  ) {
+    return null;
+  }
+
+  const date = formatDate(
+    report.decisionAt
+  );
+
+  const ends = computeEndsDate(report);
+
+  const durationText =
+    report.decisionDurationDays &&
+    report.decisionDurationDays > 0
+      ? `${report.decisionDurationDays} Days`
+      : "";
+
+  const rows: {
+    label: string;
+    value: string;
+  }[] = [];
+
+  if (decision === "warning") {
+    if (date) {
+      rows.push({
+        label: "Date",
+        value: date,
+      });
+    }
+
+    rows.push({
+      label: "Effective",
+      value: "Immediately",
+    });
+
+    return {
+      title: "Warning Issued",
+      tone: "amber",
+      rows,
+      statusLabel: "Active",
+    };
+  }
+
+  if (decision === "remove_content") {
+    if (date) {
+      rows.push({
+        label: "Date",
+        value: date,
+      });
+    }
+
+    rows.push({
+      label: "Effective",
+      value: "Immediately",
+    });
+
+    return {
+      title: "Content Removed",
+      tone: "orange",
+      rows,
+      statusLabel: "Completed",
+    };
+  }
+
+  if (decision === "restrict_account") {
+    if (date) {
+      rows.push({
+        label: "Date",
+        value: date,
+      });
+    }
+
+    if (durationText) {
+      rows.push({
+        label: "Duration",
+        value: durationText,
+      });
+    }
+
+    if (ends) {
+      rows.push({
+        label: "Ends",
+        value: ends,
+      });
+    }
+
+    return {
+      title: "Account Restricted",
+      tone: "orange",
+      rows,
+      statusLabel: "Active",
+    };
+  }
+
+  if (decision === "suspend_account") {
+    if (durationText) {
+      rows.push({
+        label: "Duration",
+        value: durationText,
+      });
+    }
+
+    if (date) {
+      rows.push({
+        label: "Started",
+        value: date,
+      });
+    }
+
+    if (ends) {
+      rows.push({
+        label: "Ends",
+        value: ends,
+      });
+    }
+
+    return {
+      title: "Account Suspended",
+      tone: "orange",
+      rows,
+      statusLabel: "Active",
+    };
+  }
+
+  if (date) {
+    rows.push({
+      label: "Date",
+      value: date,
+    });
+  }
+
+  rows.push({
+    label: "Duration",
+    value: "Permanent",
+  });
+
+  return {
+    title: "Permanent Ban",
+    tone: "red",
+    rows,
+    statusLabel: "Permanent",
+  };
+}
+
+function reporterFeedback(
+  report: SafetyReportSummary
+): {
+  tone: Tone;
+  icon: keyof typeof Ionicons.glyphMap;
+  text: string;
+} | null {
+  const concluded =
+    report.status === "resolved" ||
+    report.status === "dismissed";
+
+  if (!concluded) {
+    return null;
+  }
+
+  if (
+    isEnforcementDecision(
+      report.decisionType
+    )
+  ) {
+    return {
+      tone: "green",
+      icon: "heart-outline",
+      text:
+        "Thank you for helping keep the Kristo community safe. Appropriate action has been taken.",
+    };
+  }
+
+  return {
+    tone: "neutral",
+    icon: "shield-outline",
+    text:
+      "We carefully reviewed the available evidence but could not confirm a violation of Kristo policies.",
+  };
+}
+
+function InvestigationSummaryRow({
+  icon,
+  label,
+  done,
+  pendingLabel,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  done: boolean;
+  pendingLabel: string;
+}) {
+  return (
+    <View style={styles.summaryRow}>
+      <View
+        style={[
+          styles.summaryIcon,
+          done
+            ? styles.summaryIconDone
+            : null,
+        ]}
+      >
+        <Ionicons
+          name={icon}
+          size={18}
+          color={
+            done ? "#6EE7B7" : MUTED
+          }
+        />
+      </View>
+
+      <Text style={styles.summaryLabel}>
+        {label}
+      </Text>
+
+      <View
+        style={[
+          styles.summaryChip,
+          done
+            ? styles.summaryChipDone
+            : null,
+        ]}
+      >
+        <Text
+          style={[
+            styles.summaryChipText,
+            done
+              ? styles.summaryChipTextDone
+              : null,
+          ]}
+        >
+          {done
+            ? "Completed"
+            : pendingLabel}
+        </Text>
+      </View>
+    </View>
+  );
 }
 
 export default function MyReportDetailScreen() {
@@ -185,25 +848,57 @@ export default function MyReportDetailScreen() {
   const [loading, setLoading] =
     React.useState(true);
 
+  const [refreshing, setRefreshing] =
+    React.useState(false);
+
   const [error, setError] =
     React.useState("");
 
+  const pulse = React.useRef(
+    new Animated.Value(0)
+  ).current;
+
+  const progressAnim = React.useRef(
+    new Animated.Value(0)
+  ).current;
+
+  const hasLoadedRef =
+    React.useRef(false);
+
   React.useEffect(() => {
-    let cancelled = false;
-
-    setLoading(true);
+    hasLoadedRef.current = false;
+    setReport(null);
     setError("");
+    setLoading(true);
+  }, [reportCode]);
 
-    void fetchMySafetyReportByCode(
-      reportCode
-    )
-      .then((row) => {
-        if (!cancelled) {
-          setReport(row);
+  const loadReport =
+    React.useCallback(
+      async (
+        mode:
+          | "initial"
+          | "focus"
+          | "pull" = "initial"
+      ) => {
+        if (mode === "pull") {
+          setRefreshing(true);
+        } else if (
+          mode === "initial" ||
+          !hasLoadedRef.current
+        ) {
+          setLoading(true);
         }
-      })
-      .catch(() => {
-        if (!cancelled) {
+
+        setError("");
+
+        try {
+          const row =
+            await fetchMySafetyReportByCode(
+              reportCode
+            );
+          setReport(row);
+          hasLoadedRef.current = true;
+        } catch {
           /*
            * Keep the message generic so users
            * cannot determine whether another
@@ -212,18 +907,100 @@ export default function MyReportDetailScreen() {
           setError(
             "Report not found or unavailable."
           );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
+          if (
+            mode === "initial" ||
+            !hasLoadedRef.current
+          ) {
+            setReport(null);
+          }
+        } finally {
           setLoading(false);
+          setRefreshing(false);
         }
-      });
+      },
+      [reportCode]
+    );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      void loadReport(
+        hasLoadedRef.current
+          ? "focus"
+          : "initial"
+      );
+    }, [loadReport])
+  );
+
+  const timeline = React.useMemo(
+    () =>
+      report
+        ? buildTimeline(report)
+        : [],
+    [report]
+  );
+
+  const caseClosed = Boolean(
+    report &&
+      (report.status === "resolved" ||
+        report.status === "dismissed")
+  );
+
+  React.useEffect(() => {
+    if (!report) {
+      return;
+    }
+
+    progressAnim.setValue(0);
+
+    Animated.timing(progressAnim, {
+      toValue: Math.min(
+        timeline.length /
+          CANONICAL_STAGE_COUNT,
+        1
+      ),
+      duration: 900,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [
+    report,
+    timeline.length,
+    progressAnim,
+  ]);
+
+  React.useEffect(() => {
+    if (!report || caseClosed) {
+      pulse.setValue(0);
+      return;
+    }
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 1100,
+          easing: Easing.inOut(
+            Easing.ease
+          ),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 1100,
+          easing: Easing.inOut(
+            Easing.ease
+          ),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    loop.start();
 
     return () => {
-      cancelled = true;
+      loop.stop();
     };
-  }, [reportCode]);
+  }, [report, caseClosed, pulse]);
 
   const canOpenReportedItem =
     Boolean(
@@ -275,39 +1052,43 @@ export default function MyReportDetailScreen() {
       router,
     ]);
 
-  const timeline = report
-    ? [
-        {
-          key: "submitted",
-          label: "Submitted",
-          complete: true,
-        },
-        {
-          key: "assigned",
-          label:
-            "Assigned to Safety Team",
-          complete:
-            report.status !== "open",
-        },
-        {
-          key: "review",
-          label: "Under Review",
-          complete: [
-            "in_review",
-            "resolved",
-            "escalated",
-            "dismissed",
-          ].includes(report.status),
-        },
-        {
-          key: "resolved",
-          label: "Resolved",
-          complete:
-            report.status ===
-            "resolved",
-        },
-      ]
-    : [];
+  const badge = report
+    ? caseStatusBadge(report)
+    : null;
+
+  const outcome = report
+    ? decisionOutcome(
+        report.decisionType
+      )
+    : null;
+
+  const enforcement = report
+    ? enforcementDetails(report)
+    : null;
+
+  const feedback = report
+    ? reporterFeedback(report)
+    : null;
+
+  const pulseScale = pulse.interpolate(
+    {
+      inputRange: [0, 1],
+      outputRange: [1, 2.4],
+    }
+  );
+
+  const pulseOpacity = pulse.interpolate(
+    {
+      inputRange: [0, 1],
+      outputRange: [0.45, 0],
+    }
+  );
+
+  const progressWidth =
+    progressAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: ["0%", "100%"],
+    });
 
   return (
     <View style={styles.screen}>
@@ -359,7 +1140,7 @@ export default function MyReportDetailScreen() {
             color={GOLD}
           />
         </View>
-      ) : error || !report ? (
+      ) : error || !report || !badge ? (
         <View style={styles.center}>
           <Ionicons
             name="lock-closed-outline"
@@ -385,7 +1166,21 @@ export default function MyReportDetailScreen() {
                 insets.bottom + 30,
             },
           ]}
+          showsVerticalScrollIndicator={
+            false
+          }
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                void loadReport("pull");
+              }}
+              tintColor={GOLD}
+              colors={[GOLD]}
+            />
+          }
         >
+          {/* Hero: command code + large status badge */}
           <View style={styles.hero}>
             <Text style={styles.codeLabel}>
               REPORT COMMAND CODE
@@ -395,15 +1190,111 @@ export default function MyReportDetailScreen() {
               {report.reportCode}
             </Text>
 
-            <View style={styles.statusPill}>
-              <Text style={styles.statusText}>
-                {statusLabel(
-                  report.status
-                )}
+            <View
+              style={[
+                styles.badge,
+                {
+                  backgroundColor:
+                    TONES[badge.tone]
+                      .bg,
+                  borderColor:
+                    TONES[badge.tone]
+                      .border,
+                },
+              ]}
+            >
+              <Ionicons
+                name={badge.icon}
+                size={20}
+                color={
+                  TONES[badge.tone].fg
+                }
+              />
+
+              <Text
+                style={[
+                  styles.badgeText,
+                  {
+                    color:
+                      TONES[badge.tone]
+                        .fg,
+                  },
+                ]}
+              >
+                {badge.label}
               </Text>
             </View>
           </View>
 
+          {/* Actual decision outcome */}
+          {outcome ? (
+            <View
+              style={[
+                styles.outcomeCard,
+                {
+                  borderColor:
+                    TONES[outcome.tone]
+                      .border,
+                  backgroundColor:
+                    TONES[outcome.tone]
+                      .bg,
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.outcomeIcon,
+                  {
+                    backgroundColor:
+                      TONES[
+                        outcome.tone
+                      ].bg,
+                    borderColor:
+                      TONES[
+                        outcome.tone
+                      ].border,
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={outcome.icon}
+                  size={30}
+                  color={
+                    TONES[outcome.tone]
+                      .fg
+                  }
+                />
+              </View>
+
+              <View
+                style={{ flex: 1 }}
+              >
+                <Text
+                  style={
+                    styles.outcomeEyebrow
+                  }
+                >
+                  OUTCOME
+                </Text>
+
+                <Text
+                  style={[
+                    styles.outcomeLabel,
+                    {
+                      color:
+                        TONES[
+                          outcome.tone
+                        ].fg,
+                    },
+                  ]}
+                >
+                  {outcome.label}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
+          {/* Reported item */}
           <Pressable
             disabled={!canOpenReportedItem}
             onPress={openReportedItem}
@@ -461,14 +1352,7 @@ export default function MyReportDetailScreen() {
                     ? styles.reportedItemAvatar
                     : null,
                 ]}
-                resizeMode={
-                  report.targetType ===
-                    "post" ||
-                  report.targetType ===
-                    "live"
-                    ? "cover"
-                    : "cover"
-                }
+                resizeMode="cover"
               />
             ) : null}
 
@@ -576,9 +1460,459 @@ export default function MyReportDetailScreen() {
             ) : null}
           </Pressable>
 
-          <View style={styles.details}>
+          {/* Investigation timeline */}
+          <View style={styles.card}>
+            <View
+              style={
+                styles.timelineHeader
+              }
+            >
+              <Text
+                style={styles.sectionTitle}
+              >
+                Investigation Progress
+              </Text>
+
+              <Text
+                style={
+                  styles.timelineStageCount
+                }
+              >
+                {timeline.length}/
+                {CANONICAL_STAGE_COUNT}
+              </Text>
+            </View>
+
+            <View
+              style={styles.progressTrack}
+            >
+              <Animated.View
+                style={[
+                  styles.progressFill,
+                  {
+                    width:
+                      progressWidth,
+                  },
+                ]}
+              />
+            </View>
+
+            <View
+              style={styles.timelineBody}
+            >
+              {timeline.map(
+                (step, index) => {
+                  const isLast =
+                    index ===
+                    timeline.length -
+                      1;
+
+                  const isCurrent =
+                    isLast &&
+                    !caseClosed;
+
+                  return (
+                    <View
+                      key={step.key}
+                      style={
+                        styles.timelineRow
+                      }
+                    >
+                      <View
+                        style={
+                          styles.timelineRail
+                        }
+                      >
+                        {isCurrent ? (
+                          <Animated.View
+                            style={[
+                              styles.timelinePulse,
+                              {
+                                opacity:
+                                  pulseOpacity,
+                                transform:
+                                  [
+                                    {
+                                      scale:
+                                        pulseScale,
+                                    },
+                                  ],
+                              },
+                            ]}
+                          />
+                        ) : null}
+
+                        <View
+                          style={[
+                            styles.timelineDot,
+                            isCurrent
+                              ? styles.timelineDotCurrent
+                              : styles.timelineDotDone,
+                          ]}
+                        >
+                          <Ionicons
+                            name={
+                              isCurrent
+                                ? step.icon
+                                : "checkmark"
+                            }
+                            size={13}
+                            color={
+                              isCurrent
+                                ? GOLD
+                                : "#07111F"
+                            }
+                          />
+                        </View>
+
+                        {!isLast ? (
+                          <View
+                            style={
+                              styles.timelineLine
+                            }
+                          />
+                        ) : null}
+                      </View>
+
+                      <View
+                        style={
+                          styles.timelineContent
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.timelineLabel,
+                            isCurrent
+                              ? styles.timelineLabelCurrent
+                              : null,
+                          ]}
+                        >
+                          {step.label}
+                        </Text>
+
+                        {step.subtitle ? (
+                          <Text
+                            style={
+                              styles.timelineSubtitle
+                            }
+                          >
+                            {
+                              step.subtitle
+                            }
+                          </Text>
+                        ) : null}
+
+                        {formatDateTime(
+                          step.timestamp
+                        ) ? (
+                          <Text
+                            style={
+                              styles.timelineTime
+                            }
+                          >
+                            {formatDateTime(
+                              step.timestamp
+                            )}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                }
+              )}
+            </View>
+          </View>
+
+          {/* Investigation summary — only proven backend signals */}
+          {(
+            report.aiScreeningCompleted ||
+            report.assignedToSafetyTeam ||
+            report.humanReviewCompleted ||
+            report.status ===
+              "in_review" ||
+            report.status ===
+              "escalated" ||
+            report.status ===
+              "resolved" ||
+            report.status ===
+              "dismissed"
+          ) ? (
+            <View style={styles.card}>
+              <Text
+                style={
+                  styles.sectionTitle
+                }
+              >
+                Investigation Summary
+              </Text>
+
+              {report.aiScreeningCompleted ? (
+                <InvestigationSummaryRow
+                  icon="sparkles-outline"
+                  label="AI initial screening"
+                  done
+                  pendingLabel="Pending"
+                />
+              ) : null}
+
+              {report.assignedToSafetyTeam ? (
+                <InvestigationSummaryRow
+                  icon="people-outline"
+                  label="Assigned to Safety Team"
+                  done
+                  pendingLabel="Pending"
+                />
+              ) : null}
+
+              {(
+                report.status ===
+                  "in_review" ||
+                report.status ===
+                  "escalated" ||
+                report.status ===
+                  "resolved" ||
+                report.status ===
+                  "dismissed" ||
+                report.humanReviewCompleted
+              ) ? (
+                <InvestigationSummaryRow
+                  icon="search-outline"
+                  label="Under investigation"
+                  done
+                  pendingLabel="Pending"
+                />
+              ) : null}
+
+              {report.humanReviewCompleted ? (
+                <InvestigationSummaryRow
+                  icon="reader-outline"
+                  label="Human review completed"
+                  done
+                  pendingLabel="Pending"
+                />
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* Official Safety Decision */}
+          {report.decisionType ? (
+            <View style={styles.card}>
+              <Text
+                style={
+                  styles.sectionTitle
+                }
+              >
+                Official Safety Decision
+              </Text>
+
+              <Text
+                style={
+                  styles.decisionReasonLabel
+                }
+              >
+                DECISION EXPLANATION
+              </Text>
+
+              <Text
+                style={
+                  styles.decisionReason
+                }
+              >
+                {String(
+                  report.decisionReason ||
+                    ""
+                ).trim() ||
+                  "The Safety Team reviewed this report and recorded an official decision. No additional explanation was shared."}
+              </Text>
+
+              <View
+                style={
+                  styles.decisionMetaRow
+                }
+              >
+                <Ionicons
+                  name="shield-checkmark-outline"
+                  size={16}
+                  color={MUTED}
+                />
+
+                <Text
+                  style={
+                    styles.decisionMetaText
+                  }
+                >
+                  Reviewed by{" "}
+                  {reviewerRoleLabel(
+                    report.decidedByRole
+                  )}
+                </Text>
+              </View>
+
+              {formatDate(
+                report.decisionAt
+              ) ? (
+                <View
+                  style={
+                    styles.decisionMetaRow
+                  }
+                >
+                  <Ionicons
+                    name="calendar-outline"
+                    size={16}
+                    color={MUTED}
+                  />
+
+                  <Text
+                    style={
+                      styles.decisionMetaText
+                    }
+                  >
+                    Decision recorded{" "}
+                    {formatDate(
+                      report.decisionAt
+                    )}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* Enforcement details */}
+          {enforcement ? (
+            <View
+              style={[
+                styles.enforcementCard,
+                {
+                  borderColor:
+                    TONES[
+                      enforcement.tone
+                    ].border,
+                  backgroundColor:
+                    TONES[
+                      enforcement.tone
+                    ].bg,
+                },
+              ]}
+            >
+              <View
+                style={
+                  styles.enforcementHeader
+                }
+              >
+                <Text
+                  style={[
+                    styles.enforcementTitle,
+                    {
+                      color:
+                        TONES[
+                          enforcement
+                            .tone
+                        ].fg,
+                    },
+                  ]}
+                >
+                  {enforcement.title}
+                </Text>
+
+                <View
+                  style={[
+                    styles.enforcementStatusPill,
+                    {
+                      borderColor:
+                        TONES[
+                          enforcement
+                            .tone
+                        ].border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.enforcementStatusText,
+                      {
+                        color:
+                          TONES[
+                            enforcement
+                              .tone
+                          ].fg,
+                      },
+                    ]}
+                  >
+                    {
+                      enforcement.statusLabel
+                    }
+                  </Text>
+                </View>
+              </View>
+
+              {enforcement.rows.map(
+                (row) => (
+                  <View
+                    key={row.label}
+                    style={
+                      styles.enforcementRow
+                    }
+                  >
+                    <Text
+                      style={
+                        styles.enforcementRowLabel
+                      }
+                    >
+                      {row.label}
+                    </Text>
+
+                    <Text
+                      style={
+                        styles.enforcementRowValue
+                      }
+                    >
+                      {row.value}
+                    </Text>
+                  </View>
+                )
+              )}
+            </View>
+          ) : null}
+
+          {/* Reporter feedback */}
+          {feedback ? (
+            <View
+              style={[
+                styles.feedbackCard,
+                {
+                  borderColor:
+                    TONES[
+                      feedback.tone
+                    ].border,
+                  backgroundColor:
+                    TONES[feedback.tone]
+                      .bg,
+                },
+              ]}
+            >
+              <Ionicons
+                name={feedback.icon}
+                size={24}
+                color={
+                  TONES[feedback.tone]
+                    .fg
+                }
+              />
+
+              <Text
+                style={
+                  styles.feedbackText
+                }
+              >
+                {feedback.text}
+              </Text>
+            </View>
+          ) : null}
+
+          {/* Report details */}
+          <View style={styles.card}>
             <Text style={styles.sectionTitle}>
-              Report details
+              Report Details
             </Text>
 
             <Text style={styles.detailLabel}>
@@ -586,80 +1920,52 @@ export default function MyReportDetailScreen() {
             </Text>
 
             <Text style={styles.detailValue}>
-              {report.category}
+              {readableCategory(
+                report.category
+              )}
             </Text>
+
+            {String(
+              report.description || ""
+            ).trim() ? (
+              <>
+                <Text
+                  style={
+                    styles.detailLabel
+                  }
+                >
+                  Your description
+                </Text>
+
+                <Text
+                  style={
+                    styles.detailValuePlain
+                  }
+                >
+                  {report.description}
+                </Text>
+              </>
+            ) : null}
 
             <Text style={styles.detailLabel}>
               Submitted
             </Text>
 
-            <Text style={styles.detailValue}>
-              {new Date(
+            <Text style={styles.detailValuePlain}>
+              {formatDateTime(
                 report.createdAt
-              ).toLocaleString()}
+              ) || "—"}
             </Text>
 
             <Text style={styles.detailLabel}>
               Last updated
             </Text>
 
-            <Text style={styles.detailValue}>
-              {new Date(
+            <Text style={styles.detailValuePlain}>
+              {formatDateTime(
                 report.updatedAt
-              ).toLocaleString()}
+              ) || "—"}
             </Text>
-          </View>
-
-          <View style={styles.timelineCard}>
-            <Text style={styles.sectionTitle}>
-              Progress
-            </Text>
-
-            {timeline.map(
-              (step, index) => (
-                <View
-                  key={step.key}
-                  style={styles.timelineRow}
-                >
-                  <View
-                    style={[
-                      styles.timelineDot,
-                      step.complete &&
-                        styles.timelineDotComplete,
-                    ]}
-                  >
-                    {step.complete ? (
-                      <Ionicons
-                        name="checkmark"
-                        size={14}
-                        color="#07111F"
-                      />
-                    ) : null}
-                  </View>
-
-                  <Text
-                    style={[
-                      styles.timelineText,
-                      step.complete &&
-                        styles.timelineTextComplete,
-                    ]}
-                  >
-                    {step.label}
-                  </Text>
-
-                  {index <
-                  timeline.length - 1 ? (
-                    <View
-                      style={[
-                        styles.timelineLine,
-                        step.complete &&
-                          styles.timelineLineComplete,
-                      ]}
-                    />
-                  ) : null}
-                </View>
-              )
-            )}
           </View>
 
           <View style={styles.privacyCard}>
@@ -776,19 +2082,52 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
 
-  statusPill: {
-    marginTop: 17,
+  badge: {
+    marginTop: 18,
     alignSelf: "flex-start",
-    paddingHorizontal: 13,
-    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingHorizontal: 15,
+    paddingVertical: 11,
     borderRadius: 999,
-    backgroundColor:
-      "rgba(147,197,253,0.13)",
+    borderWidth: 1,
   },
 
-  statusText: {
-    color: "#93C5FD",
-    fontSize: 11,
+  badgeText: {
+    fontSize: 14,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+
+  outcomeCard: {
+    padding: 18,
+    borderRadius: 23,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 15,
+  },
+
+  outcomeIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  outcomeEyebrow: {
+    color: MUTED,
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.1,
+  },
+
+  outcomeLabel: {
+    marginTop: 5,
+    fontSize: 21,
     fontWeight: "900",
   },
 
@@ -946,7 +2285,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  details: {
+  card: {
     padding: 20,
     borderRadius: 23,
     borderWidth: 1,
@@ -957,14 +2296,279 @@ const styles = StyleSheet.create({
   },
 
   sectionTitle: {
-    marginBottom: 15,
     color: TEXT,
     fontSize: 19,
     fontWeight: "900",
   },
 
+  timelineHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  timelineStageCount: {
+    color: GOLD,
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+
+  progressTrack: {
+    marginTop: 14,
+    height: 7,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor:
+      "rgba(255,255,255,0.09)",
+  },
+
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: GOLD,
+  },
+
+  timelineBody: {
+    marginTop: 20,
+  },
+
+  timelineRow: {
+    flexDirection: "row",
+    minHeight: 62,
+  },
+
+  timelineRail: {
+    width: 26,
+    alignItems: "center",
+  },
+
+  timelinePulse: {
+    position: "absolute",
+    top: 0,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: GOLD,
+  },
+
+  timelineDot: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2,
+  },
+
+  timelineDotDone: {
+    backgroundColor: GOLD,
+  },
+
+  timelineDotCurrent: {
+    backgroundColor:
+      "rgba(244,208,111,0.16)",
+    borderWidth: 2,
+    borderColor: GOLD,
+  },
+
+  timelineLine: {
+    flex: 1,
+    width: 2,
+    marginTop: 2,
+    marginBottom: -4,
+    alignSelf: "center",
+    backgroundColor:
+      "rgba(244,208,111,0.4)",
+  },
+
+  timelineContent: {
+    flex: 1,
+    marginLeft: 13,
+    paddingBottom: 18,
+  },
+
+  timelineLabel: {
+    color: TEXT,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+
+  timelineLabelCurrent: {
+    color: GOLD,
+    fontWeight: "900",
+  },
+
+  timelineSubtitle: {
+    marginTop: 3,
+    color: MUTED,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
+  },
+
+  timelineTime: {
+    marginTop: 4,
+    color: "rgba(255,255,255,0.45)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  summaryRow: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+
+  summaryIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor:
+      "rgba(255,255,255,0.06)",
+  },
+
+  summaryIconDone: {
+    backgroundColor:
+      "rgba(110,231,183,0.13)",
+  },
+
+  summaryLabel: {
+    flex: 1,
+    color: TEXT,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+
+  summaryChip: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor:
+      "rgba(255,255,255,0.07)",
+  },
+
+  summaryChipDone: {
+    backgroundColor:
+      "rgba(110,231,183,0.15)",
+  },
+
+  summaryChipText: {
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+
+  summaryChipTextDone: {
+    color: "#6EE7B7",
+  },
+
+  decisionReasonLabel: {
+    marginTop: 16,
+    color: MUTED,
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+
+  decisionReason: {
+    marginTop: 7,
+    color: "rgba(255,255,255,0.9)",
+    fontSize: 14,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+
+  decisionMetaRow: {
+    marginTop: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  decisionMetaText: {
+    flex: 1,
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  enforcementCard: {
+    padding: 20,
+    borderRadius: 23,
+    borderWidth: 1,
+  },
+
+  enforcementHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  enforcementTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  enforcementStatusPill: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+
+  enforcementStatusText: {
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+  },
+
+  enforcementRow: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  enforcementRowLabel: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+
+  enforcementRowValue: {
+    color: TEXT,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  feedbackCard: {
+    padding: 18,
+    borderRadius: 22,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+  },
+
+  feedbackText: {
+    flex: 1,
+    color: "rgba(255,255,255,0.86)",
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "700",
+  },
+
   detailLabel: {
-    marginTop: 10,
+    marginTop: 14,
     color: MUTED,
     fontSize: 10,
     fontWeight: "900",
@@ -979,67 +2583,12 @@ const styles = StyleSheet.create({
     textTransform: "capitalize",
   },
 
-  timelineCard: {
-    padding: 20,
-    borderRadius: 23,
-    borderWidth: 1,
-    borderColor:
-      "rgba(255,255,255,0.11)",
-    backgroundColor:
-      "rgba(255,255,255,0.045)",
-  },
-
-  timelineRow: {
-    minHeight: 57,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    position: "relative",
-  },
-
-  timelineDot: {
-    width: 25,
-    height: 25,
-    borderRadius: 13,
-    borderWidth: 2,
-    borderColor:
-      "rgba(255,255,255,0.24)",
-    backgroundColor: BG,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 2,
-  },
-
-  timelineDotComplete: {
-    borderColor: GOLD,
-    backgroundColor: GOLD,
-  },
-
-  timelineText: {
-    marginLeft: 12,
-    paddingTop: 3,
-    color: MUTED,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-
-  timelineTextComplete: {
+  detailValuePlain: {
+    marginTop: 4,
     color: TEXT,
-    fontWeight: "900",
-  },
-
-  timelineLine: {
-    position: "absolute",
-    left: 11,
-    top: 25,
-    bottom: -1,
-    width: 2,
-    backgroundColor:
-      "rgba(255,255,255,0.12)",
-  },
-
-  timelineLineComplete: {
-    backgroundColor:
-      "rgba(244,208,111,0.55)",
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: "700",
   },
 
   privacyCard: {

@@ -3113,3 +3113,383 @@ describe("16. Legacy direct-message decision target recovery", () => {
     assertIncludes(route, "ok: true", "route returns ok:true on success");
   });
 });
+
+describe("17. Reporter report status privacy projection", () => {
+  const route = read(
+    "app/api/safety/my-reports/route.ts"
+  );
+
+  it("redacts every reporter response through the allowlist projection", () => {
+    assertIncludes(
+      route,
+      "function redactSafetyReportForReporter",
+      "reporter projection helper defined"
+    );
+    assertIncludes(
+      route,
+      "report:\n        redactSafetyReportForReporter(",
+      "single report response is redacted"
+    );
+    assertIncludes(
+      route,
+      "reports: reports.map(\n      redactSafetyReportForReporter\n    )",
+      "list response is redacted"
+    );
+  });
+
+  it("never exposes internal notes, internal scores, AI confidence, or moderator identities", () => {
+    // Assert these are never emitted as response object keys.
+    assertNotIncludes(
+      route,
+      "decisionNotes:",
+      "internal investigation notes withheld"
+    );
+    assertNotIncludes(
+      route,
+      "decisionConfidence:",
+      "internal decision score withheld"
+    );
+    assertNotIncludes(
+      route,
+      "aiConfidence:",
+      "AI confidence withheld"
+    );
+    assertNotIncludes(
+      route,
+      "decidedByUserId:",
+      "decider identity withheld"
+    );
+    assertNotIncludes(
+      route,
+      "assignedSupervisorUserId:",
+      "supervisor identity withheld"
+    );
+    assertNotIncludes(
+      route,
+      "assignedAgentUserId:",
+      "agent identity withheld"
+    );
+  });
+
+  it("exposes only privacy-safe derived investigation signals", () => {
+    assertIncludes(
+      route,
+      "assignedToSafetyTeam",
+      "assigned-team flag exposed"
+    );
+    assertIncludes(
+      route,
+      "aiScreeningCompleted",
+      "ai-screening flag exposed"
+    );
+    assertIncludes(
+      route,
+      "humanReviewCompleted",
+      "human-review flag exposed"
+    );
+    assertIncludes(
+      route,
+      "decidedByRole: report.decidedByRole",
+      "reviewer role (not identity) exposed"
+    );
+  });
+});
+
+describe("18. Runtime Safety enforcement gaps closed", () => {
+  const rbac = read("app/api/_lib/rbac.ts");
+  const roomMessages = read(
+    "app/api/church/room-messages/route.ts"
+  );
+  const live = read("app/api/church/live/route.ts");
+  const livekit = read("app/api/livekit/token/route.ts");
+  const upload = read(
+    "app/api/church/room-attachments/upload/route.ts"
+  );
+  const legacyLogin = read(
+    "app/api/auth/login/route.ts"
+  );
+
+  it("exports one canonical enforcement assertion (no second implementation)", () => {
+    assertIncludes(
+      rbac,
+      "export async function assertSafetyEnforcementAllows",
+      "canonical assertion exported"
+    );
+    assertIncludes(
+      rbac,
+      "export async function assertSafetyAllowsAuthentication",
+      "canonical auth assertion exported"
+    );
+    assertIncludes(
+      rbac,
+      'code: "SAFETY_ACCOUNT_RESTRICTED"',
+      "restricted code"
+    );
+    assertIncludes(
+      rbac,
+      'code: "SAFETY_ACCOUNT_SUSPENDED"',
+      "suspended code"
+    );
+    assertIncludes(
+      rbac,
+      'code: "SAFETY_PERMANENT_BAN"',
+      "permanent ban code"
+    );
+  });
+
+  it("room-messages GET/POST/PATCH/DELETE call the canonical assertion", () => {
+    assertIncludes(
+      roomMessages,
+      'from "@/app/api/_lib/rbac"',
+      "room-messages imports rbac"
+    );
+    const calls =
+      roomMessages.split(
+        "assertSafetyEnforcementAllows"
+      ).length - 1;
+    assert.ok(
+      calls >= 4,
+      `room-messages must call assertion on each method (found ${calls})`
+    );
+  });
+
+  it("church/live GET/POST/PATCH call the canonical assertion", () => {
+    assertIncludes(
+      live,
+      "assertSafetyEnforcementAllows",
+      "live imports/uses assertion"
+    );
+    const calls =
+      live.split(
+        "assertSafetyEnforcementAllows"
+      ).length - 1;
+    assert.ok(
+      calls >= 3,
+      `live must call assertion on GET/POST/PATCH (found ${calls})`
+    );
+  });
+
+  it("livekit blocks publish for restricted; viewer-only uses GET policy", () => {
+    assertIncludes(
+      livekit,
+      "assertSafetyEnforcementAllows",
+      "livekit uses canonical assertion"
+    );
+    assertIncludes(
+      livekit,
+      'allowedToPublish ? "POST" : "GET"',
+      "publish treated as write; viewer as read"
+    );
+  });
+
+  it("room-attachments upload and legacy login are gated", () => {
+    assertIncludes(
+      upload,
+      "assertSafetyEnforcementAllows",
+      "upload gated"
+    );
+    assertIncludes(
+      legacyLogin,
+      "assertSafetyAllowsAuthentication",
+      "legacy login uses auth enforcement"
+    );
+    const loginCalls =
+      legacyLogin.split(
+        "assertSafetyAllowsAuthentication"
+      ).length - 1;
+    assert.ok(
+      loginCalls >= 2,
+      `legacy login must gate password session + OTP verify (found ${loginCalls})`
+    );
+  });
+});
+
+describe("19. Escalated case agent lock", () => {
+  const decisionDb = read(
+    "app/api/_lib/store/safetyReportDb.ts"
+  );
+  const route = read(
+    "app/api/safety/supervisor/reports/[reportId]/route.ts"
+  );
+  const screen = read(
+    "apps/mobile/app/(tabs)/more/safety-supervisor/reports/[reportId].tsx"
+  );
+
+  it("DB rejects agent re-decision on escalated status", () => {
+    assertIncludes(
+      decisionDb,
+      'existing.status === "escalated" &&\n    actorRole === "agent"',
+      "agent escalated lock"
+    );
+    assertIncludes(
+      decisionDb,
+      "SAFETY_ESCALATED_AWAITING_SUPERVISOR",
+      "stable escalation lock code"
+    );
+  });
+
+  it("PATCH maps escalated agent lock to 403 with stable code", () => {
+    assertIncludes(
+      route,
+      "SAFETY_ESCALATED_AWAITING_SUPERVISOR",
+      "route recognizes lock code"
+    );
+    assertIncludes(
+      route,
+      "escalatedAgentLock",
+      "route escalated lock branch"
+    );
+  });
+
+  it("agent UI shows escalation receipt; supervisor retains decide path", () => {
+    assertIncludes(
+      screen,
+      'report.status ===\n                "escalated" &&\n                report.decisionType ===\n                  "escalate" &&\n                isAgentView',
+      "agent-only escalated receipt gate"
+    );
+    assertIncludes(
+      screen,
+      "Escalated — Supervisor review",
+      "supervisor explicit decide path copy"
+    );
+  });
+
+  it("escalate itself still does not create account enforcement", () => {
+    assertIncludes(
+      route,
+      "decisionType === \"warning\" ||\n      decisionType ===\n        \"restrict_account\" ||\n      decisionType ===\n        \"suspend_account\" ||\n      decisionType ===\n        \"permanent_ban\"",
+      "accountDecision excludes escalate"
+    );
+  });
+});
+
+describe("20. Mobile Safety enforcement UX bus", () => {
+  const api = read("apps/mobile/src/lib/kristoApi.ts");
+  const bus = read(
+    "apps/mobile/src/lib/safetyAccountEnforcement.ts"
+  );
+  const gate = read(
+    "apps/mobile/src/components/SafetyAccountEnforcementGate.tsx"
+  );
+  const layout = read("apps/mobile/app/_layout.tsx");
+  const reporter = read(
+    "apps/mobile/app/(tabs)/more/my-reports/[reportCode].tsx"
+  );
+
+  it("normalizes details.code and notifies the UX bus from httpError", () => {
+    assertIncludes(
+      api,
+      "notifySafetyAccountEnforcement",
+      "kristoApi notifies Safety bus"
+    );
+    assertIncludes(
+      bus,
+      "SAFETY_ACCOUNT_RESTRICTED",
+      "restriction code"
+    );
+    assertIncludes(
+      bus,
+      "SAFETY_ACCOUNT_SUSPENDED",
+      "suspension code"
+    );
+    assertIncludes(
+      bus,
+      "SAFETY_PERMANENT_BAN",
+      "ban code"
+    );
+  });
+
+  it("mounts one global gate and keeps reporter notes/scores out of UI", () => {
+    assertIncludes(
+      layout,
+      "SafetyAccountEnforcementGate",
+      "gate mounted in root layout"
+    );
+    assertIncludes(
+      gate,
+      "Your account is temporarily restricted.",
+      "restriction copy"
+    );
+    assertNotIncludes(
+      reporter,
+      "decisionNotes",
+      "reporter screen never reads decisionNotes"
+    );
+    assertNotIncludes(
+      reporter,
+      "decisionConfidence",
+      "reporter screen never reads confidence"
+    );
+    assertIncludes(
+      reporter,
+      "Escalated for Further Review",
+      "reporter escalated outcome"
+    );
+    assertIncludes(
+      reporter,
+      "RefreshControl",
+      "reporter pull-to-refresh"
+    );
+    assertIncludes(
+      reporter,
+      "useFocusEffect",
+      "reporter focus refresh"
+    );
+  });
+
+  it("normalizeSafetyAccountEnforcementError is behavioral for all three codes", async () => {
+    const {
+      normalizeSafetyAccountEnforcementError,
+    } = await import(
+      "../apps/mobile/src/lib/safetyAccountEnforcement.ts"
+    );
+
+    const restricted =
+      normalizeSafetyAccountEnforcementError({
+        ok: false,
+        error: "restricted",
+        details: {
+          code: "SAFETY_ACCOUNT_RESTRICTED",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        },
+      });
+    assert.equal(
+      restricted?.code,
+      "SAFETY_ACCOUNT_RESTRICTED"
+    );
+    assert.equal(
+      restricted?.expiresAt,
+      "2099-01-01T00:00:00.000Z"
+    );
+
+    const suspended =
+      normalizeSafetyAccountEnforcementError({
+        details: {
+          code: "SAFETY_ACCOUNT_SUSPENDED",
+          expiresAt: "2099-02-01T00:00:00.000Z",
+        },
+      });
+    assert.equal(
+      suspended?.code,
+      "SAFETY_ACCOUNT_SUSPENDED"
+    );
+
+    const banned =
+      normalizeSafetyAccountEnforcementError({
+        details: {
+          code: "SAFETY_PERMANENT_BAN",
+        },
+      });
+    assert.equal(
+      banned?.code,
+      "SAFETY_PERMANENT_BAN"
+    );
+
+    assert.equal(
+      normalizeSafetyAccountEnforcementError({
+        details: { code: "OTHER" },
+      }),
+      null
+    );
+  });
+});
