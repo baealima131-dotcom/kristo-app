@@ -634,6 +634,423 @@ describe("5. Case Intelligence Engine — real-data gates only", () => {
       assert.equal(result.assessment.requiresHumanReview, true);
     }
   });
+
+  it("wires Safety Intelligence ledger + timelines into Case Intelligence", () => {
+    const historyDb = read(
+      "app/api/_lib/store/safetyIntelligenceHistoryDb.ts"
+    );
+    const historyPure = read(
+      "app/api/_lib/safetyIntelligenceHistory.ts"
+    );
+    assertIncludes(
+      historyPure,
+      "isFinalizedLearningDecisionType",
+      "pure helpers module"
+    );
+    assertIncludes(
+      historyDb,
+      "kristo_safety_intelligence_events",
+      "ledger table"
+    );
+    assertIncludes(
+      historyDb,
+      "idx_safety_intel_events_report_kind_outcome",
+      "unique ledger constraint"
+    );
+    assertIncludes(
+      historyDb,
+      "ON CONFLICT (report_id, event_kind, outcome_type)",
+      "conflict-safe insert"
+    );
+    assertIncludes(
+      historyDb,
+      "kristo_safety_intelligence_meta",
+      "versioned backfill meta"
+    );
+    assertIncludes(
+      historyDb,
+      "SAFETY_INTEL_BACKFILL_META_KEY",
+      "backfill version key"
+    );
+    assertIncludes(
+      historyDb,
+      "SAFETY_INTEL_BACKFILL_BATCH_SIZE",
+      "batched backfill"
+    );
+    assertIncludes(
+      historyDb,
+      "ensureSafetyIntelligenceEventsSchema",
+      "schema ensure"
+    );
+    assertIncludes(
+      historyDb,
+      "dbBackfillSafetyIntelligenceEvents",
+      "backfill"
+    );
+    assertIncludes(
+      historyDb,
+      "dbGetSafetyTargetIntelligenceTimeline",
+      "target timeline"
+    );
+    assertIncludes(
+      historyDb,
+      "dbGetSafetyReporterIntelligenceTimeline",
+      "reporter timeline"
+    );
+    assertIncludes(
+      historyDb,
+      "summarizeTargetFinalizedOutcomes",
+      "target finalized-only summary"
+    );
+    assertIncludes(
+      historyDb,
+      "buildReporterAccuracyProgression",
+      "reporter accuracy helper"
+    );
+    assertIncludes(
+      historyPure,
+      "appeal_upheld",
+      "appeal outcome reserved"
+    );
+    assertNotIncludes(
+      historyDb,
+      "dbRecordAppeal",
+      "no appeals feature writer"
+    );
+    assertIncludes(
+      decisionDb,
+      "dbRecordSafetyIntelligenceFromDecision",
+      "decision write records ledger"
+    );
+    assertIncludes(
+      decisionDb,
+      "KRISTO_SAFETY_INTEL_EVENT_WRITE_FAILED",
+      "ledger failure is logged"
+    );
+    assertIncludes(
+      decisionDb,
+      "Failures must not roll back the decision commit",
+      "ledger failure isolated"
+    );
+    assertIncludes(
+      decisionDb,
+      "WITH updated AS (",
+      "atomic decision CTE unchanged"
+    );
+    assertIncludes(
+      decisionDb,
+      "dbGetSafetyIntelligenceTimelines",
+      "CI loads timelines"
+    );
+    assertIncludes(
+      decisionDb,
+      "applyTimelinesToCaseIntelligenceRaw",
+      "CI applies timeline facts"
+    );
+    assertIncludes(engine, "timelines", "engine exposes timelines");
+    assertIncludes(
+      engine,
+      "timelineReasoning",
+      "explainable timeline reasoning"
+    );
+    assertNotIncludes(
+      mobile,
+      "Safety Intelligence Timeline",
+      "UI does not render timeline section"
+    );
+    assertNotIncludes(
+      mobile,
+      "accuracyProgression",
+      "UI does not render accuracy progression"
+    );
+  });
+
+  it("ledger helpers classify finalized outcomes without guessing malice", async () => {
+    const {
+      isFinalizedLearningDecisionType,
+      isMaliciousReportSignal,
+      isConfirmedViolationOutcome,
+    } = await import(
+      "../app/api/_lib/safetyIntelligenceHistory.ts"
+    );
+    for (const type of [
+      "warning",
+      "remove_content",
+      "restrict_account",
+      "suspend_account",
+      "permanent_ban",
+      "no_violation",
+    ]) {
+      assert.equal(isFinalizedLearningDecisionType(type), true, type);
+    }
+    assert.equal(isFinalizedLearningDecisionType("escalate"), false);
+    assert.equal(isConfirmedViolationOutcome("warning"), true);
+    assert.equal(isConfirmedViolationOutcome("no_violation"), false);
+    assert.equal(
+      isMaliciousReportSignal("No policy breach found"),
+      false
+    );
+    assert.equal(
+      isMaliciousReportSignal("This was a false report"),
+      true
+    );
+  });
+
+  it("engine attaches timelines and stays insufficient without gates", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const result = computeSafetyCaseIntelligence(
+      baseRaw({
+        timelines: {
+          target: {
+            firstReportAt: "2026-01-01T00:00:00.000Z",
+            lastReportAt: "2026-07-01T00:00:00.000Z",
+            previousWarnings: 0,
+            previousSuspensions: 0,
+            previousRestrictions: 0,
+            previousRemovals: 0,
+            previousPermanentBans: 0,
+            confirmedViolations: 0,
+            noViolationDismissals: 0,
+            repeatedCategories: [],
+            trend: {
+              reports7d: 2,
+              reports30d: 2,
+              reports90d: 2,
+              lifetime: 2,
+              direction: "insufficient_data",
+            },
+            enforcementHistory: [],
+          },
+          reporter: {
+            lifetimeReports: 2,
+            confirmedReports: 0,
+            dismissedReports: 0,
+            maliciousReports: 0,
+            accuracyProgression: [],
+            repeatedTargetingPattern: [],
+            reports: [],
+          },
+        },
+      }) as any
+    );
+    assert.equal(result.status, "insufficient_data");
+    assert.equal(result.assessment.recommendation, "human_review");
+    assert.equal(result.assessment.caseRiskScore, null);
+    assert.equal(result.assessment.confidence, null);
+    assert.equal(result.assessment.requiresHumanReview, true);
+    assert.ok(result.timelines);
+    assert.equal(
+      result.timelines?.target.firstReportAt,
+      "2026-01-01T00:00:00.000Z"
+    );
+    assert.ok(
+      result.assessment.reasoning.some((line) =>
+        line.includes("Target first report")
+      )
+    );
+  });
+
+  it("repeated decision / backfill / live collision stay one ledger event", async () => {
+    const {
+      tryInsertLedgerDedupeKey,
+      isFinalizedLearningDecisionType,
+    } = await import("../app/api/_lib/safetyIntelligenceHistory.ts");
+
+    const store = new Set<string>();
+    const first = tryInsertLedgerDedupeKey(
+      store,
+      "rep_1",
+      "decision",
+      "warning"
+    );
+    const retry = tryInsertLedgerDedupeKey(
+      store,
+      "rep_1",
+      "decision",
+      "warning"
+    );
+    const recovery = tryInsertLedgerDedupeKey(
+      store,
+      "rep_1",
+      "decision",
+      "warning"
+    );
+    const backfillCollision = tryInsertLedgerDedupeKey(
+      store,
+      "rep_1",
+      "decision",
+      "warning"
+    );
+    const concurrent = tryInsertLedgerDedupeKey(
+      store,
+      "rep_1",
+      "decision",
+      "warning"
+    );
+
+    assert.equal(first.inserted, true);
+    assert.equal(retry.inserted, false);
+    assert.equal(recovery.inserted, false);
+    assert.equal(backfillCollision.inserted, false);
+    assert.equal(concurrent.inserted, false);
+    assert.equal(store.size, 1);
+
+    assert.equal(isFinalizedLearningDecisionType("escalate"), false);
+    const escalate = tryInsertLedgerDedupeKey(
+      store,
+      "rep_2",
+      "decision",
+      "escalate"
+    );
+    // escalate may insert into the in-memory set, but production skips
+    // via isFinalizedLearningDecisionType before write.
+    assert.equal(isFinalizedLearningDecisionType("escalate"), false);
+    assert.ok(escalate.key.includes("escalate"));
+  });
+
+  it("backfill twice remains idempotent at the dedupe layer", async () => {
+    const { tryInsertLedgerDedupeKey } = await import(
+      "../app/api/_lib/safetyIntelligenceHistory.ts"
+    );
+    const store = new Set<string>();
+    const batchA = ["r1", "r2", "r3"].map((id) =>
+      tryInsertLedgerDedupeKey(store, id, "decision", "no_violation")
+    );
+    const batchB = ["r1", "r2", "r3"].map((id) =>
+      tryInsertLedgerDedupeKey(store, id, "decision", "no_violation")
+    );
+    assert.equal(batchA.filter((x) => x.inserted).length, 3);
+    assert.equal(batchB.filter((x) => x.inserted).length, 0);
+    assert.equal(store.size, 3);
+  });
+
+  it("ledger failure does not undo successful enforcement/decision", async () => {
+    const { decisionSurvivesLedgerFailure } = await import(
+      "../app/api/_lib/safetyIntelligenceHistory.ts"
+    );
+    assert.equal(decisionSurvivesLedgerFailure(true, false), true);
+    assert.equal(decisionSurvivesLedgerFailure(true, true), true);
+    assert.equal(decisionSurvivesLedgerFailure(false, false), false);
+
+    const decisionDbSrc = read("app/api/_lib/store/safetyReportDb.ts");
+    const writeIdx = decisionDbSrc.indexOf(
+      "dbRecordSafetyIntelligenceFromDecision"
+    );
+    const returnIdx = decisionDbSrc.indexOf(
+      "return {\n    report,\n    enforcement: enforcementRecord,",
+      writeIdx
+    );
+    assert.ok(writeIdx > 0, "ledger write present");
+    assert.ok(returnIdx > writeIdx, "decision returns after ledger attempt");
+    assert.ok(
+      decisionDbSrc.includes("KRISTO_SAFETY_INTEL_EVENT_WRITE_FAILED"),
+      "failure logged"
+    );
+  });
+
+  it("target timeline uses finalized outcomes only", async () => {
+    const { summarizeTargetFinalizedOutcomes } = await import(
+      "../app/api/_lib/safetyIntelligenceHistory.ts"
+    );
+    const summary = summarizeTargetFinalizedOutcomes([
+      {
+        outcomeType: "warning",
+        isConfirmedViolation: true,
+        isDismissed: false,
+        isMaliciousReport: false,
+        reportId: "a",
+        decisionAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        outcomeType: "suspend_account",
+        isConfirmedViolation: true,
+        isDismissed: false,
+        isMaliciousReport: false,
+        reportId: "b",
+      },
+      {
+        outcomeType: "open",
+        isConfirmedViolation: false,
+        isDismissed: false,
+        isMaliciousReport: false,
+        isOpen: true,
+        reportId: "open_1",
+      },
+      {
+        outcomeType: "escalate",
+        isConfirmedViolation: false,
+        isDismissed: false,
+        isMaliciousReport: false,
+        reportId: "esc_1",
+      },
+    ]);
+    assert.equal(summary.previousWarnings, 1);
+    assert.equal(summary.previousSuspensions, 1);
+    assert.equal(summary.confirmedViolations, 2);
+    assert.equal(summary.enforcementHistory.length, 2);
+    assert.equal(
+      summary.enforcementHistory.some((e) => e.reportId === "open_1"),
+      false
+    );
+  });
+
+  it("reporter timeline excludes open reports from accuracy", async () => {
+    const { buildReporterAccuracyProgression } = await import(
+      "../app/api/_lib/safetyIntelligenceHistory.ts"
+    );
+    const progression = buildReporterAccuracyProgression([
+      {
+        outcomeType: "warning",
+        isConfirmedViolation: true,
+        isDismissed: false,
+        isMaliciousReport: false,
+        reportId: "fin_1",
+        decisionAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        outcomeType: "pending",
+        isConfirmedViolation: false,
+        isDismissed: false,
+        isMaliciousReport: false,
+        isOpen: true,
+        reportId: "open_1",
+      },
+      {
+        outcomeType: "no_violation",
+        isConfirmedViolation: false,
+        isDismissed: true,
+        isMaliciousReport: false,
+        reportId: "fin_2",
+        decisionAt: "2026-02-01T00:00:00.000Z",
+      },
+    ]);
+    assert.equal(progression.length, 2);
+    assert.equal(progression[0].reportId, "fin_1");
+    assert.equal(progression[1].reportId, "fin_2");
+    assert.equal(progression[1].runningConfirmed, 1);
+    assert.equal(progression[1].runningDismissed, 1);
+    assert.equal(
+      progression.some((p) => p.reportId === "open_1"),
+      false
+    );
+  });
+
+  it("thin history remains insufficient_data with human_review", async () => {
+    const { computeSafetyCaseIntelligence } = await import(
+      "../app/api/_lib/safetyCaseIntelligenceEngine.ts"
+    );
+    const result = computeSafetyCaseIntelligence(baseRaw() as any);
+    assert.equal(result.status, "insufficient_data");
+    assert.equal(result.assessment.recommendation, "human_review");
+    assert.equal(result.assessment.caseRiskScore, null);
+    assert.equal(result.assessment.confidence, null);
+    assert.equal(result.reporter.credibilityScore, null);
+    assert.equal(result.target.riskScore, null);
+    assert.equal(result.evidence.strengthScore, null);
+    assert.equal(result.assessment.requiresHumanReview, true);
+  });
 });
 
 describe("6. Database integrity", () => {

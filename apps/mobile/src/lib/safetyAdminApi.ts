@@ -422,6 +422,59 @@ export type SafetyCaseIntelligence = {
     mitigatingFactors: string[];
     requiresHumanReview: true;
   };
+  /** Ledger-backed history; Investigation Center does not render this yet. */
+  timelines?: {
+    target?: {
+      firstReportAt?: string | null;
+      lastReportAt?: string | null;
+      previousWarnings?: number;
+      previousSuspensions?: number;
+      previousRestrictions?: number;
+      previousRemovals?: number;
+      previousPermanentBans?: number;
+      confirmedViolations?: number;
+      noViolationDismissals?: number;
+      repeatedCategories?: string[];
+      trend?: {
+        reports7d?: number;
+        reports30d?: number;
+        reports90d?: number;
+        lifetime?: number;
+        direction?: string;
+      };
+      enforcementHistory?: Array<{
+        at: string;
+        type: string;
+        reportId?: string;
+        reason?: string;
+      }>;
+    };
+    reporter?: {
+      lifetimeReports?: number;
+      confirmedReports?: number;
+      dismissedReports?: number;
+      maliciousReports?: number;
+      accuracyProgression?: Array<{
+        at: string;
+        reportId: string;
+        outcomeType: string;
+        isConfirmedViolation: boolean;
+        isDismissed: boolean;
+        isMaliciousReport: boolean;
+        runningConfirmed: number;
+        runningDismissed: number;
+      }>;
+      repeatedTargetingPattern?: Array<{
+        targetKey: string;
+        count: number;
+      }>;
+      reports?: Array<{
+        reportId: string;
+        at: string;
+        outcomeType: string;
+      }>;
+    };
+  };
 };
 
 export type SafetyReportSummary = {

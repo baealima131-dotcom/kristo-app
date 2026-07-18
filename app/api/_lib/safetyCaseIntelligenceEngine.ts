@@ -7,6 +7,44 @@
  * analysisMode stays "heuristic" until an LLM/classifier is wired.
  */
 
+import type { SafetyIntelligenceTimelines } from "./safetyIntelligenceHistory.ts";
+
+export type { SafetyIntelligenceTimelines };
+
+function emptySafetyIntelligenceTimelines(): SafetyIntelligenceTimelines {
+  return {
+    target: {
+      firstReportAt: null,
+      lastReportAt: null,
+      previousWarnings: 0,
+      previousSuspensions: 0,
+      previousRestrictions: 0,
+      previousRemovals: 0,
+      previousPermanentBans: 0,
+      confirmedViolations: 0,
+      noViolationDismissals: 0,
+      repeatedCategories: [],
+      trend: {
+        reports7d: 0,
+        reports30d: 0,
+        reports90d: 0,
+        lifetime: 0,
+        direction: "insufficient_data",
+      },
+      enforcementHistory: [],
+    },
+    reporter: {
+      lifetimeReports: 0,
+      confirmedReports: 0,
+      dismissedReports: 0,
+      maliciousReports: 0,
+      accuracyProgression: [],
+      repeatedTargetingPattern: [],
+      reports: [],
+    },
+  };
+}
+
 export type CaseIntelligenceStatus =
   | "ready"
   | "insufficient_data"
@@ -108,6 +146,8 @@ export type SafetyCaseIntelligence = {
     mitigatingFactors: string[];
     requiresHumanReview: true;
   };
+  /** Historical timelines from the Safety Intelligence ledger (API/data only). */
+  timelines?: SafetyIntelligenceTimelines;
 };
 
 /**
@@ -197,7 +237,92 @@ export type CaseIntelligenceRawInput = {
   targetUniqueReportersLast24h: number;
   targetUniqueReportersLast7d: number;
   repeatedCategories: string[];
+
+  /** Optional ledger-backed timelines used for explainable reasoning. */
+  timelines?: SafetyIntelligenceTimelines;
 };
+
+function timelineReasoning(
+  timelines?: SafetyIntelligenceTimelines
+): string[] {
+  if (!timelines) return [];
+  const lines: string[] = [];
+  const { target, reporter } = timelines;
+
+  if (target.firstReportAt) {
+    lines.push(`Target first report at ${target.firstReportAt}.`);
+  }
+  if (target.lastReportAt) {
+    lines.push(`Target last report at ${target.lastReportAt}.`);
+  }
+  if (target.previousWarnings > 0) {
+    lines.push(
+      `Target has ${target.previousWarnings} prior warning(s) in Safety history.`
+    );
+  }
+  if (target.previousSuspensions > 0) {
+    lines.push(
+      `Target has ${target.previousSuspensions} prior suspension(s) in Safety history.`
+    );
+  }
+  if (target.previousRestrictions > 0) {
+    lines.push(
+      `Target has ${target.previousRestrictions} prior restriction(s) in Safety history.`
+    );
+  }
+  if (target.previousRemovals > 0) {
+    lines.push(
+      `Target has ${target.previousRemovals} prior content removal(s) in Safety history.`
+    );
+  }
+  if (target.previousPermanentBans > 0) {
+    lines.push(
+      `Target has ${target.previousPermanentBans} prior permanent ban record(s).`
+    );
+  }
+  if (target.confirmedViolations > 0) {
+    lines.push(
+      `Target has ${target.confirmedViolations} confirmed violation outcome(s).`
+    );
+  }
+  if (target.repeatedCategories.length) {
+    lines.push(
+      `Repeated categories: ${target.repeatedCategories.join(", ")}.`
+    );
+  }
+  if (target.trend.direction !== "insufficient_data") {
+    lines.push(
+      `Report trend (${target.trend.direction}) across 7d=${target.trend.reports7d}, 30d=${target.trend.reports30d}, 90d=${target.trend.reports90d}, lifetime=${target.trend.lifetime}.`
+    );
+  }
+
+  if (reporter.confirmedReports > 0 || reporter.dismissedReports > 0) {
+    lines.push(
+      `Reporter finalized outcomes: ${reporter.confirmedReports} confirmed, ${reporter.dismissedReports} dismissed.`
+    );
+  }
+  if (reporter.maliciousReports > 0) {
+    lines.push(
+      `Reporter has ${reporter.maliciousReports} malicious/false-report flag(s) from prior decisions.`
+    );
+  }
+  if (reporter.repeatedTargetingPattern.length) {
+    lines.push(
+      `Reporter repeated targeting pattern on ${reporter.repeatedTargetingPattern.length} target(s).`
+    );
+  }
+  if (reporter.accuracyProgression.length >= 2) {
+    const last =
+      reporter.accuracyProgression[
+        reporter.accuracyProgression.length - 1
+      ];
+    lines.push(
+      `Reporter accuracy progression through ${reporter.accuracyProgression.length} finalized cases (running confirmed=${last.runningConfirmed}, dismissed=${last.runningDismissed}).`
+    );
+  }
+
+  return lines.slice(0, 8);
+}
 
 function clampScore(value: number) {
   if (!Number.isFinite(value)) return 0;
@@ -809,7 +934,8 @@ export function computeCaseRecommendation(input: {
 
 function emptyIntelligence(
   generatedAt: string,
-  limitations: string[]
+  limitations: string[],
+  timelines?: SafetyIntelligenceTimelines
 ): SafetyCaseIntelligence {
   return {
     status: "insufficient_data",
@@ -864,11 +990,13 @@ function emptyIntelligence(
       confidence: null,
       reasoning: [
         "Insufficient real finalized history / verified evidence for scored Case Intelligence.",
+        ...timelineReasoning(timelines),
       ],
       aggravatingFactors: [],
       mitigatingFactors: ["insufficient_data"],
       requiresHumanReview: true,
     },
+    timelines: timelines || emptySafetyIntelligenceTimelines(),
   };
 }
 
@@ -876,11 +1004,14 @@ export function computeSafetyCaseIntelligence(
   input: CaseIntelligenceRawInput
 ): SafetyCaseIntelligence {
   const generatedAt = new Date().toISOString();
+  const timelines = input.timelines || emptySafetyIntelligenceTimelines();
 
   if (!input.reporterUserId && !input.targetId && !input.targetOwnerUserId) {
-    return emptyIntelligence(generatedAt, [
-      "missing_reporter_and_target_identifiers",
-    ]);
+    return emptyIntelligence(
+      generatedAt,
+      ["missing_reporter_and_target_identifiers"],
+      timelines
+    );
   }
 
   const reporter = computeReporterCredibility({
@@ -1013,12 +1144,14 @@ export function computeSafetyCaseIntelligence(
         reasoning: [
           "Minimum real-data gates were not met for an enforcement recommendation.",
           "Reporter credibility, target risk, and evidence strength require finalized/verified history — not open-report volume or presence-only media.",
+          ...timelineReasoning(timelines),
           ...limitations.slice(0, 4),
         ],
         aggravatingFactors: [],
         mitigatingFactors: ["insufficient_data"],
         requiresHumanReview: true,
       },
+      timelines,
     };
   }
 
@@ -1062,6 +1195,9 @@ export function computeSafetyCaseIntelligence(
 
   recommendation.reasoning.push(
     `Case risk ${caseRiskScore}/100 from verified target history and machine-verified evidence.`
+  );
+  recommendation.reasoning.push(
+    ...timelineReasoning(timelines)
   );
   recommendation.reasoning.push(
     "Heuristic engine — recommendation still requires human review before enforcement."
@@ -1116,5 +1252,6 @@ export function computeSafetyCaseIntelligence(
       mitigatingFactors: recommendation.mitigatingFactors,
       requiresHumanReview: true,
     },
+    timelines,
   };
 }

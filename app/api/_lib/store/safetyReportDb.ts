@@ -13,6 +13,13 @@ import {
   type CaseIntelligenceRawInput,
   type SafetyCaseIntelligence,
 } from "@/app/api/_lib/safetyCaseIntelligenceEngine";
+import {
+  applyTimelinesToCaseIntelligenceRaw,
+  dbGetSafetyIntelligenceTimelines,
+  dbRecordSafetyIntelligenceFromDecision,
+  emptySafetyIntelligenceTimelines,
+  ensureSafetyIntelligenceHistoryReady,
+} from "@/app/api/_lib/store/safetyIntelligenceHistoryDb";
 
 neonConfig.fetchConnectionCache = true;
 
@@ -3653,6 +3660,7 @@ export async function dbIssueSafetyReportDecision(
 
   await ensureSafetyReportSchema();
   await ensureSafetyAccountEnforcementSchema();
+  await ensureSafetyIntelligenceHistoryReady().catch(() => undefined);
 
   const sql = getSql();
 
@@ -4032,8 +4040,28 @@ export async function dbIssueSafetyReportDecision(
         }
       : undefined;
 
+  const report = rowToReport(updated);
+
+  /*
+   * Persist finalized outcomes into the Safety Intelligence ledger.
+   * escalate is non-final and is skipped inside the recorder.
+   * Failures must not roll back the decision commit.
+   */
+  try {
+    await dbRecordSafetyIntelligenceFromDecision({
+      report,
+      enforcementId: enforcementId || null,
+    });
+  } catch (intelError: any) {
+    console.log("KRISTO_SAFETY_INTEL_EVENT_WRITE_FAILED", {
+      reportId,
+      decisionType,
+      error: String(intelError?.message || intelError || ""),
+    });
+  }
+
   return {
-    report: rowToReport(updated),
+    report,
     enforcement: enforcementRecord,
   };
 }
@@ -4689,10 +4717,26 @@ export async function dbGetSafetyCaseIntelligence(input: {
 
   try {
     await ensureSafetyReportSchema();
+    await ensureSafetyIntelligenceHistoryReady().catch(() => undefined);
 
     const sql = getSql();
 
     type CountRow = Record<string, unknown>;
+
+    const timelines = await dbGetSafetyIntelligenceTimelines({
+      reporterUserId,
+      targetType,
+      targetId,
+      targetOwnerUserId: ownerUserId,
+    }).catch((timelineError: any) => {
+      console.log("KRISTO_SAFETY_INTEL_TIMELINE_FAILED", {
+        reportId: reportId || null,
+        error: safeText(
+          timelineError?.message || "timeline_load_failed"
+        ),
+      });
+      return emptySafetyIntelligenceTimelines();
+    });
 
     /*
      * Reporter history — always scoped by reporter_user_id.
@@ -5355,7 +5399,10 @@ export async function dbGetSafetyCaseIntelligence(input: {
         Boolean(safeText(report?.targetPreview)),
         Boolean(input.hasMediaUri),
       ].filter(Boolean).length,
+      timelines,
     };
+
+    applyTimelinesToCaseIntelligenceRaw(raw, timelines);
 
     const facts = {
       reportId: reportId || null,
@@ -5379,6 +5426,10 @@ export async function dbGetSafetyCaseIntelligence(input: {
         raw.hasThumbnail || raw.hasPreview || raw.hasMediaUri
       ),
       evidenceAttachmentCount: raw.evidenceAttachmentCount ?? 0,
+      targetFirstReportAt: timelines.target.firstReportAt,
+      targetLastReportAt: timelines.target.lastReportAt,
+      reporterMaliciousReports: timelines.reporter.maliciousReports,
+      ledgerEnforcementEvents: timelines.target.enforcementHistory.length,
     };
 
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_FACTS", facts);
@@ -5499,6 +5550,7 @@ export async function dbGetSafetyCaseIntelligence(input: {
         mitigatingFactors: ["analysis_unavailable"],
         requiresHumanReview: true,
       },
+      timelines: emptySafetyIntelligenceTimelines(),
     };
   }
 }

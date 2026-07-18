@@ -910,6 +910,37 @@ async function hydrateSafetyCaseReport(
         mitigatingFactors: ["analysis_unavailable"],
         requiresHumanReview: true,
       },
+      timelines: {
+        target: {
+          firstReportAt: null,
+          lastReportAt: null,
+          previousWarnings: 0,
+          previousSuspensions: 0,
+          previousRestrictions: 0,
+          previousRemovals: 0,
+          previousPermanentBans: 0,
+          confirmedViolations: 0,
+          noViolationDismissals: 0,
+          repeatedCategories: [],
+          trend: {
+            reports7d: 0,
+            reports30d: 0,
+            reports90d: 0,
+            lifetime: 0,
+            direction: "insufficient_data",
+          },
+          enforcementHistory: [],
+        },
+        reporter: {
+          lifetimeReports: 0,
+          confirmedReports: 0,
+          dismissedReports: 0,
+          maliciousReports: 0,
+          accuracyProgression: [],
+          repeatedTargetingPattern: [],
+          reports: [],
+        },
+      },
     };
   }
 
