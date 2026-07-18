@@ -1,5 +1,7 @@
 import {
+  HOME_FEED_REPORT_REASONS,
   submitHomeFeedReport,
+  type HomeFeedReportReason,
 } from "@/src/lib/homeFeedReport";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -392,7 +394,13 @@ function findReportedComment(
   return null;
 }
 
-function CommentReportModal({
+/*
+ * Rendered INSIDE the Comments Modal as an absolute overlay.
+ * A sibling/nested RN Modal on top of a fullScreen Modal often
+ * fails to present (state updates, nothing visible) — that was
+ * the Report button "does nothing" bug.
+ */
+function CommentReportSheet({
   visible,
   postId,
   comment,
@@ -405,183 +413,297 @@ function CommentReportModal({
 }) {
   const insets = useSafeAreaInsets();
 
-  const [submitting, setSubmitting] =
-    React.useState(false);
+  const [selectedReason, setSelectedReason] =
+    useState<HomeFeedReportReason | null>(null);
+  const [details, setDetails] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState("");
 
   const commentId =
     String(comment?.id || "").trim();
 
-  const submitReport =
-    React.useCallback(async () => {
-      if (
-        submitting ||
-        !postId ||
-        !commentId
-      ) {
-        return;
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    console.log("KRISTO_COMMENT_REPORT_SHEET_OPEN", {
+      postId,
+      commentId,
+      hasComment: Boolean(comment),
+    });
+
+    setSelectedReason(null);
+    setDetails("");
+    setFormError("");
+    setSubmitting(false);
+  }, [visible, postId, commentId, comment]);
+
+  const submitReport = useCallback(async () => {
+    if (submitting || !postId || !commentId) {
+      return;
+    }
+
+    if (!selectedReason) {
+      setFormError("Select a reason to continue.");
+      return;
+    }
+
+    setFormError("");
+    setSubmitting(true);
+
+    try {
+      const displayName = String(
+        comment?.displayName ||
+          comment?.authorName ||
+          comment?.userName ||
+          comment?.name ||
+          "Comment author"
+      ).trim();
+
+      const avatarUri = String(
+        comment?.avatarUri ||
+          comment?.avatarUrl ||
+          comment?.profileImage ||
+          comment?.photoURL ||
+          ""
+      ).trim();
+
+      const ownerUserId = String(
+        comment?.userId ||
+          comment?.authorUserId ||
+          comment?.createdByUserId ||
+          ""
+      ).trim();
+
+      const commentText = String(
+        comment?.text || comment?.body || ""
+      )
+        .replace(/\s+/g, " ")
+        .trim();
+
+      console.log("KRISTO_COMMENT_REPORT_SUBMIT", {
+        postId,
+        commentId,
+        reason: selectedReason,
+      });
+
+      const result = await submitHomeFeedReport({
+        postId,
+        reason: selectedReason,
+        details: String(details || "").trim(),
+        targetType: "comment",
+        targetId: commentId,
+        sourceMessageId: commentId,
+        targetTitle: displayName,
+        targetSubtitle: String(
+          comment?.parentPostTitle ||
+            comment?.postTitle ||
+            comment?.feedPostTitle ||
+            comment?.parentTitle ||
+            `Post ${postId}`
+        )
+          .replace(/\s+/g, " ")
+          .trim(),
+        targetOwnerName: displayName,
+        targetOwnerAvatarUri: avatarUri,
+        targetMediaType: "text",
+        targetOwnerUserId: ownerUserId,
+        targetPreview: commentText,
+        targetThumbnailUri: avatarUri,
+      });
+
+      if (!result.ok) {
+        throw new Error(
+          result.error || "Could not report comment."
+        );
       }
 
-      setSubmitting(true);
+      onClose();
 
-      try {
-        const displayName =
-          String(
-            comment?.displayName ||
-            comment?.authorName ||
-            comment?.userName ||
-            comment?.name ||
-            "Comment author"
-          ).trim();
-
-        const avatarUri =
-          String(
-            comment?.avatarUri ||
-            comment?.avatarUrl ||
-            comment?.profileImage ||
-            comment?.photoURL ||
-            ""
-          ).trim();
-
-        const ownerUserId =
-          String(
-            comment?.userId ||
-            comment?.authorUserId ||
-            comment?.createdByUserId ||
-            ""
-          ).trim();
-
-        const commentText =
-          String(
-            comment?.text ||
-            comment?.body ||
-            ""
-          )
-            .replace(/\s+/g, " ")
-            .trim();
-
-        const result =
-          await submitHomeFeedReport({
-            postId,
-            reason:
-              "Other" as any,
-
-            details:
-              "Reported a feed comment.",
-
-            targetType:
-              "comment",
-
-            targetId:
-              commentId,
-
-            sourceMessageId:
-              commentId,
-
-            targetTitle:
-              displayName,
-
-            /*
-             * Keep the reported comment connected to
-             * the post where it appeared.
-             */
-            targetSubtitle:
-              String(
-                comment?.parentPostTitle ||
-                comment?.postTitle ||
-                comment?.feedPostTitle ||
-                comment?.parentTitle ||
-                `Post ${postId}`
-              )
-                .replace(/\s+/g, " ")
-                .trim(),
-
-            targetOwnerName:
-              displayName,
-
-            targetOwnerAvatarUri:
-              avatarUri,
-
-            targetMediaType:
-              "text",
-
-            targetOwnerUserId:
-              ownerUserId,
-
-            targetPreview:
-              commentText,
-
-            targetThumbnailUri:
-              avatarUri,
-          });
-
-        if (!result.ok) {
-          throw new Error(
-            result.error ||
-            "Could not report comment."
-          );
-        }
-
-        onClose();
-
+      if (result.alreadyReported || result.duplicate) {
         Alert.alert(
-          "Comment reported",
+          "Already reported",
           result.reportCode
             ? [
-                "Your Report Command Code:",
+                "You already reported this comment.",
                 "",
-                result.reportCode,
+                `Report Command Code: ${result.reportCode}`,
                 "",
                 "You can follow its status in My Reports.",
               ].join("\n")
-            : "Your comment report was submitted."
+            : "You already reported this comment."
         );
-      } catch (error: any) {
-        Alert.alert(
-          "Could not report comment",
-          String(
-            error?.message ||
-            "Please try again."
-          )
-        );
-      } finally {
-        setSubmitting(false);
+        return;
       }
-    }, [
-      comment,
-      commentId,
-      onClose,
-      postId,
-      submitting,
-    ]);
+
+      Alert.alert(
+        "Comment reported successfully.",
+        result.reportCode
+          ? [
+              "Your Report Command Code:",
+              "",
+              result.reportCode,
+              "",
+              "You can follow its status in My Reports.",
+            ].join("\n")
+          : undefined
+      );
+    } catch (error: any) {
+      console.log("KRISTO_COMMENT_REPORT_FAILED", {
+        postId,
+        commentId,
+        error: String(error?.message || error),
+      });
+      Alert.alert(
+        "Could not report comment",
+        String(error?.message || "Please try again.")
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [
+    comment,
+    commentId,
+    details,
+    onClose,
+    postId,
+    selectedReason,
+    submitting,
+  ]);
+
+  if (!visible) {
+    return null;
+  }
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.reportBackdrop} onPress={onClose}>
-        <Pressable
-          style={[styles.reportSheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
-          onPress={(e) => e.stopPropagation()}
+    <View
+      style={styles.reportOverlay}
+      pointerEvents="auto"
+    >
+      <Pressable
+        style={styles.reportBackdrop}
+        onPress={onClose}
+      />
+      <KeyboardAvoidingView
+        behavior={
+          Platform.OS === "ios"
+            ? "padding"
+            : undefined
+        }
+        style={styles.reportSheetWrap}
+      >
+        <View
+          style={[
+            styles.reportSheet,
+            {
+              paddingBottom: Math.max(
+                insets.bottom,
+                16
+              ),
+            },
+          ]}
         >
           <View style={styles.handle} />
-          <Text style={styles.title}>Report Comment</Text>
-          <Text style={styles.reportSubtitle}>
-            Help us review comments that violate community standards. Moderation review is coming
-            soon.
+          <Text style={styles.reportSheetTitle}>
+            Report Comment
           </Text>
+          <Text style={styles.reportSubtitle}>
+            Select why this comment should be reviewed by the Kristo Safety Team.
+          </Text>
+
           <View style={styles.reportReadyBox}>
-            <Ionicons name="flag-outline" size={20} color={HOME_FEED_GOLD_SOFT} />
+            <Ionicons
+              name="flag-outline"
+              size={20}
+              color={HOME_FEED_GOLD_SOFT}
+            />
             <Text
               style={styles.reportReadyText}
               numberOfLines={3}
             >
               {String(
-                comment?.text ||
-                "Selected comment"
+                comment?.text || "Selected comment"
               ).trim()}
             </Text>
           </View>
+
+          <ScrollView
+            style={styles.reportReasonsScroll}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {HOME_FEED_REPORT_REASONS.map(
+              (reason) => {
+                const active =
+                  selectedReason === reason;
+
+                return (
+                  <Pressable
+                    key={reason}
+                    onPress={() => {
+                      setSelectedReason(reason);
+                      setFormError("");
+                    }}
+                    style={[
+                      styles.reportReasonRow,
+                      active
+                        ? styles.reportReasonRowActive
+                        : null,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.reportReasonText,
+                        active
+                          ? styles.reportReasonTextActive
+                          : null,
+                      ]}
+                    >
+                      {reason}
+                    </Text>
+                    {active ? (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={18}
+                        color={HOME_FEED_GOLD_SOFT}
+                      />
+                    ) : null}
+                  </Pressable>
+                );
+              }
+            )}
+
+            <Text style={styles.reportDetailsLabel}>
+              Additional details (optional)
+            </Text>
+            <TextInput
+              value={details}
+              onChangeText={setDetails}
+              placeholder="Add any context that helps Safety review this comment…"
+              placeholderTextColor="rgba(255,255,255,0.38)"
+              style={styles.reportDetailsInput}
+              multiline
+              maxLength={2000}
+              editable={!submitting}
+            />
+          </ScrollView>
+
+          {formError ? (
+            <Text style={styles.errorText}>
+              {formError}
+            </Text>
+          ) : null}
+
           <Pressable
-            style={styles.submitBtn}
-            disabled={submitting}
+            style={[
+              styles.submitBtn,
+              (!selectedReason || submitting) &&
+                styles.sendBtnDisabled,
+            ]}
+            disabled={
+              !selectedReason || submitting
+            }
             onPress={() => {
               void submitReport();
             }}
@@ -592,12 +714,19 @@ function CommentReportModal({
                 : "Submit report"}
             </Text>
           </Pressable>
-          <Pressable style={styles.cancelBtn} onPress={onClose} hitSlop={10}>
-            <Text style={styles.cancelBtnText}>Cancel</Text>
+          <Pressable
+            style={styles.cancelBtn}
+            onPress={onClose}
+            hitSlop={10}
+            disabled={submitting}
+          >
+            <Text style={styles.cancelBtnText}>
+              Cancel
+            </Text>
           </Pressable>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -823,9 +952,18 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
     return true;
   }, []);
 
-  const handleReportComment = useCallback((commentId: string) => {
-    setReportCommentId(commentId);
-  }, []);
+  const handleReportComment = useCallback(
+    (commentId: string) => {
+      const id = String(commentId || "").trim();
+      console.log("KRISTO_COMMENT_REPORT_PRESS", {
+        postId,
+        commentId: id,
+      });
+      if (!id) return;
+      setReportCommentId(id);
+    },
+    [postId]
+  );
 
   const handleToggleLike = useCallback(async (commentId: string) => {
     if (!commentId) return;
@@ -1081,22 +1219,20 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
                   </Pressable>
                 </View>
               </View>
+
+              <CommentReportSheet
+                visible={Boolean(reportCommentId)}
+                postId={postId}
+                comment={findReportedComment(
+                  comments,
+                  reportCommentId
+                )}
+                onClose={() => setReportCommentId("")}
+              />
             </View>
           </KeyboardAvoidingView>
         </View>
       </Modal>
-
-      <CommentReportModal
-        visible={Boolean(reportCommentId)}
-        postId={postId}
-        comment={findReportedComment(
-          comments,
-          reportCommentId
-        )}
-        onClose={() =>
-          setReportCommentId("")
-        }
-      />
     </>
   );
 });
@@ -1113,6 +1249,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#0B0F17",
     paddingHorizontal: 18,
+    position: "relative",
+    overflow: "hidden",
   },
   headerRow: {
     flexDirection: "row",
@@ -1349,10 +1487,19 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.22)",
     marginBottom: 12,
   },
-  reportBackdrop: {
-    flex: 1,
+  reportOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 40,
+    elevation: 40,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  reportBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.62)",
+  },
+  reportSheetWrap: {
+    width: "100%",
+    maxHeight: "88%",
   },
   reportSheet: {
     backgroundColor: "#0B0F17",
@@ -1362,6 +1509,12 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
+    maxHeight: "100%",
+  },
+  reportSheetTitle: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "900",
   },
   reportSubtitle: {
     color: HOME_FEED_MUTED,
@@ -1387,6 +1540,61 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     flex: 1,
+  },
+  reportReasonsScroll: {
+    maxHeight: 320,
+    marginBottom: 8,
+  },
+  reportReasonRow: {
+    minHeight: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    paddingHorizontal: 14,
+    marginBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  reportReasonRowActive: {
+    borderColor: "rgba(217,179,95,0.55)",
+    backgroundColor: "rgba(217,179,95,0.12)",
+  },
+  reportReasonText: {
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 14,
+    fontWeight: "700",
+    flex: 1,
+    paddingRight: 10,
+  },
+  reportReasonTextActive: {
+    color: HOME_FEED_GOLD_SOFT,
+    fontWeight: "900",
+  },
+  reportDetailsLabel: {
+    marginTop: 6,
+    marginBottom: 6,
+    color: HOME_FEED_MUTED,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  reportDetailsInput: {
+    minHeight: 72,
+    maxHeight: 120,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: HOME_FEED_BG,
+    color: "#FFFFFF",
+    fontSize: 14,
+    lineHeight: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    textAlignVertical: "top",
+    marginBottom: 4,
   },
   submitBtn: {
     backgroundColor: HOME_FEED_GOLD_SOFT,
