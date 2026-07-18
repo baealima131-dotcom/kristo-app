@@ -8,7 +8,7 @@ import {
 } from "@/app/api/auth/_lib/profile";
 
 
-import { guard } from "@/app/api/_lib/rbac";
+import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import {
   ensureDirectMessageThreadFromRoomId,
   listDirectMessageInbox,
@@ -79,11 +79,11 @@ export async function GET(req: NextRequest) {
       url.searchParams.get("roomId") || ""
     ).trim();
 
-    if (!roomId || !churchId) {
+    if (!roomId) {
       return json(
         {
           ok: false,
-          error: "roomId and churchId are required.",
+          error: "roomId is required.",
         },
         { status: 400 }
       );
@@ -174,7 +174,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const ctxOrRes = await guard(req);
+  // Auth only — do not require shared/active church membership to open a DM.
+  const ctxOrRes = await guardAuth(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const body = (await req.json().catch(() => null)) as {
@@ -187,20 +188,22 @@ export async function POST(req: NextRequest) {
   const viewerUserId = String(ctxOrRes.viewer.userId || "").trim();
   const targetUserId = String(body?.targetUserId || "").trim();
   const roomId = String(body?.roomId || "").trim();
-  const churchId = String(body?.churchId || ctxOrRes.churchId || "").trim();
+  const headerChurchId = String(
+    (ctxOrRes.viewer as any)?.churchId ||
+      req.headers.get("x-kristo-church-id") ||
+      ""
+  ).trim();
+  const churchId = String(body?.churchId || headerChurchId || "").trim();
   const action = String(body?.action || "").trim().toLowerCase();
 
   if (action === "ensure" || roomId) {
     if (!roomId) {
       return json({ ok: false, error: "roomId is required." }, { status: 400 });
     }
-    if (!churchId) {
-      return json({ ok: false, error: "churchId is required." }, { status: 400 });
-    }
 
     const thread = await ensureDirectMessageThreadFromRoomId({
       viewerUserId,
-      churchId,
+      churchId: churchId || "dm",
       roomId,
       intent: "repair",
     });
@@ -215,9 +218,6 @@ export async function POST(req: NextRequest) {
   if (!targetUserId) {
     return json({ ok: false, error: "targetUserId is required." }, { status: 400 });
   }
-  if (!churchId) {
-    return json({ ok: false, error: "churchId is required." }, { status: 400 });
-  }
 
   try {
     const thread = await openDirectMessageThread({
@@ -228,8 +228,20 @@ export async function POST(req: NextRequest) {
     return json({ ok: true, data: thread }, { status: 201 });
   } catch (error) {
     const message = String((error as Error)?.message || error || "Could not start chat.");
-    const status = message.includes("yourself") ? 400 : message.includes("member") ? 403 : 400;
-    return json({ ok: false, error: message }, { status });
+    let status = 400;
+    if (message.includes("yourself")) status = 400;
+    else if (message === "conversation_blocked") status = 403;
+    else if (message.includes("not found")) status = 404;
+    return json(
+      {
+        ok: false,
+        error: message,
+        ...(message === "conversation_blocked"
+          ? { code: "conversation_blocked" }
+          : {}),
+      },
+      { status }
+    );
   }
 }
 
@@ -259,6 +271,8 @@ export async function PATCH(req: NextRequest) {
     "delete",
     "restore",
     "report",
+    "accept",
+    "decline",
   ]);
 
   if (!supportedActions.has(action)) {
@@ -272,8 +286,8 @@ export async function PATCH(req: NextRequest) {
   const churchId = String(body?.churchId || ctxOrRes.churchId || "").trim();
   const viewerUserId = String(ctxOrRes.viewer.userId || "").trim();
 
-  if (!roomId || !churchId) {
-    return json({ ok: false, error: "roomId and churchId are required." }, { status: 400 });
+  if (!roomId) {
+    return json({ ok: false, error: "roomId is required." }, { status: 400 });
   }
 
   if (action === "report") {
@@ -501,16 +515,25 @@ export async function PATCH(req: NextRequest) {
           | "unblock"
           | "clear"
           | "delete"
-          | "restore",
+          | "restore"
+          | "accept"
+          | "decline",
       });
 
     if (!settings) {
+      const receiverOnly =
+        action === "accept" || action === "decline";
       return json(
         {
           ok: false,
-          error: "Could not update conversation.",
+          error: receiverOnly
+            ? "Only the recipient can accept or decline this message request."
+            : "Could not update conversation.",
+          ...(receiverOnly
+            ? { code: "DM_REQUEST_RECEIVER_ONLY" }
+            : {}),
         },
-        { status: 400 }
+        { status: receiverOnly ? 403 : 400 }
       );
     }
 

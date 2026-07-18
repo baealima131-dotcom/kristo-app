@@ -4,8 +4,36 @@ import {
   updateDirectMessageThreadStore,
 } from "@/app/api/_lib/store/directMessageThreadDb";
 import { getChurchById } from "@/app/api/_lib/churches";
-import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
-import { getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
+import {
+  getActiveMembership,
+  getMembershipsForChurch,
+} from "@/app/api/_lib/memberships";
+import {
+  getProfile,
+  getProfileByUserCode,
+  resolveCanonicalUserIdentity,
+} from "@/app/api/auth/_lib/profile";
+import {
+  buildDmRequestQuota,
+  claimDirectMessageRequestOutboundSlot,
+  DM_REQUEST_MESSAGE_LIMIT_REACHED,
+  DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
+  findThreadEntryByRoomId,
+  relationshipToThreadOverlay,
+  releaseDirectMessageRequestOutboundSlot,
+  resolveDmRelationshipStatus,
+  threadStoreKey as requestThreadStoreKey,
+  usersShareActiveChurch,
+  type DmRelationshipStatus,
+  type DmRequestQuota,
+} from "@/app/api/_lib/directMessageRequests";
+import {
+  ensurePendingRequestForInitiator,
+  getDirectMessageRelationshipByRoomId,
+  updateDirectMessageRelationshipStatus,
+  upsertDirectMessageRelationship,
+  type DirectMessageRelationshipRecord,
+} from "@/app/api/_lib/store/directMessageRelationshipDb";
 
 export type DirectMessageReportRecord = {
   reporterUserId: string;
@@ -28,6 +56,13 @@ export type DirectMessageThreadRecord = {
   clearedAtByUserId?: Record<string, number>;
   deletedAtByUserId?: Record<string, number>;
   reports?: DirectMessageReportRecord[];
+  /** Durable request state for outside-church DMs. */
+  requestStatus?: "pending" | "accepted" | "declined";
+  requestInitiatorUserId?: string;
+  sameChurchAtCreation?: boolean;
+  requestOutboundCountByUserId?: Record<string, number>;
+  acceptedAt?: number;
+  declinedAt?: number;
 };
 
 export type DirectMessageConversationSettings = {
@@ -40,6 +75,18 @@ export type DirectMessageConversationSettings = {
   blocked: boolean;
   clearedAt: number;
   deletedAt: number;
+  relationshipStatus: DmRelationshipStatus;
+  outgoingMessageCount: number;
+  outgoingMessageLimit: number;
+  remainingMessages: number;
+  canSend: boolean;
+  isRequestInitiator: boolean;
+  canAcceptDecline: boolean;
+};
+
+export type {
+  DmRelationshipStatus,
+  DmRequestQuota,
 };
 
 export type DirectMessagePeerPreview = {
@@ -78,7 +125,49 @@ function normUserId(value: string) {
 }
 
 function threadStoreKey(churchId: string, roomId: string) {
-  return `${String(churchId || "").trim()}::${String(roomId || "").trim()}`;
+  return requestThreadStoreKey(churchId, roomId);
+}
+
+function mergeRelationshipIntoRecord(
+  record: DirectMessageThreadRecord,
+  rel: DirectMessageRelationshipRecord | null
+): DirectMessageThreadRecord {
+  if (!rel) return record;
+  const overlay = relationshipToThreadOverlay(rel);
+  return {
+    ...record,
+    churchId: overlay.churchId || record.churchId,
+    requestStatus: overlay.requestStatus,
+    requestInitiatorUserId: overlay.requestInitiatorUserId,
+    sameChurchAtCreation: overlay.sameChurchAtCreation,
+    requestOutboundCountByUserId: overlay.requestOutboundCountByUserId,
+    acceptedAt: overlay.acceptedAt,
+    declinedAt: overlay.declinedAt,
+  };
+}
+
+async function ensureDurableRelationship(args: {
+  roomId: string;
+  storageChurchId: string;
+  participantUserIds: [string, string];
+  viewerUserId: string;
+  sameChurch: boolean;
+}): Promise<DirectMessageRelationshipRecord> {
+  const existing = await getDirectMessageRelationshipByRoomId(args.roomId);
+  if (existing) return existing;
+
+  return upsertDirectMessageRelationship({
+    roomId: args.roomId,
+    storageChurchId: args.storageChurchId,
+    participantUserIds: args.participantUserIds,
+    sameChurchAtCreation: args.sameChurch,
+    ...(args.sameChurch
+      ? { requestStatus: "none" as const, requestInitiatorUserId: "" }
+      : {
+          requestStatus: "pending" as const,
+          requestInitiatorUserId: args.viewerUserId,
+        }),
+  });
 }
 
 function roomMessagesKey(churchId: string, roomId: string) {
@@ -225,15 +314,15 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
   intent?: "create" | "repair";
 }): Promise<DirectMessageThreadView | null> {
   const viewerUserId = normUserId(args.viewerUserId);
-  const churchId = String(args.churchId || "").trim();
+  const requestedChurchId = String(args.churchId || "").trim();
   const rawRoomId = String(args.roomId || "").trim();
   const intent = args.intent === "create" ? "create" : "repair";
 
-  if (!viewerUserId || !churchId || !rawRoomId || !isDirectRoomId(rawRoomId)) {
+  if (!viewerUserId || !rawRoomId || !isDirectRoomId(rawRoomId)) {
     console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
       reason: "invalid_room_or_context",
       roomId: rawRoomId,
-      churchId,
+      churchId: requestedChurchId,
       viewerUserId,
     });
     return null;
@@ -244,7 +333,7 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
     console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
       reason: "invalid_room_participants",
       roomId: rawRoomId,
-      churchId,
+      churchId: requestedChurchId,
       viewerUserId,
     });
     return null;
@@ -256,7 +345,7 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
       reason: "room_id_not_canonical",
       roomId: rawRoomId,
       canonicalRoomId,
-      churchId,
+      churchId: requestedChurchId,
       viewerUserId,
     });
     return null;
@@ -266,39 +355,41 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
     console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
       reason: "viewer_not_participant",
       roomId: canonicalRoomId,
-      churchId,
+      churchId: requestedChurchId,
       viewerUserId,
     });
     return null;
   }
 
   const peerUserId = peerUserIdFromParticipants(participants, viewerUserId);
-  const [viewerMember, peerMember] = await Promise.all([
-    assertActiveChurchMember(churchId, viewerUserId),
-    assertActiveChurchMember(churchId, peerUserId),
-  ]);
-
-  if (!viewerMember || !peerMember) {
-    console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
-      reason: "inactive_membership",
-      roomId: canonicalRoomId,
-      churchId,
-      viewerUserId,
-      peerUserId,
-      viewerMember,
-      peerMember,
-    });
-    return null;
-  }
-
   const now = Date.now();
   const store = await readThreadStore();
-  const key = threadStoreKey(churchId, canonicalRoomId);
-  const existing = store[key];
+  const existingEntry = findThreadEntryByRoomId(store, canonicalRoomId);
+  const sharedChurchId = await usersShareActiveChurch(viewerUserId, peerUserId);
+  const sameChurchNow = Boolean(sharedChurchId);
 
-  if (existing) {
-    existing.updatedAt = Math.max(existing.updatedAt, now);
-    store[key] = existing;
+  if (existingEntry) {
+    const priorChurchId = String(
+      existingEntry.record.churchId || requestedChurchId || ""
+    ).trim();
+    const existingRecord = existingEntry.record as DirectMessageThreadRecord;
+    const rel = await ensureDurableRelationship({
+      roomId: canonicalRoomId,
+      storageChurchId: priorChurchId,
+      participantUserIds: participants,
+      viewerUserId:
+        normUserId(existingRecord.createdByUserId || "") || viewerUserId,
+      // Ongoing same-church only — historical sameChurchAtCreation must not
+      // mint an unlimited "none" relationship after users leave the church.
+      sameChurch: sameChurchNow,
+    });
+    const churchId = String(rel.storageChurchId || priorChurchId).trim();
+    existingRecord.updatedAt = Math.max(
+      Number(existingRecord.updatedAt || 0),
+      now
+    );
+    existingRecord.churchId = churchId;
+    store[existingEntry.key] = existingRecord;
     await writeThreadStore(store);
     console.log("KRISTO_DM_THREAD_FOUND", {
       roomId: canonicalRoomId,
@@ -309,14 +400,66 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
     return buildThreadView({ roomId: canonicalRoomId, churchId, peerUserId });
   }
 
+  // Durable relationship may already exist even if metadata JSON was lost.
+  const existingRel = await getDirectMessageRelationshipByRoomId(canonicalRoomId);
+  if (existingRel) {
+    const churchId = String(
+      existingRel.storageChurchId || requestedChurchId || ""
+    ).trim();
+    if (!churchId) return null;
+    const key = threadStoreKey(churchId, canonicalRoomId);
+    store[key] = {
+      roomId: canonicalRoomId,
+      churchId,
+      participantUserIds: participants,
+      createdAt: existingRel.createdAt || now,
+      updatedAt: now,
+      readAtByUserId: {},
+      createdByUserId: viewerUserId,
+      sameChurchAtCreation: existingRel.sameChurchAtCreation,
+    };
+    await writeThreadStore(store);
+    return buildThreadView({ roomId: canonicalRoomId, churchId, peerUserId });
+  }
+
+  // Creation no longer requires shared/active church membership.
+  // Status is same_church when they share Active membership; else request_pending.
+  const peerIdentity = await resolveCanonicalUserIdentity(peerUserId);
+  if (!peerIdentity?.userId) {
+    console.log("KRISTO_DM_READ_MARK_SKIPPED_NO_THREAD", {
+      reason: "peer_identity_missing",
+      roomId: canonicalRoomId,
+      viewerUserId,
+      peerUserId,
+    });
+    return null;
+  }
+
+  const viewerActive = await getActiveMembership(viewerUserId).catch(() => null);
+  const churchId = String(
+    sharedChurchId ||
+      requestedChurchId ||
+      viewerActive?.churchId ||
+      "dm"
+  ).trim();
+  const rel = await ensureDurableRelationship({
+    roomId: canonicalRoomId,
+    storageChurchId: churchId,
+    participantUserIds: participants,
+    viewerUserId,
+    sameChurch: sameChurchNow,
+  });
+  const durableChurchId = String(rel.storageChurchId || churchId).trim();
+  const key = threadStoreKey(durableChurchId, canonicalRoomId);
   const record: DirectMessageThreadRecord = {
     roomId: canonicalRoomId,
-    churchId,
+    churchId: durableChurchId,
     participantUserIds: participants,
     createdAt: now,
     updatedAt: now,
     readAtByUserId: {},
     createdByUserId: viewerUserId,
+    sameChurchAtCreation: sameChurchNow,
   };
   store[key] = record;
   await writeThreadStore(store);
@@ -324,20 +467,26 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
   if (intent === "create") {
     console.log("KRISTO_DM_THREAD_CREATED", {
       roomId: canonicalRoomId,
-      churchId,
+      churchId: durableChurchId,
       viewerUserId,
       peerUserId,
+      requestStatus: rel.requestStatus,
+      sameChurchAtCreation: rel.sameChurchAtCreation === true,
     });
   } else {
     console.log("KRISTO_DM_THREAD_REPAIRED_FROM_ROOM_ID", {
       roomId: canonicalRoomId,
-      churchId,
+      churchId: durableChurchId,
       viewerUserId,
       peerUserId,
     });
   }
 
-  return buildThreadView({ roomId: canonicalRoomId, churchId, peerUserId });
+  return buildThreadView({
+    roomId: canonicalRoomId,
+    churchId: durableChurchId,
+    peerUserId,
+  });
 }
 
 export async function openDirectMessageThread(args: {
@@ -346,27 +495,80 @@ export async function openDirectMessageThread(args: {
   churchId: string;
 }) {
   const viewerUserId = normUserId(args.viewerUserId);
-  const targetUserId = normUserId(args.targetUserId);
-  const churchId = String(args.churchId || "").trim();
+  const rawTargetUserId = normUserId(args.targetUserId);
+  const requestedChurchId = String(args.churchId || "").trim();
 
-  if (!viewerUserId || !targetUserId || !churchId) {
-    throw new Error("Missing viewer, target, or church.");
+  if (!viewerUserId || !rawTargetUserId) {
+    throw new Error("Missing viewer or target.");
   }
+
+  const targetIdentity = await resolveCanonicalUserIdentity(rawTargetUserId);
+  if (!targetIdentity?.userId) {
+    throw new Error("Target user not found.");
+  }
+  const targetUserId = normUserId(targetIdentity.userId);
+
   if (viewerUserId === targetUserId) {
     throw new Error("You cannot start a chat with yourself.");
   }
 
   const roomId = buildDirectRoomId(viewerUserId, targetUserId);
-  if (!roomId) throw new Error("Could not create conversation.");
+  if (!roomId) throw new Error("Invalid conversation participants.");
+
+  const store = await readThreadStore();
+  const existing = findThreadEntryByRoomId(store, roomId);
+  if (existing) {
+    const record = existing.record as DirectMessageThreadRecord;
+    const blocked =
+      record.blockedByUserId?.[viewerUserId] === true ||
+      record.blockedByUserId?.[targetUserId] === true;
+    if (blocked) {
+      throw new Error("conversation_blocked");
+    }
+    const existingRel = await getDirectMessageRelationshipByRoomId(roomId);
+    return buildThreadView({
+      roomId,
+      churchId: String(
+        existingRel?.storageChurchId || record.churchId || requestedChurchId || "dm"
+      ),
+      peerUserId: targetUserId,
+    });
+  }
+
+  const existingRel = await getDirectMessageRelationshipByRoomId(roomId);
+  if (existingRel) {
+    // Recreate metadata row under the durable storage church.
+    const ensuredExisting = await ensureDirectMessageThreadFromRoomId({
+      viewerUserId,
+      churchId: String(
+        existingRel.storageChurchId || requestedChurchId || "dm"
+      ),
+      roomId,
+      intent: "repair",
+    });
+    if (ensuredExisting) return ensuredExisting;
+  }
+
+  const sharedChurchId = await usersShareActiveChurch(
+    viewerUserId,
+    targetUserId
+  );
+  const viewerActive = await getActiveMembership(viewerUserId).catch(() => null);
+  const storageChurchId = String(
+    sharedChurchId ||
+      requestedChurchId ||
+      viewerActive?.churchId ||
+      "dm"
+  ).trim();
 
   const ensured = await ensureDirectMessageThreadFromRoomId({
     viewerUserId,
-    churchId,
+    churchId: storageChurchId,
     roomId,
     intent: "create",
   });
   if (!ensured) {
-    throw new Error("Could not create conversation.");
+    throw new Error("Target user not found.");
   }
 
   return ensured;
@@ -410,12 +612,11 @@ export async function getDirectMessageConversationSettings(args: {
   roomId: string;
   userId: string;
 }): Promise<DirectMessageConversationSettings | null> {
-  const churchId = String(args.churchId || "").trim();
+  const requestedChurchId = String(args.churchId || "").trim();
   const roomId = String(args.roomId || "").trim();
   const userId = normUserId(args.userId);
 
   if (
-    !churchId ||
     !roomId ||
     !userId ||
     !isDirectRoomId(roomId) ||
@@ -428,18 +629,51 @@ export async function getDirectMessageConversationSettings(args: {
   if (!participants) return null;
 
   const store = await readThreadStore();
-  const record = store[threadStoreKey(churchId, roomId)];
-  if (!record) return null;
+  const found = findThreadEntryByRoomId(store, roomId);
+  const baseRecord = found?.record as DirectMessageThreadRecord | undefined;
+  if (!baseRecord) return null;
 
-  const peerUserId = peerUserIdFromParticipants(
-    participants,
-    userId
+  const rel = await getDirectMessageRelationshipByRoomId(roomId);
+  const record = mergeRelationshipIntoRecord(baseRecord, rel);
+  const churchId = String(
+    record.churchId || requestedChurchId || ""
+  ).trim();
+  const peerUserId = peerUserIdFromParticipants(participants, userId);
+
+  const blockedByMe = record.blockedByUserId?.[userId] === true;
+  const blockedByPeer = record.blockedByUserId?.[peerUserId] === true;
+  const shareActiveChurch = Boolean(
+    await usersShareActiveChurch(userId, peerUserId)
   );
-
-  const blockedByMe =
-    record.blockedByUserId?.[userId] === true;
-  const blockedByPeer =
-    record.blockedByUserId?.[peerUserId] === true;
+  const relationshipStatus = resolveDmRelationshipStatus({
+    record,
+    viewerUserId: userId,
+    peerUserId,
+    shareActiveChurch,
+  });
+  const isRequestInitiator =
+    normUserId(record.requestInitiatorUserId || "") === userId;
+  const quotaSenderUserId =
+    relationshipStatus === "request_pending"
+      ? normUserId(record.requestInitiatorUserId || "") || userId
+      : userId;
+  const quota = buildDmRequestQuota({
+    relationshipStatus,
+    record,
+    senderUserId: quotaSenderUserId,
+  });
+  const canAcceptDecline =
+    relationshipStatus === "request_pending" &&
+    !isRequestInitiator &&
+    !blockedByMe &&
+    !blockedByPeer;
+  // Viewer-specific sendability: initiator uses quota; recipient can reply
+  // without consuming the initiator's 7-message allowance.
+  const viewerCanSend =
+    relationshipStatus === "same_church" ||
+    relationshipStatus === "accepted" ||
+    (relationshipStatus === "request_pending" &&
+      (isRequestInitiator ? quota.canSend : true));
 
   return {
     roomId,
@@ -449,12 +683,23 @@ export async function getDirectMessageConversationSettings(args: {
     blockedByMe,
     blockedByPeer,
     blocked: blockedByMe || blockedByPeer,
-    clearedAt: Number(
-      record.clearedAtByUserId?.[userId] || 0
-    ),
-    deletedAt: Number(
-      record.deletedAtByUserId?.[userId] || 0
-    ),
+    clearedAt: Number(record.clearedAtByUserId?.[userId] || 0),
+    deletedAt: Number(record.deletedAtByUserId?.[userId] || 0),
+    relationshipStatus: quota.relationshipStatus,
+    outgoingMessageCount: quota.outgoingMessageCount,
+    outgoingMessageLimit: quota.outgoingMessageLimit,
+    remainingMessages: isRequestInitiator
+      ? quota.remainingMessages
+      : relationshipStatus === "request_pending"
+        ? quota.outgoingMessageLimit
+        : quota.remainingMessages,
+    canSend:
+      relationshipStatus === "blocked" ||
+      relationshipStatus === "declined"
+        ? false
+        : viewerCanSend,
+    isRequestInitiator,
+    canAcceptDecline,
   };
 }
 
@@ -469,14 +714,15 @@ export async function updateDirectMessageConversationSettings(args: {
     | "unblock"
     | "clear"
     | "delete"
-    | "restore";
+    | "restore"
+    | "accept"
+    | "decline";
 }): Promise<DirectMessageConversationSettings | null> {
-  const churchId = String(args.churchId || "").trim();
+  const requestedChurchId = String(args.churchId || "").trim();
   const roomId = String(args.roomId || "").trim();
   const userId = normUserId(args.userId);
 
   if (
-    !churchId ||
     !roomId ||
     !userId ||
     !isDirectRoomId(roomId) ||
@@ -484,6 +730,13 @@ export async function updateDirectMessageConversationSettings(args: {
   ) {
     return null;
   }
+
+  const storeBefore = await readThreadStore();
+  const existing = findThreadEntryByRoomId(storeBefore, roomId);
+  const churchId = String(
+    existing?.record.churchId || requestedChurchId || ""
+  ).trim();
+  if (!churchId) return null;
 
   const ensured = await ensureDirectMessageThreadFromRoomId({
     viewerUserId: userId,
@@ -495,6 +748,25 @@ export async function updateDirectMessageConversationSettings(args: {
   if (!ensured) return null;
 
   const now = Date.now();
+  const participants = parseDirectRoomParticipants(roomId);
+  if (!participants) return null;
+  const peerUserId = peerUserIdFromParticipants(participants, userId);
+
+  if (args.action === "accept" || args.action === "decline") {
+    const statusUpdate = await updateDirectMessageRelationshipStatus({
+      roomId,
+      actorUserId: userId,
+      action: args.action,
+    });
+    if (!statusUpdate.ok) {
+      return null;
+    }
+    return getDirectMessageConversationSettings({
+      churchId: ensured.churchId,
+      roomId,
+      userId,
+    });
+  }
 
   await updateDirectMessageThreadStore<
     Record<string, DirectMessageThreadRecord>
@@ -503,9 +775,9 @@ export async function updateDirectMessageConversationSettings(args: {
       ? { ...current }
       : {};
 
-    const key = threadStoreKey(churchId, roomId);
-    const record = next[key];
-    if (!record) return next;
+    const found = findThreadEntryByRoomId(next, roomId);
+    if (!found) return next;
+    const record = found.record as DirectMessageThreadRecord;
 
     if (args.action === "mute" || args.action === "unmute") {
       record.mutedByUserId = {
@@ -550,25 +822,22 @@ export async function updateDirectMessageConversationSettings(args: {
       };
     }
 
-    record.updatedAt = Math.max(
-      Number(record.updatedAt || 0),
-      now
-    );
-
-    next[key] = record;
+    record.updatedAt = Math.max(Number(record.updatedAt || 0), now);
+    next[found.key] = record;
     return next;
   }, {});
 
   console.log("KRISTO_DM_CONVERSATION_SETTING_UPDATED", {
-    churchId,
+    churchId: ensured.churchId,
     roomId,
     userId,
+    peerUserId,
     action: args.action,
     ts: now,
   });
 
   return getDirectMessageConversationSettings({
-    churchId,
+    churchId: ensured.churchId,
     roomId,
     userId,
   });
@@ -614,9 +883,9 @@ export async function reportDirectMessageUser(args: {
       ? { ...current }
       : {};
 
-    const key = threadStoreKey(churchId, roomId);
-    const record = next[key];
-    if (!record) return next;
+    const found = findThreadEntryByRoomId(next, roomId);
+    if (!found) return next;
+    const record = found.record as DirectMessageThreadRecord;
 
     record.reports = [
       ...(record.reports || []),
@@ -629,7 +898,7 @@ export async function reportDirectMessageUser(args: {
       },
     ].slice(-200);
 
-    next[key] = record;
+    next[found.key] = record;
     return next;
   }, {});
 
@@ -654,6 +923,234 @@ export async function isDirectMessageBlocked(args: {
     await getDirectMessageConversationSettings(args);
   return settings?.blocked === true;
 }
+
+export type DirectMessageSendGateResult =
+  | {
+      ok: true;
+      churchId: string;
+      relationshipStatus: DmRelationshipStatus;
+      claimedOutboundSlot: boolean;
+      quota: DmRequestQuota;
+    }
+  | {
+      ok: false;
+      status: number;
+      body: {
+        ok: false;
+        error: string;
+        code?: string;
+        message?: string;
+        details?: {
+          limit: number;
+          remainingMessages: number;
+        };
+      };
+    };
+
+/**
+ * Enforce block + relationship/request limit before persisting a DM.
+ * When a pending request slot is claimed, caller must release on persist failure.
+ */
+export async function assertDirectMessageSendAllowed(args: {
+  churchId: string;
+  roomId: string;
+  senderUserId: string;
+}): Promise<DirectMessageSendGateResult> {
+  const roomId = String(args.roomId || "").trim();
+  const senderUserId = normUserId(args.senderUserId);
+  const requestedChurchId = String(args.churchId || "").trim();
+
+  if (
+    !roomId ||
+    !senderUserId ||
+    !isDirectRoomId(roomId) ||
+    !isParticipantInDirectRoom(roomId, senderUserId)
+  ) {
+    return {
+      ok: false,
+      status: 403,
+      body: { ok: false, error: "Forbidden" },
+    };
+  }
+
+  const participants = parseDirectRoomParticipants(roomId);
+  if (!participants) {
+    return {
+      ok: false,
+      status: 400,
+      body: { ok: false, error: "Invalid direct message room." },
+    };
+  }
+
+  const peerUserId = peerUserIdFromParticipants(participants, senderUserId);
+  const store = await readThreadStore();
+  const found = findThreadEntryByRoomId(store, roomId);
+  if (!found) {
+    return {
+      ok: false,
+      status: 404,
+      body: { ok: false, error: "Conversation not found." },
+    };
+  }
+
+  // Block is checked before any quota claim so blocked attempts never consume.
+  const baseRecord = found.record as DirectMessageThreadRecord;
+  const blockedByMe = baseRecord.blockedByUserId?.[senderUserId] === true;
+  const blockedByPeer = baseRecord.blockedByUserId?.[peerUserId] === true;
+  if (blockedByMe || blockedByPeer) {
+    return {
+      ok: false,
+      status: 403,
+      body: {
+        ok: false,
+        error: "conversation_blocked",
+        message:
+          "Messages cannot be sent in this blocked conversation.",
+      },
+    };
+  }
+
+  let rel = await getDirectMessageRelationshipByRoomId(roomId);
+  if (!rel) {
+    const shareNow = Boolean(
+      await usersShareActiveChurch(senderUserId, peerUserId)
+    );
+    rel = await ensureDurableRelationship({
+      roomId,
+      storageChurchId: String(
+        baseRecord.churchId || requestedChurchId || ""
+      ).trim(),
+      participantUserIds: participants,
+      viewerUserId: senderUserId,
+      sameChurch: shareNow,
+    });
+  }
+
+  const record = mergeRelationshipIntoRecord(baseRecord, rel);
+  const churchId = String(
+    rel.storageChurchId || record.churchId || requestedChurchId || ""
+  ).trim();
+  const shareActiveChurch = Boolean(
+    await usersShareActiveChurch(senderUserId, peerUserId)
+  );
+  const relationshipStatus = resolveDmRelationshipStatus({
+    record,
+    viewerUserId: senderUserId,
+    peerUserId,
+    shareActiveChurch,
+  });
+  const quota = buildDmRequestQuota({
+    relationshipStatus,
+    record,
+    senderUserId,
+  });
+
+  if (relationshipStatus === "declined") {
+    return {
+      ok: false,
+      status: 403,
+      body: {
+        ok: false,
+        error:
+          "This message request was declined. The recipient must accept before you can continue.",
+        code: "DM_REQUEST_DECLINED",
+      },
+    };
+  }
+
+  if (
+    relationshipStatus === "same_church" ||
+    relationshipStatus === "accepted"
+  ) {
+    return {
+      ok: true,
+      churchId,
+      relationshipStatus,
+      claimedOutboundSlot: false,
+      quota,
+    };
+  }
+
+  // request_pending: only the initiator consumes the 7-message quota.
+  // Receiver may reply before Accept without consuming initiator quota.
+  const initiatorUserId = normUserId(record.requestInitiatorUserId || "");
+  if (initiatorUserId && initiatorUserId !== senderUserId) {
+    return {
+      ok: true,
+      churchId,
+      relationshipStatus: "request_pending",
+      claimedOutboundSlot: false,
+      quota: buildDmRequestQuota({
+        relationshipStatus: "request_pending",
+        record,
+        senderUserId: initiatorUserId,
+      }),
+    };
+  }
+
+  // If relationship was "none"/legacy and no longer same-church, mint pending
+  // for this authenticated sender as initiator before claiming (server-set only).
+  if (!initiatorUserId || rel.requestStatus === "none") {
+    const pending = await ensurePendingRequestForInitiator({
+      roomId,
+      senderUserId,
+      storageChurchId: churchId,
+      participantUserIds: participants,
+    });
+    if (pending) {
+      rel = pending;
+    }
+  }
+
+  const claim = await claimDirectMessageRequestOutboundSlot({
+    roomId,
+    senderUserId,
+    limit: DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
+  });
+
+  if (!claim.ok) {
+    if (claim.code === DM_REQUEST_MESSAGE_LIMIT_REACHED) {
+      return {
+        ok: false,
+        status: 403,
+        body: {
+          ok: false,
+          error: claim.error,
+          code: DM_REQUEST_MESSAGE_LIMIT_REACHED,
+          details: {
+            limit: claim.limit,
+            remainingMessages: 0,
+          },
+        },
+      };
+    }
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        ok: false,
+        error: claim.error || "Could not send message request.",
+        code: claim.code,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    churchId: claim.churchId || churchId,
+    relationshipStatus: "request_pending",
+    claimedOutboundSlot: true,
+    quota: {
+      relationshipStatus: "request_pending",
+      outgoingMessageCount: claim.count,
+      outgoingMessageLimit: DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
+      remainingMessages: claim.remainingMessages,
+      canSend: claim.remainingMessages > 0,
+    },
+  };
+}
+
+export { releaseDirectMessageRequestOutboundSlot };
 
 export async function touchDirectMessageThread(args: {
   churchId: string;
@@ -762,15 +1259,25 @@ async function lastMessageForThread(
   };
 }
 
-async function discoverDirectRoomIdsFromMessages(churchId: string, viewerUserId: string) {
-  const store = await readRoomMessagesJsonFile<Record<string, any[]>>("room-messages.json", {});
-  const prefix = `${churchId}::dm:`;
+async function discoverDirectRoomIdsFromMessages(
+  churchId: string,
+  viewerUserId: string
+) {
+  const store = await readRoomMessagesJsonFile<Record<string, any[]>>(
+    "room-messages.json",
+    {}
+  );
   const roomIds = new Set<string>();
+  const churchPrefix = `${churchId}::`;
 
   for (const key of Object.keys(store || {})) {
-    if (!key.startsWith(prefix)) continue;
-    const roomId = key.slice(prefix.length);
-    if (isParticipantInDirectRoom(roomId, viewerUserId)) {
+    const sep = key.indexOf("::");
+    if (sep <= 0) continue;
+    const roomId = key.slice(sep + 2);
+    if (!isDirectRoomId(roomId)) continue;
+    if (!isParticipantInDirectRoom(roomId, viewerUserId)) continue;
+    // Prefer same-church discoveries for repair, but include all participant DMs.
+    if (key.startsWith(churchPrefix) || isDirectRoomId(roomId)) {
       roomIds.add(roomId);
     }
   }
@@ -782,19 +1289,27 @@ async function collectThreadRecordsForViewer(churchId: string, viewerUserId: str
   const store = await readThreadStore();
   const fromStore = Object.values(store).filter(
     (thread) =>
-      String(thread?.churchId || "") === churchId &&
       Array.isArray(thread?.participantUserIds) &&
-      thread.participantUserIds.includes(viewerUserId)
+      thread.participantUserIds.includes(viewerUserId) &&
+      !Number(thread?.deletedAtByUserId?.[viewerUserId] || 0)
   );
 
-  const discoveredRoomIds = await discoverDirectRoomIdsFromMessages(churchId, viewerUserId);
+  const discoveredRoomIds = await discoverDirectRoomIdsFromMessages(
+    churchId,
+    viewerUserId
+  );
   const knownRoomIds = new Set(fromStore.map((thread) => thread.roomId));
 
   for (const roomId of discoveredRoomIds) {
     if (knownRoomIds.has(roomId)) continue;
+    const existing = findThreadEntryByRoomId(store, roomId);
+    const repairChurchId = String(
+      existing?.record.churchId || churchId || ""
+    ).trim();
+    if (!repairChurchId) continue;
     await ensureDirectMessageThreadFromRoomId({
       viewerUserId,
-      churchId,
+      churchId: repairChurchId,
       roomId,
     });
   }
@@ -802,9 +1317,9 @@ async function collectThreadRecordsForViewer(churchId: string, viewerUserId: str
   const refreshed = await readThreadStore();
   return Object.values(refreshed).filter(
     (thread) =>
-      String(thread?.churchId || "") === churchId &&
       Array.isArray(thread?.participantUserIds) &&
-      thread.participantUserIds.includes(viewerUserId)
+      thread.participantUserIds.includes(viewerUserId) &&
+      !Number(thread?.deletedAtByUserId?.[viewerUserId] || 0)
   );
 }
 

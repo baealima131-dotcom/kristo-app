@@ -1,11 +1,16 @@
 import { readJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
 import {
   dbFindProfileByUserCode,
+  dbFindUserByKristoId,
   dbGetProfile,
+  dbGetUserById,
   dbUpsertProfile,
   ensureAuthStoreReady,
   hasDurableStore,
 } from "@/app/api/_lib/store/authDb";
+import {
+  localGetUserById,
+} from "@/app/api/_lib/store/localAuthStore";
 
 export type Gender = "MALE" | "FEMALE";
 
@@ -148,6 +153,75 @@ export async function getProfileByUserCode(userCode: string): Promise<UserProfil
       return userCodeValue === code || userId === code || coreId === code || coreIdBirth === code;
     }) || null
   );
+}
+
+/**
+ * Resolve a public/external identity by canonical user id, Kristo code, or
+ * account row — independent of church membership.
+ */
+export async function resolveCanonicalUserIdentity(rawId: string): Promise<{
+  userId: string;
+  profile: UserProfile | null;
+  account: { id: string; kristoId?: string; email?: string; phone?: string } | null;
+} | null> {
+  await ensureAuthStoreReady();
+  const target = String(rawId || "").trim();
+  if (!target) return null;
+
+  async function loadAccount(id: string) {
+    const uid = String(id || "").trim();
+    if (!uid) return null;
+    return hasDurableStore()
+      ? dbGetUserById(uid)
+      : localGetUserById(uid);
+  }
+
+  let profile = await getProfile(target).catch(() => null);
+  if (!profile) {
+    profile = await getProfileByUserCode(target).catch(() => null);
+  }
+
+  let account =
+    (await loadAccount(
+      String((profile as any)?.userId || target).trim()
+    ).catch(() => null)) || null;
+
+  if (!account) {
+    account = (await loadAccount(target).catch(() => null)) || null;
+  }
+
+  if (!account && !profile && hasDurableStore()) {
+    account = (await dbFindUserByKristoId(target).catch(() => null)) || null;
+    if (account?.id) {
+      profile = await getProfile(account.id).catch(() => null);
+    }
+  }
+
+  const userId = String(
+    (profile as any)?.userId ||
+      (profile as any)?.id ||
+      account?.id ||
+      ""
+  ).trim();
+
+  if (!userId) return null;
+
+  if (!profile && account?.id) {
+    profile = await getProfile(account.id).catch(() => null);
+  }
+
+  return {
+    userId,
+    profile,
+    account: account
+      ? {
+          id: account.id,
+          kristoId: account.kristoId,
+          email: account.email,
+          phone: account.phone,
+        }
+      : null,
+  };
 }
 
 export function defaultPrivacy(): UserProfilePrivacy {

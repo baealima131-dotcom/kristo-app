@@ -50,13 +50,32 @@ async function ensureReady() {
   }
 }
 
-async function readDocument<T>(fallback: T): Promise<T> {
+async function readDocumentWithVersion<T>(
+  fallback: T
+): Promise<{ data: T; updatedAt: string | null; exists: boolean }> {
   const sql = getSql();
   const rows = await sql`
-    SELECT data FROM kristo_room_message_store WHERE key = ${DIRECT_MESSAGE_THREADS_STORE_KEY} LIMIT 1
+    SELECT data, updated_at
+    FROM kristo_room_message_store
+    WHERE key = ${DIRECT_MESSAGE_THREADS_STORE_KEY}
+    LIMIT 1
   `;
-  const row = (rows as { data: T }[])[0];
-  return row && row.data != null ? (row.data as T) : fallback;
+  const row = (rows as { data: T; updated_at: string | Date | null }[])[0];
+  if (!row || row.data == null) {
+    return { data: fallback, updatedAt: null, exists: false };
+  }
+  const updatedAt =
+    row.updated_at == null
+      ? null
+      : typeof row.updated_at === "string"
+        ? row.updated_at
+        : new Date(row.updated_at).toISOString();
+  return { data: row.data as T, updatedAt, exists: true };
+}
+
+async function readDocument<T>(fallback: T): Promise<T> {
+  const snap = await readDocumentWithVersion<T>(fallback);
+  return snap.data;
 }
 
 async function writeDocument<T>(data: T): Promise<void> {
@@ -67,6 +86,32 @@ async function writeDocument<T>(data: T): Promise<void> {
     ON CONFLICT (key)
     DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
   `;
+}
+
+async function compareAndSwapDocument<T>(
+  next: T,
+  expectedUpdatedAt: string | null,
+  exists: boolean
+): Promise<boolean> {
+  const sql = getSql();
+  if (!exists || !expectedUpdatedAt) {
+    const inserted = await sql`
+      INSERT INTO kristo_room_message_store (key, data, updated_at)
+      VALUES (${DIRECT_MESSAGE_THREADS_STORE_KEY}, ${next as any}, NOW())
+      ON CONFLICT (key) DO NOTHING
+      RETURNING key
+    `;
+    return Array.isArray(inserted) && inserted.length > 0;
+  }
+
+  const updated = await sql`
+    UPDATE kristo_room_message_store
+    SET data = ${next as any}, updated_at = NOW()
+    WHERE key = ${DIRECT_MESSAGE_THREADS_STORE_KEY}
+      AND updated_at = ${expectedUpdatedAt}::timestamptz
+    RETURNING key
+  `;
+  return Array.isArray(updated) && updated.length > 0;
 }
 
 export async function readDirectMessageThreadStore<T>(fallback: T): Promise<T> {
@@ -90,12 +135,51 @@ export async function updateDirectMessageThreadStore<T>(
   mutator: (current: T) => T,
   fallback: T
 ): Promise<T> {
+  return updateDirectMessageThreadStoreWithResult<T, T>(
+    (current) => {
+      const next = mutator(current);
+      return { next, result: next };
+    },
+    fallback
+  );
+}
+
+/**
+ * Compare-and-swap update for concurrency-safe DM request slot claims.
+ * File store uses the existing in-process lock; Postgres retries on version mismatch.
+ */
+export async function updateDirectMessageThreadStoreWithResult<T, R>(
+  mutator: (current: T) => { next: T; result: R },
+  fallback: T,
+  options?: { maxRetries?: number }
+): Promise<R> {
   await ensureReady();
+  const maxRetries = Math.max(1, Number(options?.maxRetries || 12) || 12);
+
   if (!usePostgres()) {
-    return updateJsonFile<T>(DIRECT_MESSAGE_THREADS_STORE_KEY, mutator, fallback);
+    let result!: R;
+    await updateJsonFile<T>(
+      DIRECT_MESSAGE_THREADS_STORE_KEY,
+      (current) => {
+        const out = mutator(current);
+        result = out.result;
+        return out.next;
+      },
+      fallback
+    );
+    return result;
   }
-  const current = await readDocument<T>(fallback);
-  const next = mutator(current);
-  await writeDocument<T>(next);
-  return next;
+
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    const snap = await readDocumentWithVersion<T>(fallback);
+    const out = mutator(snap.data);
+    const swapped = await compareAndSwapDocument(
+      out.next,
+      snap.updatedAt,
+      snap.exists
+    );
+    if (swapped) return out.result;
+  }
+
+  throw new Error("Direct message thread store update conflicted too many times");
 }

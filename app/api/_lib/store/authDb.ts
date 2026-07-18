@@ -181,6 +181,22 @@ export async function dbGetUserById(userId: string): Promise<UserRecord | null> 
   return row ? rowToUser(row) : null;
 }
 
+export async function dbFindUserByKristoId(
+  kristoId: string
+): Promise<UserRecord | null> {
+  await ensureAuthSchema();
+  const key = String(kristoId || "").trim().toUpperCase();
+  if (!key) return null;
+  const sql = getSql();
+  const rows = await sql`
+    SELECT * FROM kristo_users
+    WHERE UPPER(COALESCE(kristo_id, '')) = ${key}
+    LIMIT 1
+  `;
+  const row = (rows as UserRow[])[0];
+  return row ? rowToUser(row) : null;
+}
+
 export async function dbFindUserByEmail(email: string): Promise<UserRecord | null> {
   await ensureAuthSchema();
   const sql = getSql();

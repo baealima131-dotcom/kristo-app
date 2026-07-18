@@ -2,16 +2,14 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import {
-  getProfile,
-  getProfileByUserCode,
+  normalizePrivacy,
+  resolveCanonicalUserIdentity,
 } from "@/app/api/auth/_lib/profile";
-import { getUserById } from "@/app/api/auth/_lib/session";
 import {
   getActiveMembership,
   getMembershipsForUser,
 } from "@/app/api/_lib/memberships";
 import { getChurchById } from "@/app/api/_lib/churches";
-import { normalizePrivacy } from "@/app/api/auth/_lib/profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -99,41 +97,21 @@ export async function GET(
     );
   }
 
-  const directProfile =
-    await getProfile(targetUserId).catch(
-      () => null
+  // Canonical identity resolution is membership-agnostic.
+  const resolved =
+    await resolveCanonicalUserIdentity(
+      targetUserId
     );
 
-  const codeProfile =
-    directProfile
-      ? null
-      : await getProfileByUserCode(
-          targetUserId
-        ).catch(() => null);
-
-  const initialProfile =
-    directProfile || codeProfile;
-
-  const canonicalTargetUserId = text(
-    (initialProfile as any)?.userId ||
-      (initialProfile as any)?.id ||
-      targetUserId
-  );
-
-  const [profile, account] =
-    await Promise.all([
-      initialProfile
-        ? Promise.resolve(initialProfile)
-        : getProfile(
-            canonicalTargetUserId
-          ).catch(() => null),
-
-      getUserById(
-        canonicalTargetUserId
-      ).catch(() => null),
-    ]);
-
-  if (!profile && !account) {
+  if (!resolved?.userId) {
+    console.log(
+      "KRISTO_PUBLIC_USER_PROFILE_NOT_FOUND",
+      {
+        viewerUserId,
+        requestedTargetUserId:
+          targetUserId,
+      }
+    );
     return NextResponse.json(
       {
         ok: false,
@@ -142,6 +120,11 @@ export async function GET(
       { status: 404 }
     );
   }
+
+  const canonicalTargetUserId =
+    resolved.userId;
+  const profile = resolved.profile;
+  const account = resolved.account;
 
   const source: any = profile || {};
   const user: any = account || {};
@@ -269,7 +252,8 @@ export async function GET(
     ? text(
         source.userCode ||
           source.kristoId ||
-          source.publicKristoId
+          source.publicKristoId ||
+          user.kristoId
       )
     : "";
 
@@ -379,7 +363,7 @@ export async function GET(
                     ""
                   );
 
-            const role = text(
+            const historyRole = text(
               membership?.churchRole ||
               membership?.role ||
               "Member"
@@ -402,7 +386,7 @@ export async function GET(
                 historyChurchId
               ),
 
-              role,
+              role: historyRole,
 
               joinedAt,
 
@@ -520,40 +504,6 @@ export async function GET(
         churchId || null,
       returnedKristoId:
         kristoId || null,
-      showGender:
-        privacy.showGender === true,
-      showAge:
-        dobIsPublic,
-      showCountry:
-        privacy.showCountry === true,
-      showCity:
-        privacy.showCity === true,
-      showMaritalStatus:
-        privacy.showMaritalStatus === true,
-      showLanguages:
-        privacy.showLanguages === true,
-      showProfileFact:
-        privacy.showProfileFact === true,
-      showMemberSince:
-        privacy.showMemberSince === true,
-      showChurchHistory:
-        privacy.showChurchHistory === true,
-      returnedCountry:
-        publicCountry || null,
-      returnedCity:
-        publicCity || null,
-      returnedLanguageCount:
-        publicLanguages.length,
-      returnedHistoryCount:
-        publicChurchHistory.length,
-      journeySource:
-        "kristo-membership-history",
-      journeyKristoUserId:
-        canonicalTargetUserId,
-      totalMembershipRecords:
-        Array.isArray(membershipHistory)
-          ? membershipHistory.length
-          : 0,
     }
   );
 
@@ -569,7 +519,8 @@ export async function GET(
         kristoId: text(
           source.userCode ||
           source.kristoId ||
-          source.publicKristoId
+          source.publicKristoId ||
+          user.kristoId
         ),
       },
 

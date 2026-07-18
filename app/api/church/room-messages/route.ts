@@ -15,10 +15,11 @@ import {
 } from "@/app/api/_lib/store/roomMessageDb";
 import { purgeFeedSchedulesForDeletedRoomCards } from "@/app/api/_lib/reconcileMediaScheduleFeed";
 import {
+  assertDirectMessageSendAllowed,
   getDirectMessageConversationSettings,
-  isDirectMessageBlocked,
   isDirectRoomId,
   isParticipantInDirectRoom,
+  releaseDirectMessageRequestOutboundSlot,
   touchDirectMessageThread,
 } from "@/app/api/_lib/directMessages";
 
@@ -291,6 +292,30 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
   }
 
+  let viewerClearedAt = 0;
+  let effectiveChurchId = churchId;
+
+  if (isDirectRoomId(roomId)) {
+    if (!isParticipantInDirectRoom(roomId, userId)) {
+      return NextResponse.json(
+        { ok: false, error: "Forbidden" },
+        { status: 403 }
+      );
+    }
+
+    const settings =
+      await getDirectMessageConversationSettings({
+        churchId,
+        roomId,
+        userId,
+      });
+
+    viewerClearedAt = Number(settings?.clearedAt || 0);
+    // Canonical thread churchId — not the viewer's session header — so
+    // cross-church request DMs share one message document.
+    effectiveChurchId = String(settings?.churchId || churchId).trim();
+  }
+
   let store: Record<string, RoomMessage[]>;
   try {
     store = await readStore();
@@ -304,7 +329,7 @@ export async function GET(req: Request) {
       { status: 503 }
     );
   }
-  const getStoreKey = keyOf(churchId, roomId);
+  const getStoreKey = keyOf(effectiveChurchId, roomId);
 
   // Diagnostics: the store is keyed by `${churchId}::${roomId}`, NOT by roomId
   // alone. These logs make it obvious if POST wrote under a different key than
@@ -312,26 +337,13 @@ export async function GET(req: Request) {
   console.log("KRISTO_ROOM_MESSAGES_GET_STORE", roomId, store[roomId]?.length);
   console.log("KRISTO_ROOM_MESSAGES_GET_STORE_DETAIL", {
     roomId,
-    churchId,
+    churchId: effectiveChurchId,
     storeKey: getStoreKey,
     rowsForStoreKey: store[getStoreKey]?.length || 0,
     rowsForRoomIdOnly: store[roomId]?.length || 0,
     totalDocKeys: Object.keys(store || {}).length,
     docKeys: Object.keys(store || {}).slice(0, 30),
   });
-
-  let viewerClearedAt = 0;
-
-  if (isDirectRoomId(roomId)) {
-    const settings =
-      await getDirectMessageConversationSettings({
-        churchId,
-        roomId,
-        userId,
-      });
-
-    viewerClearedAt = Number(settings?.clearedAt || 0);
-  }
 
   const rows = (store[getStoreKey] || []).filter((m: any) => {
     const deletedFor = Array.isArray(m?.deletedFor)
@@ -356,7 +368,7 @@ export async function GET(req: Request) {
   const enriched = await Promise.all(
     window.map(async (m: any) => {
       const profile = await senderProfileFor(
-        churchId,
+        effectiveChurchId,
         String(m.senderUserId || "")
       );
 
@@ -661,6 +673,11 @@ export async function POST(req: Request) {
     }
   }
 
+  let dmSendGate: Awaited<
+    ReturnType<typeof assertDirectMessageSendAllowed>
+  > | null = null;
+  let effectiveChurchId = churchId;
+
   if (isDirectRoom) {
     if (!isDirectRoomId(roomId)) {
       return NextResponse.json(
@@ -671,30 +688,6 @@ export async function POST(req: Request) {
     if (!isParticipantInDirectRoom(roomId, userId)) {
       return NextResponse.json(
         { ok: false, error: "Forbidden" },
-        { status: 403 }
-      );
-    }
-
-    const blocked = await isDirectMessageBlocked({
-      churchId,
-      roomId,
-      userId,
-    });
-
-    if (blocked) {
-      console.log("KRISTO_DM_SEND_BLOCKED", {
-        churchId,
-        roomId,
-        senderUserId: userId,
-      });
-
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "conversation_blocked",
-          message:
-            "Messages cannot be sent in this blocked conversation.",
-        },
         { status: 403 }
       );
     }
@@ -744,10 +737,40 @@ export async function POST(req: Request) {
     if (subscriptionBlocked) return subscriptionBlocked;
   }
 
+  // Block + DM request limit after validation, immediately before persist.
+  if (isDirectRoom) {
+    dmSendGate = await assertDirectMessageSendAllowed({
+      churchId,
+      roomId,
+      senderUserId: userId,
+    });
+
+    if (!dmSendGate.ok) {
+      if (dmSendGate.body.error === "conversation_blocked") {
+        console.log("KRISTO_DM_SEND_BLOCKED", {
+          churchId,
+          roomId,
+          senderUserId: userId,
+        });
+      }
+      return NextResponse.json(dmSendGate.body, {
+        status: dmSendGate.status,
+      });
+    }
+
+    effectiveChurchId = String(dmSendGate.churchId || churchId).trim();
+  }
+
   let store: Record<string, RoomMessage[]>;
   try {
     store = await readStore();
   } catch (e) {
+    if (dmSendGate?.ok && dmSendGate.claimedOutboundSlot) {
+      await releaseDirectMessageRequestOutboundSlot({
+        roomId,
+        senderUserId: userId,
+      }).catch(() => null);
+    }
     console.log("KRISTO_ROOM_MESSAGES_READ_FAILED", {
       roomId,
       roomKind,
@@ -758,16 +781,16 @@ export async function POST(req: Request) {
       { status: 503 }
     );
   }
-  const key = keyOf(churchId, roomId);
+  const key = keyOf(effectiveChurchId, roomId);
 
   const identity = await resolveSenderIdentity(userId);
-  const senderRole = await churchRoleForUser(churchId, userId);
+  const senderRole = await churchRoleForUser(effectiveChurchId, userId);
   const senderName = String(identity.name || body?.senderName || name || "Member").trim();
 
   const msg: RoomMessage = {
     id: `rm_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     ...(clientId ? { clientId } : {}),
-    churchId,
+    churchId: effectiveChurchId,
     roomId,
     roomKind,
     senderUserId: userId,
@@ -789,7 +812,7 @@ export async function POST(req: Request) {
   console.log("KRISTO_ROOM_MESSAGES_POST_STORE", roomId, store[roomId]?.length);
   console.log("KRISTO_ROOM_MESSAGES_POST_STORE_DETAIL", {
     roomId,
-    churchId,
+    churchId: effectiveChurchId,
     storeKey: key,
     rowsForStoreKey: store[key]?.length || 0,
     rowsForRoomIdOnly: store[roomId]?.length || 0,
@@ -808,6 +831,12 @@ export async function POST(req: Request) {
   try {
     await writeStore(store);
   } catch (e) {
+    if (dmSendGate?.ok && dmSendGate.claimedOutboundSlot) {
+      await releaseDirectMessageRequestOutboundSlot({
+        roomId,
+        senderUserId: userId,
+      }).catch(() => null);
+    }
     console.log("KRISTO_ROOM_MESSAGES_WRITE_FAILED", {
       roomId,
       roomKind,
@@ -822,7 +851,7 @@ export async function POST(req: Request) {
   if (isDirectRoom) {
     try {
       await touchDirectMessageThread({
-        churchId,
+        churchId: effectiveChurchId,
         roomId,
         senderUserId: userId,
         previewText: text,
