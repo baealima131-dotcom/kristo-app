@@ -294,9 +294,45 @@ describe("DM request role direction (source)", () => {
       "PATCH allowlist includes restart_request"
     );
     assertIncludes(
+      dmRoute,
+      "Restart request persistence failed",
+      "strict PATCH error contract"
+    );
+    assertIncludes(
       relDb,
       "restartMessageRequestAsPending",
       "restart export"
+    );
+    assertIncludes(
+      relDb,
+      "KRISTO_DM_REQUEST_RESTART_BEGIN",
+      "restart begin log"
+    );
+    assertIncludes(
+      relDb,
+      "KRISTO_DM_REQUEST_RESTART_UPDATED",
+      "restart updated log"
+    );
+    assertIncludes(
+      relDb,
+      "KRISTO_DM_REQUEST_RESTART_VERIFIED",
+      "restart verified log"
+    );
+    assertIncludes(
+      relDb,
+      "KRISTO_DM_REQUEST_RESTART_FAILED",
+      "restart failed log"
+    );
+    assertIncludes(relDb, "sql.transaction", "atomic restart transaction");
+    assertIncludes(
+      dmLib,
+      "syncThreadRecordFromRelationship",
+      "thread metadata sync after restart"
+    );
+    assertIncludes(
+      dmLib,
+      "KRISTO_DM_THREAD_SYNCED_AFTER_RESTART",
+      "thread sync log"
     );
     assertIncludes(
       relDb,
@@ -305,7 +341,6 @@ describe("DM request role direction (source)", () => {
     );
     assertIncludes(dmLib, "restart_request", "settings restart action");
     assertIncludes(dmLib, "canRestartRequest", "settings canRestartRequest");
-    assertIncludes(dmLib, "KRISTO_DM_REQUEST_RESTARTED", "restart diagnostic");
     assertIncludes(
       dmLib,
       "resetDirectMessageRelationshipToNone",

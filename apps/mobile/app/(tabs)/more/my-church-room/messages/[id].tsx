@@ -10049,6 +10049,11 @@ const displayHeaderTitle = assignmentDisplayTitle;
         action,
         muted: settings.muted,
         blocked: settings.blocked,
+        relationshipStatus: settings.relationshipStatus || "",
+        requestInitiatorUserId: settings.requestInitiatorUserId || "",
+        isRequestInitiator: settings.isRequestInitiator === true,
+        isRequestReceiver: settings.isRequestReceiver === true,
+        canRestartRequest: settings.canRestartRequest === true,
       });
 
       if (action === "clear") {

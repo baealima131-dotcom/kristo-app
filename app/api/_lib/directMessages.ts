@@ -116,6 +116,9 @@ export type DirectMessageInboxItem = {
   timestampLabel: string;
   timestampMs: number;
   unreadCount: number;
+  relationshipStatus?: DmRelationshipStatus;
+  requestInitiatorUserId?: string;
+  isRequestReceiver?: boolean;
 };
 
 export type DirectMessageThreadView = {
@@ -141,16 +144,83 @@ function mergeRelationshipIntoRecord(
 ): DirectMessageThreadRecord {
   if (!rel) return record;
   const overlay = relationshipToThreadOverlay(rel);
-  return {
+  const next: DirectMessageThreadRecord = {
     ...record,
     churchId: overlay.churchId || record.churchId,
     requestStatus: overlay.requestStatus,
     requestInitiatorUserId: overlay.requestInitiatorUserId,
     sameChurchAtCreation: overlay.sameChurchAtCreation,
-    requestOutboundCountByUserId: overlay.requestOutboundCountByUserId,
+    requestOutboundCountByUserId: overlay.requestOutboundCountByUserId || {},
     acceptedAt: overlay.acceptedAt,
     declinedAt: overlay.declinedAt,
   };
+  // Durable relationship is source of truth — clear stale declined/accepted
+  // markers from the JSON thread blob when the row has moved on.
+  if (rel.requestStatus === "pending" || rel.requestStatus === "none") {
+    delete next.acceptedAt;
+    delete next.declinedAt;
+  }
+  if (rel.requestStatus === "pending") {
+    next.requestStatus = "pending";
+    next.requestInitiatorUserId = normUserId(rel.requestInitiatorUserId);
+    next.requestOutboundCountByUserId = {
+      [normUserId(rel.requestInitiatorUserId)]: Math.max(
+        0,
+        Number(rel.initiatorOutboundCount || 0) || 0
+      ),
+    };
+  }
+  return next;
+}
+
+async function syncThreadRecordFromRelationship(
+  roomId: string,
+  rel: DirectMessageRelationshipRecord
+) {
+  const store = await readThreadStore();
+  const found = findThreadEntryByRoomId(store, roomId);
+  if (!found) return;
+  const prior = found.record as DirectMessageThreadRecord;
+  const initiator = normUserId(rel.requestInitiatorUserId || "");
+  // Relationship is source of truth — overwrite every request field.
+  // Never leave stale declined/accepted markers from the JSON blob.
+  const next: DirectMessageThreadRecord = {
+    ...prior,
+    churchId: String(rel.storageChurchId || prior.churchId || "").trim(),
+    requestStatus:
+      rel.requestStatus === "none"
+        ? undefined
+        : (rel.requestStatus as "pending" | "accepted" | "declined"),
+    requestInitiatorUserId: initiator,
+    sameChurchAtCreation: rel.sameChurchAtCreation === true,
+    requestOutboundCountByUserId: initiator
+      ? { [initiator]: Math.max(0, Number(rel.initiatorOutboundCount || 0) || 0) }
+      : {},
+    acceptedAt: rel.acceptedAt ?? undefined,
+    declinedAt: rel.declinedAt ?? undefined,
+    updatedAt: Date.now(),
+  };
+  if (rel.requestStatus === "pending" || rel.requestStatus === "none") {
+    delete next.acceptedAt;
+    delete next.declinedAt;
+  }
+  if (rel.requestStatus === "pending") {
+    next.requestStatus = "pending";
+    next.requestOutboundCountByUserId = initiator ? { [initiator]: 0 } : {};
+  }
+  await upsertThreadRecord(found.key, next);
+  console.log("KRISTO_DM_THREAD_SYNCED_AFTER_RESTART", {
+    roomId,
+    viewerUserId: initiator,
+    previousStatus: String(prior.requestStatus || "none"),
+    newStatus: String(next.requestStatus || rel.requestStatus || ""),
+    initiatorUserId: initiator,
+    requestStatus: next.requestStatus || "",
+    requestInitiatorUserId: next.requestInitiatorUserId || "",
+    initiatorOutboundCount: Number(
+      next.requestOutboundCountByUserId?.[initiator] || 0
+    ),
+  });
 }
 
 async function ensureDurableRelationship(args: {
@@ -604,6 +674,7 @@ export async function openDirectMessageThread(args: {
         participantUserIds: [viewerUserId, targetUserId],
       });
       if (restarted.ok) {
+        await syncThreadRecordFromRelationship(roomId, restarted.record);
         console.log("KRISTO_DM_REQUEST_RESTARTED", {
           roomId,
           authenticatedOpenerUserId: viewerUserId,
@@ -611,6 +682,7 @@ export async function openDirectMessageThread(args: {
           previousStatus: statusBefore,
           requestInitiatorUserId: restarted.record.requestInitiatorUserId,
           initiatorOutboundCount: restarted.record.initiatorOutboundCount,
+          source: "profile_open",
         });
       }
     }
@@ -882,30 +954,74 @@ export async function updateDirectMessageConversationSettings(args: {
       userId,
     });
     if (settingsBefore?.blocked) return null;
-    if (settingsBefore?.relationshipStatus !== "declined") {
-      return settingsBefore;
-    }
+
+    const relBefore = await getDirectMessageRelationshipByRoomId(roomId);
+    const previousStatus = String(relBefore?.requestStatus || "none");
+    if (previousStatus === "accepted") return null;
+
     const restarted = await restartMessageRequestAsPending({
       roomId,
       initiatorUserId: userId,
       storageChurchId: ensured.churchId,
       participantUserIds: participants,
     });
-    if (!restarted.ok) return null;
-    console.log("KRISTO_DM_REQUEST_RESTARTED", {
-      roomId,
-      authenticatedOpenerUserId: userId,
-      targetUserId: peerUserId,
-      previousStatus: "declined",
-      requestInitiatorUserId: restarted.record.requestInitiatorUserId,
-      initiatorOutboundCount: restarted.record.initiatorOutboundCount,
-      source: "restart_request",
-    });
-    return getDirectMessageConversationSettings({
+    if (!restarted.ok) {
+      console.log("KRISTO_DM_REQUEST_RESTART_FAILED", {
+        roomId,
+        viewerUserId: userId,
+        previousStatus: restarted.previousStatus || previousStatus,
+        newStatus: restarted.record?.requestStatus || "",
+        initiatorUserId: userId,
+        code: restarted.code,
+      });
+      return null;
+    }
+
+    await syncThreadRecordFromRelationship(roomId, restarted.record);
+
+    const settingsAfter = await getDirectMessageConversationSettings({
       churchId: ensured.churchId,
       roomId,
       userId,
     });
+    // Fail closed: never return OK unless settings prove pending for viewer.
+    const freshQuotaOk =
+      !restarted.restarted ||
+      (Number(settingsAfter?.remainingMessages || 0) ===
+        Number(
+          settingsAfter?.outgoingMessageLimit || DM_REQUEST_MESSAGE_LIMIT
+        ) &&
+        Number(settingsAfter?.outgoingMessageCount || 0) === 0);
+    if (
+      !settingsAfter ||
+      settingsAfter.relationshipStatus !== "request_pending" ||
+      settingsAfter.isRequestInitiator !== true ||
+      settingsAfter.isRequestReceiver === true ||
+      normUserId(settingsAfter.requestInitiatorUserId || "") !== userId ||
+      !freshQuotaOk
+    ) {
+      console.log("KRISTO_DM_REQUEST_RESTART_FAILED", {
+        roomId,
+        viewerUserId: userId,
+        previousStatus,
+        newStatus: settingsAfter?.relationshipStatus || "",
+        initiatorUserId: userId,
+        code: "DM_REQUEST_RESTART_PERSISTENCE_FAILED",
+        settings: settingsAfter
+          ? {
+              relationshipStatus: settingsAfter.relationshipStatus,
+              requestInitiatorUserId: settingsAfter.requestInitiatorUserId,
+              isRequestInitiator: settingsAfter.isRequestInitiator,
+              isRequestReceiver: settingsAfter.isRequestReceiver,
+              remainingMessages: settingsAfter.remainingMessages,
+              outgoingMessageCount: settingsAfter.outgoingMessageCount,
+            }
+          : null,
+      });
+      return null;
+    }
+
+    return settingsAfter;
   }
 
   await updateDirectMessageThreadStore<
@@ -1622,6 +1738,35 @@ export async function listDirectMessageInbox(args: {
             0
           );
 
+        const rel =
+          await getDirectMessageRelationshipByRoomId(
+            thread.roomId
+          ).catch(() => null);
+        const shareActiveChurch = Boolean(
+          await usersShareActiveChurch(
+            viewerUserId,
+            peerUserId
+          ).catch(() => null)
+        );
+        const merged = mergeRelationshipIntoRecord(
+          thread,
+          rel
+        );
+        const relationshipStatus =
+          resolveDmRelationshipStatus({
+            record: merged,
+            viewerUserId,
+            peerUserId,
+            shareActiveChurch,
+          });
+        const requestInitiatorUserId = normUserId(
+          merged.requestInitiatorUserId || ""
+        );
+        const isRequestReceiver =
+          relationshipStatus === "request_pending" &&
+          Boolean(requestInitiatorUserId) &&
+          requestInitiatorUserId !== viewerUserId;
+
         return {
           roomId:
             thread.roomId,
@@ -1630,10 +1775,12 @@ export async function listDirectMessageInbox(args: {
           title:
             pickDisplayName(profile),
           subtitle:
-            String(
-              church?.name ||
-              "Direct message"
-            ).trim(),
+            isRequestReceiver
+              ? "Message request"
+              : String(
+                  church?.name ||
+                  "Direct message"
+                ).trim(),
           avatarUri:
             pickAvatar(profile),
           lastMessagePreview:
@@ -1647,6 +1794,9 @@ export async function listDirectMessageInbox(args: {
             ),
           timestampMs,
           unreadCount,
+          relationshipStatus,
+          requestInitiatorUserId,
+          isRequestReceiver,
         } satisfies DirectMessageInboxItem;
       })
     );

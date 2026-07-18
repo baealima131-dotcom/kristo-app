@@ -525,21 +525,42 @@ export async function PATCH(req: NextRequest) {
     if (!settings) {
       const receiverOnly =
         action === "accept" || action === "decline";
+      if (action === "restart_request") {
+        return json(
+          {
+            ok: false,
+            error: "Restart request persistence failed",
+            code: "DM_REQUEST_RESTART_PERSISTENCE_FAILED",
+          },
+          { status: 400 }
+        );
+      }
       return json(
         {
           ok: false,
           error: receiverOnly
             ? "Only the recipient can accept or decline this message request."
-            : action === "restart_request"
-              ? "Could not start a new message request."
             : "Could not update conversation.",
           ...(receiverOnly
             ? { code: "DM_REQUEST_RECEIVER_ONLY" }
-            : action === "restart_request"
-              ? { code: "DM_REQUEST_NOT_RESTARTABLE" }
-              : {}),
+            : {}),
         },
         { status: receiverOnly ? 403 : 400 }
+      );
+    }
+
+    if (
+      action === "restart_request" &&
+      (settings.relationshipStatus !== "request_pending" ||
+        settings.isRequestInitiator !== true)
+    ) {
+      return json(
+        {
+          ok: false,
+          error: "Restart request persistence failed",
+          code: "DM_REQUEST_RESTART_PERSISTENCE_FAILED",
+        },
+        { status: 400 }
       );
     }
 
