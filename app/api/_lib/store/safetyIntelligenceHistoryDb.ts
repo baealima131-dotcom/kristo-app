@@ -1239,6 +1239,18 @@ export async function dbGetSafetyTargetIntelligenceTimeline(input: {
   const reports90d = nonNegInt(bounds.reports_90d);
   const lifetime = nonNegInt(bounds.lifetime);
 
+  console.log("KRISTO_PROFILE_ENFORCEMENT_READ", {
+    reportId: null,
+    targetUserId: ownerUserId,
+    enforcementType:
+      enforcementHistory
+        .map((e) => e.type)
+        .join(",") || null,
+    enforcementId: null,
+    rowsAffected: enforcementHistory.length,
+    tableName: "kristo_safety_intelligence_events",
+  });
+
   return {
     firstReportAt: bounds.first_report_at
       ? String(bounds.first_report_at)

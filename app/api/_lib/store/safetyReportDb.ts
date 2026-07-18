@@ -3850,6 +3850,14 @@ export async function dbIssueSafetyReportDecision(
 
   const hasAccountEnforcement = Boolean(enforcementId);
 
+  console.log("KRISTO_ENFORCEMENT_WRITE_BEGIN", {
+    reportId,
+    targetUserId: enforcementUserId || null,
+    enforcementType: enforcementType || null,
+    enforcementId: enforcementId || null,
+    tableName: "kristo_safety_account_enforcements",
+  });
+
   const updatedRows = (await sql`
     WITH updated AS (
       UPDATE kristo_safety_reports
@@ -4044,6 +4052,44 @@ export async function dbIssueSafetyReportDecision(
     throw new Error(
       "This case already has a final decision."
     );
+  }
+
+  console.log("KRISTO_ENFORCEMENT_WRITE_SUCCESS", {
+    reportId,
+    targetUserId: enforcementUserId || null,
+    enforcementType: enforcementType || null,
+    enforcementId: enforcementId || null,
+    tableName: "kristo_safety_account_enforcements",
+  });
+
+  if (enforcementId) {
+    try {
+      const verifyRows = (await sql`
+        SELECT COUNT(*)::int AS c
+        FROM kristo_safety_account_enforcements
+        WHERE id = ${enforcementId}::text
+      `) as Array<{ c: number }>;
+      console.log("KRISTO_ENFORCEMENT_WRITE_RESULT", {
+        reportId,
+        targetUserId: enforcementUserId || null,
+        enforcementType: enforcementType || null,
+        enforcementId,
+        rowsAffected: verifyRows?.[0]?.c ?? 0,
+        tableName: "kristo_safety_account_enforcements",
+      });
+    } catch (verifyError: any) {
+      console.log("KRISTO_ENFORCEMENT_WRITE_RESULT", {
+        reportId,
+        targetUserId: enforcementUserId || null,
+        enforcementType: enforcementType || null,
+        enforcementId,
+        rowsAffected: null,
+        tableName: "kristo_safety_account_enforcements",
+        error: String(
+          verifyError?.message || verifyError
+        ),
+      });
+    }
   }
 
   const enforcementRecord:
