@@ -2335,7 +2335,7 @@ SafetySupervisorReportDetailsScreen() {
 
                   <View style={styles.decisionReceiptMetaRow}>
                     <Text style={styles.decisionReceiptMeta}>
-                      Confidence{" "}
+                      Investigator confidence:{" "}
                       {report.decisionConfidence ??
                         "—"}
                       %
