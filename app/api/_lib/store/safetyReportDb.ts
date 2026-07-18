@@ -1059,6 +1059,23 @@ export async function ensureSafetyReportSchema() {
         )
       `;
 
+      // Analytics aggregates (Phase 2A): church volume + target recurrence.
+      await sql`
+        CREATE INDEX IF NOT EXISTS kristo_safety_reports_church_created_idx
+        ON kristo_safety_reports (
+          church_id,
+          created_at DESC
+        )
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS kristo_safety_reports_owner_created_idx
+        ON kristo_safety_reports (
+          target_owner_user_id,
+          created_at DESC
+        )
+      `;
+
       await sql`
         CREATE TABLE IF NOT EXISTS kristo_safety_supervisor_agents (
           id TEXT PRIMARY KEY,

@@ -49,6 +49,12 @@ import {
   type SafetyCrossCasePatternSignal,
 } from "@/app/api/_lib/safetyCrossCaseGraph";
 import {
+  computeSafetyAnalyticsAggregates,
+  type AnalyticsLedgerRow,
+  type AnalyticsReportRow,
+  type SafetyAnalyticsAggregates,
+} from "@/app/api/_lib/safetyAnalyticsAggregates";
+import {
   getDatabaseUrl,
 } from "@/app/api/_lib/store/authDb";
 
@@ -1613,6 +1619,171 @@ export async function dbGetSafetyCrossCaseSignals(input: {
   });
 
   return computeCrossCasePatternSignals(rows);
+}
+
+export type { SafetyAnalyticsAggregates };
+
+/** Upper bound on rows fetched per analytics query (dashboard/system utility). */
+export const SAFETY_ANALYTICS_QUERY_LIMIT = 5000;
+
+/**
+ * Analytics-ready FACTS for future dashboards/system endpoints.
+ *
+ * Backend utility only — NOT wired into the hot report-detail GET path.
+ * Two bounded, indexed queries run in parallel (no N+1):
+ *   1. finalized decision ledger rows (idx_safety_intel_events_category_decision
+ *      / decider_decision) for global counts + supervisor distribution.
+ *   2. report rows (idx_safety_reports_church_created_idx /
+ *      _owner_created_idx / _reporter_idx / _queue_idx) for category trends and
+ *      the requested target/reporter/church scopes.
+ * All aggregation happens in the pure module so duplicates cannot inflate facts
+ * and FP/FN/appeal/reliability stay null by contract.
+ */
+export async function dbGetSafetyAnalyticsAggregates(input: {
+  targetUserId?: string;
+  reporterUserId?: string;
+  churchId?: string;
+  limit?: number;
+}): Promise<SafetyAnalyticsAggregates> {
+  await ensureSafetyIntelligenceHistoryReady();
+  const sql = getSql();
+
+  const targetUserId = safeText(input.targetUserId) || null;
+  const reporterUserId = safeText(input.reporterUserId) || null;
+  const churchId = safeText(input.churchId) || null;
+  const limit = Math.min(
+    SAFETY_ANALYTICS_QUERY_LIMIT,
+    Math.max(1, nonNegInt(input.limit) || SAFETY_ANALYTICS_QUERY_LIMIT)
+  );
+
+  type LedgerRow = {
+    report_id: string | null;
+    event_kind: string | null;
+    outcome_type: string | null;
+    category: string | null;
+    decided_by_user_id: string | null;
+    decision_at: string | null;
+    resolution_minutes: number | string | null;
+  };
+
+  type ReportRow = {
+    id: string | null;
+    reporter_user_id: string | null;
+    target_owner_user_id: string | null;
+    reported_user_id: string | null;
+    church_id: string | null;
+    category: string | null;
+    status: string | null;
+    decision_type: string | null;
+    created_at: string | null;
+  };
+
+  let ledger: LedgerRow[] = [];
+  let reports: ReportRow[] = [];
+  try {
+    [ledger, reports] = await Promise.all([
+      (async () =>
+        asRowArray<LedgerRow>(
+          await sql`
+            SELECT
+              report_id,
+              event_kind,
+              outcome_type,
+              category,
+              decided_by_user_id,
+              decision_at::text,
+              resolution_minutes
+            FROM kristo_safety_intelligence_events
+            WHERE event_kind = 'decision'
+              AND outcome_type IN (
+                'warning',
+                'remove_content',
+                'restrict_account',
+                'suspend_account',
+                'permanent_ban',
+                'no_violation'
+              )
+            ORDER BY decision_at DESC NULLS LAST
+            LIMIT ${limit}
+          `
+        ))(),
+      (async () =>
+        asRowArray<ReportRow>(
+          await sql`
+            SELECT
+              id,
+              reporter_user_id,
+              target_owner_user_id,
+              reported_user_id,
+              church_id,
+              category,
+              status,
+              decision_type,
+              created_at::text
+            FROM kristo_safety_reports
+            WHERE (
+                ${churchId}::text IS NULL
+                AND ${targetUserId}::text IS NULL
+                AND ${reporterUserId}::text IS NULL
+              )
+              OR (${churchId}::text IS NOT NULL AND church_id = ${churchId})
+              OR (
+                ${targetUserId}::text IS NOT NULL
+                AND target_owner_user_id = ${targetUserId}
+              )
+              OR (
+                ${reporterUserId}::text IS NOT NULL
+                AND reporter_user_id = ${reporterUserId}
+              )
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT ${limit}
+          `
+        ))(),
+    ]);
+  } catch (error: any) {
+    console.log("KRISTO_SAFETY_ANALYTICS_FAILED", {
+      churchId,
+      targetUserId,
+      reporterUserId,
+      error: safeText(error?.message || "analytics_query_failed"),
+    });
+    return computeSafetyAnalyticsAggregates({
+      ledgerRows: [],
+      reportRows: [],
+      targetUserId,
+      reporterUserId,
+      churchId,
+    });
+  }
+
+  const ledgerRows: AnalyticsLedgerRow[] = ledger.map((r) => ({
+    reportId: r.report_id,
+    eventKind: r.event_kind,
+    outcomeType: r.outcome_type,
+    category: r.category,
+    decidedByUserId: r.decided_by_user_id,
+    decisionAt: r.decision_at,
+    resolutionMinutes: r.resolution_minutes,
+  }));
+
+  const reportRows: AnalyticsReportRow[] = reports.map((r) => ({
+    id: r.id,
+    reporterUserId: r.reporter_user_id,
+    targetOwnerUserId: r.target_owner_user_id || r.reported_user_id,
+    churchId: r.church_id,
+    category: r.category,
+    status: r.status,
+    decisionType: r.decision_type,
+    createdAt: r.created_at,
+  }));
+
+  return computeSafetyAnalyticsAggregates({
+    ledgerRows,
+    reportRows,
+    targetUserId,
+    reporterUserId,
+    churchId,
+  });
 }
 
 /** Prefer ledger timeline facts when they exist; never invent values. */

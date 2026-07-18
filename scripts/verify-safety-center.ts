@@ -2173,3 +2173,354 @@ describe("12. Confidence Calibration (Phase 2A)", () => {
     );
   });
 });
+
+describe("13. Analytics Aggregates (Phase 2A)", () => {
+  const analyticsModule = read(
+    "app/api/_lib/safetyAnalyticsAggregates.ts"
+  );
+  const historyDb = read(
+    "app/api/_lib/store/safetyIntelligenceHistoryDb.ts"
+  );
+
+  const MOD = "../app/api/_lib/safetyAnalyticsAggregates.ts";
+  const NOW = Date.parse("2026-06-01T00:00:00.000Z");
+  const DAY = 24 * 60 * 60 * 1000;
+
+  function led(overrides: Record<string, unknown> = {}) {
+    return {
+      reportId: "rep_" + Math.random().toString(36).slice(2),
+      eventKind: "decision",
+      outcomeType: "warning",
+      category: "harassment",
+      decidedByUserId: "sup1",
+      decisionAt: "2026-05-01T00:00:00.000Z",
+      resolutionMinutes: 30,
+      ...overrides,
+    };
+  }
+
+  function rep(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "r_" + Math.random().toString(36).slice(2),
+      reporterUserId: "reporter1",
+      targetOwnerUserId: "target1",
+      churchId: "church1",
+      category: "harassment",
+      status: "open",
+      decisionType: null,
+      createdAt: "2026-05-15T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("zero data => counts 0, nullable rates null", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      generatedAt: "2026-06-01T00:00:00.000Z",
+      nowMs: NOW,
+      ledgerRows: [],
+      reportRows: [],
+    });
+    assert.equal(r.finalizedDecisionCount, 0);
+    assert.equal(r.averageResolutionMinutes, null);
+    assert.deepEqual(r.categoryTrends, []);
+    assert.deepEqual(r.supervisorDistribution, []);
+    assert.equal(r.falsePositiveRate, null);
+    assert.equal(r.falseNegativeRate, null);
+    assert.equal(r.appealSuccessRate, null);
+    assert.equal(r.supervisorReliabilityTrend, null);
+    assert.equal(r.targetRecurrence.totalReports, 0);
+    assert.equal(r.reporterOutcomes.accuracyPercent, null);
+  });
+
+  it("open reports are excluded from finalized", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      churchId: "church1",
+      reportRows: [
+        rep({ status: "open", decisionType: null }),
+        rep({ status: "in_review", decisionType: null }),
+        rep({ status: "resolved", decisionType: "warning" }),
+      ],
+    });
+    assert.equal(r.churchSafetyVolume.totalReports, 3);
+    assert.equal(r.churchSafetyVolume.openReports, 2);
+    assert.equal(r.churchSafetyVolume.finalizedReports, 1);
+  });
+
+  it("confirmed outcomes counted correctly", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      targetUserId: "target1",
+      reportRows: [
+        rep({ status: "resolved", decisionType: "warning" }),
+        rep({ status: "resolved", decisionType: "remove_content" }),
+        rep({ status: "resolved", decisionType: "suspend_account" }),
+        rep({ status: "open", decisionType: null }),
+      ],
+    });
+    assert.equal(r.targetRecurrence.confirmedViolations, 3);
+    assert.equal(r.targetRecurrence.finalizedReports, 3);
+    assert.equal(r.targetRecurrence.totalReports, 4);
+  });
+
+  it("no_violation and dismissed status counted as dismissed", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      reporterUserId: "reporter1",
+      reportRows: [
+        rep({ status: "resolved", decisionType: "no_violation" }),
+        rep({ status: "dismissed", decisionType: null }),
+        rep({ status: "resolved", decisionType: "warning" }),
+      ],
+    });
+    assert.equal(r.reporterOutcomes.dismissedReports, 2);
+    assert.equal(r.reporterOutcomes.confirmedReports, 1);
+    assert.equal(r.reporterOutcomes.finalizedReports, 3);
+    // accuracy = 1 / (1 + 2) = 33
+    assert.equal(r.reporterOutcomes.accuracyPercent, 33);
+  });
+
+  it("accuracy denominator zero => null", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      reporterUserId: "reporter1",
+      reportRows: [rep({ status: "open", decisionType: null })],
+    });
+    assert.equal(r.reporterOutcomes.confirmedReports, 0);
+    assert.equal(r.reporterOutcomes.dismissedReports, 0);
+    assert.equal(r.reporterOutcomes.accuracyPercent, null);
+  });
+
+  it("average resolution ignores null values", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      ledgerRows: [
+        led({ reportId: "a", resolutionMinutes: 10 }),
+        led({ reportId: "b", resolutionMinutes: 20 }),
+        led({ reportId: "c", resolutionMinutes: null }),
+        led({ reportId: "d", resolutionMinutes: "bad" }),
+      ],
+    });
+    assert.equal(r.finalizedDecisionCount, 4);
+    // avg of 10 and 20 only.
+    assert.equal(r.averageResolutionMinutes, 15);
+  });
+
+  it("7/30/90-day window boundaries are deterministic", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      targetUserId: "target1",
+      reportRows: [
+        rep({ createdAt: new Date(NOW - 3 * DAY).toISOString() }),
+        rep({ createdAt: new Date(NOW - 7 * DAY).toISOString() }),
+        rep({ createdAt: new Date(NOW - 8 * DAY).toISOString() }),
+        rep({ createdAt: new Date(NOW - 29 * DAY).toISOString() }),
+        rep({ createdAt: new Date(NOW - 31 * DAY).toISOString() }),
+        rep({ createdAt: new Date(NOW - 89 * DAY).toISOString() }),
+        rep({ createdAt: new Date(NOW - 120 * DAY).toISOString() }),
+      ],
+    });
+    assert.equal(r.targetRecurrence.reportsLast7Days, 2); // 3d + exactly 7d
+    assert.equal(r.targetRecurrence.reportsLast30Days, 4); // +8d +29d
+    assert.equal(r.targetRecurrence.reportsLast90Days, 6); // +31d +89d
+  });
+
+  it("category trends normalize malformed values", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      reportRows: [
+        rep({ category: "Harassment", status: "resolved", decisionType: "warning" }),
+        rep({ category: "harassment", status: "open", decisionType: null }),
+        rep({ category: "  ", status: "resolved", decisionType: "no_violation" }),
+        rep({ category: null, status: "dismissed", decisionType: null }),
+      ],
+    });
+    const harassment = r.categoryTrends.find((c: any) => c.category === "harassment");
+    const unknown = r.categoryTrends.find((c: any) => c.category === "unknown");
+    assert.ok(harassment, "normalized case-insensitively");
+    assert.equal(harassment.reportCount, 2);
+    assert.equal(harassment.confirmedViolationCount, 1);
+    assert.ok(unknown, "blank/null grouped as unknown");
+    assert.equal(unknown.reportCount, 2);
+    assert.equal(unknown.dismissedCount, 2);
+  });
+
+  it("target recurrence isolated by target", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      targetUserId: "target1",
+      reportRows: [
+        rep({ targetOwnerUserId: "target1", reporterUserId: "ra" }),
+        rep({ targetOwnerUserId: "target1", reporterUserId: "rb" }),
+        rep({ targetOwnerUserId: "target2", reporterUserId: "rc" }),
+      ],
+    });
+    assert.equal(r.targetRecurrence.targetUserId, "target1");
+    assert.equal(r.targetRecurrence.totalReports, 2);
+    assert.equal(r.targetRecurrence.uniqueReporters, 2);
+  });
+
+  it("reporter outcomes isolated by reporter", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      reporterUserId: "reporter1",
+      reportRows: [
+        rep({ reporterUserId: "reporter1", status: "resolved", decisionType: "warning" }),
+        rep({ reporterUserId: "reporter2", status: "resolved", decisionType: "warning" }),
+      ],
+    });
+    assert.equal(r.reporterOutcomes.reporterUserId, "reporter1");
+    assert.equal(r.reporterOutcomes.confirmedReports, 1);
+    assert.equal(r.reporterOutcomes.finalizedReports, 1);
+  });
+
+  it("supervisor distributions isolated by supervisor", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      ledgerRows: [
+        led({ reportId: "a", decidedByUserId: "sup1", outcomeType: "warning" }),
+        led({ reportId: "b", decidedByUserId: "sup1", outcomeType: "suspend_account" }),
+        led({ reportId: "c", decidedByUserId: "sup2", outcomeType: "no_violation" }),
+        led({ reportId: "d", decidedByUserId: "", outcomeType: "warning" }),
+      ],
+    });
+    const sup1 = r.supervisorDistribution.find((s: any) => s.supervisorUserId === "sup1");
+    const sup2 = r.supervisorDistribution.find((s: any) => s.supervisorUserId === "sup2");
+    assert.ok(sup1 && sup2);
+    assert.equal(sup1.finalizedDecisionCount, 2);
+    assert.equal(sup1.warningCount, 1);
+    assert.equal(sup1.suspensionCount, 1);
+    assert.equal(sup2.noViolationCount, 1);
+    // blank supervisor id excluded.
+    assert.equal(
+      r.supervisorDistribution.find((s: any) => s.supervisorUserId === ""),
+      undefined
+    );
+  });
+
+  it("church volume isolated by church", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      churchId: "church1",
+      reportRows: [
+        rep({ churchId: "church1", targetOwnerUserId: "t1", reporterUserId: "r1" }),
+        rep({ churchId: "church1", targetOwnerUserId: "t2", reporterUserId: "r1" }),
+        rep({ churchId: "church2", targetOwnerUserId: "t3", reporterUserId: "r9" }),
+      ],
+    });
+    assert.equal(r.churchSafetyVolume.churchId, "church1");
+    assert.equal(r.churchSafetyVolume.totalReports, 2);
+    assert.equal(r.churchSafetyVolume.uniqueTargets, 2);
+    assert.equal(r.churchSafetyVolume.uniqueReporters, 1);
+  });
+
+  it("repeated pattern counts use provided facts only", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      patternCounts: [
+        { patternType: "repeated_reporter_targeting_signal", count: 3 },
+        { patternType: "  ", count: 5 },
+        { patternType: "report_burst_signal", count: -2 },
+      ],
+    });
+    // Blank pattern dropped; negative normalized to 0.
+    assert.equal(r.repeatedPatternCounts.length, 2);
+    const burst = r.repeatedPatternCounts.find(
+      (p: any) => p.patternType === "report_burst_signal"
+    );
+    assert.equal(burst.count, 0);
+    // No confidence field is emitted.
+    for (const p of r.repeatedPatternCounts) {
+      assert.equal("confidence" in p, false);
+    }
+  });
+
+  it("never emits synthetic FP/FN/appeal/reliability values", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      ledgerRows: [led({ reportId: "a" }), led({ reportId: "b" })],
+      reportRows: [rep({ status: "resolved", decisionType: "warning" })],
+    });
+    assert.equal(r.falsePositiveRate, null);
+    assert.equal(r.falseNegativeRate, null);
+    assert.equal(r.appealSuccessRate, null);
+    assert.equal(r.supervisorReliabilityTrend, null);
+    assert.ok(
+      r.limitations.includes(
+        "rates_require_appeals_and_final_review_ground_truth"
+      )
+    );
+    assertNotIncludes(analyticsModule, "falsePositiveRate: 0", "no fp baseline");
+    assertNotIncludes(analyticsModule, "appealSuccessRate: 0", "no appeal baseline");
+  });
+
+  it("duplicate ledger rows cannot inflate counts", async () => {
+    const { computeSafetyAnalyticsAggregates } = await import(MOD);
+    const r = computeSafetyAnalyticsAggregates({
+      nowMs: NOW,
+      ledgerRows: [
+        led({ reportId: "dup", eventKind: "decision", outcomeType: "warning", resolutionMinutes: 40 }),
+        led({ reportId: "dup", eventKind: "decision", outcomeType: "warning", resolutionMinutes: 40 }),
+        led({ reportId: "dup2", eventKind: "decision", outcomeType: "warning", resolutionMinutes: 40 }),
+      ],
+    });
+    assert.equal(r.finalizedDecisionCount, 2, "duplicate collapsed");
+    const sup = r.supervisorDistribution.find((s: any) => s.supervisorUserId === "sup1");
+    assert.equal(sup.finalizedDecisionCount, 2);
+  });
+
+  it("has no device/IP/location/provider implementation imports", () => {
+    assertNotIncludes(analyticsModule, "@neondatabase/serverless", "no neon");
+    assertNotIncludes(analyticsModule, "getDatabaseUrl", "no db url");
+    assertNotIncludes(analyticsModule, "x-forwarded-for", "no ip capture");
+    assertNotIncludes(analyticsModule, "deviceId", "no device capture");
+    assertNotIncludes(analyticsModule, "userAgent", "no user agent");
+    assertNotIncludes(analyticsModule, "latitude", "no location");
+    assertNotIncludes(analyticsModule, "ocr(", "no ocr impl");
+  });
+
+  it("loader uses bounded/indexed parallel queries and no N+1", () => {
+    assertIncludes(
+      historyDb,
+      "export async function dbGetSafetyAnalyticsAggregates",
+      "analytics loader"
+    );
+    assertIncludes(
+      historyDb,
+      "computeSafetyAnalyticsAggregates",
+      "loader uses pure engine"
+    );
+    assertIncludes(historyDb, "FROM kristo_safety_reports", "reports query");
+    assertIncludes(
+      historyDb,
+      "FROM kristo_safety_intelligence_events",
+      "ledger query"
+    );
+    assertIncludes(historyDb, "Promise.all", "batched parallel load");
+    assertIncludes(historyDb, "LIMIT ${limit}", "bounded query");
+    assertIncludes(
+      historyDb,
+      "SAFETY_ANALYTICS_QUERY_LIMIT",
+      "documented bound constant"
+    );
+  });
+
+  it("uses versioned constant", async () => {
+    const mod = await import(MOD);
+    assert.equal(mod.SAFETY_ANALYTICS_AGGREGATES_VERSION, "v1");
+  });
+});
