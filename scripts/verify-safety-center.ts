@@ -1883,3 +1883,293 @@ describe("11. Cross-Case Pattern Signals (Phase 2A)", () => {
     assertIncludes(historyDb, "Promise.all", "batched two-query load");
   });
 });
+
+describe("12. Confidence Calibration (Phase 2A)", () => {
+  const calibrationModule = read(
+    "app/api/_lib/safetyConfidenceCalibration.ts"
+  );
+  const engine = read("app/api/_lib/safetyCaseIntelligenceEngine.ts");
+  const reportDb = read("app/api/_lib/store/safetyReportDb.ts");
+
+  const MOD = "../app/api/_lib/safetyConfidenceCalibration.ts";
+
+  function verifiedInput(overrides: Record<string, unknown> = {}) {
+    return {
+      reporterFinalizedCases: 4,
+      targetFinalizedCases: 4,
+      uniqueReporterCount: 3,
+      evidenceMachineVerified: true,
+      evidenceProvider: "acme-vision",
+      evidenceProviderVersion: "2.1.0",
+      evidenceAnalyzedAt: "2026-01-01T00:00:00.000Z",
+      hasOriginalEvidence: true,
+      hasSnapshotEvidence: true,
+      hasHistoricalOutcomeCoverage: true,
+      ...overrides,
+    };
+  }
+
+  it("unverified evidence => insufficient_data, confidence null", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration(
+      verifiedInput({ evidenceMachineVerified: false })
+    );
+    assert.equal(r.confidenceLevel, "insufficient_data");
+    assert.equal(r.confidence, null);
+    assert.equal(r.gates.evidenceGatePassed, false);
+    assert.ok(r.limitations.includes("evidence_not_machine_verified"));
+  });
+
+  it("missing provider/version => insufficient_data", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration(
+      verifiedInput({ evidenceProvider: null, evidenceProviderVersion: null })
+    );
+    assert.equal(r.confidenceLevel, "insufficient_data");
+    assert.equal(r.confidence, null);
+    assert.equal(r.dataCoverage.evidenceVerified, false);
+    assert.ok(
+      r.limitations.includes("evidence_provider_or_version_missing")
+    );
+  });
+
+  it("provider metadata alone (not machine-verified) does not pass", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration(
+      verifiedInput({ evidenceMachineVerified: false })
+    );
+    assert.equal(r.gates.evidenceGatePassed, false);
+    assert.equal(r.dataCoverage.evidenceVerified, false);
+  });
+
+  it("original content alone does not pass evidence gate", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration({
+      reporterFinalizedCases: 4,
+      targetFinalizedCases: 4,
+      uniqueReporterCount: 3,
+      evidenceMachineVerified: false,
+      evidenceProvider: null,
+      evidenceProviderVersion: null,
+      evidenceAnalyzedAt: null,
+      hasOriginalEvidence: true,
+      hasSnapshotEvidence: true,
+      hasHistoricalOutcomeCoverage: true,
+    });
+    assert.equal(r.gates.evidenceGatePassed, false);
+    assert.equal(r.confidenceLevel, "insufficient_data");
+  });
+
+  it("insufficient reporter history => insufficient_data", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration(
+      verifiedInput({ reporterFinalizedCases: 1 })
+    );
+    assert.equal(r.gates.reporterHistoryGatePassed, false);
+    assert.equal(r.confidenceLevel, "insufficient_data");
+    assert.ok(
+      r.limitations.includes("reporter_finalized_history_below_minimum")
+    );
+  });
+
+  it("insufficient target history => insufficient_data", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration(
+      verifiedInput({ targetFinalizedCases: 1 })
+    );
+    assert.equal(r.gates.targetHistoryGatePassed, false);
+    assert.equal(r.confidenceLevel, "insufficient_data");
+    assert.ok(
+      r.limitations.includes("target_finalized_history_below_minimum")
+    );
+  });
+
+  it("insufficient corroboration is disclosed", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration(
+      verifiedInput({ uniqueReporterCount: 1 })
+    );
+    assert.equal(r.gates.corroborationGatePassed, false);
+    assert.ok(
+      r.limitations.includes("insufficient_unique_reporter_corroboration")
+    );
+  });
+
+  it("malformed/null counts normalize safely", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration({
+      reporterFinalizedCases: -5 as any,
+      targetFinalizedCases: "x" as any,
+      uniqueReporterCount: null as any,
+      evidenceMachineVerified: "yes" as any,
+      evidenceProvider: "   " as any,
+      evidenceProviderVersion: undefined as any,
+      evidenceAnalyzedAt: null,
+      hasOriginalEvidence: undefined as any,
+      hasSnapshotEvidence: undefined as any,
+      hasHistoricalOutcomeCoverage: undefined as any,
+    });
+    assert.equal(r.dataCoverage.finalizedReporterCases, 0);
+    assert.equal(r.dataCoverage.finalizedTargetCases, 0);
+    assert.equal(r.dataCoverage.uniqueReporterCount, 0);
+    assert.equal(r.dataCoverage.evidenceVerified, false);
+    assert.equal(r.confidenceLevel, "insufficient_data");
+    assert.equal(r.confidence, null);
+  });
+
+  it("all gates pass => non-insufficient level but numeric confidence stays null", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration(verifiedInput());
+    assert.notEqual(r.confidenceLevel, "insufficient_data");
+    assert.equal(r.confidence, null);
+    assert.equal(r.gates.numericConfidenceAllowed, false);
+    assert.ok(
+      r.limitations.includes(
+        "numeric_confidence_requires_approved_versioned_formula"
+      )
+    );
+  });
+
+  it("low/moderate/high ladder is deterministic", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    // Base gates pass, minimal coverage (no corroboration, no history coverage,
+    // minimum counts) => low.
+    const low = computeSafetyConfidenceCalibration(
+      verifiedInput({
+        reporterFinalizedCases: 2,
+        targetFinalizedCases: 2,
+        uniqueReporterCount: 1,
+        hasHistoricalOutcomeCoverage: false,
+      })
+    );
+    assert.equal(low.confidenceLevel, "low");
+
+    // Some coverage => moderate.
+    const moderate = computeSafetyConfidenceCalibration(
+      verifiedInput({
+        reporterFinalizedCases: 2,
+        targetFinalizedCases: 2,
+        uniqueReporterCount: 2,
+        hasHistoricalOutcomeCoverage: false,
+      })
+    );
+    assert.equal(moderate.confidenceLevel, "moderate");
+
+    // Strong coverage => high.
+    const high = computeSafetyConfidenceCalibration(
+      verifiedInput({
+        reporterFinalizedCases: 4,
+        targetFinalizedCases: 4,
+        uniqueReporterCount: 3,
+        hasHistoricalOutcomeCoverage: true,
+      })
+    );
+    assert.equal(high.confidenceLevel, "high");
+
+    // Determinism: same input, same output.
+    const again = computeSafetyConfidenceCalibration(
+      verifiedInput({
+        reporterFinalizedCases: 4,
+        targetFinalizedCases: 4,
+        uniqueReporterCount: 3,
+        hasHistoricalOutcomeCoverage: true,
+      })
+    );
+    assert.deepEqual(again, high);
+  });
+
+  it("never emits a default percentage / synthetic baseline", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    // Across many gate combinations, confidence must always be null in v1.
+    const cases = [
+      verifiedInput(),
+      verifiedInput({ evidenceMachineVerified: false }),
+      verifiedInput({ reporterFinalizedCases: 1 }),
+      verifiedInput({ uniqueReporterCount: 1 }),
+    ];
+    for (const c of cases) {
+      const r = computeSafetyConfidenceCalibration(c);
+      assert.equal(r.confidence, null);
+    }
+    // No hardcoded percentage baseline in source.
+    assertNotIncludes(calibrationModule, "confidence = 50", "no 50 baseline");
+    assertNotIncludes(calibrationModule, "confidence = 75", "no 75 baseline");
+    assertNotIncludes(calibrationModule, "confidence = 100", "no 100 baseline");
+  });
+
+  it("exposes versioned constant", async () => {
+    const mod = await import(MOD);
+    assert.equal(mod.SAFETY_CONFIDENCE_CALIBRATION_VERSION, "v1");
+    assert.equal(mod.SAFETY_MIN_REPORTER_FINALIZED_CASES, 2);
+    assert.equal(mod.SAFETY_MIN_TARGET_FINALIZED_CASES, 2);
+    assert.equal(mod.SAFETY_MIN_UNIQUE_REPORTERS_FOR_CORROBORATION, 2);
+    assert.equal(mod.SAFETY_NUMERIC_CONFIDENCE_FORMULA_APPROVED, false);
+    const r = mod.computeSafetyConfidenceCalibration(verifiedInput());
+    assert.equal(r.version, "v1");
+  });
+
+  it("limitations explain every failed gate simultaneously", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(MOD);
+    const r = computeSafetyConfidenceCalibration({
+      reporterFinalizedCases: 0,
+      targetFinalizedCases: 0,
+      uniqueReporterCount: 0,
+      evidenceMachineVerified: false,
+      evidenceProvider: null,
+      evidenceProviderVersion: null,
+      evidenceAnalyzedAt: null,
+      hasOriginalEvidence: false,
+      hasSnapshotEvidence: false,
+      hasHistoricalOutcomeCoverage: false,
+    });
+    assert.ok(r.limitations.includes("evidence_not_machine_verified"));
+    assert.ok(
+      r.limitations.includes("reporter_finalized_history_below_minimum")
+    );
+    assert.ok(
+      r.limitations.includes("target_finalized_history_below_minimum")
+    );
+    assert.ok(
+      r.limitations.includes("insufficient_unique_reporter_corroboration")
+    );
+    assert.ok(
+      r.limitations.includes("historical_outcome_coverage_missing")
+    );
+  });
+
+  it("has no device/IP/location/provider implementation imports", () => {
+    assertNotIncludes(calibrationModule, "@neondatabase/serverless", "no neon");
+    assertNotIncludes(calibrationModule, "getDatabaseUrl", "no db url");
+    assertNotIncludes(calibrationModule, "x-forwarded-for", "no ip capture");
+    assertNotIncludes(calibrationModule, "deviceId", "no device capture");
+    assertNotIncludes(calibrationModule, "userAgent", "no user agent");
+    assertNotIncludes(calibrationModule, "latitude", "no location");
+    assertNotIncludes(calibrationModule, "ocr(", "no ocr impl");
+  });
+
+  it("integrates as additive block without changing recommendation engine", () => {
+    // Type exposed on the Case Intelligence contract.
+    assertIncludes(
+      engine,
+      "calibration?: SafetyConfidenceCalibration",
+      "calibration field on contract"
+    );
+    // Loader attaches calibration facts.
+    assertIncludes(
+      reportDb,
+      "computeSafetyConfidenceCalibration",
+      "loader computes calibration"
+    );
+    assertIncludes(
+      reportDb,
+      "intelligence.calibration =",
+      "calibration attached to result"
+    );
+    // requiresHumanReview remains hardcoded true in the engine.
+    assertIncludes(
+      engine,
+      "requiresHumanReview: true",
+      "human review unchanged"
+    );
+  });
+});

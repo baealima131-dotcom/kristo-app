@@ -8,8 +8,10 @@
  */
 
 import type { SafetyIntelligenceTimelines } from "./safetyIntelligenceHistory.ts";
+import type { SafetyConfidenceCalibration } from "./safetyConfidenceCalibration.ts";
 
 export type { SafetyIntelligenceTimelines };
+export type { SafetyConfidenceCalibration };
 
 function emptySafetyIntelligenceTimelines(): SafetyIntelligenceTimelines {
   return {
@@ -148,6 +150,8 @@ export type SafetyCaseIntelligence = {
   };
   /** Historical timelines from the Safety Intelligence ledger (API/data only). */
   timelines?: SafetyIntelligenceTimelines;
+  /** Honest confidence calibration facts (API/data only; recommendation unchanged). */
+  calibration?: SafetyConfidenceCalibration;
 };
 
 /**

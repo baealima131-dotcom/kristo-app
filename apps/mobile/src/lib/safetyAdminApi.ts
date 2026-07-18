@@ -475,6 +475,32 @@ export type SafetyCaseIntelligence = {
       }>;
     };
   };
+  calibration?: {
+    version?: string;
+    confidenceLevel?:
+      | "high"
+      | "moderate"
+      | "low"
+      | "insufficient_data";
+    confidence?: number | null;
+    dataCoverage?: {
+      reporterHistoryAvailable?: boolean;
+      targetHistoryAvailable?: boolean;
+      evidenceVerified?: boolean;
+      corroborationAvailable?: boolean;
+      finalizedReporterCases?: number;
+      finalizedTargetCases?: number;
+      uniqueReporterCount?: number;
+    };
+    gates?: {
+      reporterHistoryGatePassed?: boolean;
+      targetHistoryGatePassed?: boolean;
+      evidenceGatePassed?: boolean;
+      corroborationGatePassed?: boolean;
+      numericConfidenceAllowed?: boolean;
+    };
+    limitations?: string[];
+  } | null;
 };
 
 export type SafetyReportSummary = {

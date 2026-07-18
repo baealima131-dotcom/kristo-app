@@ -14,6 +14,9 @@ import {
   type SafetyCaseIntelligence,
 } from "@/app/api/_lib/safetyCaseIntelligenceEngine";
 import {
+  computeSafetyConfidenceCalibration,
+} from "@/app/api/_lib/safetyConfidenceCalibration";
+import {
   applyTimelinesToCaseIntelligenceRaw,
   dbGetSafetyIntelligenceTimelines,
   dbRecordSafetyIntelligenceFromDecision,
@@ -5436,6 +5439,32 @@ export async function dbGetSafetyCaseIntelligence(input: {
 
     const intelligence = computeSafetyCaseIntelligence(raw);
     exitStatus = intelligence.status;
+
+    /*
+     * Honest confidence calibration (additive facts only — does NOT influence
+     * recommendation logic and does not consume cross-case signals yet).
+     * Evidence is unverified today (no provider), so this degrades to
+     * insufficient_data with confidence null.
+     */
+    const reporterFinalizedCases =
+      raw.reporterConfirmedReports + raw.reporterDismissedReports;
+    const targetFinalizedCases =
+      raw.targetConfirmedViolations + raw.targetDismissedReports;
+    intelligence.calibration = computeSafetyConfidenceCalibration({
+      reporterFinalizedCases,
+      targetFinalizedCases,
+      uniqueReporterCount: raw.targetUniqueReporters,
+      evidenceMachineVerified: raw.evidenceMachineVerified === true,
+      evidenceProvider: null,
+      evidenceProviderVersion: null,
+      evidenceAnalyzedAt: null,
+      hasOriginalEvidence: raw.originalContentAvailable === true,
+      hasSnapshotEvidence: Boolean(
+        raw.hasThumbnail || raw.hasPreview || raw.hasMediaUri
+      ),
+      hasHistoricalOutcomeCoverage:
+        reporterFinalizedCases > 0 || targetFinalizedCases > 0,
+    });
 
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_RESULT", {
       reportId: reportId || null,
