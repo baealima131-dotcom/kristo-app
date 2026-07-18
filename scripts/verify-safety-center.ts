@@ -1208,3 +1208,228 @@ describe("8. remove_content reconciliation", () => {
     );
   });
 });
+
+describe("9. Outcome Learning metadata (Phase 2A)", () => {
+  const historyDb = read(
+    "app/api/_lib/store/safetyIntelligenceHistoryDb.ts"
+  );
+  const outcomeModule = read("app/api/_lib/safetyOutcomeLearning.ts");
+
+  it("severity map is versioned, documented and deterministic", async () => {
+    const {
+      SAFETY_SEVERITY_MAP_VERSION,
+      computeSeverityScore,
+    } = await import("../app/api/_lib/safetyOutcomeLearning.ts");
+
+    assert.equal(SAFETY_SEVERITY_MAP_VERSION, "v1");
+
+    // Base decision severity + documented category modifier, clamped 0..100.
+    assert.equal(computeSeverityScore("warning", "harassment"), 25);
+    assert.equal(computeSeverityScore("suspend_account", "child_safety"), 95);
+    assert.equal(computeSeverityScore("permanent_ban", "spam"), 95);
+    assert.equal(computeSeverityScore("remove_content", "other"), 40);
+
+    // no_violation is always 0 regardless of category (no harm attributable).
+    assert.equal(computeSeverityScore("no_violation", "child_safety"), 0);
+
+    // Deterministic across calls.
+    assert.equal(
+      computeSeverityScore("restrict_account", "violence"),
+      computeSeverityScore("restrict_account", "violence")
+    );
+  });
+
+  it("severity is null for non-finalized decisions (no synthetic score)", async () => {
+    const { computeSeverityScore } = await import(
+      "../app/api/_lib/safetyOutcomeLearning.ts"
+    );
+    assert.equal(computeSeverityScore("escalate", "harassment"), null);
+    assert.equal(computeSeverityScore("open"), null);
+    assert.equal(computeSeverityScore(""), null);
+    assert.equal(computeSeverityScore(undefined), null);
+  });
+
+  it("resolutionMinutes derives from real timestamps only", async () => {
+    const { computeResolutionMinutes } = await import(
+      "../app/api/_lib/safetyOutcomeLearning.ts"
+    );
+    assert.equal(
+      computeResolutionMinutes(
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T01:30:00.000Z"
+      ),
+      90
+    );
+    // Missing timestamp -> null.
+    assert.equal(
+      computeResolutionMinutes("2026-01-01T00:00:00.000Z", undefined),
+      null
+    );
+    assert.equal(computeResolutionMinutes(null, null), null);
+    // Clock skew (decision before creation) -> null, never negative.
+    assert.equal(
+      computeResolutionMinutes(
+        "2026-01-01T02:00:00.000Z",
+        "2026-01-01T01:00:00.000Z"
+      ),
+      null
+    );
+  });
+
+  it("investigatorConfidence is human-only and clamped", async () => {
+    const { normalizeInvestigatorConfidence } = await import(
+      "../app/api/_lib/safetyOutcomeLearning.ts"
+    );
+    assert.equal(normalizeInvestigatorConfidence(undefined), null);
+    assert.equal(normalizeInvestigatorConfidence(null), null);
+    assert.equal(normalizeInvestigatorConfidence(""), null);
+    assert.equal(normalizeInvestigatorConfidence("not-a-number"), null);
+    assert.equal(normalizeInvestigatorConfidence(75), 75);
+    assert.equal(normalizeInvestigatorConfidence(120), 100);
+    assert.equal(normalizeInvestigatorConfidence(-5), 0);
+  });
+
+  it("evidence URL hash is deterministic, normalized, null-safe", async () => {
+    const { computeEvidenceUrlHash } = await import(
+      "../app/api/_lib/safetyOutcomeLearning.ts"
+    );
+    assert.equal(computeEvidenceUrlHash(""), null);
+    assert.equal(computeEvidenceUrlHash(null), null);
+    const a = computeEvidenceUrlHash("https://cdn.kristo.app/x.jpg");
+    const b = computeEvidenceUrlHash("  HTTPS://CDN.KRISTO.APP/X.JPG  ");
+    const c = computeEvidenceUrlHash("https://cdn.kristo.app/y.jpg");
+    assert.ok(typeof a === "string" && a.length === 64);
+    assert.equal(a, b); // trimmed + lowercased normalization
+    assert.notEqual(a, c);
+  });
+
+  it("appeals + finalOutcomeWeight stay reserved/null in Phase 2A", async () => {
+    const { computeOutcomeLearningMetadata } = await import(
+      "../app/api/_lib/safetyOutcomeLearning.ts"
+    );
+    const meta = computeOutcomeLearningMetadata({
+      decisionType: "warning",
+      category: "harassment",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      decisionAt: "2026-01-01T00:30:00.000Z",
+      investigatorConfidence: 60,
+      evidenceUrl: "https://cdn.kristo.app/x.jpg",
+    });
+    assert.equal(meta.severityScore, 25);
+    assert.equal(meta.severityMapVersion, "v1");
+    assert.equal(meta.resolutionMinutes, 30);
+    assert.equal(meta.investigatorConfidence, 60);
+    assert.equal(meta.appealFiled, false);
+    assert.equal(meta.appealOutcome, null);
+    assert.equal(meta.finalOutcomeWeight, null);
+    assert.ok(typeof meta.evidenceUrlHash === "string");
+  });
+
+  it("thin/unset metadata degrades to null (no fabricated values)", async () => {
+    const { computeOutcomeLearningMetadata } = await import(
+      "../app/api/_lib/safetyOutcomeLearning.ts"
+    );
+    const meta = computeOutcomeLearningMetadata({
+      decisionType: "escalate",
+    });
+    assert.equal(meta.severityScore, null);
+    assert.equal(meta.resolutionMinutes, null);
+    assert.equal(meta.investigatorConfidence, null);
+    assert.equal(meta.evidenceUrlHash, null);
+    assert.equal(meta.finalOutcomeWeight, null);
+  });
+
+  it("module has no DB / provider / capture imports", () => {
+    assertNotIncludes(outcomeModule, "@neondatabase/serverless", "no neon");
+    assertNotIncludes(outcomeModule, "getDatabaseUrl", "no db url");
+    assertNotIncludes(outcomeModule, "evidenceMachineVerified = true", "no fake verify");
+    assertNotIncludes(outcomeModule, "x-forwarded-for", "no ip capture");
+    assertNotIncludes(outcomeModule, "deviceId", "no device capture");
+  });
+
+  it("ledger schema adds all outcome-learning columns", () => {
+    for (const col of [
+      "severity_score INTEGER",
+      "severity_map_version TEXT",
+      "resolution_minutes INTEGER",
+      "investigator_confidence INTEGER",
+      "appeal_filed BOOLEAN NOT NULL DEFAULT FALSE",
+      "appeal_outcome TEXT",
+      "final_outcome_weight NUMERIC",
+      "evidence_url_hash TEXT",
+    ]) {
+      assertIncludes(historyDb, col, `column ${col}`);
+    }
+  });
+
+  it("adds decider/category/evidence-hash indexes", () => {
+    assertIncludes(
+      historyDb,
+      "idx_safety_intel_events_decider_decision",
+      "decider index"
+    );
+    assertIncludes(
+      historyDb,
+      "idx_safety_intel_events_category_decision",
+      "category index"
+    );
+    assertIncludes(
+      historyDb,
+      "idx_safety_intel_events_evidence_hash",
+      "evidence hash index"
+    );
+  });
+
+  it("live decision write enriches ledger with real metadata", () => {
+    assertIncludes(
+      historyDb,
+      "computeOutcomeLearningMetadata",
+      "live write computes metadata"
+    );
+    assertIncludes(historyDb, "severityScore: outcome.severityScore", "severity wired");
+    assertIncludes(
+      historyDb,
+      "investigatorConfidence: outcome.investigatorConfidence",
+      "confidence wired"
+    );
+  });
+
+  it("v2 backfill is versioned, batched and idempotent (no full-scan per GET)", () => {
+    assertIncludes(
+      historyDb,
+      "intelligence_events_backfill_v2",
+      "v2 meta key value"
+    );
+    assertIncludes(
+      historyDb,
+      "SAFETY_INTEL_OUTCOME_BACKFILL_META_KEY",
+      "v2 meta key const"
+    );
+    assertIncludes(
+      historyDb,
+      "export async function dbBackfillSafetyOutcomeLearning",
+      "v2 backfill function"
+    );
+    assertIncludes(
+      historyDb,
+      "AND e.severity_map_version IS NULL",
+      "idempotent enrichment guard"
+    );
+    assertIncludes(
+      historyDb,
+      "AND severity_map_version IS NULL",
+      "per-row idempotency guard on update"
+    );
+    assertIncludes(
+      historyDb,
+      "SAFETY_INTEL_BACKFILL_BATCH_SIZE",
+      "batched enrichment"
+    );
+    // Gated by process cache + meta so it does not rescan on every GET.
+    assertIncludes(
+      historyDb,
+      "outcomeBackfillCompleteCached",
+      "process-cache gate"
+    );
+  });
+});

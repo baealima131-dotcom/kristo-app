@@ -30,6 +30,15 @@ import {
   type SafetyTargetIntelligenceTimeline,
 } from "@/app/api/_lib/safetyIntelligenceHistory";
 import {
+  SAFETY_SEVERITY_MAP_VERSION,
+  computeEvidenceUrlHash,
+  computeOutcomeLearningMetadata,
+  computeResolutionMinutes,
+  computeSeverityScore,
+  normalizeInvestigatorConfidence,
+  type SafetyOutcomeAppealOutcome,
+} from "@/app/api/_lib/safetyOutcomeLearning";
+import {
   getDatabaseUrl,
 } from "@/app/api/_lib/store/authDb";
 
@@ -53,10 +62,19 @@ export {
 
 neonConfig.fetchConnectionCache = true;
 
+/**
+ * Versioned, run-once enrichment of Outcome Learning columns on existing rows.
+ * Separate from the v1 row-insert backfill so it can be gated independently.
+ */
+export const SAFETY_INTEL_OUTCOME_BACKFILL_META_KEY =
+  "intelligence_events_backfill_v2";
+
 let sqlClient: ReturnType<typeof neon> | null = null;
 let schemaReady = false;
 /** Process-local cache of DB-versioned backfill completion. */
 let backfillCompleteCached = false;
+/** Process-local cache of DB-versioned outcome-learning enrichment (v2). */
+let outcomeBackfillCompleteCached = false;
 
 function getSql() {
   if (!sqlClient) {
@@ -162,6 +180,77 @@ export async function ensureSafetyIntelligenceEventsSchema() {
   `;
 
   /*
+   * Phase 2A — Outcome Learning metadata (additive, all nullable).
+   * Derived from real finalized data only; no synthetic scores.
+   *   severity_score        -> versioned decision+category map (0..100)
+   *   severity_map_version  -> map revision tag (also the "enriched" marker)
+   *   resolution_minutes    -> created_at -> decision_at
+   *   investigator_confidence-> human decision_confidence only
+   *   appeal_*              -> appeals not built (reserved contract)
+   *   final_outcome_weight  -> null until an explainable policy exists
+   *   evidence_url_hash     -> sha256 of an already-stored media URL
+   */
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS severity_score INTEGER
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS severity_map_version TEXT
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS resolution_minutes INTEGER
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS investigator_confidence INTEGER
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS appeal_filed BOOLEAN NOT NULL DEFAULT FALSE
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS appeal_outcome TEXT
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS final_outcome_weight NUMERIC
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS evidence_url_hash TEXT
+  `;
+
+  // Supervisor reliability facts (Commit #2 reads this; index added now).
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_safety_intel_events_decider_decision
+    ON kristo_safety_intelligence_events (
+      decided_by_user_id,
+      decision_at DESC
+    )
+  `;
+
+  // Category trends / analytics aggregates.
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_safety_intel_events_category_decision
+    ON kristo_safety_intelligence_events (
+      category,
+      decision_at DESC
+    )
+  `;
+
+  // Exact-URL evidence linking across cases (cross-case graph).
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_safety_intel_events_evidence_hash
+    ON kristo_safety_intelligence_events (
+      evidence_url_hash
+    )
+    WHERE evidence_url_hash IS NOT NULL
+  `;
+
+  /*
    * Versioned backfill completion marker — PK lookup only on hot paths.
    * Prevents full-table rescans on every report GET after v1 completes.
    */
@@ -197,7 +286,28 @@ export type RecordSafetyIntelligenceEventInput = {
   isDismissed?: boolean;
   isMaliciousReport?: boolean;
   metadata?: Record<string, unknown>;
+  /** Phase 2A outcome-learning columns (all derived from real data, nullable). */
+  severityScore?: number | null;
+  severityMapVersion?: string | null;
+  resolutionMinutes?: number | null;
+  investigatorConfidence?: number | null;
+  appealFiled?: boolean;
+  appealOutcome?: SafetyOutcomeAppealOutcome;
+  finalOutcomeWeight?: number | null;
+  evidenceUrlHash?: string | null;
 };
+
+function nullableInt(value: unknown): number | null {
+  if (value == null) return null;
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? n : null;
+}
+
+function nullableNumeric(value: unknown): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
 export async function dbRecordSafetyIntelligenceEvent(
   input: RecordSafetyIntelligenceEventInput
@@ -276,7 +386,15 @@ export async function dbRecordSafetyIntelligenceEvent(
           is_confirmed_violation,
           is_dismissed,
           is_malicious_report,
-          metadata_json
+          metadata_json,
+          severity_score,
+          severity_map_version,
+          resolution_minutes,
+          investigator_confidence,
+          appeal_filed,
+          appeal_outcome,
+          final_outcome_weight,
+          evidence_url_hash
         )
         VALUES (
           ${id}::text,
@@ -300,7 +418,15 @@ export async function dbRecordSafetyIntelligenceEvent(
           ${isConfirmedViolation}::boolean,
           ${isDismissed}::boolean,
           ${isMaliciousReport}::boolean,
-          ${metadataJson}::text
+          ${metadataJson}::text,
+          ${nullableInt(input.severityScore)}::integer,
+          ${safeText(input.severityMapVersion) || null}::text,
+          ${nullableInt(input.resolutionMinutes)}::integer,
+          ${nullableInt(input.investigatorConfidence)}::integer,
+          ${Boolean(input.appealFiled)}::boolean,
+          ${safeText(input.appealOutcome) || null}::text,
+          ${nullableNumeric(input.finalOutcomeWeight)}::numeric,
+          ${safeText(input.evidenceUrlHash) || null}::text
         )
         ON CONFLICT (report_id, event_kind, outcome_type)
         WHERE report_id IS NOT NULL
@@ -344,6 +470,9 @@ export async function dbRecordSafetyIntelligenceFromDecision(input: {
     decidedByRole?: string;
     decisionAt?: string;
     status?: string;
+    createdAt?: string;
+    decisionConfidence?: number;
+    targetThumbnailUri?: string;
   };
   enforcementId?: string | null;
 }): Promise<void> {
@@ -351,6 +480,16 @@ export async function dbRecordSafetyIntelligenceFromDecision(input: {
   if (!isFinalizedLearningDecisionType(decisionType)) {
     return;
   }
+
+  // Outcome-learning metadata — derived from real report fields only.
+  const outcome = computeOutcomeLearningMetadata({
+    decisionType,
+    category: input.report.category,
+    createdAt: input.report.createdAt,
+    decisionAt: input.report.decisionAt,
+    investigatorConfidence: input.report.decisionConfidence,
+    evidenceUrl: input.report.targetThumbnailUri,
+  });
 
   await dbRecordSafetyIntelligenceEvent({
     eventKind: "decision",
@@ -382,6 +521,14 @@ export async function dbRecordSafetyIntelligenceFromDecision(input: {
       notes: input.report.decisionNotes || null,
       status: input.report.status || null,
     },
+    severityScore: outcome.severityScore,
+    severityMapVersion: outcome.severityMapVersion,
+    resolutionMinutes: outcome.resolutionMinutes,
+    investigatorConfidence: outcome.investigatorConfidence,
+    appealFiled: outcome.appealFiled,
+    appealOutcome: outcome.appealOutcome,
+    finalOutcomeWeight: outcome.finalOutcomeWeight,
+    evidenceUrlHash: outcome.evidenceUrlHash,
   });
 }
 
@@ -549,20 +696,24 @@ export async function dbBackfillSafetyIntelligenceEvents(
   };
 }
 
-async function readBackfillMetaValue(): Promise<string | null> {
+async function readBackfillMetaValue(
+  metaKey: string = SAFETY_INTEL_BACKFILL_META_KEY
+): Promise<string | null> {
   const sql = getSql();
   const rows = asRowArray<{ meta_value: string }>(
     await sql`
       SELECT meta_value
       FROM kristo_safety_intelligence_meta
-      WHERE meta_key = ${SAFETY_INTEL_BACKFILL_META_KEY}
+      WHERE meta_key = ${metaKey}
       LIMIT 1
     `
   );
   return rows[0]?.meta_value ? String(rows[0].meta_value) : null;
 }
 
-async function markBackfillCompleted() {
+async function markBackfillCompleted(
+  metaKey: string = SAFETY_INTEL_BACKFILL_META_KEY
+) {
   const sql = getSql();
   await sql`
     INSERT INTO kristo_safety_intelligence_meta (
@@ -571,7 +722,7 @@ async function markBackfillCompleted() {
       updated_at
     )
     VALUES (
-      ${SAFETY_INTEL_BACKFILL_META_KEY},
+      ${metaKey},
       'completed',
       NOW()
     )
@@ -583,34 +734,189 @@ async function markBackfillCompleted() {
 }
 
 /**
+ * Phase 2A — versioned, batched, idempotent enrichment of Outcome Learning
+ * columns on pre-existing ledger rows (rows inserted before this deploy, incl.
+ * v1-backfilled rows which had no severity/resolution set).
+ *
+ * Idempotency: only rows WHERE severity_map_version IS NULL are enriched, and
+ * each UPDATE re-checks that guard, so repeated runs and concurrent workers
+ * converge to a single write per row. Never full-scans on every report GET —
+ * gated by SAFETY_INTEL_OUTCOME_BACKFILL_META_KEY once done.
+ *
+ * Severity/resolution/confidence/hash are computed in JS via the single
+ * versioned map (safetyOutcomeLearning.ts) so SQL and app logic cannot drift.
+ */
+export async function dbBackfillSafetyOutcomeLearning(
+  batchSize: number = SAFETY_INTEL_BACKFILL_BATCH_SIZE
+): Promise<{ updated: number; done: boolean }> {
+  await ensureSafetyIntelligenceEventsSchema();
+  const sql = getSql();
+  const limit = Math.max(
+    1,
+    Math.min(
+      2000,
+      Math.floor(Number(batchSize) || SAFETY_INTEL_BACKFILL_BATCH_SIZE)
+    )
+  );
+
+  type EnrichRow = {
+    id: string;
+    outcome_type: string;
+    decision_type: string | null;
+    category: string | null;
+    event_decision_at: string | null;
+    report_created_at: string | null;
+    report_decision_at: string | null;
+    decision_confidence: number | null;
+    target_thumbnail_uri: string | null;
+  };
+
+  const rows = asRowArray<EnrichRow>(
+    await sql`
+      SELECT
+        e.id,
+        e.outcome_type,
+        e.decision_type,
+        e.category,
+        e.decision_at::text AS event_decision_at,
+        r.created_at::text AS report_created_at,
+        r.decision_at::text AS report_decision_at,
+        r.decision_confidence,
+        r.target_thumbnail_uri
+      FROM kristo_safety_intelligence_events e
+      LEFT JOIN kristo_safety_reports r ON r.id = e.report_id
+      WHERE e.event_kind = 'decision'
+        AND e.severity_map_version IS NULL
+      ORDER BY e.created_at ASC
+      LIMIT ${limit}
+    `
+  );
+
+  let updated = 0;
+  const chunkSize = 25;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const results = await Promise.all(
+      chunk.map(async (row) => {
+        const decisionType = safeLower(row.decision_type || row.outcome_type);
+        const decisionAt =
+          safeText(row.report_decision_at) ||
+          safeText(row.event_decision_at);
+        const severityScore = computeSeverityScore(decisionType, row.category);
+        const resolutionMinutes = computeResolutionMinutes(
+          row.report_created_at,
+          decisionAt
+        );
+        const investigatorConfidence = normalizeInvestigatorConfidence(
+          row.decision_confidence
+        );
+        const evidenceUrlHash = computeEvidenceUrlHash(
+          row.target_thumbnail_uri
+        );
+
+        const res = asRowArray<{ id: string }>(
+          await sql`
+            UPDATE kristo_safety_intelligence_events
+            SET
+              severity_score = ${nullableInt(severityScore)}::integer,
+              severity_map_version = ${SAFETY_SEVERITY_MAP_VERSION}::text,
+              resolution_minutes = ${nullableInt(resolutionMinutes)}::integer,
+              investigator_confidence = ${nullableInt(
+                investigatorConfidence
+              )}::integer,
+              evidence_url_hash = COALESCE(
+                evidence_url_hash,
+                ${evidenceUrlHash || null}::text
+              )
+            WHERE id = ${row.id}
+              AND severity_map_version IS NULL
+            RETURNING id
+          `
+        );
+        return res.length > 0 ? 1 : 0;
+      })
+    );
+    updated += results.reduce<number>((sum, n) => sum + n, 0);
+  }
+
+  const remaining = asRowArray<{ remaining: number }>(
+    await sql`
+      SELECT CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM kristo_safety_intelligence_events e
+          WHERE e.event_kind = 'decision'
+            AND e.severity_map_version IS NULL
+          LIMIT 1
+        ) THEN 1
+        ELSE 0
+      END::int AS remaining
+    `
+  )[0];
+
+  return {
+    updated,
+    done: nonNegInt(remaining?.remaining) === 0,
+  };
+}
+
+/**
  * Versioned/batched backfill gate.
  * After meta=completed, hot paths only do a PK lookup (or process cache hit).
  * Does NOT full-scan kristo_safety_reports on every report GET once done.
  */
 export async function ensureSafetyIntelligenceHistoryReady() {
   await ensureSafetyIntelligenceEventsSchema();
-  if (backfillCompleteCached) return;
+  if (backfillCompleteCached && outcomeBackfillCompleteCached) return;
 
   try {
-    const meta = await readBackfillMetaValue();
-    if (meta === "completed") {
-      backfillCompleteCached = true;
-      return;
+    // Stage 1 — v1 row-insert backfill from finalized reports/enforcements.
+    if (!backfillCompleteCached) {
+      const meta = await readBackfillMetaValue();
+      if (meta === "completed") {
+        backfillCompleteCached = true;
+      } else {
+        const result = await dbBackfillSafetyIntelligenceEvents(
+          SAFETY_INTEL_BACKFILL_BATCH_SIZE
+        );
+
+        console.log("KRISTO_SAFETY_INTEL_BACKFILL", {
+          inserted: result.inserted,
+          done: result.done,
+          metaKey: SAFETY_INTEL_BACKFILL_META_KEY,
+        });
+
+        if (result.done) {
+          await markBackfillCompleted();
+          backfillCompleteCached = true;
+        }
+      }
     }
 
-    const result = await dbBackfillSafetyIntelligenceEvents(
-      SAFETY_INTEL_BACKFILL_BATCH_SIZE
-    );
+    // Stage 2 — v2 outcome-learning enrichment (only after v1 rows exist).
+    if (backfillCompleteCached && !outcomeBackfillCompleteCached) {
+      const outcomeMeta = await readBackfillMetaValue(
+        SAFETY_INTEL_OUTCOME_BACKFILL_META_KEY
+      );
+      if (outcomeMeta === "completed") {
+        outcomeBackfillCompleteCached = true;
+      } else {
+        const enrich = await dbBackfillSafetyOutcomeLearning(
+          SAFETY_INTEL_BACKFILL_BATCH_SIZE
+        );
 
-    console.log("KRISTO_SAFETY_INTEL_BACKFILL", {
-      inserted: result.inserted,
-      done: result.done,
-      metaKey: SAFETY_INTEL_BACKFILL_META_KEY,
-    });
+        console.log("KRISTO_SAFETY_INTEL_OUTCOME_BACKFILL", {
+          updated: enrich.updated,
+          done: enrich.done,
+          metaKey: SAFETY_INTEL_OUTCOME_BACKFILL_META_KEY,
+          severityMapVersion: SAFETY_SEVERITY_MAP_VERSION,
+        });
 
-    if (result.done) {
-      await markBackfillCompleted();
-      backfillCompleteCached = true;
+        if (enrich.done) {
+          await markBackfillCompleted(SAFETY_INTEL_OUTCOME_BACKFILL_META_KEY);
+          outcomeBackfillCompleteCached = true;
+        }
+      }
     }
   } catch (error: any) {
     console.log("KRISTO_SAFETY_INTEL_BACKFILL_FAILED", {
