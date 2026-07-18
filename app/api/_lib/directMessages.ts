@@ -31,6 +31,8 @@ import {
   ensurePendingRequestForInitiator,
   getDirectMessageRelationshipByRoomId,
   repairReversedEmptyPendingInitiator,
+  resetDirectMessageRelationshipToNone,
+  restartMessageRequestAsPending,
   updateDirectMessageRelationshipStatus,
   upsertDirectMessageRelationship,
   type DirectMessageRelationshipRecord,
@@ -85,6 +87,8 @@ export type DirectMessageConversationSettings = {
   isRequestInitiator: boolean;
   isRequestReceiver: boolean;
   canAcceptDecline: boolean;
+  /** Declined (and not blocked): viewer may start a fresh invitation. */
+  canRestartRequest: boolean;
 };
 
 export type {
@@ -565,7 +569,16 @@ export async function openDirectMessageThread(args: {
   );
   const existingRel = await getDirectMessageRelationshipByRoomId(roomId);
 
-  // Profile open is the only safe repair entrypoint for reversed/empty pending.
+  const viewerActive = await getActiveMembership(viewerUserId).catch(() => null);
+  const storageChurchId = String(
+    existingRel?.storageChurchId ||
+      sharedChurchId ||
+      requestedChurchId ||
+      viewerActive?.churchId ||
+      "dm"
+  ).trim();
+
+  // Profile Message: reverse/empty repair, or restart declined/none as a new invite.
   if (!sharedChurchId) {
     const repair = await repairReversedEmptyPendingInitiator({
       roomId,
@@ -580,16 +593,28 @@ export async function openDirectMessageThread(args: {
         reason: repair.reason,
       });
     }
-  }
 
-  const viewerActive = await getActiveMembership(viewerUserId).catch(() => null);
-  const storageChurchId = String(
-    existingRel?.storageChurchId ||
-      sharedChurchId ||
-      requestedChurchId ||
-      viewerActive?.churchId ||
-      "dm"
-  ).trim();
+    const relBefore = await getDirectMessageRelationshipByRoomId(roomId);
+    const statusBefore = String(relBefore?.requestStatus || "none");
+    if (!relBefore || statusBefore === "none" || statusBefore === "declined") {
+      const restarted = await restartMessageRequestAsPending({
+        roomId,
+        initiatorUserId: viewerUserId,
+        storageChurchId,
+        participantUserIds: [viewerUserId, targetUserId],
+      });
+      if (restarted.ok) {
+        console.log("KRISTO_DM_REQUEST_RESTARTED", {
+          roomId,
+          authenticatedOpenerUserId: viewerUserId,
+          targetUserId,
+          previousStatus: statusBefore,
+          requestInitiatorUserId: restarted.record.requestInitiatorUserId,
+          initiatorOutboundCount: restarted.record.initiatorOutboundCount,
+        });
+      }
+    }
+  }
 
   // Always ensure metadata + durable relationship (never early-return without initiator).
   const ensured = await ensureDirectMessageThreadFromRoomId({
@@ -733,6 +758,8 @@ export async function getDirectMessageConversationSettings(args: {
   });
   const canAcceptDecline =
     isRequestReceiver && !blockedByMe && !blockedByPeer;
+  const canRestartRequest =
+    relationshipStatus === "declined" && !blockedByMe && !blockedByPeer;
   // Viewer-specific sendability: initiator uses quota; recipient can reply
   // without consuming the initiator's message allowance.
   const viewerCanSend =
@@ -768,6 +795,7 @@ export async function getDirectMessageConversationSettings(args: {
     isRequestInitiator,
     isRequestReceiver,
     canAcceptDecline,
+    canRestartRequest,
   };
 }
 
@@ -784,7 +812,8 @@ export async function updateDirectMessageConversationSettings(args: {
     | "delete"
     | "restore"
     | "accept"
-    | "decline";
+    | "decline"
+    | "restart_request";
 }): Promise<DirectMessageConversationSettings | null> {
   const requestedChurchId = String(args.churchId || "").trim();
   const roomId = String(args.roomId || "").trim();
@@ -829,6 +858,49 @@ export async function updateDirectMessageConversationSettings(args: {
     if (!statusUpdate.ok) {
       return null;
     }
+    return getDirectMessageConversationSettings({
+      churchId: ensured.churchId,
+      roomId,
+      userId,
+    });
+  }
+
+  if (args.action === "restart_request") {
+    const shareActiveChurch = Boolean(
+      await usersShareActiveChurch(userId, peerUserId)
+    );
+    if (shareActiveChurch) {
+      return getDirectMessageConversationSettings({
+        churchId: ensured.churchId,
+        roomId,
+        userId,
+      });
+    }
+    const settingsBefore = await getDirectMessageConversationSettings({
+      churchId: ensured.churchId,
+      roomId,
+      userId,
+    });
+    if (settingsBefore?.blocked) return null;
+    if (settingsBefore?.relationshipStatus !== "declined") {
+      return settingsBefore;
+    }
+    const restarted = await restartMessageRequestAsPending({
+      roomId,
+      initiatorUserId: userId,
+      storageChurchId: ensured.churchId,
+      participantUserIds: participants,
+    });
+    if (!restarted.ok) return null;
+    console.log("KRISTO_DM_REQUEST_RESTARTED", {
+      roomId,
+      authenticatedOpenerUserId: userId,
+      targetUserId: peerUserId,
+      previousStatus: "declined",
+      requestInitiatorUserId: restarted.record.requestInitiatorUserId,
+      initiatorOutboundCount: restarted.record.initiatorOutboundCount,
+      source: "restart_request",
+    });
     return getDirectMessageConversationSettings({
       churchId: ensured.churchId,
       roomId,
@@ -894,6 +966,18 @@ export async function updateDirectMessageConversationSettings(args: {
     next[found.key] = record;
     return next;
   }, {});
+
+  // Unblock clears relationship to none — next Message opener becomes initiator.
+  // Does NOT restore accepted.
+  if (args.action === "unblock") {
+    const reset = await resetDirectMessageRelationshipToNone(roomId);
+    console.log("KRISTO_DM_REQUEST_RESET_AFTER_UNBLOCK", {
+      roomId,
+      userId,
+      peerUserId,
+      requestStatus: reset?.requestStatus || "none",
+    });
+  }
 
   console.log("KRISTO_DM_CONVERSATION_SETTING_UPDATED", {
     churchId: ensured.churchId,
@@ -1120,7 +1204,7 @@ export async function assertDirectMessageSendAllowed(args: {
       body: {
         ok: false,
         error:
-          "This message request was declined. The recipient must accept before you can continue.",
+          "This message request was declined. Tap Request again to start a new invitation.",
         code: "DM_REQUEST_DECLINED",
       },
     };

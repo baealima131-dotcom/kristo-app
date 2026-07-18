@@ -285,6 +285,38 @@ describe("DM request role direction (source)", () => {
     assertIncludes(relDb, "accepted_at IS NULL", "repair accepted guard");
     assertIncludes(relDb, "declined_at IS NULL", "repair declined guard");
   });
+
+  it("declined can restart as a new pending invitation", () => {
+    assertIncludes(
+      relDb,
+      "restartMessageRequestAsPending",
+      "restart export"
+    );
+    assertIncludes(
+      relDb,
+      "resetDirectMessageRelationshipToNone",
+      "unblock resets to none"
+    );
+    assertIncludes(dmLib, "restart_request", "settings restart action");
+    assertIncludes(dmLib, "canRestartRequest", "settings canRestartRequest");
+    assertIncludes(dmLib, "KRISTO_DM_REQUEST_RESTARTED", "restart diagnostic");
+    assertIncludes(
+      dmLib,
+      "resetDirectMessageRelationshipToNone",
+      "unblock clears relationship"
+    );
+    assertIncludes(messagesUi, "Request again", "restart CTA");
+    assertIncludes(
+      messagesUi,
+      "restart_request",
+      "mobile restart action"
+    );
+    assertNotIncludes(
+      messagesUi,
+      "You cannot send more messages until they accept.",
+      "old forever-locked declined copy removed"
+    );
+  });
 });
 
 describe("DM request wiring (source)", () => {

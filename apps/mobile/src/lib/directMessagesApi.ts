@@ -202,6 +202,7 @@ export type DirectMessageConversationSettings = {
   isRequestInitiator?: boolean;
   isRequestReceiver?: boolean;
   canAcceptDecline?: boolean;
+  canRestartRequest?: boolean;
 };
 
 /** Canonical cross-church DM request outbound limit (must match backend). */
@@ -249,7 +250,8 @@ export async function updateDirectMessageConversationSetting(
       | "delete"
       | "restore"
       | "accept"
-      | "decline";
+      | "decline"
+      | "restart_request";
   }
 ): Promise<DirectMessageConversationSettings> {
   const res: any = await apiPatch(

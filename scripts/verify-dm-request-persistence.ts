@@ -191,6 +191,96 @@ describe("DM request durable persistence", () => {
     assert.equal(noRepair.repaired, false);
     assert.equal(noRepair.record?.requestInitiatorUserId, SENDER);
 
+    // Decline is not forever: either party can restart a fresh invite.
+    await reloaded2.deleteDirectMessageRelationshipForTests(ROOM_ID);
+    await reloaded2.upsertDirectMessageRelationship({
+      roomId: ROOM_ID,
+      storageChurchId: CHURCH,
+      participantUserIds: [SENDER, RECEIVER],
+      requestStatus: "pending",
+      requestInitiatorUserId: SENDER,
+      sameChurchAtCreation: false,
+    });
+    for (let i = 0; i < 2; i += 1) {
+      await reloaded2.claimInitiatorOutboundSlotAtomic({
+        roomId: ROOM_ID,
+        senderUserId: SENDER,
+        limit: DM_REQUEST_MESSAGE_LIMIT,
+      });
+    }
+    const declined = await reloaded2.updateDirectMessageRelationshipStatus({
+      roomId: ROOM_ID,
+      actorUserId: RECEIVER,
+      action: "decline",
+    });
+    assert.equal(declined.ok, true);
+
+    const restartBySender = await reloaded2.restartMessageRequestAsPending({
+      roomId: ROOM_ID,
+      initiatorUserId: SENDER,
+      storageChurchId: CHURCH,
+      participantUserIds: [SENDER, RECEIVER],
+    });
+    assert.equal(restartBySender.ok, true);
+    if (restartBySender.ok) {
+      assert.equal(restartBySender.record.requestStatus, "pending");
+      assert.equal(restartBySender.record.requestInitiatorUserId, SENDER);
+      assert.equal(restartBySender.record.initiatorOutboundCount, 0);
+      assert.equal(restartBySender.record.declinedAt, null);
+    }
+
+    const declinedAgain = await reloaded2.updateDirectMessageRelationshipStatus({
+      roomId: ROOM_ID,
+      actorUserId: RECEIVER,
+      action: "decline",
+    });
+    assert.equal(declinedAgain.ok, true);
+
+    // Decliner can become the new initiator.
+    const restartByReceiver = await reloaded2.restartMessageRequestAsPending({
+      roomId: ROOM_ID,
+      initiatorUserId: RECEIVER,
+      storageChurchId: CHURCH,
+      participantUserIds: [SENDER, RECEIVER],
+    });
+    assert.equal(restartByReceiver.ok, true);
+    if (restartByReceiver.ok) {
+      assert.equal(restartByReceiver.record.requestInitiatorUserId, RECEIVER);
+      assert.equal(restartByReceiver.record.initiatorOutboundCount, 0);
+    }
+
+    // Unblock resets to none (not accepted).
+    const reset = await reloaded2.resetDirectMessageRelationshipToNone(ROOM_ID);
+    assert.ok(reset);
+    assert.equal(reset.requestStatus, "none");
+    assert.equal(reset.requestInitiatorUserId, "");
+    assert.equal(reset.initiatorOutboundCount, 0);
+
+    const afterNone = await reloaded2.restartMessageRequestAsPending({
+      roomId: ROOM_ID,
+      initiatorUserId: RECEIVER,
+      storageChurchId: CHURCH,
+      participantUserIds: [SENDER, RECEIVER],
+    });
+    assert.equal(afterNone.ok, true);
+    if (afterNone.ok) {
+      assert.equal(afterNone.record.requestInitiatorUserId, RECEIVER);
+    }
+
+    // Accepted cannot be restarted into a new pending invite.
+    await reloaded2.updateDirectMessageRelationshipStatus({
+      roomId: ROOM_ID,
+      actorUserId: SENDER,
+      action: "accept",
+    });
+    const noRestartAccepted = await reloaded2.restartMessageRequestAsPending({
+      roomId: ROOM_ID,
+      initiatorUserId: RECEIVER,
+      storageChurchId: CHURCH,
+      participantUserIds: [SENDER, RECEIVER],
+    });
+    assert.equal(noRestartAccepted.ok, false);
+
     console.log("KRISTO_DM_REQUEST_PERSISTENCE_BACKEND", {
       backend: reloaded2.getDirectMessageRelationshipPersistenceBackend(),
       roomId: ROOM_ID,

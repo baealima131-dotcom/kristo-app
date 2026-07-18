@@ -10022,6 +10022,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
       | "delete"
       | "accept"
       | "decline"
+      | "restart_request"
   ) {
     if (!isPersonToPersonDm || !backendRoomId || dmSettingsBusy) {
       return;
@@ -14082,7 +14083,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               {dmRelationshipBlocked
                 ? "Messages cannot be sent in this blocked conversation."
                 : dmRequestDeclined
-                  ? "The recipient declined this request. You cannot send more messages until they accept."
+                  ? "This request was declined. You can start a new invitation anytime."
                   : dmIsRequestReceiver
                     ? "Accept to open a normal conversation, or decline / block this request."
                     : dmIsRequestInitiator
@@ -14137,6 +14138,25 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   </Text>
                 </Pressable>
               </View>
+            ) : null}
+            {dmRequestDeclined &&
+            !dmRelationshipBlocked &&
+            dmConversationSettings?.canRestartRequest !== false ? (
+              <Pressable
+                disabled={dmSettingsBusy}
+                onPress={() => void applyDmConversationSetting("restart_request")}
+                style={{
+                  marginTop: 4,
+                  paddingVertical: 11,
+                  borderRadius: 10,
+                  backgroundColor: GOLD_SOLID,
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ color: "#111", fontWeight: "800", fontSize: 13 }}>
+                  Request again
+                </Text>
+              </Pressable>
             ) : null}
             {dmIsRequestInitiator &&
             dmConversationSettings?.canSend === false ? (
@@ -14227,7 +14247,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   dmComposerLocked
                     ? dmRelationshipBlocked
                       ? "Conversation blocked"
-                      : "Waiting for acceptance..."
+                      : dmRequestDeclined
+                        ? "Request declined — tap Request again"
+                        : "Waiting for acceptance..."
                     : "Type a message..."
                 }
                 autoFocus={false}

@@ -289,8 +289,10 @@ export async function upsertDirectMessageRelationship(args: {
 }
 
 /**
- * Transition a non-request row into a pending request for the authenticated sender.
- * Never overwrites an existing initiator / accepted / declined relationship.
+ * Transition none / empty-initiator rows into a pending request for the
+ * authenticated sender. Does NOT overwrite accepted, declined, or an active
+ * pending request owned by someone else (use restartMessageRequestAsPending
+ * for declined → new invitation).
  */
 export async function ensurePendingRequestForInitiator(args: {
   roomId: string;
@@ -353,6 +355,9 @@ export async function ensurePendingRequestForInitiator(args: {
             ...existing,
             requestStatus: "pending",
             requestInitiatorUserId: senderUserId,
+            initiatorOutboundCount: 0,
+            acceptedAt: null,
+            declinedAt: null,
             updatedAt: now,
           };
           store[roomId] = record;
@@ -410,9 +415,258 @@ export async function ensurePendingRequestForInitiator(args: {
         THEN ${senderUserId}
         ELSE kristo_direct_message_relationships.request_initiator_user_id
       END,
+      initiator_outbound_count = CASE
+        WHEN kristo_direct_message_relationships.request_status = 'none'
+          OR COALESCE(kristo_direct_message_relationships.request_initiator_user_id, '') = ''
+        THEN 0
+        ELSE kristo_direct_message_relationships.initiator_outbound_count
+      END,
+      accepted_at = CASE
+        WHEN kristo_direct_message_relationships.request_status = 'none'
+          OR COALESCE(kristo_direct_message_relationships.request_initiator_user_id, '') = ''
+        THEN NULL
+        ELSE kristo_direct_message_relationships.accepted_at
+      END,
+      declined_at = CASE
+        WHEN kristo_direct_message_relationships.request_status = 'none'
+          OR COALESCE(kristo_direct_message_relationships.request_initiator_user_id, '') = ''
+        THEN NULL
+        ELSE kristo_direct_message_relationships.declined_at
+      END,
       updated_at = NOW()
   `;
   return getDirectMessageRelationshipByRoomId(roomId);
+}
+
+/**
+ * Start a fresh invitation on an existing thread.
+ * Allowed from: declined | none (and missing row).
+ * Sets: pending, initiator = authenticated opener, outbound count = 0.
+ * Never overwrites accepted or an active pending request.
+ */
+export async function restartMessageRequestAsPending(args: {
+  roomId: string;
+  initiatorUserId: string;
+  storageChurchId: string;
+  participantUserIds: [string, string];
+}): Promise<
+  | { ok: true; record: DirectMessageRelationshipRecord; restarted: boolean }
+  | {
+      ok: false;
+      code:
+        | "DM_THREAD_NOT_FOUND"
+        | "DM_REQUEST_NOT_RESTARTABLE"
+        | "DM_REQUEST_ALREADY_PENDING";
+      record: DirectMessageRelationshipRecord | null;
+    }
+> {
+  await ensureReady();
+  const roomId = norm(args.roomId);
+  const initiatorUserId = norm(args.initiatorUserId);
+  const storageChurchId = norm(args.storageChurchId);
+  const ordered = orderedParticipants(
+    args.participantUserIds[0],
+    args.participantUserIds[1]
+  );
+  if (!roomId || !initiatorUserId || !storageChurchId || !ordered) {
+    return { ok: false, code: "DM_THREAD_NOT_FOUND", record: null };
+  }
+  if (
+    ordered[0] !== initiatorUserId &&
+    ordered[1] !== initiatorUserId
+  ) {
+    return { ok: false, code: "DM_THREAD_NOT_FOUND", record: null };
+  }
+
+  const now = Date.now();
+
+  if (!usePostgres()) {
+    let result:
+      | { ok: true; record: DirectMessageRelationshipRecord; restarted: boolean }
+      | {
+          ok: false;
+          code:
+            | "DM_THREAD_NOT_FOUND"
+            | "DM_REQUEST_NOT_RESTARTABLE"
+            | "DM_REQUEST_ALREADY_PENDING";
+          record: DirectMessageRelationshipRecord | null;
+        } = { ok: false, code: "DM_THREAD_NOT_FOUND", record: null };
+
+    await updateJsonFile<Record<string, DirectMessageRelationshipRecord>>(
+      DIRECT_MESSAGE_RELATIONSHIPS_STORE_KEY,
+      (current) => {
+        const store =
+          current && typeof current === "object" ? { ...current } : {};
+        const existing = store[roomId];
+        if (!existing) {
+          const record: DirectMessageRelationshipRecord = {
+            roomId,
+            storageChurchId,
+            participantA: ordered[0],
+            participantB: ordered[1],
+            requestStatus: "pending",
+            requestInitiatorUserId: initiatorUserId,
+            sameChurchAtCreation: false,
+            initiatorOutboundCount: 0,
+            acceptedAt: null,
+            declinedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          };
+          store[roomId] = record;
+          result = { ok: true, record, restarted: true };
+          return store;
+        }
+        if (existing.requestStatus === "accepted") {
+          result = {
+            ok: false,
+            code: "DM_REQUEST_NOT_RESTARTABLE",
+            record: existing,
+          };
+          return store;
+        }
+        if (existing.requestStatus === "pending") {
+          result = {
+            ok: false,
+            code: "DM_REQUEST_ALREADY_PENDING",
+            record: existing,
+          };
+          return store;
+        }
+        // declined | none → fresh invitation
+        const record: DirectMessageRelationshipRecord = {
+          ...existing,
+          storageChurchId: existing.storageChurchId || storageChurchId,
+          requestStatus: "pending",
+          requestInitiatorUserId: initiatorUserId,
+          initiatorOutboundCount: 0,
+          acceptedAt: null,
+          declinedAt: null,
+          updatedAt: now,
+        };
+        store[roomId] = record;
+        result = { ok: true, record, restarted: true };
+        return store;
+      },
+      {}
+    );
+    return result;
+  }
+
+  const sql = getSql();
+  const inserted = await sql`
+    INSERT INTO kristo_direct_message_relationships (
+      room_id,
+      storage_church_id,
+      participant_a,
+      participant_b,
+      request_status,
+      request_initiator_user_id,
+      same_church_at_creation,
+      initiator_outbound_count,
+      accepted_at,
+      declined_at,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      ${roomId},
+      ${storageChurchId},
+      ${ordered[0]},
+      ${ordered[1]},
+      'pending',
+      ${initiatorUserId},
+      FALSE,
+      0,
+      NULL,
+      NULL,
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (room_id) DO UPDATE
+    SET
+      request_status = 'pending',
+      request_initiator_user_id = ${initiatorUserId},
+      initiator_outbound_count = 0,
+      accepted_at = NULL,
+      declined_at = NULL,
+      updated_at = NOW()
+    WHERE kristo_direct_message_relationships.request_status IN ('declined', 'none')
+    RETURNING *
+  `;
+  const row = (inserted as any[])[0];
+  if (row) {
+    return { ok: true, record: rowToRecord(row), restarted: true };
+  }
+
+  const existing = await getDirectMessageRelationshipByRoomId(roomId);
+  if (!existing) {
+    return { ok: false, code: "DM_THREAD_NOT_FOUND", record: null };
+  }
+  if (existing.requestStatus === "pending") {
+    return {
+      ok: false,
+      code: "DM_REQUEST_ALREADY_PENDING",
+      record: existing,
+    };
+  }
+  return {
+    ok: false,
+    code: "DM_REQUEST_NOT_RESTARTABLE",
+    record: existing,
+  };
+}
+
+/** After Unblock: relationship returns to none so the next opener becomes initiator. */
+export async function resetDirectMessageRelationshipToNone(
+  roomId: string
+): Promise<DirectMessageRelationshipRecord | null> {
+  await ensureReady();
+  const rid = norm(roomId);
+  if (!rid) return null;
+  const now = Date.now();
+
+  if (!usePostgres()) {
+    let record: DirectMessageRelationshipRecord | null = null;
+    await updateJsonFile<Record<string, DirectMessageRelationshipRecord>>(
+      DIRECT_MESSAGE_RELATIONSHIPS_STORE_KEY,
+      (current) => {
+        const store =
+          current && typeof current === "object" ? { ...current } : {};
+        const existing = store[rid];
+        if (!existing) return store;
+        record = {
+          ...existing,
+          requestStatus: "none",
+          requestInitiatorUserId: "",
+          initiatorOutboundCount: 0,
+          acceptedAt: null,
+          declinedAt: null,
+          updatedAt: now,
+        };
+        store[rid] = record;
+        return store;
+      },
+      {}
+    );
+    return record;
+  }
+
+  const sql = getSql();
+  const rows = await sql`
+    UPDATE kristo_direct_message_relationships
+    SET
+      request_status = 'none',
+      request_initiator_user_id = '',
+      initiator_outbound_count = 0,
+      accepted_at = NULL,
+      declined_at = NULL,
+      updated_at = NOW()
+    WHERE room_id = ${rid}
+    RETURNING *
+  `;
+  const row = (rows as any[])[0];
+  return row ? rowToRecord(row) : null;
 }
 
 export async function updateDirectMessageRelationshipStatus(args: {

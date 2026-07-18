@@ -517,7 +517,8 @@ export async function PATCH(req: NextRequest) {
           | "delete"
           | "restore"
           | "accept"
-          | "decline",
+          | "decline"
+          | "restart_request",
       });
 
     if (!settings) {
@@ -528,10 +529,14 @@ export async function PATCH(req: NextRequest) {
           ok: false,
           error: receiverOnly
             ? "Only the recipient can accept or decline this message request."
+            : action === "restart_request"
+              ? "Could not start a new message request."
             : "Could not update conversation.",
           ...(receiverOnly
             ? { code: "DM_REQUEST_RECEIVER_ONLY" }
-            : {}),
+            : action === "restart_request"
+              ? { code: "DM_REQUEST_NOT_RESTARTABLE" }
+              : {}),
         },
         { status: receiverOnly ? 403 : 400 }
       );
