@@ -340,12 +340,32 @@ export async function PATCH(req: NextRequest) {
         ""
       ).trim();
 
+    if (!reportedUserId) {
+      console.error(
+        "KRISTO_DM_SAFETY_REPORT_TARGET_UNRESOLVED",
+        {
+          roomId,
+          viewerUserId,
+          churchId,
+        }
+      );
+
+      return json(
+        {
+          ok: false,
+          error:
+            "The reported account could not be identified.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
     const reportedProfile =
-      reportedUserId
-        ? await getProfile(
-            reportedUserId
-          )
-        : null;
+      await getProfile(
+        reportedUserId
+      );
 
     const safetyReport =
       await dbCreateSafetyReport({

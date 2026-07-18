@@ -613,8 +613,73 @@ async function hydrateSafetyCaseReport(
   const liveComment: any =
     comment as any;
 
+  /*
+   * Older direct-message reports may not contain
+   * reportedUserId/targetOwnerUserId. Recover the
+   * reported peer from the durable DM room identity.
+   */
+  console.log(
+    "KRISTO_DM_LEGACY_REPORT_IDENTITY_INPUT",
+    {
+      reportId:
+        report?.id || null,
+      sourceType:
+        report?.sourceType || null,
+      sourceId:
+        report?.sourceId || null,
+      sourceRoomId:
+        report?.sourceRoomId || null,
+      sourceMessageId:
+        report?.sourceMessageId || null,
+      targetId:
+        report?.targetId || null,
+      reporterUserId:
+        report?.reporterUserId || null,
+      reportedUserId:
+        report?.reportedUserId || null,
+      targetOwnerUserId:
+        report?.targetOwnerUserId || null,
+    }
+  );
+
+  const directMessageRoomId =
+    report?.sourceType ===
+    "direct_message"
+      ? firstText(
+          report?.sourceRoomId,
+          report?.sourceId
+        )
+      : "";
+
+  const directMessageParticipants =
+    directMessageRoomId.startsWith(
+      "dm:"
+    )
+      ? directMessageRoomId
+          .slice(3)
+          .split("::")
+          .map((value: unknown) =>
+            String(value || "").trim()
+          )
+          .filter(Boolean)
+      : [];
+
+  const directMessageOwnerUserId =
+    directMessageParticipants.length === 2
+      ? (
+          directMessageParticipants.find(
+            (userId: string) =>
+              userId !==
+              firstText(
+                report?.reporterUserId
+              )
+          ) || ""
+        )
+      : "";
+
   const liveOwnerUserId =
     firstText(
+      directMessageOwnerUserId,
       liveComment?.authorUserId,
       liveComment?.authorId,
       liveComment?.userId,

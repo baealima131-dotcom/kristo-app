@@ -304,6 +304,26 @@ SafetySupervisorReportDetailsScreen() {
           result.report
         );
 
+        console.log(
+          "KRISTO_SAFETY_REPORT_DEBUG",
+          {
+            reportId:
+              result.report.id,
+            sourceType:
+              result.report.sourceType,
+            targetType:
+              result.report.targetType,
+            targetOwnerUserId:
+              result.report.targetOwnerUserId,
+            targetOwnerKristoId:
+              result.report.targetOwnerKristoId,
+            reportedUserId:
+              result.report.reportedUserId,
+            reportedKristoId:
+              result.report.reportedKristoId,
+          }
+        );
+
         setAgents(
           result.agents
         );
