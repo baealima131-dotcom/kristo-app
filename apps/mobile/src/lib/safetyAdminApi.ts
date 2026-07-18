@@ -501,6 +501,21 @@ export type SafetyCaseIntelligence = {
     };
     limitations?: string[];
   } | null;
+  evidenceIntelligence?: {
+    schemaVersion?: string;
+    provider?: string;
+    providerVersion?: string;
+    analyzedAt?: string;
+    ocrConfidence?: number | null;
+    imageClassificationConfidence?: number | null;
+    videoClassificationConfidence?: number | null;
+    manipulationDetectionConfidence?: number | null;
+    duplicateEvidenceConfidence?: number | null;
+    metadataConsistencyConfidence?: number | null;
+    overallEvidenceConfidence?: number | null;
+    machineVerified?: boolean;
+    limitations?: string[];
+  } | null;
 };
 
 export type SafetyReportSummary = {

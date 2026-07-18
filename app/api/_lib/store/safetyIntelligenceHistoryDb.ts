@@ -239,6 +239,51 @@ export async function ensureSafetyIntelligenceEventsSchema() {
     ADD COLUMN IF NOT EXISTS evidence_url_hash TEXT
   `;
 
+  /*
+   * Phase 2B — Evidence Intelligence + Privacy-gated signals (reserved).
+   * All nullable, no backfill, no synthetic values. NO code path fills the
+   * device/IP/geo columns; capture stays disabled until privacy review.
+   *   evidence_classifier_json  -> normalized, allowlisted classifier contract
+   *   reporter_device_hash      -> reserved (never captured in Phase 2A/2B)
+   *   reporter_ip_hash          -> reserved (never captured)
+   *   reporter_geo_coarse       -> reserved (never captured)
+   *   privacy_capture_status    -> defaults to 'not_collected'
+   *   *_policy_version          -> reserved policy tags
+   */
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS evidence_classifier_json TEXT
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS reporter_device_hash TEXT
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS reporter_ip_hash TEXT
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS reporter_geo_coarse TEXT
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS privacy_capture_status TEXT
+      NOT NULL DEFAULT 'not_collected'
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS retention_policy_version TEXT
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS hashing_policy_version TEXT
+  `;
+  await sql`
+    ALTER TABLE kristo_safety_intelligence_events
+    ADD COLUMN IF NOT EXISTS consent_disclosure_version TEXT
+  `;
+
   // Supervisor reliability facts (Commit #2 reads this; index added now).
   await sql`
     CREATE INDEX IF NOT EXISTS idx_safety_intel_events_decider_decision

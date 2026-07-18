@@ -17,6 +17,9 @@ import {
   computeSafetyConfidenceCalibration,
 } from "@/app/api/_lib/safetyConfidenceCalibration";
 import {
+  emptyEvidenceClassifierResult,
+} from "@/app/api/_lib/safetyEvidenceIntelligence";
+import {
   applyTimelinesToCaseIntelligenceRaw,
   dbGetSafetyIntelligenceTimelines,
   dbRecordSafetyIntelligenceFromDecision,
@@ -5482,6 +5485,13 @@ export async function dbGetSafetyCaseIntelligence(input: {
       hasHistoricalOutcomeCoverage:
         reporterFinalizedCases > 0 || targetFinalizedCases > 0,
     });
+
+    /*
+     * Evidence Intelligence contract (Phase 2B). No classifier provider is
+     * connected, so this is the unverified all-null result. Calibration keeps
+     * seeing the evidence gate as false; recommendation logic is unchanged.
+     */
+    intelligence.evidenceIntelligence = emptyEvidenceClassifierResult();
 
     console.log("KRISTO_SAFETY_CASE_INTELLIGENCE_RESULT", {
       reportId: reportId || null,

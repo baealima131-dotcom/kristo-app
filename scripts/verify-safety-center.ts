@@ -2524,3 +2524,260 @@ describe("13. Analytics Aggregates (Phase 2A)", () => {
     assert.equal(mod.SAFETY_ANALYTICS_AGGREGATES_VERSION, "v1");
   });
 });
+
+describe("14. Evidence Intelligence + Privacy contracts (Phase 2B)", () => {
+  const evidenceModule = read(
+    "app/api/_lib/safetyEvidenceIntelligence.ts"
+  );
+  const historyDb = read(
+    "app/api/_lib/store/safetyIntelligenceHistoryDb.ts"
+  );
+  const engine = read("app/api/_lib/safetyCaseIntelligenceEngine.ts");
+  const reportDb = read("app/api/_lib/store/safetyReportDb.ts");
+
+  const EVID = "../app/api/_lib/safetyEvidenceIntelligence.ts";
+  const CALIB = "../app/api/_lib/safetyConfidenceCalibration.ts";
+
+  function validProvider(overrides: Record<string, unknown> = {}) {
+    return {
+      provider: "acme-vision",
+      providerVersion: "2.1.0",
+      analyzedAt: "2026-01-01T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("no provider => all null and machineVerified false", async () => {
+    const { emptyEvidenceClassifierResult, normalizeEvidenceClassifierResult } =
+      await import(EVID);
+    for (const r of [
+      emptyEvidenceClassifierResult(),
+      normalizeEvidenceClassifierResult(null),
+      normalizeEvidenceClassifierResult(undefined),
+    ]) {
+      assert.equal(r.machineVerified, false);
+      assert.equal(r.ocrConfidence, null);
+      assert.equal(r.overallEvidenceConfidence, null);
+      assert.ok(
+        r.limitations.includes("no_evidence_classifier_provider_connected")
+      );
+    }
+  });
+
+  it("blank provider/version is rejected", async () => {
+    const { normalizeEvidenceClassifierResult } = await import(EVID);
+    const r = normalizeEvidenceClassifierResult(
+      validProvider({ provider: "  ", providerVersion: "", ocrConfidence: 80 })
+    );
+    assert.equal(r.machineVerified, false);
+    assert.ok(r.limitations.includes("missing_provider"));
+    assert.ok(r.limitations.includes("missing_provider_version"));
+  });
+
+  it("invalid analyzedAt is rejected", async () => {
+    const { normalizeEvidenceClassifierResult } = await import(EVID);
+    const r = normalizeEvidenceClassifierResult(
+      validProvider({ analyzedAt: "not-a-date", ocrConfidence: 80 })
+    );
+    assert.equal(r.analyzedAt, "");
+    assert.equal(r.machineVerified, false);
+    assert.ok(r.limitations.includes("invalid_analyzed_at"));
+  });
+
+  it("confidence under 0 / over 100 handled safely (null, not fabricated)", async () => {
+    const { normalizeEvidenceClassifierResult } = await import(EVID);
+    const r = normalizeEvidenceClassifierResult(
+      validProvider({ ocrConfidence: -5, imageClassificationConfidence: 150 })
+    );
+    assert.equal(r.ocrConfidence, null);
+    assert.equal(r.imageClassificationConfidence, null);
+    assert.ok(r.limitations.includes("ocrConfidence_out_of_range"));
+    assert.ok(
+      r.limitations.includes("imageClassificationConfidence_out_of_range")
+    );
+  });
+
+  it("provider metadata alone does not verify evidence", async () => {
+    const { normalizeEvidenceClassifierResult } = await import(EVID);
+    const r = normalizeEvidenceClassifierResult(validProvider());
+    assert.equal(r.machineVerified, false);
+    assert.ok(r.limitations.includes("no_real_classifier_signal"));
+  });
+
+  it("one real signal + valid provider metadata can verify", async () => {
+    const { normalizeEvidenceClassifierResult } = await import(EVID);
+    const r = normalizeEvidenceClassifierResult(
+      validProvider({ imageClassificationConfidence: 92 })
+    );
+    assert.equal(r.machineVerified, true);
+    assert.equal(r.imageClassificationConfidence, 92);
+  });
+
+  it("overall confidence stays null unless provider supplies it (no averaging)", async () => {
+    const { normalizeEvidenceClassifierResult } = await import(EVID);
+    const noOverall = normalizeEvidenceClassifierResult(
+      validProvider({ ocrConfidence: 40, imageClassificationConfidence: 80 })
+    );
+    assert.equal(noOverall.overallEvidenceConfidence, null);
+
+    const withOverall = normalizeEvidenceClassifierResult(
+      validProvider({ ocrConfidence: 40, overallEvidenceConfidence: 55 })
+    );
+    assert.equal(withOverall.overallEvidenceConfidence, 55);
+  });
+
+  it("unknown/raw provider fields are stripped", async () => {
+    const { normalizeEvidenceClassifierResult } = await import(EVID);
+    const r: any = normalizeEvidenceClassifierResult(
+      validProvider({ ocrConfidence: 70, foo: "bar", debugTrace: [1, 2, 3] })
+    );
+    assert.equal("foo" in r, false);
+    assert.equal("debugTrace" in r, false);
+    assert.ok(r.limitations.includes("unknown_provider_fields_stripped"));
+  });
+
+  it("secrets/tokens are rejected and never persisted", async () => {
+    const {
+      normalizeEvidenceClassifierResult,
+      serializeEvidenceClassifierForPersist,
+    } = await import(EVID);
+    const r: any = normalizeEvidenceClassifierResult(
+      validProvider({
+        ocrConfidence: 70,
+        apiToken: "sk-secret-123",
+        authorization: "Bearer abc",
+      })
+    );
+    assert.equal(r.machineVerified, false, "secret payload rejected");
+    assert.ok(r.limitations.includes("raw_provider_payload_rejected"));
+    assert.equal("apiToken" in r, false);
+    const json = serializeEvidenceClassifierForPersist(r);
+    assert.equal(json.includes("sk-secret-123"), false, "secret not persisted");
+    assert.equal(json.includes("Bearer"), false);
+  });
+
+  it("schemaVersion is always present", async () => {
+    const { emptyEvidenceClassifierResult, normalizeEvidenceClassifierResult } =
+      await import(EVID);
+    assert.equal(
+      emptyEvidenceClassifierResult().schemaVersion,
+      "v1"
+    );
+    assert.equal(
+      normalizeEvidenceClassifierResult(
+        validProvider({ ocrConfidence: 50 })
+      ).schemaVersion,
+      "v1"
+    );
+  });
+
+  it("persisted JSON contains only allowlisted keys", async () => {
+    const {
+      normalizeEvidenceClassifierResult,
+      serializeEvidenceClassifierForPersist,
+      SAFETY_EVIDENCE_ALLOWED_KEYS,
+    } = await import(EVID);
+    const r = normalizeEvidenceClassifierResult(
+      validProvider({ ocrConfidence: 60 })
+    );
+    const parsed = JSON.parse(serializeEvidenceClassifierForPersist(r));
+    for (const key of Object.keys(parsed)) {
+      assert.ok(
+        SAFETY_EVIDENCE_ALLOWED_KEYS.has(key),
+        `unexpected persisted key: ${key}`
+      );
+    }
+  });
+
+  it("privacy capture status defaults to not_collected; device/IP/geo null", async () => {
+    const { emptyPrivacyGatedSignals } = await import(EVID);
+    const p = emptyPrivacyGatedSignals();
+    assert.equal(p.captureStatus, "not_collected");
+    assert.equal(p.reporterDeviceHash, null);
+    assert.equal(p.reporterIpHash, null);
+    assert.equal(p.reporterGeoCoarse, null);
+    assert.equal(p.retentionPolicyVersion, null);
+    assert.equal(p.hashingPolicyVersion, null);
+    assert.equal(p.consentDisclosureVersion, null);
+  });
+
+  it("no header/device/location/network capture code exists", () => {
+    assertNotIncludes(evidenceModule, "@neondatabase/serverless", "no neon");
+    assertNotIncludes(evidenceModule, "getDatabaseUrl", "no db url");
+    assertNotIncludes(evidenceModule, "x-forwarded-for", "no ip capture");
+    assertNotIncludes(evidenceModule, "req.headers", "no header capture");
+    assertNotIncludes(evidenceModule, "request.headers", "no header capture");
+    assertNotIncludes(evidenceModule, "deviceId", "no device capture");
+    assertNotIncludes(evidenceModule, "navigator", "no navigator");
+    assertNotIncludes(evidenceModule, "userAgent", "no user agent");
+    assertNotIncludes(evidenceModule, "geolocation", "no geolocation");
+    assertNotIncludes(evidenceModule, "latitude", "no location");
+    assertNotIncludes(evidenceModule, "fetch(", "no network");
+  });
+
+  it("nullable evidence + privacy DB columns exist (no destructive migration)", () => {
+    for (const col of [
+      "evidence_classifier_json",
+      "reporter_device_hash",
+      "reporter_ip_hash",
+      "reporter_geo_coarse",
+      "privacy_capture_status",
+      "retention_policy_version",
+      "hashing_policy_version",
+      "consent_disclosure_version",
+    ]) {
+      assertIncludes(
+        historyDb,
+        `ADD COLUMN IF NOT EXISTS ${col}`,
+        `nullable column ${col}`
+      );
+    }
+    assertIncludes(
+      historyDb,
+      "'not_collected'",
+      "privacy capture default"
+    );
+    // No code path fills device/IP/geo columns.
+    assertNotIncludes(historyDb, "reporter_device_hash =", "no device write");
+    assertNotIncludes(historyDb, "reporter_ip_hash =", "no ip write");
+    assertNotIncludes(historyDb, "reporter_geo_coarse =", "no geo write");
+  });
+
+  it("calibration still returns insufficient_data without a provider", async () => {
+    const { computeSafetyConfidenceCalibration } = await import(CALIB);
+    const { emptyEvidenceClassifierResult } = await import(EVID);
+    const evidence = emptyEvidenceClassifierResult();
+    const r = computeSafetyConfidenceCalibration({
+      reporterFinalizedCases: 4,
+      targetFinalizedCases: 4,
+      uniqueReporterCount: 3,
+      evidenceMachineVerified: evidence.machineVerified,
+      evidenceProvider: evidence.provider || null,
+      evidenceProviderVersion: evidence.providerVersion || null,
+      evidenceAnalyzedAt: evidence.analyzedAt || null,
+      hasOriginalEvidence: true,
+      hasSnapshotEvidence: true,
+      hasHistoricalOutcomeCoverage: true,
+    });
+    assert.equal(r.confidenceLevel, "insufficient_data");
+    assert.equal(r.confidence, null);
+  });
+
+  it("integrates as additive block; recommendation unchanged", () => {
+    assertIncludes(
+      engine,
+      "evidenceIntelligence?: SafetyEvidenceClassifierResult",
+      "evidence field on contract"
+    );
+    assertIncludes(
+      reportDb,
+      "intelligence.evidenceIntelligence = emptyEvidenceClassifierResult()",
+      "loader attaches evidence contract"
+    );
+    assertIncludes(
+      engine,
+      "requiresHumanReview: true",
+      "human review unchanged"
+    );
+  });
+});

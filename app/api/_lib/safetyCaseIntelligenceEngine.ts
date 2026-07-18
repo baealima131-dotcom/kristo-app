@@ -9,9 +9,11 @@
 
 import type { SafetyIntelligenceTimelines } from "./safetyIntelligenceHistory.ts";
 import type { SafetyConfidenceCalibration } from "./safetyConfidenceCalibration.ts";
+import type { SafetyEvidenceClassifierResult } from "./safetyEvidenceIntelligence.ts";
 
 export type { SafetyIntelligenceTimelines };
 export type { SafetyConfidenceCalibration };
+export type { SafetyEvidenceClassifierResult };
 
 function emptySafetyIntelligenceTimelines(): SafetyIntelligenceTimelines {
   return {
@@ -152,6 +154,12 @@ export type SafetyCaseIntelligence = {
   timelines?: SafetyIntelligenceTimelines;
   /** Honest confidence calibration facts (API/data only; recommendation unchanged). */
   calibration?: SafetyConfidenceCalibration;
+  /**
+   * Evidence classifier contract (Phase 2B). No provider is connected yet, so
+   * this is an unverified, all-null result. API/data only; does not influence
+   * the recommendation.
+   */
+  evidenceIntelligence?: SafetyEvidenceClassifierResult;
 };
 
 /**
