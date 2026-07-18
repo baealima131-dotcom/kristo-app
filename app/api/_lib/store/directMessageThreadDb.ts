@@ -52,25 +52,27 @@ async function ensureReady() {
 
 async function readDocumentWithVersion<T>(
   fallback: T
-): Promise<{ data: T; updatedAt: string | null; exists: boolean }> {
+): Promise<{ data: T; version: string | null; exists: boolean }> {
   const sql = getSql();
+  // Use epoch-micros as the CAS token. Avoid timestamptz string round-trips
+  // (JS Date/toISOString truncates microseconds and makes CAS always miss).
   const rows = await sql`
-    SELECT data, updated_at
+    SELECT
+      data,
+      (EXTRACT(EPOCH FROM updated_at) * 1000000)::bigint AS version
     FROM kristo_room_message_store
     WHERE key = ${DIRECT_MESSAGE_THREADS_STORE_KEY}
     LIMIT 1
   `;
-  const row = (rows as { data: T; updated_at: string | Date | null }[])[0];
+  const row = (rows as { data: T; version: string | number | bigint | null }[])[0];
   if (!row || row.data == null) {
-    return { data: fallback, updatedAt: null, exists: false };
+    return { data: fallback, version: null, exists: false };
   }
-  const updatedAt =
-    row.updated_at == null
+  const version =
+    row.version == null || row.version === ""
       ? null
-      : typeof row.updated_at === "string"
-        ? row.updated_at
-        : new Date(row.updated_at).toISOString();
-  return { data: row.data as T, updatedAt, exists: true };
+      : String(row.version);
+  return { data: row.data as T, version, exists: true };
 }
 
 async function readDocument<T>(fallback: T): Promise<T> {
@@ -90,11 +92,11 @@ async function writeDocument<T>(data: T): Promise<void> {
 
 async function compareAndSwapDocument<T>(
   next: T,
-  expectedUpdatedAt: string | null,
+  expectedVersion: string | null,
   exists: boolean
 ): Promise<boolean> {
   const sql = getSql();
-  if (!exists || !expectedUpdatedAt) {
+  if (!exists || !expectedVersion) {
     const inserted = await sql`
       INSERT INTO kristo_room_message_store (key, data, updated_at)
       VALUES (${DIRECT_MESSAGE_THREADS_STORE_KEY}, ${next as any}, NOW())
@@ -108,7 +110,7 @@ async function compareAndSwapDocument<T>(
     UPDATE kristo_room_message_store
     SET data = ${next as any}, updated_at = NOW()
     WHERE key = ${DIRECT_MESSAGE_THREADS_STORE_KEY}
-      AND updated_at = ${expectedUpdatedAt}::timestamptz
+      AND (EXTRACT(EPOCH FROM updated_at) * 1000000)::bigint = ${expectedVersion}::bigint
     RETURNING key
   `;
   return Array.isArray(updated) && updated.length > 0;
@@ -175,7 +177,7 @@ export async function updateDirectMessageThreadStoreWithResult<T, R>(
     const out = mutator(snap.data);
     const swapped = await compareAndSwapDocument(
       out.next,
-      snap.updatedAt,
+      snap.version,
       snap.exists
     );
     if (swapped) return out.result;

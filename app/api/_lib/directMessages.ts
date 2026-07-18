@@ -224,8 +224,21 @@ async function readThreadStore(): Promise<Record<string, DirectMessageThreadReco
   return data && typeof data === "object" ? data : {};
 }
 
-async function writeThreadStore(data: Record<string, DirectMessageThreadRecord>) {
-  await updateDirectMessageThreadStore(() => data, {});
+/** CAS-safe single-key upsert — never blind-replace the whole document. */
+async function upsertThreadRecord(
+  key: string,
+  record: DirectMessageThreadRecord
+) {
+  const storeKey = String(key || "").trim();
+  if (!storeKey) return;
+  await updateDirectMessageThreadStore((current) => {
+    const base =
+      current && typeof current === "object" && !Array.isArray(current)
+        ? { ...(current as Record<string, DirectMessageThreadRecord>) }
+        : {};
+    base[storeKey] = record;
+    return base;
+  }, {});
 }
 
 function formatTimestampLabel(ms: number) {
@@ -389,8 +402,7 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
       now
     );
     existingRecord.churchId = churchId;
-    store[existingEntry.key] = existingRecord;
-    await writeThreadStore(store);
+    await upsertThreadRecord(existingEntry.key, existingRecord);
     console.log("KRISTO_DM_THREAD_FOUND", {
       roomId: canonicalRoomId,
       churchId,
@@ -408,7 +420,7 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
     ).trim();
     if (!churchId) return null;
     const key = threadStoreKey(churchId, canonicalRoomId);
-    store[key] = {
+    await upsertThreadRecord(key, {
       roomId: canonicalRoomId,
       churchId,
       participantUserIds: participants,
@@ -417,8 +429,7 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
       readAtByUserId: {},
       createdByUserId: viewerUserId,
       sameChurchAtCreation: existingRel.sameChurchAtCreation,
-    };
-    await writeThreadStore(store);
+    });
     return buildThreadView({ roomId: canonicalRoomId, churchId, peerUserId });
   }
 
@@ -461,8 +472,7 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
     createdByUserId: viewerUserId,
     sameChurchAtCreation: sameChurchNow,
   };
-  store[key] = record;
-  await writeThreadStore(store);
+  await upsertThreadRecord(key, record);
 
   if (intent === "create") {
     console.log("KRISTO_DM_THREAD_CREATED", {
@@ -601,8 +611,7 @@ export async function markDirectMessageThreadRead(args: {
     [userId]: Date.now(),
   };
   record.updatedAt = Date.now();
-  store[key] = record;
-  await writeThreadStore(store);
+  await upsertThreadRecord(key, record);
   return true;
 }
 
@@ -1182,8 +1191,7 @@ export async function touchDirectMessageThread(args: {
     ...(record.readAtByUserId || {}),
     [senderUserId]: now,
   };
-  store[key] = record;
-  await writeThreadStore(store);
+  await upsertThreadRecord(key, record);
 }
 
 async function unreadCountForThread(args: {
