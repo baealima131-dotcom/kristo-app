@@ -39,6 +39,11 @@ import {
   type SafetyOutcomeAppealOutcome,
 } from "@/app/api/_lib/safetyOutcomeLearning";
 import {
+  supervisorReliabilityFromAggregate,
+  emptySupervisorReliability,
+  type SafetySupervisorReliability,
+} from "@/app/api/_lib/safetySupervisorReliability";
+import {
   getDatabaseUrl,
 } from "@/app/api/_lib/store/authDb";
 
@@ -1369,6 +1374,111 @@ export async function dbGetSafetyIntelligenceTimelines(input: {
     }),
   ]);
   return { target, reporter };
+}
+
+export type { SafetySupervisorReliability };
+
+/**
+ * Supervisor Reliability FACTS from the intelligence ledger.
+ *
+ * Single indexed aggregation query (uses idx_safety_intel_events_decider_decision)
+ * over finalized decision rows for one supervisor — no N+1. A DISTINCT ON
+ * subquery mirrors the unique index so duplicate rows cannot inflate facts.
+ * reliabilityScore / agreement / FP / FN stay null by contract.
+ */
+export async function dbGetSafetySupervisorReliability(input: {
+  supervisorUserId?: string;
+}): Promise<SafetySupervisorReliability> {
+  await ensureSafetyIntelligenceHistoryReady();
+  const sql = getSql();
+
+  const supervisorUserId = safeText(input.supervisorUserId);
+  if (!supervisorUserId) {
+    return emptySupervisorReliability("", ["missing_supervisor_identifier"]);
+  }
+
+  type AggRow = {
+    finalized: number | string | null;
+    warning: number | string | null;
+    removal: number | string | null;
+    restriction: number | string | null;
+    suspension: number | string | null;
+    permanent_ban: number | string | null;
+    no_violation: number | string | null;
+    avg_resolution: number | string | null;
+    appeal: number | string | null;
+    reversed: number | string | null;
+  };
+
+  let agg: AggRow | undefined;
+  try {
+    agg = asRowArray<AggRow>(
+      await sql`
+        SELECT
+          COUNT(*)::int AS finalized,
+          COUNT(*) FILTER (WHERE outcome_type = 'warning')::int AS warning,
+          COUNT(*) FILTER (WHERE outcome_type = 'remove_content')::int AS removal,
+          COUNT(*) FILTER (WHERE outcome_type = 'restrict_account')::int AS restriction,
+          COUNT(*) FILTER (WHERE outcome_type = 'suspend_account')::int AS suspension,
+          COUNT(*) FILTER (WHERE outcome_type = 'permanent_ban')::int AS permanent_ban,
+          COUNT(*) FILTER (WHERE outcome_type = 'no_violation')::int AS no_violation,
+          AVG(resolution_minutes) FILTER (
+            WHERE resolution_minutes IS NOT NULL
+          ) AS avg_resolution,
+          COUNT(*) FILTER (WHERE appeal_filed = TRUE)::int AS appeal,
+          COUNT(*) FILTER (
+            WHERE LOWER(COALESCE(appeal_outcome, '')) IN ('upheld', 'modified')
+          )::int AS reversed
+        FROM (
+          SELECT DISTINCT ON (report_id, event_kind, outcome_type)
+            report_id,
+            event_kind,
+            outcome_type,
+            resolution_minutes,
+            appeal_filed,
+            appeal_outcome
+          FROM kristo_safety_intelligence_events
+          WHERE decided_by_user_id = ${supervisorUserId}
+            AND event_kind = 'decision'
+            AND outcome_type IN (
+              'warning',
+              'remove_content',
+              'restrict_account',
+              'suspend_account',
+              'permanent_ban',
+              'no_violation'
+            )
+          ORDER BY report_id, event_kind, outcome_type, decision_at DESC
+        ) d
+      `
+    )[0];
+  } catch (error: any) {
+    console.log("KRISTO_SAFETY_SUPERVISOR_RELIABILITY_FAILED", {
+      supervisorUserId,
+      error: safeText(error?.message || "reliability_query_failed"),
+    });
+    return emptySupervisorReliability(supervisorUserId, [
+      "reliability_query_failed",
+    ]);
+  }
+
+  const avgRaw = agg?.avg_resolution;
+  return supervisorReliabilityFromAggregate({
+    supervisorUserId,
+    finalizedDecisionCount: nonNegInt(agg?.finalized),
+    warningCount: nonNegInt(agg?.warning),
+    removalCount: nonNegInt(agg?.removal),
+    restrictionCount: nonNegInt(agg?.restriction),
+    suspensionCount: nonNegInt(agg?.suspension),
+    permanentBanCount: nonNegInt(agg?.permanent_ban),
+    noViolationCount: nonNegInt(agg?.no_violation),
+    averageResolutionMinutes:
+      avgRaw == null || !Number.isFinite(Number(avgRaw))
+        ? null
+        : Number(avgRaw),
+    appealCount: nonNegInt(agg?.appeal),
+    reversedDecisionCount: nonNegInt(agg?.reversed),
+  });
 }
 
 /** Prefer ledger timeline facts when they exist; never invent values. */

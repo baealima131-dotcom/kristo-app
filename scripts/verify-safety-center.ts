@@ -1433,3 +1433,212 @@ describe("9. Outcome Learning metadata (Phase 2A)", () => {
     );
   });
 });
+
+describe("10. Supervisor Reliability facts (Phase 2A)", () => {
+  const historyDb = read(
+    "app/api/_lib/store/safetyIntelligenceHistoryDb.ts"
+  );
+  const reliabilityModule = read(
+    "app/api/_lib/safetySupervisorReliability.ts"
+  );
+
+  function row(overrides: Record<string, unknown> = {}) {
+    return {
+      decidedByUserId: "sup_a",
+      eventKind: "decision",
+      outcomeType: "warning",
+      decisionAt: "2026-01-01T00:00:00.000Z",
+      resolutionMinutes: 30,
+      reportId: "rep_" + Math.random().toString(36).slice(2),
+      appealFiled: false,
+      appealOutcome: null,
+      ...overrides,
+    };
+  }
+
+  it("supervisor with no finalized decisions → insufficient_data, all zero", async () => {
+    const { computeSupervisorReliabilityFacts } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const r = computeSupervisorReliabilityFacts("sup_a", []);
+    assert.equal(r.status, "insufficient_data");
+    assert.equal(r.finalizedDecisionCount, 0);
+    assert.equal(r.warningCount, 0);
+    assert.equal(r.averageResolutionMinutes, null);
+    assert.equal(r.reliabilityScore, null);
+    assert.ok(r.limitations.includes("no_finalized_decisions_for_supervisor"));
+  });
+
+  it("finalized outcomes are counted correctly", async () => {
+    const { computeSupervisorReliabilityFacts } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const r = computeSupervisorReliabilityFacts("sup_a", [
+      row({ outcomeType: "warning" }),
+      row({ outcomeType: "remove_content" }),
+      row({ outcomeType: "restrict_account" }),
+      row({ outcomeType: "suspend_account" }),
+      row({ outcomeType: "permanent_ban" }),
+      row({ outcomeType: "no_violation" }),
+    ]);
+    assert.equal(r.status, "ready");
+    assert.equal(r.finalizedDecisionCount, 6);
+    assert.equal(r.warningCount, 1);
+    assert.equal(r.removalCount, 1);
+    assert.equal(r.restrictionCount, 1);
+    assert.equal(r.suspensionCount, 1);
+    assert.equal(r.permanentBanCount, 1);
+    assert.equal(r.noViolationCount, 1);
+  });
+
+  it("open / escalated / non-decision rows are excluded", async () => {
+    const { computeSupervisorReliabilityFacts } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const r = computeSupervisorReliabilityFacts("sup_a", [
+      row({ outcomeType: "warning" }),
+      row({ outcomeType: "escalate" }),
+      row({ outcomeType: "open" }),
+      row({ eventKind: "enforcement", outcomeType: "warning" }),
+    ]);
+    assert.equal(r.finalizedDecisionCount, 1);
+    assert.equal(r.warningCount, 1);
+  });
+
+  it("averageResolutionMinutes ignores null values only", async () => {
+    const { computeSupervisorReliabilityFacts } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const r = computeSupervisorReliabilityFacts("sup_a", [
+      row({ resolutionMinutes: 30 }),
+      row({ resolutionMinutes: 90 }),
+      row({ resolutionMinutes: null }),
+    ]);
+    assert.equal(r.finalizedDecisionCount, 3);
+    assert.equal(r.averageResolutionMinutes, 60);
+  });
+
+  it("appeal + reversal facts remain zero without appeal events", async () => {
+    const { computeSupervisorReliabilityFacts } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const r = computeSupervisorReliabilityFacts("sup_a", [
+      row({ outcomeType: "warning" }),
+      row({ outcomeType: "suspend_account" }),
+    ]);
+    assert.equal(r.appealCount, 0);
+    assert.equal(r.reversedDecisionCount, 0);
+  });
+
+  it("reliabilityScore + FP/FN/agreement stay null (no synthetic baselines)", async () => {
+    const { computeSupervisorReliabilityFacts } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const many = Array.from({ length: 40 }, () =>
+      row({ outcomeType: "suspend_account", resolutionMinutes: 10 })
+    );
+    const r = computeSupervisorReliabilityFacts("sup_a", many);
+    assert.equal(r.status, "ready");
+    assert.equal(r.finalizedDecisionCount, 40);
+    assert.equal(r.reliabilityScore, null);
+    assert.equal(r.agreementCount, null);
+    assert.equal(r.falsePositiveCount, null);
+    assert.equal(r.falseNegativeCount, null);
+    assert.ok(
+      r.limitations.includes(
+        "reliability_score_requires_appeal_or_reversal_ground_truth"
+      )
+    );
+  });
+
+  it("duplicate ledger rows cannot inflate facts", async () => {
+    const { computeSupervisorReliabilityFacts } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const dup = {
+      decidedByUserId: "sup_a",
+      eventKind: "decision",
+      outcomeType: "warning",
+      decisionAt: "2026-01-01T00:00:00.000Z",
+      resolutionMinutes: 30,
+      reportId: "rep_same",
+      appealFiled: false,
+      appealOutcome: null,
+    };
+    const r = computeSupervisorReliabilityFacts("sup_a", [
+      { ...dup },
+      { ...dup },
+      { ...dup },
+    ]);
+    assert.equal(r.finalizedDecisionCount, 1);
+    assert.equal(r.warningCount, 1);
+  });
+
+  it("supervisor A data does not leak into supervisor B", async () => {
+    const { computeSupervisorReliabilityFacts } = await import(
+      "../app/api/_lib/safetySupervisorReliability.ts"
+    );
+    const rows = [
+      row({ decidedByUserId: "sup_a", outcomeType: "warning" }),
+      row({ decidedByUserId: "sup_a", outcomeType: "suspend_account" }),
+      row({ decidedByUserId: "sup_b", outcomeType: "permanent_ban" }),
+    ];
+    const a = computeSupervisorReliabilityFacts("sup_a", rows);
+    const b = computeSupervisorReliabilityFacts("sup_b", rows);
+    assert.equal(a.finalizedDecisionCount, 2);
+    assert.equal(a.permanentBanCount, 0);
+    assert.equal(b.finalizedDecisionCount, 1);
+    assert.equal(b.permanentBanCount, 1);
+  });
+
+  it("malformed / null decider IDs are excluded", async () => {
+    const {
+      computeSupervisorReliabilityFacts,
+      emptySupervisorReliability,
+    } = await import("../app/api/_lib/safetySupervisorReliability.ts");
+    const r = computeSupervisorReliabilityFacts("sup_a", [
+      row({ decidedByUserId: null, outcomeType: "warning" }),
+      row({ decidedByUserId: "", outcomeType: "warning" }),
+      row({ decidedByUserId: "   ", outcomeType: "warning" }),
+      row({ decidedByUserId: "sup_a", outcomeType: "warning" }),
+    ]);
+    assert.equal(r.finalizedDecisionCount, 1);
+
+    // Missing target id yields insufficient_data with a clear limitation.
+    const none = emptySupervisorReliability("", ["missing_supervisor_identifier"]);
+    assert.equal(none.status, "insufficient_data");
+    assert.ok(none.limitations.includes("missing_supervisor_identifier"));
+    const blank = computeSupervisorReliabilityFacts("", [
+      row({ outcomeType: "warning" }),
+    ]);
+    assert.equal(blank.status, "insufficient_data");
+    assert.ok(blank.limitations.includes("missing_supervisor_identifier"));
+  });
+
+  it("module has no DB / provider / capture imports", () => {
+    assertNotIncludes(reliabilityModule, "@neondatabase/serverless", "no neon");
+    assertNotIncludes(reliabilityModule, "getDatabaseUrl", "no db url");
+    // Severity/volume must never feed a reliability score.
+    assertNotIncludes(reliabilityModule, "safetyOutcomeLearning", "no severity import");
+    assertNotIncludes(reliabilityModule, "computeSeverityScore", "severity not used");
+  });
+
+  it("store loader uses one indexed aggregation query (no N+1)", () => {
+    assertIncludes(
+      historyDb,
+      "export async function dbGetSafetySupervisorReliability",
+      "reliability loader"
+    );
+    assertIncludes(
+      historyDb,
+      "supervisorReliabilityFromAggregate",
+      "loader uses shared contract builder"
+    );
+    // Single aggregation + DISTINCT ON dedupe mirroring the unique index.
+    assertIncludes(historyDb, "DISTINCT ON (report_id, event_kind, outcome_type)", "dedupe subquery");
+    assertIncludes(historyDb, "AVG(resolution_minutes) FILTER (", "avg ignores null");
+    assertIncludes(historyDb, "WHERE decided_by_user_id = ${supervisorUserId}", "scoped by decider");
+    // Reliability score is not computed in SQL either.
+    assertNotIncludes(historyDb, "reliabilityScore =", "no sql reliability score");
+  });
+});
