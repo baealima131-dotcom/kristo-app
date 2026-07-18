@@ -44,6 +44,11 @@ import {
   type SafetySupervisorReliability,
 } from "@/app/api/_lib/safetySupervisorReliability";
 import {
+  computeCrossCasePatternSignals,
+  type CrossCaseRow,
+  type SafetyCrossCasePatternSignal,
+} from "@/app/api/_lib/safetyCrossCaseGraph";
+import {
   getDatabaseUrl,
 } from "@/app/api/_lib/store/authDb";
 
@@ -1479,6 +1484,135 @@ export async function dbGetSafetySupervisorReliability(input: {
     appealCount: nonNegInt(agg?.appeal),
     reversedDecisionCount: nonNegInt(agg?.reversed),
   });
+}
+
+export type { SafetyCrossCasePatternSignal };
+
+/**
+ * Cross-Case Pattern Signals for one target scope.
+ *
+ * Two indexed, target-scoped queries (no N+1): all reports for the target
+ * (kristo_safety_reports — includes open reports for volume/burst) merged with
+ * finalized ledger facts (confirmed violations + evidence_url_hash) by report
+ * id. The pure engine groups per target, so nothing leaks across targets.
+ * All signal.confidence values are null; signals are leads, not proof.
+ */
+export async function dbGetSafetyCrossCaseSignals(input: {
+  targetType?: string;
+  targetId?: string;
+  targetOwnerUserId?: string;
+}): Promise<SafetyCrossCasePatternSignal[]> {
+  await ensureSafetyIntelligenceHistoryReady();
+  const sql = getSql();
+
+  const targetId = safeText(input.targetId);
+  const ownerUserId = safeText(input.targetOwnerUserId);
+  if (!targetId && !ownerUserId) return [];
+
+  type ReportRow = {
+    id: string;
+    reporter_user_id: string | null;
+    target_id: string | null;
+    target_owner_user_id: string | null;
+    reported_user_id: string | null;
+    church_id: string | null;
+    category: string | null;
+    source_type: string | null;
+    target_type: string | null;
+    created_at: string | null;
+    status: string | null;
+    decision_type: string | null;
+  };
+
+  type LedgerRow = {
+    report_id: string | null;
+    is_confirmed_violation: boolean | null;
+    evidence_url_hash: string | null;
+    decision_at: string | null;
+  };
+
+  let reports: ReportRow[] = [];
+  let ledger: LedgerRow[] = [];
+  try {
+    [reports, ledger] = await Promise.all([
+      (async () =>
+        asRowArray<ReportRow>(
+          await sql`
+            SELECT
+              id,
+              reporter_user_id,
+              target_id,
+              target_owner_user_id,
+              reported_user_id,
+              church_id,
+              category,
+              source_type,
+              target_type,
+              created_at::text,
+              status,
+              decision_type
+            FROM kristo_safety_reports
+            WHERE target_id = ${targetId || null}
+              OR target_owner_user_id = ${ownerUserId || null}
+              OR reported_user_id = ${ownerUserId || null}
+            ORDER BY created_at ASC NULLS LAST
+            LIMIT 2000
+          `
+        ))(),
+      (async () =>
+        asRowArray<LedgerRow>(
+          await sql`
+            SELECT
+              report_id,
+              is_confirmed_violation,
+              evidence_url_hash,
+              decision_at::text
+            FROM kristo_safety_intelligence_events
+            WHERE event_kind = 'decision'
+              AND (
+                target_id = ${targetId || null}
+                OR target_owner_user_id = ${ownerUserId || null}
+              )
+            LIMIT 2000
+          `
+        ))(),
+    ]);
+  } catch (error: any) {
+    console.log("KRISTO_SAFETY_CROSS_CASE_FAILED", {
+      targetId: targetId || null,
+      ownerUserId: ownerUserId || null,
+      error: safeText(error?.message || "cross_case_query_failed"),
+    });
+    return [];
+  }
+
+  const ledgerByReport = new Map<string, LedgerRow>();
+  for (const row of ledger) {
+    const key = safeText(row.report_id);
+    if (key) ledgerByReport.set(key, row);
+  }
+
+  const rows: CrossCaseRow[] = reports.map((r) => {
+    const led = ledgerByReport.get(safeText(r.id));
+    return {
+      reportId: r.id,
+      reporterUserId: r.reporter_user_id,
+      targetId: r.target_id,
+      targetOwnerUserId: r.target_owner_user_id || r.reported_user_id,
+      churchId: r.church_id,
+      category: r.category,
+      sourceType: r.source_type,
+      targetType: r.target_type,
+      createdAt: r.created_at,
+      decisionAt: led?.decision_at || null,
+      status: r.status,
+      outcomeType: led ? safeLower(r.decision_type) : null,
+      isConfirmedViolation: led?.is_confirmed_violation === true,
+      evidenceUrlHash: led?.evidence_url_hash || null,
+    };
+  });
+
+  return computeCrossCasePatternSignals(rows);
 }
 
 /** Prefer ledger timeline facts when they exist; never invent values. */

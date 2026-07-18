@@ -1642,3 +1642,244 @@ describe("10. Supervisor Reliability facts (Phase 2A)", () => {
     assertNotIncludes(historyDb, "reliabilityScore =", "no sql reliability score");
   });
 });
+
+describe("11. Cross-Case Pattern Signals (Phase 2A)", () => {
+  const historyDb = read(
+    "app/api/_lib/store/safetyIntelligenceHistoryDb.ts"
+  );
+  const graphModule = read("app/api/_lib/safetyCrossCaseGraph.ts");
+
+  function crow(overrides: Record<string, unknown> = {}) {
+    return {
+      reportId: "rep_" + Math.random().toString(36).slice(2),
+      reporterUserId: "rep_user",
+      targetOwnerUserId: "t1",
+      targetId: "t1",
+      category: "harassment",
+      sourceType: "feed_post",
+      targetType: "account",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      status: "open",
+      outcomeType: null,
+      isConfirmedViolation: false,
+      evidenceUrlHash: null,
+      ...overrides,
+    };
+  }
+
+  function find(signals: any[], type: string) {
+    return signals.find((s) => s.type === type);
+  }
+
+  it("detects repeated_reporter_targeting and dedupes supporting ids", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1" }),
+      crow({ reportId: "a", reporterUserId: "r1" }), // duplicate id
+      crow({ reportId: "b", reporterUserId: "r1" }),
+      crow({ reportId: "c", reporterUserId: "r1" }),
+    ]);
+    const s = find(signals, "repeated_reporter_targeting_signal");
+    assert.ok(s, "signal present");
+    assert.equal(s.confidence, null);
+    assert.deepEqual([...s.supportingCaseIds].sort(), ["a", "b", "c"]);
+    assert.equal(s.supportingCount, 3);
+  });
+
+  it("detects multi_reporter_target with unique reporters", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1" }),
+      crow({ reportId: "b", reporterUserId: "r2" }),
+      crow({ reportId: "c", reporterUserId: "r3" }),
+    ]);
+    const s = find(signals, "multi_reporter_target_signal");
+    assert.ok(s);
+    assert.equal(s.confidence, null);
+  });
+
+  it("detects recurring_category", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", category: "spam" }),
+      crow({ reportId: "b", reporterUserId: "r2", category: "spam" }),
+      crow({ reportId: "c", reporterUserId: "r3", category: "spam" }),
+    ]);
+    assert.ok(find(signals, "recurring_category_signal"));
+  });
+
+  it("open reports support burst but are NOT counted as confirmed", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", status: "open", createdAt: "2026-01-01T00:00:00.000Z" }),
+      crow({ reportId: "b", reporterUserId: "r1", status: "open", createdAt: "2026-01-01T01:00:00.000Z" }),
+      crow({ reportId: "c", reporterUserId: "r1", status: "open", createdAt: "2026-01-01T02:00:00.000Z" }),
+    ]);
+    assert.ok(find(signals, "report_burst_signal"), "burst from open reports");
+    assert.equal(
+      find(signals, "repeated_confirmed_violation_signal"),
+      undefined,
+      "no confirmed from open reports"
+    );
+  });
+
+  it("detects repeated_confirmed_violation from finalized confirmed only", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", status: "resolved", isConfirmedViolation: true, outcomeType: "warning" }),
+      crow({ reportId: "b", reporterUserId: "r2", status: "resolved", isConfirmedViolation: true, outcomeType: "suspend_account" }),
+      crow({ reportId: "c", reporterUserId: "r3", status: "open" }),
+    ]);
+    const s = find(signals, "repeated_confirmed_violation_signal");
+    assert.ok(s);
+    assert.deepEqual([...s.supportingCaseIds].sort(), ["a", "b"]);
+  });
+
+  it("detects multi_surface_owner across distinct surfaces", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", sourceType: "feed_post" }),
+      crow({ reportId: "b", reporterUserId: "r2", sourceType: "feed_comment" }),
+    ]);
+    assert.ok(find(signals, "multi_surface_owner_signal"));
+  });
+
+  it("detects duplicate_evidence_url across cases", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", evidenceUrlHash: "hashX" }),
+      crow({ reportId: "b", reporterUserId: "r2", evidenceUrlHash: "hashX" }),
+    ]);
+    const s = find(signals, "duplicate_evidence_url_signal");
+    assert.ok(s);
+    assert.deepEqual([...s.supportingCaseIds].sort(), ["a", "b"]);
+    assert.ok(
+      s.limitations.includes("matches_identical_url_only_not_visual_similarity")
+    );
+  });
+
+  it("coordinated_reporting_signal only emerges after facts converge", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    // 3 unique reporters within 24h -> coordinated.
+    const converge = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", createdAt: "2026-01-01T00:00:00.000Z" }),
+      crow({ reportId: "b", reporterUserId: "r2", createdAt: "2026-01-01T01:00:00.000Z" }),
+      crow({ reportId: "c", reporterUserId: "r3", createdAt: "2026-01-01T02:00:00.000Z" }),
+    ]);
+    const s = find(converge, "coordinated_reporting_signal");
+    assert.ok(s, "coordinated present when facts converge");
+    assert.equal(s.confidence, null);
+    assert.ok(
+      s.limitations.includes(
+        "coordinated_label_is_a_signal_not_confirmed_abuse"
+      )
+    );
+
+    // Same 3 reports but ONE reporter -> burst, but NOT coordinated.
+    const single = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", createdAt: "2026-01-01T00:00:00.000Z" }),
+      crow({ reportId: "b", reporterUserId: "r1", createdAt: "2026-01-01T01:00:00.000Z" }),
+      crow({ reportId: "c", reporterUserId: "r1", createdAt: "2026-01-01T02:00:00.000Z" }),
+    ]);
+    assert.equal(
+      find(single, "coordinated_reporting_signal"),
+      undefined,
+      "no coordinated from a single reporter"
+    );
+  });
+
+  it("all signals expose null confidence and are not accusations", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", status: "resolved", isConfirmedViolation: true, evidenceUrlHash: "h" }),
+      crow({ reportId: "b", reporterUserId: "r2", status: "resolved", isConfirmedViolation: true, evidenceUrlHash: "h" }),
+      crow({ reportId: "c", reporterUserId: "r3" }),
+    ]);
+    assert.ok(signals.length > 0);
+    for (const s of signals) {
+      assert.equal(s.confidence, null);
+      assert.ok(
+        s.limitations.includes("signal_is_not_proof_of_violation")
+      );
+    }
+  });
+
+  it("malformed rows (no target) are excluded", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      { reportId: "a", reporterUserId: "r1", category: "spam" },
+      { reportId: "b", reporterUserId: "r2", category: "spam" },
+      { reportId: "c", reporterUserId: "r3", category: "spam" },
+    ] as any);
+    assert.equal(signals.length, 0, "no target key => dropped");
+  });
+
+  it("target A data does not leak into target B", async () => {
+    const { computeCrossCasePatternSignals } = await import(
+      "../app/api/_lib/safetyCrossCaseGraph.ts"
+    );
+    const signals = computeCrossCasePatternSignals([
+      crow({ reportId: "a", reporterUserId: "r1", targetOwnerUserId: "t1", targetId: "t1" }),
+      crow({ reportId: "b", reporterUserId: "r1", targetOwnerUserId: "t1", targetId: "t1" }),
+      crow({ reportId: "c", reporterUserId: "r1", targetOwnerUserId: "t1", targetId: "t1" }),
+      crow({ reportId: "z", reporterUserId: "r1", targetOwnerUserId: "t2", targetId: "t2" }),
+    ]);
+    const s = find(signals, "repeated_reporter_targeting_signal");
+    assert.ok(s);
+    assert.equal(s.supportingCaseIds.includes("z"), false, "t2 not in t1 signal");
+    assert.equal(s.supportingCount, 3);
+  });
+
+  it("uses versioned named thresholds", async () => {
+    const graph = await import("../app/api/_lib/safetyCrossCaseGraph.ts");
+    assert.equal(graph.SAFETY_CROSS_CASE_SIGNALS_VERSION, "v1");
+    assert.equal(graph.SAFETY_REPORT_BURST_WINDOW_HOURS, 24);
+    assert.equal(graph.SAFETY_REPORT_BURST_MIN_REPORTS, 3);
+    assertIncludes(graphModule, "SAFETY_REPORT_BURST_WINDOW_HOURS = 24", "burst window const");
+    assertIncludes(graphModule, "SAFETY_REPORT_BURST_MIN_REPORTS = 3", "burst min const");
+    // No prohibited signals.
+    assertNotIncludes(graphModule, "ipAddress", "no ip");
+    assertNotIncludes(graphModule, "deviceId", "no device");
+    assertNotIncludes(graphModule, "userAgent", "no user agent");
+  });
+
+  it("store loader uses scoped indexed queries (no N+1)", () => {
+    assertIncludes(
+      historyDb,
+      "export async function dbGetSafetyCrossCaseSignals",
+      "cross-case loader"
+    );
+    assertIncludes(
+      historyDb,
+      "computeCrossCasePatternSignals",
+      "loader uses pure engine"
+    );
+    assertIncludes(historyDb, "FROM kristo_safety_reports", "reports query");
+    assertIncludes(
+      historyDb,
+      "FROM kristo_safety_intelligence_events",
+      "ledger query"
+    );
+    assertIncludes(historyDb, "Promise.all", "batched two-query load");
+  });
+});
