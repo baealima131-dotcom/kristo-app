@@ -287,6 +287,12 @@ describe("DM request role direction (source)", () => {
   });
 
   it("declined can restart as a new pending invitation", () => {
+    const dmRoute = read("app/api/church/direct-messages/route.ts");
+    assertIncludes(
+      dmRoute,
+      '"restart_request"',
+      "PATCH allowlist includes restart_request"
+    );
     assertIncludes(
       relDb,
       "restartMessageRequestAsPending",

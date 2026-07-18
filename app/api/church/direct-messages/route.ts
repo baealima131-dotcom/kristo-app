@@ -273,6 +273,7 @@ export async function PATCH(req: NextRequest) {
     "report",
     "accept",
     "decline",
+    "restart_request",
   ]);
 
   if (!supportedActions.has(action)) {
