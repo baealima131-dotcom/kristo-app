@@ -30,6 +30,7 @@ import {
 import {
   ensurePendingRequestForInitiator,
   getDirectMessageRelationshipByRoomId,
+  listDirectMessageRelationshipsForParticipant,
   repairReversedEmptyPendingInitiator,
   resetDirectMessageRelationshipToNone,
   restartMessageRequestAsPending,
@@ -109,15 +110,20 @@ export type DirectMessageInboxItem = {
   roomId: string;
   churchId: string;
   peerUserId: string;
+  /** Display name for the peer (alias of title). */
+  peerName: string;
   title: string;
   subtitle: string;
   avatarUri: string;
   lastMessagePreview: string;
+  /** Latest message text preview (alias of lastMessagePreview). */
+  lastMessageText: string;
   timestampLabel: string;
   timestampMs: number;
   unreadCount: number;
   relationshipStatus?: DmRelationshipStatus;
   requestInitiatorUserId?: string;
+  isRequestInitiator?: boolean;
   isRequestReceiver?: boolean;
 };
 
@@ -763,6 +769,26 @@ export async function markDirectMessageThreadRead(args: {
 }
 
 
+/** Canonical storage church for a DM room — never the viewer's session church. */
+export async function resolveDirectMessageStorageChurchId(args: {
+  roomId: string;
+  fallbackChurchId?: string;
+}): Promise<string> {
+  const roomId = String(args.roomId || "").trim();
+  if (!roomId || !isDirectRoomId(roomId)) {
+    return String(args.fallbackChurchId || "").trim();
+  }
+  const rel = await getDirectMessageRelationshipByRoomId(roomId).catch(
+    () => null
+  );
+  if (rel?.storageChurchId) return String(rel.storageChurchId).trim();
+  const store = await readThreadStore();
+  const found = findThreadEntryByRoomId(store, roomId);
+  const fromThread = String(found?.record?.churchId || "").trim();
+  if (fromThread) return fromThread;
+  return String(args.fallbackChurchId || "").trim();
+}
+
 export async function getDirectMessageConversationSettings(args: {
   churchId: string;
   roomId: string;
@@ -784,15 +810,35 @@ export async function getDirectMessageConversationSettings(args: {
   const participants = parseDirectRoomParticipants(roomId);
   if (!participants) return null;
 
-  const store = await readThreadStore();
-  const found = findThreadEntryByRoomId(store, roomId);
-  const baseRecord = found?.record as DirectMessageThreadRecord | undefined;
-  if (!baseRecord) return null;
+  const rel = await getDirectMessageRelationshipByRoomId(roomId).catch(
+    () => null
+  );
+  let store = await readThreadStore();
+  let found = findThreadEntryByRoomId(store, roomId);
+  let baseRecord = found?.record as DirectMessageThreadRecord | undefined;
 
-  const rel = await getDirectMessageRelationshipByRoomId(roomId);
+  // Relationship can exist before the receiver's session ever wrote a thread
+  // blob — repair from durable storageChurchId, not the header church.
+  if (!baseRecord) {
+    const repairChurchId = String(
+      rel?.storageChurchId || requestedChurchId || ""
+    ).trim();
+    if (!repairChurchId) return null;
+    await ensureDirectMessageThreadFromRoomId({
+      viewerUserId: userId,
+      churchId: repairChurchId,
+      roomId,
+      intent: "repair",
+    });
+    store = await readThreadStore();
+    found = findThreadEntryByRoomId(store, roomId);
+    baseRecord = found?.record as DirectMessageThreadRecord | undefined;
+    if (!baseRecord) return null;
+  }
+
   const record = mergeRelationshipIntoRecord(baseRecord, rel);
   const churchId = String(
-    record.churchId || requestedChurchId || ""
+    rel?.storageChurchId || record.churchId || requestedChurchId || ""
   ).trim();
   const peerUserId = peerUserIdFromParticipants(participants, userId);
 
@@ -1552,296 +1598,458 @@ async function discoverDirectRoomIdsFromMessages(
   return Array.from(roomIds);
 }
 
-async function collectThreadRecordsForViewer(churchId: string, viewerUserId: string) {
+function viewerIsThreadParticipant(
+  thread: DirectMessageThreadRecord | null | undefined,
+  viewerUserId: string
+) {
+  if (!thread) return false;
+  if (isParticipantInDirectRoom(String(thread.roomId || ""), viewerUserId)) {
+    return true;
+  }
+  const participants = Array.isArray(thread.participantUserIds)
+    ? thread.participantUserIds.map(normUserId)
+    : [];
+  return participants.includes(viewerUserId);
+}
+
+async function collectThreadRecordsForViewer(
+  churchId: string,
+  viewerUserId: string
+) {
   const store = await readThreadStore();
-  const fromStore = Object.values(store).filter(
-    (thread) =>
-      Array.isArray(thread?.participantUserIds) &&
-      thread.participantUserIds.includes(viewerUserId) &&
-      !Number(thread?.deletedAtByUserId?.[viewerUserId] || 0)
+  // Include soft-deleted threads here — enrichment decides whether a pending
+  // request / newer message should surface them again in the inbox.
+  const fromStore = Object.values(store).filter((thread) =>
+    viewerIsThreadParticipant(thread, viewerUserId)
   );
 
-  const discoveredRoomIds = await discoverDirectRoomIdsFromMessages(
-    churchId,
+  const knownRoomIds = new Set(
+    fromStore.map((thread) => String(thread.roomId || "").trim()).filter(Boolean)
+  );
+
+  // Durable relationships are authoritative for cross-church discovery.
+  // storageChurchId is metadata only — never an inbox membership filter.
+  const relationships = await listDirectMessageRelationshipsForParticipant(
     viewerUserId
-  );
-  const knownRoomIds = new Set(fromStore.map((thread) => thread.roomId));
+  ).catch(() => [] as DirectMessageRelationshipRecord[]);
 
-  for (const roomId of discoveredRoomIds) {
-    if (knownRoomIds.has(roomId)) continue;
-    const existing = findThreadEntryByRoomId(store, roomId);
+  for (const rel of relationships) {
+    const roomId = String(rel.roomId || "").trim();
+    if (!roomId) continue;
+    const participantA = normUserId(rel.participantA);
+    const participantB = normUserId(rel.participantB);
+    const viewerIsParticipant =
+      participantA === viewerUserId || participantB === viewerUserId;
+    if (!viewerIsParticipant) continue;
+    // Always repair so soft-deleted / sparse thread blobs are refreshed from
+    // the relationship — do not skip merely because a stale key exists.
     const repairChurchId = String(
-      existing?.record.churchId || churchId || ""
+      rel.storageChurchId || churchId || ""
     ).trim();
     if (!repairChurchId) continue;
     await ensureDirectMessageThreadFromRoomId({
       viewerUserId,
       churchId: repairChurchId,
       roomId,
+      intent: "repair",
     });
+    knownRoomIds.add(roomId);
+  }
+
+  const discoveredRoomIds = await discoverDirectRoomIdsFromMessages(
+    churchId,
+    viewerUserId
+  );
+
+  for (const roomId of discoveredRoomIds) {
+    if (knownRoomIds.has(roomId)) continue;
+    const existing = findThreadEntryByRoomId(store, roomId);
+    const rel = await getDirectMessageRelationshipByRoomId(roomId).catch(
+      () => null
+    );
+    const repairChurchId = String(
+      rel?.storageChurchId ||
+        existing?.record.churchId ||
+        churchId ||
+        ""
+    ).trim();
+    if (!repairChurchId) continue;
+    await ensureDirectMessageThreadFromRoomId({
+      viewerUserId,
+      churchId: repairChurchId,
+      roomId,
+      intent: "repair",
+    });
+    knownRoomIds.add(roomId);
   }
 
   const refreshed = await readThreadStore();
-  return Object.values(refreshed).filter(
-    (thread) =>
-      Array.isArray(thread?.participantUserIds) &&
-      thread.participantUserIds.includes(viewerUserId) &&
-      !Number(thread?.deletedAtByUserId?.[viewerUserId] || 0)
-  );
+  const byRoomId = new Map<string, DirectMessageThreadRecord>();
+
+  for (const thread of Object.values(refreshed)) {
+    if (!viewerIsThreadParticipant(thread, viewerUserId)) continue;
+    const roomId = String(thread.roomId || "").trim();
+    if (!roomId) continue;
+    byRoomId.set(roomId, thread);
+  }
+
+  // Relationship-only rooms must still produce an inbox candidate even if the
+  // thread store write failed — synthesize a minimal participant record.
+  for (const rel of relationships) {
+    const roomId = String(rel.roomId || "").trim();
+    if (!roomId || byRoomId.has(roomId)) continue;
+    const participantA = normUserId(rel.participantA);
+    const participantB = normUserId(rel.participantB);
+    if (
+      participantA !== viewerUserId &&
+      participantB !== viewerUserId
+    ) {
+      continue;
+    }
+    byRoomId.set(roomId, {
+      roomId,
+      churchId: String(rel.storageChurchId || churchId || "").trim(),
+      participantUserIds: [participantA, participantB],
+      createdAt: Number(rel.createdAt || Date.now()) || Date.now(),
+      updatedAt: Number(rel.updatedAt || Date.now()) || Date.now(),
+      readAtByUserId: {},
+      requestStatus:
+        rel.requestStatus === "pending" ||
+        rel.requestStatus === "accepted" ||
+        rel.requestStatus === "declined"
+          ? rel.requestStatus
+          : undefined,
+      requestInitiatorUserId: rel.requestInitiatorUserId || undefined,
+      sameChurchAtCreation: rel.sameChurchAtCreation === true,
+      requestOutboundCountByUserId: rel.requestInitiatorUserId
+        ? {
+            [normUserId(rel.requestInitiatorUserId)]: Math.max(
+              0,
+              Number(rel.initiatorOutboundCount || 0) || 0
+            ),
+          }
+        : {},
+    });
+  }
+
+  return Array.from(byRoomId.values());
 }
 
 export async function listDirectMessageInbox(args: {
   churchId: string;
   viewerUserId: string;
 }): Promise<DirectMessageInboxItem[]> {
-  const churchId =
-    String(args.churchId || "").trim();
+  const headerChurchId = String(args.churchId || "").trim();
+  const viewerUserId = normUserId(args.viewerUserId);
 
-  const viewerUserId =
-    normUserId(args.viewerUserId);
-
-  if (!churchId || !viewerUserId) {
+  // Viewer session church is only needed for same-church subtitle labels.
+  // Inbox inclusion must not require churchId — participant identity is enough.
+  if (!viewerUserId) {
     return [];
   }
 
   let threads: DirectMessageThreadRecord[] = [];
 
   try {
-    threads =
-      await collectThreadRecordsForViewer(
-        churchId,
-        viewerUserId
-      );
-  } catch (error) {
-    console.error(
-      "KRISTO_DM_INBOX_THREAD_COLLECTION_FAILED",
-      {
-        churchId,
-        viewerUserId,
-        error:
-          String(
-            (error as any)?.message ||
-            error
-          ),
-      }
+    threads = await collectThreadRecordsForViewer(
+      headerChurchId,
+      viewerUserId
     );
-
+  } catch (error) {
+    console.error("KRISTO_DM_INBOX_THREAD_COLLECTION_FAILED", {
+      churchId: headerChurchId,
+      viewerUserId,
+      error: String((error as any)?.message || error),
+    });
     return [];
   }
 
-  const church =
-    await getChurchById(churchId)
-      .catch((error) => {
-        console.warn(
-          "KRISTO_DM_INBOX_CHURCH_LOOKUP_FAILED",
-          {
-            churchId,
-            error:
-              String(
-                (error as any)?.message ||
-                error
-              ),
-          }
-        );
+  const settledItems = await Promise.allSettled(
+    threads.map(async (thread) => {
+      const participants = Array.isArray(thread.participantUserIds)
+        ? (thread.participantUserIds.map(normUserId) as [string, string])
+        : (parseDirectRoomParticipants(thread.roomId) as
+            | [string, string]
+            | null);
+      const participantA = String(participants?.[0] || "").trim();
+      const participantB = String(participants?.[1] || "").trim();
+      const viewerIsParticipant =
+        participantA === viewerUserId || participantB === viewerUserId;
 
+      const rel = await getDirectMessageRelationshipByRoomId(
+        thread.roomId
+      ).catch(() => null);
+
+      const storageChurchId = String(
+        rel?.storageChurchId || thread.churchId || headerChurchId || ""
+      ).trim();
+
+      if (!viewerIsParticipant) {
+        console.log("KRISTO_DM_INBOX_ROOM_VISIBILITY", {
+          roomId: thread.roomId,
+          viewerUserId,
+          participantA,
+          participantB,
+          viewerIsParticipant: false,
+          relationshipStatus: rel?.requestStatus || "",
+          requestInitiatorUserId: rel?.requestInitiatorUserId || "",
+          storageChurchId,
+          included: false,
+          excludedReason: "viewer_not_participant",
+          lastMessageId: "",
+        });
+        return null;
+      }
+
+      if (!participants) {
+        console.log("KRISTO_DM_INBOX_ROOM_VISIBILITY", {
+          roomId: thread.roomId,
+          viewerUserId,
+          participantA,
+          participantB,
+          viewerIsParticipant,
+          relationshipStatus: rel?.requestStatus || "",
+          requestInitiatorUserId: rel?.requestInitiatorUserId || "",
+          storageChurchId,
+          included: false,
+          excludedReason: "invalid_participants",
+          lastMessageId: "",
+        });
+        return null;
+      }
+
+      const peerUserId = peerUserIdFromParticipants(
+        participants,
+        viewerUserId
+      );
+
+      const profile = await getProfile(peerUserId).catch((error) => {
+        console.warn("KRISTO_DM_INBOX_PROFILE_LOOKUP_FAILED", {
+          roomId: thread.roomId,
+          peerUserId,
+          error: String((error as any)?.message || error),
+        });
         return null;
       });
 
-  const settledItems =
-    await Promise.allSettled(
-      threads.map(async (thread) => {
-        const peerUserId =
-          peerUserIdFromParticipants(
-            thread.participantUserIds,
-            viewerUserId
-          );
+      const clearedAt = Number(
+        thread.clearedAtByUserId?.[viewerUserId] || 0
+      );
+      const deletedAt = Number(
+        thread.deletedAtByUserId?.[viewerUserId] || 0
+      );
 
-        const profile =
-          await getProfile(peerUserId)
-            .catch((error) => {
-              console.warn(
-                "KRISTO_DM_INBOX_PROFILE_LOOKUP_FAILED",
-                {
-                  roomId:
-                    thread.roomId,
-                  peerUserId,
-                  error:
-                    String(
-                      (error as any)?.message ||
-                      error
-                    ),
-                }
-              );
-
-              return null;
-            });
-
-        const clearedAt =
-          Number(
-            thread
-              .clearedAtByUserId
-              ?.[viewerUserId] || 0
-          );
-
-        const deletedAt =
-          Number(
-            thread
-              .deletedAtByUserId
-              ?.[viewerUserId] || 0
-          );
-
-        const lastMessage =
-          await lastMessageForThread(
-            churchId,
+      // Message store is keyed by storageChurchId::roomId — never header church.
+      const lastMessage = storageChurchId
+        ? await lastMessageForThread(
+            storageChurchId,
             thread.roomId,
             viewerUserId,
             clearedAt
-          );
+          )
+        : null;
 
-        if (!lastMessage) {
-          return null;
-        }
+      const shareActiveChurch = Boolean(
+        await usersShareActiveChurch(viewerUserId, peerUserId).catch(
+          () => null
+        )
+      );
+      const merged = mergeRelationshipIntoRecord(thread, rel);
+      const relationshipStatus = resolveDmRelationshipStatus({
+        record: merged,
+        viewerUserId,
+        peerUserId,
+        shareActiveChurch,
+      });
+      const requestInitiatorUserId = normUserId(
+        merged.requestInitiatorUserId || ""
+      );
+      const isPendingRequest = relationshipStatus === "request_pending";
+      const isRequestInitiator =
+        isPendingRequest &&
+        Boolean(requestInitiatorUserId) &&
+        requestInitiatorUserId === viewerUserId;
+      const isRequestReceiver =
+        isPendingRequest &&
+        Boolean(requestInitiatorUserId) &&
+        requestInitiatorUserId !== viewerUserId;
 
-        if (
-          deletedAt > 0 &&
-          Number(
-            lastMessage.timestampMs || 0
-          ) <= deletedAt
-        ) {
-          return null;
-        }
+      const hasPersistedMessage = Boolean(lastMessage);
+      const isListableRelationship =
+        relationshipStatus === "request_pending" ||
+        relationshipStatus === "accepted" ||
+        relationshipStatus === "declined";
 
-        const readAt =
-          Math.max(
-            Number(
-              thread
-                .readAtByUserId
-                ?.[viewerUserId] || 0
-            ),
-            clearedAt
-          );
+      // Inclusion: participant + (message OR pending/accepted/declined).
+      // Never hide pending because preview/church/thread metadata is sparse.
+      const shouldInclude =
+        viewerIsParticipant &&
+        (hasPersistedMessage || isListableRelationship);
 
-        const unreadCount =
-          await unreadCountForThread({
-            churchId,
-            roomId:
-              thread.roomId,
-            viewerUserId,
-            readAt,
-          });
-
-        const timestampMs =
-          Number(
-            lastMessage.timestampMs ||
-            thread.updatedAt ||
-            thread.createdAt ||
-            0
-          );
-
-        const rel =
-          await getDirectMessageRelationshipByRoomId(
-            thread.roomId
-          ).catch(() => null);
-        const shareActiveChurch = Boolean(
-          await usersShareActiveChurch(
-            viewerUserId,
-            peerUserId
-          ).catch(() => null)
-        );
-        const merged = mergeRelationshipIntoRecord(
-          thread,
-          rel
-        );
-        const relationshipStatus =
-          resolveDmRelationshipStatus({
-            record: merged,
-            viewerUserId,
-            peerUserId,
-            shareActiveChurch,
-          });
-        const requestInitiatorUserId = normUserId(
-          merged.requestInitiatorUserId || ""
-        );
-        const isRequestReceiver =
-          relationshipStatus === "request_pending" &&
-          Boolean(requestInitiatorUserId) &&
-          requestInitiatorUserId !== viewerUserId;
-
-        return {
-          roomId:
-            thread.roomId,
-          churchId,
-          peerUserId,
-          title:
-            pickDisplayName(profile),
-          subtitle:
-            isRequestReceiver
-              ? "Message request"
-              : String(
-                  church?.name ||
-                  "Direct message"
-                ).trim(),
-          avatarUri:
-            pickAvatar(profile),
-          lastMessagePreview:
-            String(
-              lastMessage.preview ||
-              "No messages yet"
-            ),
-          timestampLabel:
-            formatTimestampLabel(
-              timestampMs
-            ),
-          timestampMs,
-          unreadCount,
+      if (!shouldInclude) {
+        const excludedReason = !hasPersistedMessage
+          ? "no_listable_activity"
+          : "not_included";
+        console.log("KRISTO_DM_INBOX_ITEM_BUILT", {
+          viewerUserId,
+          roomId: thread.roomId,
+          relationshipStatus,
+          isRequestReceiver,
+          hasLastMessage: hasPersistedMessage,
+          included: false,
+          excludedReason,
+        });
+        console.log("KRISTO_DM_INBOX_ROOM_VISIBILITY", {
+          roomId: thread.roomId,
+          viewerUserId,
+          participantA,
+          participantB,
+          viewerIsParticipant,
           relationshipStatus,
           requestInitiatorUserId,
-          isRequestReceiver,
-        } satisfies DirectMessageInboxItem;
-      })
-    );
-
-  const items:
-    DirectMessageInboxItem[] = [];
-
-  settledItems.forEach(
-    (result, index) => {
-      if (
-        result.status === "fulfilled"
-      ) {
-        if (result.value) {
-          items.push(result.value);
-        }
-
-        return;
+          storageChurchId,
+          included: false,
+          excludedReason,
+          lastMessageId: "",
+        });
+        return null;
       }
 
-      const thread =
-        threads[index];
-
-      console.error(
-        "KRISTO_DM_INBOX_THREAD_ENRICHMENT_FAILED",
-        {
-          churchId,
+      // Soft-delete only hides non-request rows with no newer activity.
+      // Pending/accepted/declined must remain listable for the receiver.
+      if (
+        deletedAt > 0 &&
+        !isListableRelationship &&
+        (!lastMessage || Number(lastMessage.timestampMs || 0) <= deletedAt)
+      ) {
+        console.log("KRISTO_DM_INBOX_ITEM_BUILT", {
           viewerUserId,
-          roomId:
-            String(
-              thread?.roomId || ""
-            ),
-          error:
-            String(
-              (result.reason as any)
-                ?.message ||
-              result.reason
-            ),
-        }
+          roomId: thread.roomId,
+          relationshipStatus,
+          isRequestReceiver,
+          hasLastMessage: hasPersistedMessage,
+          included: false,
+          excludedReason: "deleted_for_viewer",
+        });
+        console.log("KRISTO_DM_INBOX_ROOM_VISIBILITY", {
+          roomId: thread.roomId,
+          viewerUserId,
+          participantA,
+          participantB,
+          viewerIsParticipant,
+          relationshipStatus,
+          requestInitiatorUserId,
+          storageChurchId,
+          included: false,
+          excludedReason: "deleted_for_viewer",
+          lastMessageId: "",
+        });
+        return null;
+      }
+
+      const readAt = Math.max(
+        Number(thread.readAtByUserId?.[viewerUserId] || 0),
+        clearedAt
       );
-    }
+
+      const unreadCount = storageChurchId
+        ? await unreadCountForThread({
+            churchId: storageChurchId,
+            roomId: thread.roomId,
+            viewerUserId,
+            readAt,
+          })
+        : 0;
+
+      const timestampMs = Number(
+        lastMessage?.timestampMs ||
+          thread.updatedAt ||
+          thread.createdAt ||
+          0
+      );
+
+      const storageChurch = storageChurchId
+        ? await getChurchById(storageChurchId).catch(() => null)
+        : null;
+
+      const peerName = pickDisplayName(profile);
+      const previewText = String(
+        lastMessage?.preview ||
+          (isRequestReceiver || isPendingRequest
+            ? "Message request"
+            : "No messages yet")
+      );
+
+      const item = {
+        roomId: thread.roomId,
+        churchId: storageChurchId || headerChurchId,
+        peerUserId,
+        peerName,
+        title: peerName,
+        subtitle: isRequestReceiver
+          ? "Message request"
+          : String(
+              storageChurch?.name || "Direct message"
+            ).trim(),
+        avatarUri: pickAvatar(profile),
+        lastMessagePreview: previewText,
+        lastMessageText: previewText,
+        timestampLabel: formatTimestampLabel(timestampMs),
+        timestampMs,
+        unreadCount,
+        relationshipStatus,
+        requestInitiatorUserId,
+        isRequestInitiator,
+        isRequestReceiver,
+      } satisfies DirectMessageInboxItem;
+
+      console.log("KRISTO_DM_INBOX_ITEM_BUILT", {
+        viewerUserId,
+        roomId: thread.roomId,
+        relationshipStatus,
+        isRequestReceiver,
+        hasLastMessage: hasPersistedMessage,
+        included: true,
+        excludedReason: "",
+      });
+      console.log("KRISTO_DM_INBOX_ROOM_VISIBILITY", {
+        roomId: thread.roomId,
+        viewerUserId,
+        participantA,
+        participantB,
+        viewerIsParticipant,
+        relationshipStatus,
+        requestInitiatorUserId,
+        storageChurchId,
+        included: true,
+        excludedReason: "",
+        lastMessageId: "",
+        lastMessagePreviewPresent: Boolean(lastMessage?.preview),
+        unreadCount,
+      });
+
+      return item;
+    })
   );
 
+  const items: DirectMessageInboxItem[] = [];
+
+  settledItems.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      if (result.value) items.push(result.value);
+      return;
+    }
+
+    const thread = threads[index];
+    console.error("KRISTO_DM_INBOX_THREAD_ENRICHMENT_FAILED", {
+      churchId: headerChurchId,
+      viewerUserId,
+      roomId: String(thread?.roomId || ""),
+      error: String((result.reason as any)?.message || result.reason),
+    });
+  });
+
   return items.sort(
-    (a, b) =>
-      Number(b.timestampMs || 0) -
-      Number(a.timestampMs || 0)
+    (a, b) => Number(b.timestampMs || 0) - Number(a.timestampMs || 0)
   );
 }

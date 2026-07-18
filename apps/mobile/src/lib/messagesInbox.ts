@@ -17,6 +17,9 @@ export type MessagesInboxConversation = {
   peerUserId: string;
   churchId: string;
   roomKind: "direct";
+  relationshipStatus?: string;
+  isRequestReceiver?: boolean;
+  isRequestInitiator?: boolean;
 };
 
 function currentUserId(): string {
@@ -123,6 +126,7 @@ function callTimestampMs(call: PrivateCallSession): number {
  * Direct-message threads remain the source of conversation rows.
  * Private call history may replace the visible preview and timestamp
  * when the newest call activity is newer than the newest DM activity.
+ * Pending message requests are never filtered out locally.
  */
 export async function fetchMessagesInboxConversations(_args: {
   base: string;
@@ -133,6 +137,17 @@ export async function fetchMessagesInboxConversations(_args: {
   ]);
 
   const viewerUserId = currentUserId();
+
+  console.log("KRISTO_DM_INBOX_API_ROWS", {
+    viewerUserId,
+    totalRows: dmRows.length,
+    roomIds: dmRows.map((row) => row.roomId).filter(Boolean),
+    pendingRequestRows: dmRows.filter(
+      (row) =>
+        row.relationshipStatus === "request_pending" ||
+        row.isRequestReceiver === true
+    ).length,
+  });
 
   const latestCallByPeer = new Map<
     string,
@@ -158,9 +173,32 @@ export async function fetchMessagesInboxConversations(_args: {
     }
   }
 
-  return dmRows
-    .filter((row) => row.roomId && row.peerUserId)
+  const beforeCount = dmRows.length;
+  // Keep every API row that has a room identity. Pending requests may arrive
+  // with a peerUserId even when preview metadata is sparse — never drop them.
+  const kept = dmRows.filter((row) => {
+    if (!row.roomId) return false;
+    if (row.peerUserId) return true;
+    return (
+      row.relationshipStatus === "request_pending" ||
+      row.isRequestReceiver === true ||
+      row.isRequestInitiator === true
+    );
+  });
+  const keptIds = new Set(kept.map((row) => row.roomId));
+  const removedRoomIds = dmRows
+    .map((row) => row.roomId)
+    .filter((roomId) => roomId && !keptIds.has(roomId));
+
+  console.log("KRISTO_DM_INBOX_VISIBLE_ROWS", {
+    beforeCount,
+    afterCount: kept.length,
+    removedRoomIds,
+  });
+
+  return kept
     .map((row) => {
+      const isRequestReceiver = row.isRequestReceiver === true;
       const call = latestCallByPeer.get(
         String(row.peerUserId || "").trim()
       );
@@ -168,18 +206,30 @@ export async function fetchMessagesInboxConversations(_args: {
       const dmTimestampMs = Number(row.timestampMs || 0);
       const callMs = call ? callTimestampMs(call) : 0;
 
+      // Do not let call history replace a pending request preview.
       const callIsNewest =
-        Boolean(call) && callMs > dmTimestampMs;
+        !isRequestReceiver &&
+        Boolean(call) &&
+        callMs > dmTimestampMs;
+
+      const previewFromApi = String(
+        row.lastMessageText ||
+          row.lastMessagePreview ||
+          ""
+      ).trim();
 
       return {
         id: row.roomId,
-        title: row.title,
-        subtitle: row.subtitle,
+        title: String(row.peerName || row.title || "Member"),
+        subtitle: isRequestReceiver
+          ? "Message request"
+          : String(row.subtitle || "Direct message"),
         avatarUri: row.avatarUri,
         lastMessagePreview:
           callIsNewest && call
             ? callPreview(call, viewerUserId)
-            : row.lastMessagePreview,
+            : previewFromApi ||
+              (isRequestReceiver ? "Message request" : "No messages yet"),
         timestampLabel:
           callIsNewest
             ? formatInboxTimestamp(callMs)
@@ -192,6 +242,9 @@ export async function fetchMessagesInboxConversations(_args: {
         peerUserId: row.peerUserId,
         churchId: row.churchId,
         roomKind: "direct" as const,
+        relationshipStatus: row.relationshipStatus,
+        isRequestReceiver,
+        isRequestInitiator: row.isRequestInitiator === true,
       };
     })
     .sort(

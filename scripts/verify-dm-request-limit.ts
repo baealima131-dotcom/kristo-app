@@ -498,4 +498,83 @@ describe("DM request wiring (source)", () => {
       "no /tmp fallback on Vercel"
     );
   });
+
+  it("cross-church inbox/read uses storageChurchId not header church filter", () => {
+    const relDb = read(
+      "app/api/_lib/store/directMessageRelationshipDb.ts"
+    );
+    const mobileApi = read("apps/mobile/src/lib/directMessagesApi.ts");
+    const mobileInbox = read("apps/mobile/src/lib/messagesInbox.ts");
+    const messagesUi = read(
+      "apps/mobile/app/(tabs)/more/my-church-room/messages/index.tsx"
+    );
+    assertIncludes(
+      relDb,
+      "listDirectMessageRelationshipsForParticipant",
+      "participant relationship listing"
+    );
+    assertIncludes(
+      dmLib,
+      "listDirectMessageRelationshipsForParticipant",
+      "inbox discovers via relationships"
+    );
+    assertIncludes(
+      dmLib,
+      "KRISTO_DM_INBOX_ROOM_VISIBILITY",
+      "inbox visibility diagnostic"
+    );
+    assertIncludes(
+      dmLib,
+      "KRISTO_DM_INBOX_ITEM_BUILT",
+      "inbox item built diagnostic"
+    );
+    assertIncludes(
+      dmLib,
+      "isListableRelationship",
+      "pending/accepted/declined inclusion"
+    );
+    assertIncludes(
+      dmLib,
+      "lastMessageText",
+      "inbox lastMessageText contract"
+    );
+    assertIncludes(dmLib, "peerName", "inbox peerName contract");
+    assertIncludes(
+      dmLib,
+      "resolveDirectMessageStorageChurchId",
+      "storage church resolver"
+    );
+    assertIncludes(
+      roomMessages,
+      "resolveDirectMessageStorageChurchId",
+      "room-messages uses storage resolver"
+    );
+    assertIncludes(
+      roomMessages,
+      "KRISTO_DM_ROOM_READ_STORAGE_RESOLUTION",
+      "room-read diagnostic"
+    );
+    assertIncludes(
+      dmLib,
+      "viewerIsParticipant",
+      "participant inclusion rule"
+    );
+    assertNotIncludes(
+      dmLib,
+      "if (!lastMessage) {\n          return null;\n        }",
+      "old header-church lastMessage drop removed"
+    );
+    assertIncludes(
+      mobileApi,
+      "KRISTO_DM_INBOX_API_ROWS",
+      "mobile API rows diagnostic"
+    );
+    assertIncludes(
+      mobileInbox,
+      "KRISTO_DM_INBOX_VISIBLE_ROWS",
+      "mobile visible rows diagnostic"
+    );
+    assertIncludes(messagesUi, "REQUEST", "request badge");
+    assertIncludes(messagesUi, "Message request", "request subtitle");
+  });
 });

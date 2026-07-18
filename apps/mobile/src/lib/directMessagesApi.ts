@@ -20,10 +20,16 @@ export type DirectMessageThread = {
 };
 
 export type DirectMessageInboxRow = DirectMessageThread & {
+  peerName?: string;
   lastMessagePreview: string;
+  lastMessageText?: string;
   timestampLabel: string;
   timestampMs: number;
   unreadCount: number;
+  relationshipStatus?: string;
+  requestInitiatorUserId?: string;
+  isRequestInitiator?: boolean;
+  isRequestReceiver?: boolean;
 };
 
 function authHeaders() {
@@ -31,23 +37,67 @@ function authHeaders() {
 }
 
 export async function fetchDirectMessageInbox(): Promise<DirectMessageInboxRow[]> {
-  const res: any = await apiGet("/api/church/direct-messages", { headers: authHeaders() });
+  const headers = authHeaders() as Record<string, string>;
+  const viewerUserId = String(
+    headers?.["x-kristo-user-id"] || headers?.["X-Kristo-User-Id"] || ""
+  ).trim();
+  const res: any = await apiGet("/api/church/direct-messages", { headers });
   if (!res?.ok) {
     throw new Error(String(res?.error || "Could not load conversations."));
   }
   const rows = Array.isArray(res?.data) ? res.data : [];
-  return rows.map((row: any) => ({
-    roomId: String(row?.roomId || ""),
-    churchId: String(row?.churchId || ""),
-    peerUserId: String(row?.peerUserId || ""),
-    title: String(row?.title || "Member"),
-    subtitle: String(row?.subtitle || "Direct message"),
-    avatarUri: String(row?.avatarUri || row?.avatarUrl || ""),
-    lastMessagePreview: String(row?.lastMessagePreview || "No messages yet"),
-    timestampLabel: String(row?.timestampLabel || ""),
-    timestampMs: Number(row?.timestampMs || 0),
-    unreadCount: Math.max(0, Number(row?.unreadCount || 0)),
-  }));
+  const mapped = rows.map((row: any) => {
+    const isRequestReceiver = row?.isRequestReceiver === true;
+    const preview = String(
+      row?.lastMessageText ||
+        row?.lastMessagePreview ||
+        (isRequestReceiver ? "Message request" : "No messages yet")
+    );
+    const peerName = String(
+      row?.peerName || row?.title || "Member"
+    );
+    return {
+      roomId: String(row?.roomId || ""),
+      churchId: String(row?.churchId || ""),
+      peerUserId: String(row?.peerUserId || ""),
+      peerName,
+      title: peerName,
+      subtitle: isRequestReceiver
+        ? "Message request"
+        : String(row?.subtitle || "Direct message"),
+      avatarUri: String(row?.avatarUri || row?.avatarUrl || ""),
+      lastMessagePreview: preview,
+      lastMessageText: preview,
+      timestampLabel: String(row?.timestampLabel || ""),
+      timestampMs: Number(row?.timestampMs || 0),
+      unreadCount: Math.max(0, Number(row?.unreadCount || 0)),
+      relationshipStatus: String(row?.relationshipStatus || ""),
+      requestInitiatorUserId: String(row?.requestInitiatorUserId || ""),
+      isRequestInitiator: row?.isRequestInitiator === true,
+      isRequestReceiver,
+    };
+  });
+  console.log("KRISTO_DM_INBOX_RESPONSE", {
+    viewerUserId,
+    conversationCount: mapped.length,
+    roomIds: mapped.map((row: DirectMessageInboxRow) => row.roomId).filter(Boolean),
+    pendingRequestCount: mapped.filter(
+      (row: DirectMessageInboxRow) =>
+        row.relationshipStatus === "request_pending" ||
+        row.isRequestReceiver === true
+    ).length,
+  });
+  console.log("KRISTO_DM_INBOX_API_ROWS", {
+    viewerUserId,
+    totalRows: mapped.length,
+    roomIds: mapped.map((row: DirectMessageInboxRow) => row.roomId).filter(Boolean),
+    pendingRequestRows: mapped.filter(
+      (row: DirectMessageInboxRow) =>
+        row.relationshipStatus === "request_pending" ||
+        row.isRequestReceiver === true
+    ).length,
+  });
+  return mapped;
 }
 
 export async function resolveDirectMessagePeer(args: {

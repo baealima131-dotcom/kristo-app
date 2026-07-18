@@ -39,6 +39,10 @@ function ConversationRow({
   onPress: () => void;
 }) {
   const initial = String(item.title || "?").trim().charAt(0).toUpperCase() || "?";
+  const isRequest = item.isRequestReceiver === true;
+  const preview = String(
+    item.lastMessagePreview || (isRequest ? "Message request" : "")
+  ).trim();
 
   return (
     <Pressable
@@ -57,9 +61,16 @@ function ConversationRow({
 
       <View style={s.rowBody}>
         <View style={s.rowTop}>
-          <Text style={s.rowTitle} numberOfLines={1}>
-            {item.title}
-          </Text>
+          <View style={s.rowTitleWrap}>
+            <Text style={s.rowTitle} numberOfLines={1}>
+              {item.title}
+            </Text>
+            {isRequest ? (
+              <View style={s.requestBadge}>
+                <Text style={s.requestBadgeText}>REQUEST</Text>
+              </View>
+            ) : null}
+          </View>
           {item.timestampLabel ? (
             <Text style={s.rowTime} numberOfLines={1}>
               {item.timestampLabel}
@@ -67,9 +78,13 @@ function ConversationRow({
           ) : null}
         </View>
 
+        <Text style={s.rowSubtitle} numberOfLines={1}>
+          {isRequest ? "Message request" : item.subtitle}
+        </Text>
+
         <View style={s.rowBottom}>
           <Text style={s.rowPreview} numberOfLines={2}>
-            {item.lastMessagePreview}
+            {preview || (isRequest ? "Message request" : "")}
           </Text>
           {item.unreadCount > 0 ? (
             <View style={s.unreadBadge}>
@@ -465,17 +480,48 @@ const s = StyleSheet.create({
     gap: 8,
   } as ViewStyle,
 
-  rowTitle: {
+  rowTitleWrap: {
     flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  } as ViewStyle,
+
+  rowTitle: {
+    flexShrink: 1,
     color: TEXT,
     fontWeight: "900",
     fontSize: 16,
+  } as TextStyle,
+
+  requestBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.45)",
+  } as ViewStyle,
+
+  requestBadgeText: {
+    color: GOLD,
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.4,
   } as TextStyle,
 
   rowTime: {
     color: "rgba(255,255,255,0.48)",
     fontWeight: "700",
     fontSize: 11,
+  } as TextStyle,
+
+  rowSubtitle: {
+    marginTop: 2,
+    color: "rgba(255,255,255,0.55)",
+    fontWeight: "700",
+    fontSize: 12,
   } as TextStyle,
 
   rowBottom: {

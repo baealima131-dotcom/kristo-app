@@ -132,10 +132,8 @@ export async function GET(req: NextRequest) {
     return json({ ok: true, data: peer });
   }
 
-  if (!churchId) {
-    return json({ ok: true, data: [] });
-  }
-
+  // Inbox inclusion is participant-based. Session churchId is optional metadata
+  // for same-church labels — never gate the list on it for cross-church DMs.
   try {
     const inbox =
       await listDirectMessageInbox({

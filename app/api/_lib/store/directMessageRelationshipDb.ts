@@ -218,6 +218,31 @@ export async function getDirectMessageRelationshipByRoomId(
   return row ? rowToRecord(row) : null;
 }
 
+/** All durable relationships where the user is a canonical participant. */
+export async function listDirectMessageRelationshipsForParticipant(
+  userId: string
+): Promise<DirectMessageRelationshipRecord[]> {
+  await ensureReady();
+  const uid = norm(userId);
+  if (!uid) return [];
+
+  if (!usePostgres()) {
+    const store = await readLocalStore();
+    return Object.values(store).filter(
+      (row) => row.participantA === uid || row.participantB === uid
+    );
+  }
+
+  const sql = getSql();
+  const rows = await sql`
+    SELECT *
+    FROM kristo_direct_message_relationships
+    WHERE participant_a = ${uid}
+       OR participant_b = ${uid}
+  `;
+  return (Array.isArray(rows) ? rows : []).map((row) => rowToRecord(row));
+}
+
 export async function upsertDirectMessageRelationship(args: {
   roomId: string;
   storageChurchId: string;

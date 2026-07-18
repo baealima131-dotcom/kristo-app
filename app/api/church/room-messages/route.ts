@@ -20,6 +20,7 @@ import {
   isDirectRoomId,
   isParticipantInDirectRoom,
   releaseDirectMessageRequestOutboundSlot,
+  resolveDirectMessageStorageChurchId,
   touchDirectMessageThread,
 } from "@/app/api/_lib/directMessages";
 
@@ -297,23 +298,56 @@ export async function GET(req: Request) {
 
   if (isDirectRoomId(roomId)) {
     if (!isParticipantInDirectRoom(roomId, userId)) {
+      console.log("KRISTO_DM_ROOM_READ_STORAGE_RESOLUTION", {
+        roomId,
+        viewerUserId: userId,
+        viewerIsParticipant: false,
+        headerChurchId: churchId,
+        resolvedStorageChurchId: "",
+        messageCount: 0,
+      });
       return NextResponse.json(
         { ok: false, error: "Forbidden" },
         { status: 403 }
       );
     }
 
+    // Resolve storage from durable relationship/thread — never trust the
+    // receiver's session church header for the message document key.
+    const resolvedStorageChurchId =
+      await resolveDirectMessageStorageChurchId({
+        roomId,
+        fallbackChurchId: "",
+      });
+
     const settings =
       await getDirectMessageConversationSettings({
-        churchId,
+        churchId: resolvedStorageChurchId || churchId,
         roomId,
         userId,
       });
 
     viewerClearedAt = Number(settings?.clearedAt || 0);
-    // Canonical thread churchId — not the viewer's session header — so
-    // cross-church request DMs share one message document.
-    effectiveChurchId = String(settings?.churchId || churchId).trim();
+    effectiveChurchId = String(
+      resolvedStorageChurchId ||
+        settings?.churchId ||
+        ""
+    ).trim();
+
+    if (!effectiveChurchId) {
+      console.log("KRISTO_DM_ROOM_READ_STORAGE_RESOLUTION", {
+        roomId,
+        viewerUserId: userId,
+        viewerIsParticipant: true,
+        headerChurchId: churchId,
+        resolvedStorageChurchId: "",
+        messageCount: 0,
+      });
+      return NextResponse.json(
+        { ok: false, error: "Conversation storage not found." },
+        { status: 404 }
+      );
+    }
   }
 
   let store: Record<string, RoomMessage[]>;
@@ -330,6 +364,19 @@ export async function GET(req: Request) {
     );
   }
   const getStoreKey = keyOf(effectiveChurchId, roomId);
+
+  if (isDirectRoomId(roomId)) {
+    console.log("KRISTO_DM_ROOM_READ_STORAGE_RESOLUTION", {
+      roomId,
+      viewerUserId: userId,
+      viewerIsParticipant: true,
+      headerChurchId: churchId,
+      resolvedStorageChurchId: effectiveChurchId,
+      messageCount: Array.isArray(store[getStoreKey])
+        ? store[getStoreKey].length
+        : 0,
+    });
+  }
 
   // Diagnostics: the store is keyed by `${churchId}::${roomId}`, NOT by roomId
   // alone. These logs make it obvious if POST wrote under a different key than
