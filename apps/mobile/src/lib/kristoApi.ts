@@ -6,6 +6,9 @@ import {
 } from "@/src/lib/kristoTraffic";
 import { resolveApiBase } from "@/src/lib/kristoEnv";
 import { describeKristoSessionToken, getKristoHeaders, logKristoAuthHeadersDiag } from "@/src/lib/kristoHeaders";
+import {
+  notifySafetyAccountEnforcement,
+} from "@/src/lib/safetyAccountEnforcement";
 
 type Json = any;
 
@@ -17,6 +20,7 @@ export type ApiErrorResult = {
   code?: string;
   reason?: string;
   status?: number;
+  expiresAt?: string | null;
   debug?: unknown;
   activeSchedule?: unknown;
 };
@@ -69,7 +73,10 @@ function isExpectedRoomOnlyScheduleFeedNotFound(
 
 function httpError(path: string, res: Response, body: any): ApiErrorResult {
   const providerError = String(body?.error || body?.message || "").trim();
-  const hint = String(body?.details?.hint || body?.details || "").trim();
+  const hint =
+    typeof body?.details?.hint === "string"
+      ? String(body.details.hint).trim()
+      : "";
   const fallback = `Request failed (${res.status})`;
   const error = providerError || hint || fallback;
   if (__DEV__) {
@@ -85,13 +92,43 @@ function httpError(path: string, res: Response, body: any): ApiErrorResult {
       console.warn("[KRISTO API] non-OK response", logPayload);
     }
   }
-  const code = String(body?.code || "").trim() || undefined;
+
+  /*
+   * Canonical Safety codes live at details.code (rbac) and may also
+   * appear at the top-level code. Normalize once here so every
+   * apiGet/apiPost/apiPatch/apiDelete path shares one UX bus.
+   */
+  const safety =
+    notifySafetyAccountEnforcement(
+      body
+    );
+
+  const code =
+    safety?.code ||
+    String(
+      body?.code ||
+      body?.details?.code ||
+      ""
+    ).trim() ||
+    undefined;
+
+  const expiresAt =
+    safety?.expiresAt ??
+    (
+      String(
+        body?.details?.expiresAt ||
+        body?.expiresAt ||
+        ""
+      ).trim() || null
+    );
+
   return {
     ok: false,
     error,
     code,
     reason: String(body?.reason || "http_error"),
     status: res.status,
+    expiresAt,
     debug: body?.details ?? body?.debug,
     activeSchedule: body?.activeSchedule,
   };
@@ -251,17 +288,46 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
     }
   }
 
+  const isSafetyDecisionPatch = path.includes("/api/safety/supervisor/reports/");
+
   try {
+    if (isSafetyDecisionPatch) {
+      console.log("KRISTO_SAFETY_DECISION_FETCH_START", {
+        path,
+        url: kristoUrl(path),
+        method: "PATCH",
+        hasUserId: Boolean(headers["x-kristo-user-id"]),
+        hasRole: Boolean(headers["x-kristo-role"]),
+        hasChurchId: Boolean(headers["x-kristo-church-id"]),
+        hasSessionToken: Boolean(headers["x-kristo-session-token"]),
+        bodyLength: payload?.length ?? 0,
+      });
+    }
     const res = await fetch(kristoUrl(path), {
       ...prepared,
       method: "PATCH",
       headers,
       body: payload,
     });
+    if (isSafetyDecisionPatch) {
+      console.log("KRISTO_SAFETY_DECISION_FETCH_RESPONSE", {
+        path,
+        url: kristoUrl(path),
+        status: res.status,
+        ok: res.ok,
+      });
+    }
     const parsed = await safeJson(res);
     if (!res.ok) return httpError(path, res, parsed) as T;
     return (parsed ?? { ok: false, error: "Empty server response", status: res.status }) as T;
   } catch (error) {
+    if (isSafetyDecisionPatch) {
+      console.log("KRISTO_SAFETY_DECISION_FETCH_ERROR", {
+        path,
+        url: kristoUrl(path),
+        message: String((error as any)?.message || error),
+      });
+    }
     return networkError(path, error) as T;
   }
 }

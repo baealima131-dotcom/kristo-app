@@ -21,6 +21,7 @@ import { runAfterHomeDeferredStartup } from "@/src/lib/homeFeedDeferredStartup";
 import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimatedSplash";
 import { HomeFeedVideoPrimer } from "@/src/components/homeFeed/HomeFeedVideoPrimer";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
+import { SafetyAccountEnforcementGate } from "@/src/components/SafetyAccountEnforcementGate";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -57,6 +58,7 @@ export default function RootLayout() {
       {!splashFinished ? <JujujuAnimatedSplash onFinished={onSplashFinished} /> : null}
       <KristoSessionProvider>
         <RevenueCatBootstrap />
+        <SafetyAccountEnforcementGate />
       </KristoSessionProvider>
       {/* Hidden primer — inline TikTok-style autoplay only. */}
       {isHomeFeedInlineVideoAutoplayEnabled() ? <HomeFeedVideoPrimer /> : null}
