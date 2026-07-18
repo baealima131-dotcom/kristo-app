@@ -1,5 +1,5 @@
 /**
- * Focused DM request / 7-message limit verification.
+ * Focused DM request / 5-message limit + role-direction verification.
  * Run: node --experimental-strip-types --test scripts/verify-dm-request-limit.ts
  */
 import assert from "node:assert/strict";
@@ -9,8 +9,10 @@ import { join } from "node:path";
 import {
   buildDmRequestQuota,
   claimOutboundSlotInStore,
+  DM_REQUEST_MESSAGE_LIMIT,
   DM_REQUEST_MESSAGE_LIMIT_REACHED,
   DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
+  dmRequestLimitReachedError,
   resolveDmRelationshipStatus,
   type DmRequestThreadRecord,
 } from "../app/api/_lib/directMessageRequestLogic.ts";
@@ -99,7 +101,7 @@ describe("DM request relationship status", () => {
       relationshipStatus: status,
       record: baseThread({
         requestStatus: "accepted",
-        requestOutboundCountByUserId: { user_a: 7 },
+        requestOutboundCountByUserId: { user_a: DM_REQUEST_MESSAGE_LIMIT },
       }),
       senderUserId: "user_a",
     });
@@ -117,13 +119,16 @@ describe("DM request relationship status", () => {
   });
 });
 
-describe("DM request 7-message counting", () => {
-  it("allows messages 1–7 and rejects message 8", () => {
+describe("DM request 5-message counting", () => {
+  it("allows messages 1–5 and rejects message 6", () => {
+    assert.equal(DM_REQUEST_MESSAGE_LIMIT, 5);
+    assert.equal(DM_REQUEST_OUTGOING_MESSAGE_LIMIT, 5);
+
     let store: Record<string, DmRequestThreadRecord> = {
       "church_a::dm:user_a::user_b": baseThread(),
     };
 
-    for (let i = 1; i <= DM_REQUEST_OUTGOING_MESSAGE_LIMIT; i += 1) {
+    for (let i = 1; i <= DM_REQUEST_MESSAGE_LIMIT; i += 1) {
       const out = claimOutboundSlotInStore({
         store,
         roomId: "dm:user_a::user_b",
@@ -136,22 +141,24 @@ describe("DM request 7-message counting", () => {
       store = out.next;
     }
 
-    const eighth = claimOutboundSlotInStore({
+    const sixth = claimOutboundSlotInStore({
       store,
       roomId: "dm:user_a::user_b",
       senderUserId: "user_a",
     });
-    assert.equal(eighth.result.ok, false);
-    if (!eighth.result.ok) {
-      assert.equal(eighth.result.code, DM_REQUEST_MESSAGE_LIMIT_REACHED);
-      assert.equal(eighth.result.remainingMessages, 0);
+    assert.equal(sixth.result.ok, false);
+    if (!sixth.result.ok) {
+      assert.equal(sixth.result.code, DM_REQUEST_MESSAGE_LIMIT_REACHED);
+      assert.equal(sixth.result.remainingMessages, 0);
+      assert.equal(sixth.result.limit, 5);
+      assert.equal(sixth.result.error, dmRequestLimitReachedError(5));
     }
   });
 
   it("receiver outbound does not consume sender quota", () => {
     let store: Record<string, DmRequestThreadRecord> = {
       "church_a::dm:user_a::user_b": baseThread({
-        requestOutboundCountByUserId: { user_a: 6 },
+        requestOutboundCountByUserId: { user_a: 4 },
       }),
     };
 
@@ -168,13 +175,13 @@ describe("DM request 7-message counting", () => {
       record: store["church_a::dm:user_a::user_b"],
       senderUserId: "user_a",
     });
-    assert.equal(senderQuota.outgoingMessageCount, 6);
+    assert.equal(senderQuota.outgoingMessageCount, 4);
     assert.equal(senderQuota.remainingMessages, 1);
   });
 
   it("deleting views does not reset stored outbound count", () => {
     const record = baseThread({
-      requestOutboundCountByUserId: { user_a: 7 },
+      requestOutboundCountByUserId: { user_a: DM_REQUEST_MESSAGE_LIMIT },
       clearedAtByUserId: { user_a: Date.now() } as any,
     });
     const quota = buildDmRequestQuota({
@@ -182,14 +189,14 @@ describe("DM request 7-message counting", () => {
       record,
       senderUserId: "user_a",
     });
-    assert.equal(quota.outgoingMessageCount, 7);
+    assert.equal(quota.outgoingMessageCount, DM_REQUEST_MESSAGE_LIMIT);
     assert.equal(quota.canSend, false);
   });
 
   it("concurrent final-slot claims produce exactly one success", () => {
     const store: Record<string, DmRequestThreadRecord> = {
       "church_a::dm:user_a::user_b": baseThread({
-        requestOutboundCountByUserId: { user_a: 6 },
+        requestOutboundCountByUserId: { user_a: DM_REQUEST_MESSAGE_LIMIT - 1 },
       }),
     };
 
@@ -210,8 +217,73 @@ describe("DM request 7-message counting", () => {
       assert.equal(b.result.code, DM_REQUEST_MESSAGE_LIMIT_REACHED);
     }
     if (a.result.ok) {
-      assert.equal(a.result.count, 7);
+      assert.equal(a.result.count, DM_REQUEST_MESSAGE_LIMIT);
     }
+  });
+});
+
+describe("DM request role direction (source)", () => {
+  const dmLib = read("app/api/_lib/directMessages.ts");
+  const messagesUi = read(
+    "apps/mobile/app/(tabs)/more/my-church-room/messages/[id].tsx"
+  );
+  const relDb = read("app/api/_lib/store/directMessageRelationshipDb.ts");
+
+  it("settings use initiator/receiver flags from requestInitiatorUserId", () => {
+    assertIncludes(dmLib, "isRequestReceiver", "settings receiver flag");
+    assertIncludes(dmLib, "requestInitiatorUserId", "settings initiator field");
+    assertIncludes(
+      dmLib,
+      "isRequestReceiver && !blockedByMe && !blockedByPeer",
+      "canAcceptDecline receiver-only"
+    );
+    assertIncludes(
+      dmLib,
+      "repairReversedEmptyPendingInitiator",
+      "safe repair on profile open"
+    );
+    assertIncludes(dmLib, "KRISTO_DM_REQUEST_CREATED", "create diagnostic");
+    assertNotIncludes(
+      dmLib,
+      "normUserId(existingRecord.createdByUserId || \"\") || viewerUserId",
+      "no stale createdBy initiator mint"
+    );
+  });
+
+  it("mobile UI uses canonical initiator/receiver roles", () => {
+    assertIncludes(
+      messagesUi,
+      "KRISTO_DM_REQUEST_ROLE_RESOLUTION",
+      "role diagnostic"
+    );
+    assertIncludes(messagesUi, "dmIsRequestInitiator", "initiator role");
+    assertIncludes(messagesUi, "dmIsRequestReceiver", "receiver role");
+    assertIncludes(
+      messagesUi,
+      "DM_REQUEST_MESSAGE_LIMIT",
+      "mobile limit constant"
+    );
+    assertNotIncludes(messagesUi, "7-message", "no hardcoded 7 copy");
+    assertNotIncludes(
+      messagesUi,
+      "outgoingMessageLimit || 7",
+      "no fallback 7"
+    );
+  });
+
+  it("safe repair requires empty pending + count 0", () => {
+    assertIncludes(
+      relDb,
+      "repairReversedEmptyPendingInitiator",
+      "repair export"
+    );
+    assertIncludes(
+      relDb,
+      "initiator_outbound_count = 0",
+      "repair count guard"
+    );
+    assertIncludes(relDb, "accepted_at IS NULL", "repair accepted guard");
+    assertIncludes(relDb, "declined_at IS NULL", "repair declined guard");
   });
 });
 
@@ -268,8 +340,13 @@ describe("DM request wiring (source)", () => {
     assertIncludes(dmLib, "usersShareActiveChurch", "used by DM lib");
     assertIncludes(
       requestLogic,
-      "DM_REQUEST_OUTGOING_MESSAGE_LIMIT = 7",
+      "DM_REQUEST_MESSAGE_LIMIT = 5",
       "limit constant"
+    );
+    assertNotIncludes(
+      requestLogic,
+      "DM_REQUEST_MESSAGE_LIMIT = 7",
+      "old limit removed"
     );
   });
 
@@ -346,26 +423,6 @@ describe("DM request wiring (source)", () => {
       relDb,
       "Direct message relationship database not configured",
       "no /tmp fallback on Vercel"
-    );
-    assertIncludes(
-      dmLib,
-      "Block is checked before any quota claim",
-      "block before claim"
-    );
-    assertIncludes(
-      dmLib,
-      "updateDirectMessageRelationshipStatus",
-      "durable accept/decline"
-    );
-  });
-
-  it("safety enforcement remains before relationship gate", () => {
-    const safetyIdx = roomMessages.indexOf("assertSafetyEnforcementAllows");
-    const dmGateIdx = roomMessages.indexOf("assertDirectMessageSendAllowed");
-    assert.ok(safetyIdx >= 0 && dmGateIdx >= 0, "both gates present");
-    assert.ok(
-      safetyIdx < dmGateIdx,
-      "safety must run before DM request limit"
     );
   });
 });

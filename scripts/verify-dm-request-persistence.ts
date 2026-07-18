@@ -14,9 +14,17 @@ import { describe, it, before, after } from "node:test";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { config as loadEnv } from "dotenv";
+import { DM_REQUEST_MESSAGE_LIMIT } from "@/app/api/_lib/directMessageRequestLogic";
 
 loadEnv({ path: join(process.cwd(), ".env.local") });
 loadEnv({ path: join(process.cwd(), ".env") });
+
+// Local verify uses data/ JSON when no DATABASE_URL. Clear inherited Vercel
+// markers so ensureReady does not hard-fail outside Neon.
+if (!process.env.DATABASE_URL && !process.env.POSTGRES_URL) {
+  delete process.env.VERCEL;
+  delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+}
 
 const ROOM_ID = "dm:audit_user_a::audit_user_b";
 const SENDER = "audit_user_a";
@@ -40,6 +48,8 @@ describe("DM request durable persistence", () => {
   });
 
   it("persists request + quota across module reload (cold-start simulation)", async () => {
+    assert.equal(DM_REQUEST_MESSAGE_LIMIT, 5);
+
     const backend = db.getDirectMessageRelationshipPersistenceBackend();
     assert.ok(
       backend === "neon-postgres" || backend === "local-json-data-dir",
@@ -58,11 +68,11 @@ describe("DM request durable persistence", () => {
     assert.equal(created.requestInitiatorUserId, SENDER);
     assert.equal(created.initiatorOutboundCount, 0);
 
-    for (let i = 1; i <= 6; i += 1) {
+    for (let i = 1; i <= DM_REQUEST_MESSAGE_LIMIT - 1; i += 1) {
       const claim = await db.claimInitiatorOutboundSlotAtomic({
         roomId: ROOM_ID,
         senderUserId: SENDER,
-        limit: 7,
+        limit: DM_REQUEST_MESSAGE_LIMIT,
       });
       assert.equal(claim.ok, true, `claim ${i}`);
       if (claim.ok) assert.equal(claim.count, i);
@@ -78,25 +88,30 @@ describe("DM request durable persistence", () => {
       ROOM_ID
     );
     assert.ok(afterReload, "relationship must survive reload");
-    assert.equal(afterReload.initiatorOutboundCount, 6);
+    assert.equal(
+      afterReload.initiatorOutboundCount,
+      DM_REQUEST_MESSAGE_LIMIT - 1
+    );
     assert.equal(afterReload.requestStatus, "pending");
 
-    const seventh = await reloaded.claimInitiatorOutboundSlotAtomic({
+    const fifth = await reloaded.claimInitiatorOutboundSlotAtomic({
       roomId: ROOM_ID,
       senderUserId: SENDER,
-      limit: 7,
+      limit: DM_REQUEST_MESSAGE_LIMIT,
     });
-    assert.equal(seventh.ok, true);
-    if (seventh.ok) assert.equal(seventh.count, 7);
+    assert.equal(fifth.ok, true);
+    if (fifth.ok) assert.equal(fifth.count, DM_REQUEST_MESSAGE_LIMIT);
 
-    const eighth = await reloaded.claimInitiatorOutboundSlotAtomic({
+    const sixth = await reloaded.claimInitiatorOutboundSlotAtomic({
       roomId: ROOM_ID,
       senderUserId: SENDER,
-      limit: 7,
+      limit: DM_REQUEST_MESSAGE_LIMIT,
     });
-    assert.equal(eighth.ok, false);
-    if (!eighth.ok) {
-      assert.equal(eighth.code, "DM_REQUEST_MESSAGE_LIMIT_REACHED");
+    assert.equal(sixth.ok, false);
+    if (!sixth.ok) {
+      assert.equal(sixth.code, "DM_REQUEST_MESSAGE_LIMIT_REACHED");
+      assert.equal(sixth.limit, 5);
+      assert.equal(sixth.remainingMessages, 0);
     }
 
     const accepted = await reloaded.updateDirectMessageRelationshipStatus({
@@ -115,7 +130,7 @@ describe("DM request durable persistence", () => {
     );
     assert.ok(afterAccept);
     assert.equal(afterAccept.requestStatus, "accepted");
-    assert.equal(afterAccept.initiatorOutboundCount, 7);
+    assert.equal(afterAccept.initiatorOutboundCount, DM_REQUEST_MESSAGE_LIMIT);
 
     await reloaded2.deleteDirectMessageRelationshipForTests(ROOM_ID);
     await reloaded2.upsertDirectMessageRelationship({
@@ -145,6 +160,36 @@ describe("DM request durable persistence", () => {
       sameChurchAtCreation: false,
     });
     assert.equal(dup.storageChurchId, CHURCH);
+
+    // Safe repair: reversed empty pending → profile opener becomes initiator.
+    await reloaded2.deleteDirectMessageRelationshipForTests(ROOM_ID);
+    await reloaded2.upsertDirectMessageRelationship({
+      roomId: ROOM_ID,
+      storageChurchId: CHURCH,
+      participantUserIds: [SENDER, RECEIVER],
+      requestStatus: "pending",
+      requestInitiatorUserId: RECEIVER, // reversed
+      sameChurchAtCreation: false,
+    });
+    const repaired = await reloaded2.repairReversedEmptyPendingInitiator({
+      roomId: ROOM_ID,
+      authenticatedOpenerUserId: SENDER,
+    });
+    assert.equal(repaired.repaired, true);
+    assert.equal(repaired.record?.requestInitiatorUserId, SENDER);
+
+    // Do not repair after outbound messages exist.
+    await reloaded2.claimInitiatorOutboundSlotAtomic({
+      roomId: ROOM_ID,
+      senderUserId: SENDER,
+      limit: DM_REQUEST_MESSAGE_LIMIT,
+    });
+    const noRepair = await reloaded2.repairReversedEmptyPendingInitiator({
+      roomId: ROOM_ID,
+      authenticatedOpenerUserId: RECEIVER,
+    });
+    assert.equal(noRepair.repaired, false);
+    assert.equal(noRepair.record?.requestInitiatorUserId, SENDER);
 
     console.log("KRISTO_DM_REQUEST_PERSISTENCE_BACKEND", {
       backend: reloaded2.getDirectMessageRelationshipPersistenceBackend(),

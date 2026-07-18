@@ -194,13 +194,18 @@ export type DirectMessageConversationSettings = {
   clearedAt: number;
   deletedAt: number;
   relationshipStatus?: DmRelationshipStatus;
+  requestInitiatorUserId?: string;
   outgoingMessageCount?: number;
   outgoingMessageLimit?: number;
   remainingMessages?: number;
   canSend?: boolean;
   isRequestInitiator?: boolean;
+  isRequestReceiver?: boolean;
   canAcceptDecline?: boolean;
 };
+
+/** Canonical cross-church DM request outbound limit (must match backend). */
+export const DM_REQUEST_MESSAGE_LIMIT = 5;
 
 export async function fetchDirectMessageConversationSettings(
   args: {

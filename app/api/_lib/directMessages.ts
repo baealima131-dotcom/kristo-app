@@ -16,8 +16,8 @@ import {
 import {
   buildDmRequestQuota,
   claimDirectMessageRequestOutboundSlot,
+  DM_REQUEST_MESSAGE_LIMIT,
   DM_REQUEST_MESSAGE_LIMIT_REACHED,
-  DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
   findThreadEntryByRoomId,
   relationshipToThreadOverlay,
   releaseDirectMessageRequestOutboundSlot,
@@ -30,6 +30,7 @@ import {
 import {
   ensurePendingRequestForInitiator,
   getDirectMessageRelationshipByRoomId,
+  repairReversedEmptyPendingInitiator,
   updateDirectMessageRelationshipStatus,
   upsertDirectMessageRelationship,
   type DirectMessageRelationshipRecord,
@@ -76,11 +77,13 @@ export type DirectMessageConversationSettings = {
   clearedAt: number;
   deletedAt: number;
   relationshipStatus: DmRelationshipStatus;
+  requestInitiatorUserId: string;
   outgoingMessageCount: number;
   outgoingMessageLimit: number;
   remainingMessages: number;
   canSend: boolean;
   isRequestInitiator: boolean;
+  isRequestReceiver: boolean;
   canAcceptDecline: boolean;
 };
 
@@ -154,7 +157,26 @@ async function ensureDurableRelationship(args: {
   sameChurch: boolean;
 }): Promise<DirectMessageRelationshipRecord> {
   const existing = await getDirectMessageRelationshipByRoomId(args.roomId);
-  if (existing) return existing;
+  if (existing) {
+    // Cross-church rows with missing initiator must become pending for the
+    // authenticated opener — never leave empty initiator (shows Accept to both).
+    if (
+      !args.sameChurch &&
+      (existing.requestStatus === "none" ||
+        !normUserId(existing.requestInitiatorUserId || ""))
+    ) {
+      const pending = await ensurePendingRequestForInitiator({
+        roomId: args.roomId,
+        senderUserId: args.viewerUserId,
+        storageChurchId: String(
+          existing.storageChurchId || args.storageChurchId
+        ),
+        participantUserIds: args.participantUserIds,
+      });
+      if (pending) return pending;
+    }
+    return existing;
+  }
 
   return upsertDirectMessageRelationship({
     roomId: args.roomId,
@@ -390,8 +412,8 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
       roomId: canonicalRoomId,
       storageChurchId: priorChurchId,
       participantUserIds: participants,
-      viewerUserId:
-        normUserId(existingRecord.createdByUserId || "") || viewerUserId,
+      // Authenticated caller only — never mint initiator from stale createdBy.
+      viewerUserId,
       // Ongoing same-church only — historical sameChurchAtCreation must not
       // mint an unlimited "none" relationship after users leave the church.
       sameChurch: sameChurchNow,
@@ -535,42 +557,41 @@ export async function openDirectMessageThread(args: {
     if (blocked) {
       throw new Error("conversation_blocked");
     }
-    const existingRel = await getDirectMessageRelationshipByRoomId(roomId);
-    return buildThreadView({
-      roomId,
-      churchId: String(
-        existingRel?.storageChurchId || record.churchId || requestedChurchId || "dm"
-      ),
-      peerUserId: targetUserId,
-    });
-  }
-
-  const existingRel = await getDirectMessageRelationshipByRoomId(roomId);
-  if (existingRel) {
-    // Recreate metadata row under the durable storage church.
-    const ensuredExisting = await ensureDirectMessageThreadFromRoomId({
-      viewerUserId,
-      churchId: String(
-        existingRel.storageChurchId || requestedChurchId || "dm"
-      ),
-      roomId,
-      intent: "repair",
-    });
-    if (ensuredExisting) return ensuredExisting;
   }
 
   const sharedChurchId = await usersShareActiveChurch(
     viewerUserId,
     targetUserId
   );
+  const existingRel = await getDirectMessageRelationshipByRoomId(roomId);
+
+  // Profile open is the only safe repair entrypoint for reversed/empty pending.
+  if (!sharedChurchId) {
+    const repair = await repairReversedEmptyPendingInitiator({
+      roomId,
+      authenticatedOpenerUserId: viewerUserId,
+    });
+    if (repair.repaired) {
+      console.log("KRISTO_DM_REQUEST_INITIATOR_REPAIRED", {
+        roomId,
+        authenticatedOpenerUserId: viewerUserId,
+        previousInitiatorUserId: repair.previousInitiatorUserId,
+        requestInitiatorUserId: repair.record?.requestInitiatorUserId || "",
+        reason: repair.reason,
+      });
+    }
+  }
+
   const viewerActive = await getActiveMembership(viewerUserId).catch(() => null);
   const storageChurchId = String(
-    sharedChurchId ||
+    existingRel?.storageChurchId ||
+      sharedChurchId ||
       requestedChurchId ||
       viewerActive?.churchId ||
       "dm"
   ).trim();
 
+  // Always ensure metadata + durable relationship (never early-return without initiator).
   const ensured = await ensureDirectMessageThreadFromRoomId({
     viewerUserId,
     churchId: storageChurchId,
@@ -580,6 +601,35 @@ export async function openDirectMessageThread(args: {
   if (!ensured) {
     throw new Error("Target user not found.");
   }
+
+  const rel = await getDirectMessageRelationshipByRoomId(roomId);
+  const relationshipStatus = rel
+    ? resolveDmRelationshipStatus({
+        record: {
+          roomId,
+          churchId: String(rel.storageChurchId || storageChurchId),
+          requestStatus:
+            rel.requestStatus === "none"
+              ? undefined
+              : (rel.requestStatus as "pending" | "accepted" | "declined"),
+          requestInitiatorUserId: rel.requestInitiatorUserId,
+          sameChurchAtCreation: rel.sameChurchAtCreation,
+        },
+        viewerUserId,
+        peerUserId: targetUserId,
+        shareActiveChurch: Boolean(sharedChurchId),
+      })
+    : sharedChurchId
+      ? ("same_church" as const)
+      : ("request_pending" as const);
+
+  console.log("KRISTO_DM_REQUEST_CREATED", {
+    roomId,
+    authenticatedSenderUserId: viewerUserId,
+    targetUserId,
+    requestInitiatorUserId: String(rel?.requestInitiatorUserId || "").trim(),
+    relationshipStatus,
+  });
 
   return ensured;
 }
@@ -660,11 +710,21 @@ export async function getDirectMessageConversationSettings(args: {
     peerUserId,
     shareActiveChurch,
   });
+  const requestInitiatorUserId = normUserId(
+    record.requestInitiatorUserId || ""
+  );
+  const isPendingRequest = relationshipStatus === "request_pending";
   const isRequestInitiator =
-    normUserId(record.requestInitiatorUserId || "") === userId;
+    isPendingRequest &&
+    Boolean(requestInitiatorUserId) &&
+    requestInitiatorUserId === userId;
+  const isRequestReceiver =
+    isPendingRequest &&
+    Boolean(requestInitiatorUserId) &&
+    requestInitiatorUserId !== userId;
   const quotaSenderUserId =
-    relationshipStatus === "request_pending"
-      ? normUserId(record.requestInitiatorUserId || "") || userId
+    isPendingRequest && requestInitiatorUserId
+      ? requestInitiatorUserId
       : userId;
   const quota = buildDmRequestQuota({
     relationshipStatus,
@@ -672,17 +732,14 @@ export async function getDirectMessageConversationSettings(args: {
     senderUserId: quotaSenderUserId,
   });
   const canAcceptDecline =
-    relationshipStatus === "request_pending" &&
-    !isRequestInitiator &&
-    !blockedByMe &&
-    !blockedByPeer;
+    isRequestReceiver && !blockedByMe && !blockedByPeer;
   // Viewer-specific sendability: initiator uses quota; recipient can reply
-  // without consuming the initiator's 7-message allowance.
+  // without consuming the initiator's message allowance.
   const viewerCanSend =
     relationshipStatus === "same_church" ||
     relationshipStatus === "accepted" ||
-    (relationshipStatus === "request_pending" &&
-      (isRequestInitiator ? quota.canSend : true));
+    (isRequestInitiator && quota.canSend) ||
+    isRequestReceiver;
 
   return {
     roomId,
@@ -695,11 +752,12 @@ export async function getDirectMessageConversationSettings(args: {
     clearedAt: Number(record.clearedAtByUserId?.[userId] || 0),
     deletedAt: Number(record.deletedAtByUserId?.[userId] || 0),
     relationshipStatus: quota.relationshipStatus,
+    requestInitiatorUserId,
     outgoingMessageCount: quota.outgoingMessageCount,
     outgoingMessageLimit: quota.outgoingMessageLimit,
     remainingMessages: isRequestInitiator
       ? quota.remainingMessages
-      : relationshipStatus === "request_pending"
+      : isRequestReceiver
         ? quota.outgoingMessageLimit
         : quota.remainingMessages,
     canSend:
@@ -708,6 +766,7 @@ export async function getDirectMessageConversationSettings(args: {
         ? false
         : viewerCanSend,
     isRequestInitiator,
+    isRequestReceiver,
     canAcceptDecline,
   };
 }
@@ -1080,7 +1139,7 @@ export async function assertDirectMessageSendAllowed(args: {
     };
   }
 
-  // request_pending: only the initiator consumes the 7-message quota.
+  // request_pending: only the initiator consumes the message quota.
   // Receiver may reply before Accept without consuming initiator quota.
   const initiatorUserId = normUserId(record.requestInitiatorUserId || "");
   if (initiatorUserId && initiatorUserId !== senderUserId) {
@@ -1114,7 +1173,7 @@ export async function assertDirectMessageSendAllowed(args: {
   const claim = await claimDirectMessageRequestOutboundSlot({
     roomId,
     senderUserId,
-    limit: DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
+    limit: DM_REQUEST_MESSAGE_LIMIT,
   });
 
   if (!claim.ok) {
@@ -1152,7 +1211,7 @@ export async function assertDirectMessageSendAllowed(args: {
     quota: {
       relationshipStatus: "request_pending",
       outgoingMessageCount: claim.count,
-      outgoingMessageLimit: DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
+      outgoingMessageLimit: DM_REQUEST_MESSAGE_LIMIT,
       remainingMessages: claim.remainingMessages,
       canSend: claim.remainingMessages > 0,
     },

@@ -3,8 +3,9 @@ import { neon, neonConfig } from "@neondatabase/serverless";
 import { readJsonFile, updateJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
 import { getDatabaseUrl, hasDurableStore, isVercelRuntime } from "@/app/api/_lib/store/authDb";
 import {
+  DM_REQUEST_MESSAGE_LIMIT,
   DM_REQUEST_MESSAGE_LIMIT_REACHED,
-  DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
+  dmRequestLimitReachedError,
 } from "@/app/api/_lib/directMessageRequestLogic";
 
 neonConfig.fetchConnectionCache = true;
@@ -541,8 +542,7 @@ export async function claimInitiatorOutboundSlotAtomic(args: {
   const senderUserId = norm(args.senderUserId);
   const limit = Math.max(
     1,
-    Number(args.limit || DM_REQUEST_OUTGOING_MESSAGE_LIMIT) ||
-      DM_REQUEST_OUTGOING_MESSAGE_LIMIT
+    Number(args.limit || DM_REQUEST_MESSAGE_LIMIT) || DM_REQUEST_MESSAGE_LIMIT
   );
 
   if (!roomId || !senderUserId) {
@@ -606,8 +606,7 @@ export async function claimInitiatorOutboundSlotAtomic(args: {
           result = {
             ok: false,
             code: DM_REQUEST_MESSAGE_LIMIT_REACHED,
-            error:
-              "This message request has reached its 7-message limit. Wait for the recipient to accept the conversation.",
+            error: dmRequestLimitReachedError(limit),
             churchId: existing.storageChurchId,
             count: existing.initiatorOutboundCount,
             limit,
@@ -698,12 +697,197 @@ export async function claimInitiatorOutboundSlotAtomic(args: {
   return {
     ok: false,
     code: DM_REQUEST_MESSAGE_LIMIT_REACHED,
-    error:
-      "This message request has reached its 7-message limit. Wait for the recipient to accept the conversation.",
+    error: dmRequestLimitReachedError(limit),
     churchId: existing.storageChurchId,
     count: existing.initiatorOutboundCount,
     limit,
     remainingMessages: 0,
+  };
+}
+
+/**
+ * Safe repair for empty/reversed pending request initiator.
+ * Only when: pending, outbound count 0, never accepted/declined,
+ * and authenticated profile opener is a participant.
+ * Never trusts client-provided initiator ids outside authenticated opener.
+ */
+export async function repairReversedEmptyPendingInitiator(args: {
+  roomId: string;
+  authenticatedOpenerUserId: string;
+}): Promise<{
+  repaired: boolean;
+  reason: string;
+  record: DirectMessageRelationshipRecord | null;
+  previousInitiatorUserId: string;
+}> {
+  await ensureReady();
+  const roomId = norm(args.roomId);
+  const openerUserId = norm(args.authenticatedOpenerUserId);
+  if (!roomId || !openerUserId) {
+    return {
+      repaired: false,
+      reason: "invalid_args",
+      record: null,
+      previousInitiatorUserId: "",
+    };
+  }
+
+  const existing = await getDirectMessageRelationshipByRoomId(roomId);
+  if (!existing) {
+    return {
+      repaired: false,
+      reason: "not_found",
+      record: null,
+      previousInitiatorUserId: "",
+    };
+  }
+
+  const previousInitiatorUserId = norm(existing.requestInitiatorUserId);
+  const isParticipant =
+    existing.participantA === openerUserId ||
+    existing.participantB === openerUserId;
+  if (!isParticipant) {
+    return {
+      repaired: false,
+      reason: "opener_not_participant",
+      record: existing,
+      previousInitiatorUserId,
+    };
+  }
+
+  if (existing.requestStatus !== "pending") {
+    return {
+      repaired: false,
+      reason: "not_pending",
+      record: existing,
+      previousInitiatorUserId,
+    };
+  }
+  if (existing.initiatorOutboundCount !== 0) {
+    return {
+      repaired: false,
+      reason: "outbound_count_nonzero",
+      record: existing,
+      previousInitiatorUserId,
+    };
+  }
+  if (existing.acceptedAt != null) {
+    return {
+      repaired: false,
+      reason: "already_accepted",
+      record: existing,
+      previousInitiatorUserId,
+    };
+  }
+  if (existing.declinedAt != null) {
+    return {
+      repaired: false,
+      reason: "already_declined",
+      record: existing,
+      previousInitiatorUserId,
+    };
+  }
+  if (previousInitiatorUserId === openerUserId) {
+    return {
+      repaired: false,
+      reason: "already_correct",
+      record: existing,
+      previousInitiatorUserId,
+    };
+  }
+  // Empty initiator or reversed initiator (peer stored as opener).
+  if (
+    previousInitiatorUserId &&
+    previousInitiatorUserId !== openerUserId &&
+    previousInitiatorUserId !== existing.participantA &&
+    previousInitiatorUserId !== existing.participantB
+  ) {
+    return {
+      repaired: false,
+      reason: "initiator_not_participant",
+      record: existing,
+      previousInitiatorUserId,
+    };
+  }
+
+  const now = Date.now();
+  if (!usePostgres()) {
+    let record: DirectMessageRelationshipRecord = existing;
+    await updateJsonFile<Record<string, DirectMessageRelationshipRecord>>(
+      DIRECT_MESSAGE_RELATIONSHIPS_STORE_KEY,
+      (current) => {
+        const store =
+          current && typeof current === "object" ? { ...current } : {};
+        const row = store[roomId];
+        if (!row) return store;
+        if (
+          row.requestStatus !== "pending" ||
+          row.initiatorOutboundCount !== 0 ||
+          row.acceptedAt != null ||
+          row.declinedAt != null
+        ) {
+          record = row;
+          return store;
+        }
+        const prior = norm(row.requestInitiatorUserId);
+        if (prior === openerUserId) {
+          record = row;
+          return store;
+        }
+        record = {
+          ...row,
+          requestInitiatorUserId: openerUserId,
+          updatedAt: now,
+        };
+        store[roomId] = record;
+        return store;
+      },
+      {}
+    );
+    const repaired =
+      norm(record.requestInitiatorUserId) === openerUserId &&
+      previousInitiatorUserId !== openerUserId;
+    return {
+      repaired,
+      reason: repaired ? "repaired" : "unchanged",
+      record,
+      previousInitiatorUserId,
+    };
+  }
+
+  const sql = getSql();
+  const rows = await sql`
+    UPDATE kristo_direct_message_relationships
+    SET
+      request_initiator_user_id = ${openerUserId},
+      updated_at = NOW()
+    WHERE room_id = ${roomId}
+      AND request_status = 'pending'
+      AND initiator_outbound_count = 0
+      AND accepted_at IS NULL
+      AND declined_at IS NULL
+      AND COALESCE(request_initiator_user_id, '') <> ${openerUserId}
+      AND (
+        participant_a = ${openerUserId}
+        OR participant_b = ${openerUserId}
+      )
+    RETURNING *
+  `;
+  const row = (rows as any[])[0];
+  if (!row) {
+    const latest = await getDirectMessageRelationshipByRoomId(roomId);
+    return {
+      repaired: false,
+      reason: "cas_miss_or_unsafe",
+      record: latest,
+      previousInitiatorUserId,
+    };
+  }
+  return {
+    repaired: true,
+    reason: "repaired",
+    record: rowToRecord(row),
+    previousInitiatorUserId,
   };
 }
 

@@ -7,8 +7,10 @@ import {
 import type { DmRequestThreadRecord } from "@/app/api/_lib/directMessageRequestLogic";
 
 export {
+  DM_REQUEST_MESSAGE_LIMIT,
   DM_REQUEST_OUTGOING_MESSAGE_LIMIT,
   DM_REQUEST_MESSAGE_LIMIT_REACHED,
+  dmRequestLimitReachedError,
   buildDmRequestQuota,
   claimOutboundSlotInStore,
   findThreadEntryByRoomId,

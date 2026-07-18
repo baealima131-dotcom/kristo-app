@@ -1,7 +1,17 @@
-export const DM_REQUEST_OUTGOING_MESSAGE_LIMIT = 7;
+/** Canonical cross-church DM request outbound message limit. */
+export const DM_REQUEST_MESSAGE_LIMIT = 5;
+
+/** @deprecated Prefer DM_REQUEST_MESSAGE_LIMIT — kept as an alias. */
+export const DM_REQUEST_OUTGOING_MESSAGE_LIMIT = DM_REQUEST_MESSAGE_LIMIT;
 
 export const DM_REQUEST_MESSAGE_LIMIT_REACHED =
   "DM_REQUEST_MESSAGE_LIMIT_REACHED";
+
+export function dmRequestLimitReachedError(
+  limit: number = DM_REQUEST_MESSAGE_LIMIT
+) {
+  return `This message request has reached its ${limit}-message limit. Wait for the recipient to accept the conversation.`;
+}
 
 export type DmRelationshipStatus =
   | "same_church"
@@ -100,8 +110,7 @@ export function buildDmRequestQuota(args: {
 }): DmRequestQuota {
   const limit = Math.max(
     1,
-    Number(args.limit || DM_REQUEST_OUTGOING_MESSAGE_LIMIT) ||
-      DM_REQUEST_OUTGOING_MESSAGE_LIMIT
+    Number(args.limit || DM_REQUEST_MESSAGE_LIMIT) || DM_REQUEST_MESSAGE_LIMIT
   );
   const senderUserId = normUserId(args.senderUserId);
   const count = Math.max(
@@ -177,8 +186,7 @@ export function claimOutboundSlotInStore(args: {
   const senderUserId = normUserId(args.senderUserId);
   const limit = Math.max(
     1,
-    Number(args.limit || DM_REQUEST_OUTGOING_MESSAGE_LIMIT) ||
-      DM_REQUEST_OUTGOING_MESSAGE_LIMIT
+    Number(args.limit || DM_REQUEST_MESSAGE_LIMIT) || DM_REQUEST_MESSAGE_LIMIT
   );
   const store =
     args.store && typeof args.store === "object" ? { ...args.store } : {};
@@ -211,8 +219,7 @@ export function claimOutboundSlotInStore(args: {
       result: {
         ok: false,
         code: DM_REQUEST_MESSAGE_LIMIT_REACHED,
-        error:
-          "This message request has reached its 7-message limit. Wait for the recipient to accept the conversation.",
+        error: dmRequestLimitReachedError(limit),
         churchId,
         count: current,
         limit,

@@ -123,6 +123,7 @@ import { getApiBase } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
+  DM_REQUEST_MESSAGE_LIMIT,
   fetchDirectMessageConversationSettings,
   markDirectMessageThreadRead,
   reportDirectMessageConversation,
@@ -8309,6 +8310,36 @@ export default function MessageThreadScreen() {
           if (canonicalChurchId) {
             setDmThreadChurchId(canonicalChurchId);
           }
+          const currentUserId = String(
+            auth?.userId || effectiveAuthUserId || ""
+          ).trim();
+          const requestInitiatorUserId = String(
+            settings.requestInitiatorUserId || ""
+          ).trim();
+          const isPendingRequest =
+            settings.relationshipStatus === "request_pending";
+          const isRequestInitiator =
+            isPendingRequest &&
+            Boolean(requestInitiatorUserId) &&
+            requestInitiatorUserId === currentUserId;
+          const isRequestReceiver =
+            isPendingRequest &&
+            Boolean(requestInitiatorUserId) &&
+            requestInitiatorUserId !== currentUserId;
+          console.log("KRISTO_DM_REQUEST_ROLE_RESOLUTION", {
+            roomId: backendRoomId,
+            currentUserId,
+            peerUserId: String(settings.peerUserId || "").trim(),
+            relationshipStatus: settings.relationshipStatus || "",
+            requestInitiatorUserId,
+            isRequestInitiator,
+            isRequestReceiver,
+            outgoingMessageCount: Number(settings.outgoingMessageCount || 0),
+            outgoingMessageLimit: Number(
+              settings.outgoingMessageLimit || DM_REQUEST_MESSAGE_LIMIT
+            ),
+            remainingMessages: Number(settings.remainingMessages || 0),
+          });
         }
       } catch (error: any) {
         console.log("KRISTO_DM_SETTINGS_LOAD_FAILED", {
@@ -8328,6 +8359,8 @@ export default function MessageThreadScreen() {
     backendRoomId,
     churchId,
     menuOpen,
+    auth?.userId,
+    effectiveAuthUserId,
   ]);
 
   const [membersOpen, setMembersOpen] = useState(false);
@@ -9509,10 +9542,36 @@ const displayHeaderTitle = assignmentDisplayTitle;
     isPersonToPersonDm &&
     (dmConversationSettings?.blocked === true ||
       dmConversationSettings?.relationshipStatus === "blocked");
+  const dmCurrentUserId = String(
+    auth?.userId || effectiveAuthUserId || ""
+  ).trim();
+  const dmRequestInitiatorUserId = String(
+    dmConversationSettings?.requestInitiatorUserId || ""
+  ).trim();
+  const dmIsRequestInitiator =
+    dmRequestPending &&
+    Boolean(dmRequestInitiatorUserId) &&
+    dmRequestInitiatorUserId === dmCurrentUserId;
+  const dmIsRequestReceiver =
+    dmRequestPending &&
+    Boolean(dmRequestInitiatorUserId) &&
+    dmRequestInitiatorUserId !== dmCurrentUserId;
+  const dmOutgoingLimit = Math.max(
+    1,
+    Number(
+      dmConversationSettings?.outgoingMessageLimit || DM_REQUEST_MESSAGE_LIMIT
+    ) || DM_REQUEST_MESSAGE_LIMIT
+  );
+  const dmOutgoingCount = Math.min(
+    dmOutgoingLimit,
+    Math.max(0, Number(dmConversationSettings?.outgoingMessageCount || 0) || 0)
+  );
+  const dmPeerDisplayName =
+    String(title || "Member").trim() || "Member";
   const dmComposerLocked =
     dmRelationshipBlocked ||
     dmRequestDeclined ||
-    (dmRequestPending && dmConversationSettings?.canSend === false);
+    (dmIsRequestInitiator && dmConversationSettings?.canSend === false);
 
   const canSend = useMemo(
     () =>
@@ -9615,7 +9674,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
           throw new Error(
             String(
               postRes?.error ||
-                "This message request has reached its 7-message limit. Wait for the recipient to accept the conversation."
+                `This message request has reached its ${DM_REQUEST_MESSAGE_LIMIT}-message limit. Wait for the recipient to accept the conversation.`
             )
           );
         }
@@ -14009,8 +14068,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 ? "Conversation blocked"
                 : dmRequestDeclined
                   ? "Message request declined"
-                  : dmConversationSettings?.canAcceptDecline
-                    ? `Message request from ${String(title || "Member").trim() || "Member"}`
+                  : dmIsRequestReceiver
+                    ? `Message request from ${dmPeerDisplayName}`
                     : "Message request"}
             </Text>
             <Text
@@ -14024,14 +14083,13 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 ? "Messages cannot be sent in this blocked conversation."
                 : dmRequestDeclined
                   ? "The recipient declined this request. You cannot send more messages until they accept."
-                  : dmConversationSettings?.canAcceptDecline
+                  : dmIsRequestReceiver
                     ? "Accept to open a normal conversation, or decline / block this request."
-                    : `The recipient has not accepted this conversation yet.\n${Math.min(
-                        Number(dmConversationSettings?.outgoingMessageCount || 0),
-                        Number(dmConversationSettings?.outgoingMessageLimit || 7)
-                      )} of ${Number(dmConversationSettings?.outgoingMessageLimit || 7)} messages used.`}
+                    : dmIsRequestInitiator
+                      ? `${dmPeerDisplayName} has not accepted this conversation yet.\n${dmOutgoingCount} of ${dmOutgoingLimit} messages used.`
+                      : "This conversation request is still being prepared."}
             </Text>
-            {dmConversationSettings?.canAcceptDecline ? (
+            {dmIsRequestReceiver ? (
               <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
                 <Pressable
                   disabled={dmSettingsBusy}
@@ -14080,8 +14138,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 </Pressable>
               </View>
             ) : null}
-            {dmRequestPending &&
-            !dmConversationSettings?.canAcceptDecline &&
+            {dmIsRequestInitiator &&
             dmConversationSettings?.canSend === false ? (
               <Text
                 style={{
@@ -14090,8 +14147,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   lineHeight: 17,
                 }}
               >
-                You’ve reached the 7-message limit. Wait for the recipient to
-                accept.
+                {`You have reached the ${dmOutgoingLimit}-message request limit.\nWait for ${dmPeerDisplayName} to accept the conversation.`}
               </Text>
             ) : null}
           </View>
