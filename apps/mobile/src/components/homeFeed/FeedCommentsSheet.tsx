@@ -20,6 +20,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import {
@@ -108,16 +109,63 @@ type Props = {
   onDiscussionCountBump: (postId: string, delta: number) => void;
 };
 
+function firstIdentityText(
+  ...values: unknown[]
+) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+/*
+ * Canonical commenter identity. Prefer explicit user-id fields,
+ * then the persisted createdBy owner used by the comment model.
+ * Never use display name or list index as identity.
+ */
+function resolveCommentAuthorIdentity(
+  comment: any
+): {
+  userId: string;
+  kristoId: string;
+  authorName: string;
+} {
+  const userId = firstIdentityText(
+    comment?.userId,
+    comment?.authorUserId,
+    comment?.ownerUserId,
+    comment?.createdBy
+  );
+
+  const kristoId = firstIdentityText(
+    comment?.kristoId,
+    comment?.authorKristoId,
+    comment?.userCode
+  ).toUpperCase();
+
+  const authorName = firstIdentityText(
+    comment?.authorName,
+    comment?.displayName,
+    comment?.userName,
+    comment?.name
+  );
+
+  return { userId, kristoId, authorName };
+}
+
 function CommentAvatar({
   commentId,
   avatarUri,
   displayName,
   size,
+  onPress,
 }: {
   commentId: string;
   avatarUri: string;
   displayName: string;
   size: number;
+  onPress?: () => void;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
   const fallbackLetter = fallbackLetterForName(displayName);
@@ -137,7 +185,7 @@ function CommentAvatar({
     });
   }, [commentId, resolvedUri, displayName, fallbackLetter]);
 
-  return (
+  const body = (
     <View
       style={[
         styles.avatarSlot,
@@ -174,6 +222,16 @@ function CommentAvatar({
         </View>
       )}
     </View>
+  );
+
+  if (!onPress) {
+    return body;
+  }
+
+  return (
+    <Pressable onPress={onPress} hitSlop={6}>
+      {body}
+    </Pressable>
   );
 }
 
@@ -224,10 +282,12 @@ function ReplyRow({
   reply,
   onToggleLike,
   onReport,
+  onOpenAuthorProfile,
 }: {
   reply: FeedCommentNode;
   onToggleLike: (commentId: string) => void;
   onReport: (commentId: string) => void;
+  onOpenAuthorProfile: (comment: FeedCommentNode) => void;
 }) {
   const display = resolveCommentAuthor(reply);
   const avatarUri = resolveAvatarUriForNode(reply);
@@ -239,12 +299,19 @@ function ReplyRow({
         avatarUri={avatarUri}
         displayName={display.authorName}
         size={AVATAR_REPLY}
+        onPress={() => onOpenAuthorProfile(reply)}
       />
       <View style={styles.commentContent}>
         <View style={styles.nameRow}>
-          <Text style={styles.replyName} numberOfLines={1}>
-            {display.authorName}
-          </Text>
+          <Pressable
+            onPress={() => onOpenAuthorProfile(reply)}
+            hitSlop={6}
+            style={styles.authorNamePressable}
+          >
+            <Text style={styles.replyName} numberOfLines={1}>
+              {display.authorName}
+            </Text>
+          </Pressable>
           <Text style={styles.timeText}>{formatCommentTime(reply.createdAt)}</Text>
         </View>
         <ExpandableCommentText text={reply.text} variant="reply" commentId={reply.id} />
@@ -267,10 +334,12 @@ function RepliesSection({
   comment,
   onToggleLike,
   onReport,
+  onOpenAuthorProfile,
 }: {
   comment: FeedCommentNode;
   onToggleLike: (commentId: string) => void;
   onReport: (commentId: string) => void;
+  onOpenAuthorProfile: (comment: FeedCommentNode) => void;
 }) {
   const replyCount = comment.replies.length;
   const [expanded, setExpanded] = useState(true);
@@ -303,6 +372,7 @@ function RepliesSection({
               reply={reply}
               onToggleLike={onToggleLike}
               onReport={onReport}
+              onOpenAuthorProfile={onOpenAuthorProfile}
             />
           ))
         : null}
@@ -315,11 +385,13 @@ function CommentRow({
   onReply,
   onToggleLike,
   onReport,
+  onOpenAuthorProfile,
 }: {
   comment: FeedCommentNode;
   onReply: (comment: FeedCommentNode) => void;
   onToggleLike: (commentId: string) => void;
   onReport: (commentId: string) => void;
+  onOpenAuthorProfile: (comment: FeedCommentNode) => void;
 }) {
   const display = resolveCommentAuthor(comment);
   const avatarUri = resolveAvatarUriForNode(comment);
@@ -332,12 +404,19 @@ function CommentRow({
           avatarUri={avatarUri}
           displayName={display.authorName}
           size={AVATAR_MAIN}
+          onPress={() => onOpenAuthorProfile(comment)}
         />
         <View style={styles.commentContent}>
           <View style={styles.nameRow}>
-            <Text style={styles.commentName} numberOfLines={1}>
-              {display.authorName}
-            </Text>
+            <Pressable
+              onPress={() => onOpenAuthorProfile(comment)}
+              hitSlop={6}
+              style={styles.authorNamePressable}
+            >
+              <Text style={styles.commentName} numberOfLines={1}>
+                {display.authorName}
+              </Text>
+            </Pressable>
             <Text style={styles.timeText}>{formatCommentTime(comment.createdAt)}</Text>
           </View>
           <ExpandableCommentText text={comment.text} variant="comment" commentId={comment.id} />
@@ -354,7 +433,12 @@ function CommentRow({
               <Text style={styles.reportCommentBtn}>Report</Text>
             </Pressable>
           </View>
-          <RepliesSection comment={comment} onToggleLike={onToggleLike} onReport={onReport} />
+          <RepliesSection
+            comment={comment}
+            onToggleLike={onToggleLike}
+            onReport={onReport}
+            onOpenAuthorProfile={onOpenAuthorProfile}
+          />
         </View>
       </View>
     </View>
@@ -738,6 +822,7 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   onDiscussionCountChange,
   onDiscussionCountBump,
 }: Props) {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput | null>(null);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
@@ -965,6 +1050,70 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
     [postId]
   );
 
+  const openCommentAuthorProfile = useCallback(
+    (comment: FeedCommentNode) => {
+      const identity = resolveCommentAuthorIdentity(comment);
+      const routeUserId =
+        identity.userId || identity.kristoId;
+      const viewerUserId = sessionUserId();
+      const isSelf =
+        Boolean(routeUserId) &&
+        routeUserId === viewerUserId;
+
+      /*
+       * Canonical full public profile is the Profile tab screen
+       * (Church Activity / Message / identity chips), not More About.
+       * External viewers use the same entry as DM thread profiles.
+       */
+      const destinationRoute = "/(tabs)/profile";
+
+      console.log("KRISTO_COMMENT_AUTHOR_PROFILE_PRESS", {
+        commentId: String(comment?.id || "").trim(),
+        resolvedUserId: identity.userId || null,
+        resolvedKristoId: identity.kristoId || null,
+        authorName: identity.authorName || null,
+        destinationRoute,
+      });
+
+      if (!routeUserId) {
+        Alert.alert(
+          "Profile unavailable",
+          "This commenter could not be identified."
+        );
+        return;
+      }
+
+      /*
+       * Close the comments modal first so it cannot remain
+       * invisibly stacked above the profile screen.
+       */
+      onClose();
+
+      requestAnimationFrame(() => {
+        if (isSelf) {
+          router.push({
+            pathname: destinationRoute as any,
+          });
+          return;
+        }
+
+        router.push({
+          pathname: destinationRoute as any,
+          params: {
+            profileMode: "external",
+            source: "direct-message-profile",
+            userId: routeUserId,
+            peerUserId: routeUserId,
+            id: routeUserId,
+            kristoId: identity.kristoId || "",
+            name: identity.authorName || "Member",
+          } as any,
+        });
+      });
+    },
+    [onClose, router]
+  );
+
   const handleToggleLike = useCallback(async (commentId: string) => {
     if (!commentId) return;
 
@@ -1168,6 +1317,9 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
                       onReply={handleReply}
                       onToggleLike={handleToggleLike}
                       onReport={handleReportComment}
+                      onOpenAuthorProfile={
+                        openCommentAuthorProfile
+                      }
                     />
                   ))
                 ) : railDiscussionCount > 0 ? (
@@ -1385,6 +1537,10 @@ const styles = StyleSheet.create({
     color: HOME_FEED_GOLD_SOFT,
     fontSize: 13,
     fontWeight: "800",
+  },
+  authorNamePressable: {
+    flexShrink: 1,
+    maxWidth: "78%",
   },
   reportCommentBtn: {
     color: "rgba(255,255,255,0.5)",
