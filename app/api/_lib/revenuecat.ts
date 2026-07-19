@@ -24,6 +24,11 @@ import {
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "@/lib/churchPremiumRevenueCat";
+import {
+  SUBSCRIBER_AUDIT_EVENT,
+  buildSubscriptionRecordAudit,
+  isSubscriberAuditChurch,
+} from "@/app/api/_lib/churchSubscriberAudit";
 
 export {
   CHURCH_PREMIUM_ENTITLEMENT,
@@ -562,6 +567,23 @@ function verifySubscriberSnapshot(
       revenueCatOriginalAppUserId,
     }),
   });
+
+  // TEMPORARY PII-safe subscriber/source audit, gated to specific church ids.
+  if (isSubscriberAuditChurch(uid)) {
+    const premiumMonthlyRecord = snapshot.subscriptions[PREMIUM_MONTHLY_PRODUCT_ID] ?? null;
+    console.log(SUBSCRIBER_AUDIT_EVENT, {
+      churchId: uid,
+      revenueCatLane: lane,
+      originalAppUserId: revenueCatOriginalAppUserId,
+      subscriberAliased: isRevenueCatSubscriberAliasedFromChurch({
+        churchId: uid,
+        revenueCatOriginalAppUserId,
+      }),
+      entitlementKeys: activeEntitlementKeys,
+      subscriptionKeys: activeSubscriptionKeys,
+      premiumMonthly: buildSubscriptionRecordAudit(premiumMonthlyRecord),
+    });
+  }
 
   if (entitlementMatch.entitlement) {
     const expiresAtRaw = entitlementMatch.entitlement.expires_date;
