@@ -2434,12 +2434,19 @@ export async function resolveSubscriptionOwnershipLockForChurch(args: {
   churchId: string;
   ownerUserId: string;
   media?: ChurchMediaProfile | null;
+  /**
+   * When false, return already-persisted lock status only — no backfill, create,
+   * metadata persist, migration, or RevenueCat reconcile writes.
+   * Host/member GET paths must pass false.
+   */
+  allowMutation?: boolean;
 }): Promise<{
   lock: SubscriptionOwnershipLockRecord | null;
   payload: SubscriptionOwnershipLockApiPayload;
 }> {
   const churchId = normalizeChurchId(args.churchId);
   const ownerUserId = normalizeUserId(args.ownerUserId);
+  const allowMutation = args.allowMutation !== false;
   if (!churchId || !ownerUserId) {
     return { lock: null, payload: emptyLockPayload() };
   }
@@ -2448,7 +2455,39 @@ export async function resolveSubscriptionOwnershipLockForChurch(args: {
     ownerUserId,
     churchId,
     storeMode: resolveSubscriptionOwnershipLockStoreMode(),
+    allowMutation,
   });
+
+  // Read-only peek: surface existing active lock for access decisions without writes.
+  if (!allowMutation) {
+    const locks = await listSubscriptionOwnershipLocksByOwnerUserId(ownerUserId);
+    const active =
+      sortLocksByRecency(listActiveSubscriptionOwnershipLocks(locks).filter((lock) => !lockIsExpired(lock)))[0] ??
+      null;
+    if (!active) {
+      console.log("KRISTO_SUBSCRIPTION_LOCK_NOT_FOUND", {
+        ownerUserId,
+        churchId,
+        reason: "read-only-no-active-lock",
+      });
+      return { lock: null, payload: emptyLockPayload() };
+    }
+    const payload = payloadFromLock({ lock: active, churchId });
+    console.log("KRISTO_SUBSCRIPTION_LOCK_DETECTED", {
+      ownerUserId,
+      churchId,
+      blocked: payload.blocked,
+      isLockHolder: payload.isLockHolder,
+      lockedChurchId: active.lockedChurchId,
+      lockedChurchName: active.lockedChurchName,
+      expiresAt: active.expiresAt,
+      status: active.status,
+      store: active.store,
+      platform: active.platform,
+      readOnly: true,
+    });
+    return { lock: active, payload };
+  }
 
   const active = await ensureActiveSubscriptionOwnershipLockForPastor({
     ownerUserId,

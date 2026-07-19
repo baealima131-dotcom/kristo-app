@@ -105,7 +105,13 @@ export async function GET(req: NextRequest) {
       profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
     });
 
-    if (hasProfile && subscriptionActive && !mediaForResponse?.subscriptionSource) {
+    // Source classification writes the media profile / may create locks — canonical pastor only.
+    if (
+      access.canManageChurchSubscription &&
+      hasProfile &&
+      subscriptionActive &&
+      !mediaForResponse?.subscriptionSource
+    ) {
       const classified = await reconcileChurchMediaSubscriptionSource({
         churchId,
         media: mediaForResponse,
@@ -131,7 +137,7 @@ export async function GET(req: NextRequest) {
     // Missing profiles are created via PATCH activate_church_subscription after an
     // explicit purchase or restore — never from passive GET + RevenueCat login.
     subscriptionActiveBeforeSync = subscriptionActive;
-    syncEligible = access.canManageMediaHosts && hasProfile && !subscriptionActive;
+    syncEligible = access.canManageChurchSubscription && hasProfile && !subscriptionActive;
     if (syncEligible) {
       syncRan = true;
       console.log("KRISTO_CHURCH_MEDIA_GET_SYNC_ATTEMPT", {
@@ -165,7 +171,7 @@ export async function GET(req: NextRequest) {
         revenueCatActive: sync.synced,
         reason: sync.reason,
       });
-    } else if (access.canManageMediaHosts && hasProfile && subscriptionActive) {
+    } else if (access.canManageChurchSubscription && hasProfile && subscriptionActive) {
       const preserveWithoutRevenueCat =
         shouldPreserveActiveSubscriptionWithoutRevenueCat(mediaForResponse);
 
@@ -208,7 +214,7 @@ export async function GET(req: NextRequest) {
       await confirmChurchMediaPersisted(churchId, mediaForResponse?.mediaName);
     }
 
-    if (access.canManageMediaHosts && access.actualPastorUserId && hasProfile && mediaForResponse) {
+    if (access.canManageChurchSubscription && access.actualPastorUserId && hasProfile && mediaForResponse) {
       try {
         const reconcileResult = await reconcileChurchSubscriptionExpiryNotifications({
           churchId,
@@ -312,11 +318,14 @@ export async function GET(req: NextRequest) {
       blocker: classifyChurchSubscriptionDecisionBlocker(decisionSnapshot),
     });
 
-    const lockOwnerUserId = String(access.actualPastorUserId || userId || "").trim();
+    // Lock peek for non-canonical requesters is read-only (no backfill/create/update).
+    // Mutation (backfill/migration/metadata persist) is reserved for the canonical pastor.
+    const lockOwnerUserId = String(access.actualPastorUserId || "").trim();
     const { payload: subscriptionOwnershipLock } = await resolveSubscriptionOwnershipLockForChurch({
       churchId,
       ownerUserId: lockOwnerUserId,
       media: mediaForResponse,
+      allowMutation: access.canManageChurchSubscription,
     });
 
     return NextResponse.json({
@@ -331,6 +340,8 @@ export async function GET(req: NextRequest) {
       canUseMediaTools: access.canUseMediaTools,
       canAccessChurchMedia: access.canAccessChurchMedia,
       isActualChurchPastor: access.isActualChurchPastor,
+      hasPastorRole: access.hasPastorRole,
+      canManageChurchSubscription: access.canManageChurchSubscription,
       actualPastorUserId: access.actualPastorUserId,
       mediaHostUserIds: access.mediaHostUserIds,
       storeMode: resolveMediaStoreMode(),
@@ -361,7 +372,14 @@ export async function POST(req: Request) {
     userId: a.userId,
   });
   if (!access.canManageMediaHosts) {
-    return NextResponse.json({ ok: false, error: "Only the church Pastor can manage Church Media" }, { status: 403 });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Only the current church Pastor can manage Church Media",
+        reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
+      },
+      { status: 403 }
+    );
   }
 
   try {
@@ -427,8 +445,15 @@ export async function PATCH(req: Request) {
     churchId: a.churchId,
     userId: a.userId,
   });
-  if (!access.canManageMediaHosts) {
-    return NextResponse.json({ ok: false, error: "Only the church Pastor can manage Church Media" }, { status: 403 });
+  if (!access.canManageChurchSubscription) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Only the current church Pastor can manage Church Media",
+        reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
+      },
+      { status: 403 }
+    );
   }
 
   try {
@@ -449,11 +474,15 @@ export async function PATCH(req: Request) {
     });
 
     if (!sync.synced) {
-      if (sync.reason === "not-pastor" || sync.reason === "profile-create-forbidden") {
+      if (
+        sync.reason === "not-pastor" ||
+        sync.reason === "not-canonical-pastor" ||
+        sync.reason === "profile-create-forbidden"
+      ) {
         return NextResponse.json(
           {
             ok: false,
-            error: "Only the church Pastor can activate a church subscription",
+            error: "Only the current church Pastor can activate a church subscription",
             reason: sync.reason,
           },
           { status: 403 }

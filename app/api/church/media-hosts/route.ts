@@ -101,12 +101,14 @@ export async function GET(req: NextRequest) {
       mediaHostUserIds: access.mediaHostUserIds,
       actualPastorUserId: access.actualPastorUserId,
       isActualChurchPastor: access.isActualChurchPastor,
+      hasPastorRole: access.hasPastorRole,
       isMediaHost: access.isMediaHost,
       subscriptionActive: access.subscriptionActive,
       canOpenMediaScreen: access.canOpenMediaScreen,
       canUseMediaTools: access.canUseMediaTools,
       canAccessChurchMedia: access.canAccessChurchMedia,
       canManageMediaHosts: access.canManageMediaHosts,
+      canManageChurchSubscription: access.canManageChurchSubscription,
       maxHosts: MAX_CHURCH_MEDIA_HOSTS,
     });
   } catch (error: any) {
@@ -129,7 +131,14 @@ export async function POST(req: NextRequest) {
     });
 
     if (!access.canManageMediaHosts) {
-      return json({ ok: false, error: "Only the church Pastor can manage media hosts" }, { status: 403 });
+      return json(
+        {
+          ok: false,
+          error: "Only the current church Pastor can manage media hosts",
+          reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
+        },
+        { status: 403 }
+      );
     }
 
     const subscriptionBlocked = await requireChurchSubscriptionActive(ctxOrRes.churchId, {
@@ -302,7 +311,14 @@ export async function DELETE(req: NextRequest) {
     });
 
     if (!access.canManageMediaHosts) {
-      return json({ ok: false, error: "Only the church Pastor can manage media hosts" }, { status: 403 });
+      return json(
+        {
+          ok: false,
+          error: "Only the current church Pastor can manage media hosts",
+          reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
+        },
+        { status: 403 }
+      );
     }
 
     const subscriptionBlocked = await requireChurchSubscriptionActive(ctxOrRes.churchId, {

@@ -35,8 +35,15 @@ export async function POST(req: NextRequest) {
     churchId,
     userId: viewer.userId,
   });
-  if (!access.isActualChurchPastor) {
-    return json({ ok: false, error: "Only the church pastor can delete this church" }, { status: 403 });
+  if (!access.isActualChurchPastor || !access.canManageChurchSubscription) {
+    return json(
+      {
+        ok: false,
+        error: "Only the current church Pastor can delete this church",
+        reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
+      },
+      { status: 403 }
+    );
   }
 
   const result = await preserveSubscriptionOwnershipLockTombstoneForChurchDelete({

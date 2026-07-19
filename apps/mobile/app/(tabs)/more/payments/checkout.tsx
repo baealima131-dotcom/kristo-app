@@ -224,6 +224,17 @@ export default function PaymentsCheckoutScreen() {
       churchId,
     }) as Record<string, string>;
 
+    // Defense-in-depth: require singular canonical pastor from server media status when known.
+    try {
+      const server = await fetchChurchMediaPremiumServerStatus(churchId, headers);
+      if (server?.isActualChurchPastor === false) {
+        console.log("KRISTO_CHECKOUT_ACTIVATE_SKIPPED_NOT_CANONICAL_PASTOR", { churchId });
+        return { activated: false, skipped: true as const, canUseMediaTools: false };
+      }
+    } catch {
+      // Fail open to session+server prepurchase/PATCH gates if status fetch fails.
+    }
+
     const sync = await syncChurchSubscriptionAfterPurchase({
       churchId,
       userId: sessionUserId,

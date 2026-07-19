@@ -15,6 +15,31 @@ function isPastorChurchRole(value: unknown): boolean {
   return normalized === "pastor" || normalized.includes("pastor");
 }
 
+/** Exact "Pastor" role (not Assistant/Co-Pastor / other pastor-like titles). */
+function isExactPastorRole(value: unknown): boolean {
+  return normalizeChurchRoleToken(value) === "pastor";
+}
+
+function isAssistantOrCoPastorRole(value: unknown): boolean {
+  const normalized = normalizeChurchRoleToken(value);
+  return (
+    normalized.includes("assistant") ||
+    normalized.includes("co-pastor") ||
+    normalized.includes("copastor") ||
+    normalized.includes("co pastor")
+  );
+}
+
+function normalizeMemberUserId(value: unknown): string {
+  return String(value || "").trim();
+}
+
+function userIdsMatch(a: unknown, b: unknown): boolean {
+  const left = normalizeMemberUserId(a).toLowerCase();
+  const right = normalizeMemberUserId(b).toLowerCase();
+  return Boolean(left && right && left === right);
+}
+
 export type MediaHostRecord = {
   userId: string;
   name: string;
@@ -30,17 +55,26 @@ export function parseMediaHostUserIds(hosts: unknown): string[] {
     .filter(Boolean);
 }
 
-function normalizeMemberUserId(value: unknown): string {
-  return String(value || "").trim();
-}
-
+/**
+ * Singular canonical / current actual Pastor for the church.
+ * Preference: exact role "Pastor", then other pastor-like roles that are not
+ * assistant/co-pastor, then (legacy) first pastor-like membership.
+ */
 export async function resolveActualChurchPastorUserId(churchId: string): Promise<string> {
   const cid = String(churchId || "").trim();
   if (!cid) return "";
 
   const members = await getMembershipsForChurch(cid, "Active");
-  const pastor = members.find((row) => isPastorChurchRole(row.churchRole));
-  return normalizeMemberUserId(pastor?.userId);
+  const exact = members.find((row) => isExactPastorRole(row.churchRole));
+  if (exact) return normalizeMemberUserId(exact.userId);
+
+  const primary = members.find(
+    (row) => isPastorChurchRole(row.churchRole) && !isAssistantOrCoPastorRole(row.churchRole)
+  );
+  if (primary) return normalizeMemberUserId(primary.userId);
+
+  const anyPastor = members.find((row) => isPastorChurchRole(row.churchRole));
+  return normalizeMemberUserId(anyPastor?.userId);
 }
 
 async function resolveRequesterMembership(churchId: string, userId: string) {
@@ -77,34 +111,36 @@ export async function evaluateChurchMediaAccess(args: {
   const requesterMembership = userId
     ? await resolveRequesterMembership(churchId, userId)
     : null;
-  const requesterIsPastorMember = isPastorChurchRole(requesterMembership?.churchRole);
-  const resolvedPastorUserId =
-    actualPastorUserId || (requesterIsPastorMember ? userId : "");
+  /** Broader pastor-role membership (Assistant/Co-Pastor/etc.). Not subscription authority. */
+  const hasPastorRole = isPastorChurchRole(requesterMembership?.churchRole);
   const hosts = await getStoredMediaHosts(churchId);
   const mediaHostUserIds = hosts.map((host) => host.userId);
 
-  const isActualChurchPastor =
-    !!userId &&
-    (userId === actualPastorUserId ||
-      requesterIsPastorMember ||
-      (!!resolvedPastorUserId && userId === resolvedPastorUserId));
+  // Subscription / host-management authority: ONLY the singular canonical pastor.
+  const isActualChurchPastor = Boolean(userId && actualPastorUserId && userIdsMatch(userId, actualPastorUserId));
+  const canManageMediaHosts = isActualChurchPastor;
+  const canManageChurchSubscription = isActualChurchPastor;
+
   const isMediaHost = !!userId && mediaHostUserIds.includes(userId);
   const media = await getChurchMediaByChurchId(churchId);
   const subscriptionActive = isChurchSubscriptionActiveFromRecord(media);
-  const canOpenMediaScreen = isActualChurchPastor || isMediaHost;
+  // Non-subscription pastor-role users may still open media (tools if active); they cannot manage.
+  const canOpenMediaScreen = isActualChurchPastor || hasPastorRole || isMediaHost;
   const canUseMediaTools = subscriptionActive && canOpenMediaScreen;
 
   return {
-    actualPastorUserId: resolvedPastorUserId || actualPastorUserId,
+    actualPastorUserId,
     hosts,
     mediaHostUserIds,
     isActualChurchPastor,
+    hasPastorRole,
     isMediaHost,
     subscriptionActive,
     canOpenMediaScreen,
     canUseMediaTools,
     canAccessChurchMedia: canOpenMediaScreen,
-    canManageMediaHosts: isActualChurchPastor,
+    canManageMediaHosts,
+    canManageChurchSubscription,
   };
 }
 
@@ -178,13 +214,11 @@ export async function ensureChurchMediaProfileForPastor(args: {
 
   let pastorUserId = String(args.actualPastorUserId || "").trim();
   if (!pastorUserId) {
-    const membership = await resolveRequesterMembership(churchId, requesterUserId);
-    if (isPastorChurchRole(membership?.churchRole)) {
-      pastorUserId = requesterUserId;
-    }
+    pastorUserId = await resolveActualChurchPastorUserId(churchId);
   }
 
-  if (!pastorUserId || requesterUserId !== pastorUserId) {
+  // Only the canonical actual Pastor may auto-create the media profile.
+  if (!pastorUserId || !userIdsMatch(requesterUserId, pastorUserId)) {
     throw new ChurchMediaAutoCreateForbiddenError();
   }
 

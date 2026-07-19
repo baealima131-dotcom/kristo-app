@@ -1078,7 +1078,16 @@ export default function PaymentsSubscriptionsScreen() {
       initialCustomerInfo?: CustomerInfo | null;
     }
   ) {
+    // Defense-in-depth: session pastor-role alone is not enough; server also requires
+    // the singular canonical actual Pastor (isActualChurchPastor from media API).
     if (!isPastorSessionRole(sessionRole)) {
+      return { activated: false, skipped: true as const, canUseMediaTools: false };
+    }
+    if (mediaPremiumStatus?.isActualChurchPastor === false) {
+      console.log("KRISTO_SUBSCRIPTION_ACTIVATE_SKIPPED_NOT_CANONICAL_PASTOR", {
+        churchId: String(churchId || "").trim() || null,
+        sessionRole,
+      });
       return { activated: false, skipped: true as const, canUseMediaTools: false };
     }
 

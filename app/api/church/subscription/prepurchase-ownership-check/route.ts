@@ -39,8 +39,15 @@ export async function POST(req: NextRequest) {
     churchId,
     userId: viewer.userId,
   });
-  if (!access.isActualChurchPastor) {
-    return json({ ok: false, error: "Only the church pastor can purchase church premium" }, { status: 403 });
+  if (!access.isActualChurchPastor || !access.canManageChurchSubscription) {
+    return json(
+      {
+        ok: false,
+        error: "Only the current church Pastor can purchase church premium",
+        reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
+      },
+      { status: 403 }
+    );
   }
 
   const ownerUserId = String(access.actualPastorUserId || viewer.userId || "").trim();

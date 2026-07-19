@@ -223,10 +223,10 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
   if (!churchId || !requesterUserId) return empty;
 
   const access = await evaluateChurchMediaAccess({ churchId, userId: requesterUserId });
-  if (!access.canManageMediaHosts) {
+  if (!access.canManageChurchSubscription) {
     return {
       ...empty,
-      reason: "not-pastor",
+      reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
     };
   }
 
