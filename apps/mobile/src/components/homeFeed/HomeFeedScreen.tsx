@@ -104,6 +104,8 @@ import {
   isHomeFeedYoutubeSilentNextPagePrepReady,
   clearHomeFeedYoutubeSilentNextPagePrep,
   refreshHomeFeedYoutubeBackgroundCache,
+  revalidateHomeFeedYoutubeStaleExhaustion,
+  shouldRevalidateStaleHomeFeedExhaustion,
   syncHomeFeedLike,
 } from "./homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "./homeFeedRowsCache";
@@ -374,6 +376,11 @@ export default function HomeFeedScreen() {
   );
   const userHasScrolledSinceAppendRef = useRef(false);
   const youtubeStreamExhaustedRef = useRef(false);
+  /** Once-per-focus attempt for stale hasMore:false revalidation. */
+  const homeFeedStalePagingAttemptedThisFocusRef = useRef(false);
+  /** Set after an authoritative revalidate accept/repair (exhaust or recover). */
+  const homeFeedStalePagingSettledRef = useRef(false);
+  const homeFeedStalePagingInflightRef = useRef(false);
   const youtubePaginationStagingRef = useRef(false);
   const youtubeRevealGenerationRef = useRef(0);
   const youtubePageRevealCompleteRef = useRef(youtubeSessionOnMount.pageRevealComplete);
@@ -728,8 +735,19 @@ export default function HomeFeedScreen() {
   const applyFeedPagingState = useCallback(
     (
       paging: { hasMore: boolean; nextCursor: string | null },
-      opts?: { allowSessionOverwrite?: boolean }
+      opts?: { allowSessionOverwrite?: boolean; pagingApplied?: boolean }
     ) => {
+      if (opts?.pagingApplied === false) {
+        console.log("KRISTO_HOME_FEED_PAGING_STATE_DECISION", {
+          action: "preserve",
+          reason: "caller-pagingApplied-false",
+          priorHasMore: feedHasMoreRef.current,
+          priorNextCursor: feedNextCursorRef.current,
+          resultHasMore: feedHasMoreRef.current,
+          resultNextCursor: feedNextCursorRef.current,
+        });
+        return;
+      }
       if (
         hasHomeFeedYoutubeStreamSession() &&
         opts?.allowSessionOverwrite !== true &&
@@ -770,6 +788,62 @@ export default function HomeFeedScreen() {
     }
     return appended;
   }, []);
+
+  const runHomeFeedStalePagingRevalidate = useCallback(
+    async (reason: "mount" | "focus") => {
+      if (!youtubeLayout) return;
+      if (homeFeedStalePagingSettledRef.current) return;
+      if (homeFeedStalePagingAttemptedThisFocusRef.current) return;
+      if (homeFeedStalePagingInflightRef.current) return;
+
+      const loadedPages = getHomeFeedLoadedPageCount();
+      const loadedRows = youtubeStreamRowsRef.current.length;
+      const eligible = shouldRevalidateStaleHomeFeedExhaustion({
+        loadedPages,
+        loadedRows,
+        firstPageSize: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
+        hasMore: feedHasMoreRef.current,
+        nextCursor: feedNextCursorRef.current,
+      });
+      if (!eligible) return;
+
+      homeFeedStalePagingAttemptedThisFocusRef.current = true;
+      homeFeedStalePagingInflightRef.current = true;
+      try {
+        const result = await revalidateHomeFeedYoutubeStaleExhaustion({
+          reason,
+          loadedPages,
+          loadedRows,
+          hasMore: feedHasMoreRef.current,
+          nextCursor: feedNextCursorRef.current,
+        });
+        if (!result.attempted) return;
+
+        if (result.preserved) {
+          // Failed/stale/uncertain — keep prior paging; allow a later focus to retry.
+          return;
+        }
+
+        homeFeedStalePagingSettledRef.current = true;
+        applyFeedPagingState(result.paging, {
+          allowSessionOverwrite: true,
+          pagingApplied: true,
+        });
+
+        if (result.newRows.length) {
+          commitYoutubeStreamAppend(result.newRows);
+        }
+
+        if (result.repaired) {
+          youtubeStreamExhaustedRef.current = false;
+          void prepareHomeFeedYoutubeNextPageSilently();
+        }
+      } finally {
+        homeFeedStalePagingInflightRef.current = false;
+      }
+    },
+    [applyFeedPagingState, commitYoutubeStreamAppend, youtubeLayout]
+  );
 
   const logYoutubePrefetchSkipThrottled = useCallback(
     (reason: string, payload: Record<string, unknown>) => {
@@ -1059,6 +1133,8 @@ export default function HomeFeedScreen() {
 
     if (forceFetch && youtubeLayout) {
       youtubeStreamExhaustedRef.current = false;
+      homeFeedStalePagingSettledRef.current = false;
+      homeFeedStalePagingAttemptedThisFocusRef.current = false;
       youtubeRevealGenerationRef.current += 1;
       resetYoutubeStreamPaginationState();
       pageReadyLoggedRef.current = false;
@@ -1385,7 +1461,10 @@ export default function HomeFeedScreen() {
           startupFeedRequestedRef.current = true;
         }
         logHomeFeedSessionRestored("focus");
-        void refreshHomeFeedYoutubeBackgroundCache("focus");
+        void (async () => {
+          await runHomeFeedStalePagingRevalidate("focus");
+          void refreshHomeFeedYoutubeBackgroundCache("focus");
+        })();
         return;
       }
       if (!startupFeedRequestedRef.current) {
@@ -1403,7 +1482,22 @@ export default function HomeFeedScreen() {
 
     bumpHomeFeedFetchGeneration("blur");
     loadFeedGenerationRef.current += 1;
-  }, [loadFeed, screenFocused, forceReloadAfterSchedule, displayOrderCacheReady, youtubeLayout]);
+    homeFeedStalePagingAttemptedThisFocusRef.current = false;
+  }, [
+    loadFeed,
+    screenFocused,
+    forceReloadAfterSchedule,
+    displayOrderCacheReady,
+    youtubeLayout,
+    runHomeFeedStalePagingRevalidate,
+  ]);
+
+  // Mount path: revalidate stale one-page exhaustion after session restore paints.
+  useEffect(() => {
+    if (!youtubeLayout || !displayOrderCacheReady) return;
+    if (!hasHomeFeedYoutubeStreamSession()) return;
+    void runHomeFeedStalePagingRevalidate("mount");
+  }, [youtubeLayout, displayOrderCacheReady, runHomeFeedStalePagingRevalidate]);
 
   useEffect(() => {
     if (!feedFocused || videoModalPayload) return;
@@ -1773,7 +1867,10 @@ export default function HomeFeedScreen() {
       const page = await fetchHomeFeedNextPage(cursor, pageLimit);
       applyFeedPagingState(
         { hasMore: page.hasMore, nextCursor: page.nextCursor },
-        { allowSessionOverwrite: true }
+        {
+          allowSessionOverwrite: true,
+          pagingApplied: page.pagingApplied !== false,
+        }
       );
 
       let afterCount = youtubeStreamRowsRef.current.length;
@@ -1966,7 +2063,10 @@ export default function HomeFeedScreen() {
     try {
       const page = await fetchHomeFeedNextPage(cursor, HOME_FEED_PAGE_SIZE);
 
-      applyFeedPagingState({ hasMore: page.hasMore, nextCursor: page.nextCursor });
+      applyFeedPagingState(
+        { hasMore: page.hasMore, nextCursor: page.nextCursor },
+        { pagingApplied: page.pagingApplied !== false }
+      );
 
       if (page.appended > 0 && page.newRows.length) {
         syncHomeFeedEngagementFromServerLikes(page.rows, buildServerLikeMap(page.rows));
@@ -2803,7 +2903,10 @@ export default function HomeFeedScreen() {
 
       applyFeedPagingState(
         { hasMore: page.hasMore, nextCursor: page.nextCursor },
-        { allowSessionOverwrite: true }
+        {
+          allowSessionOverwrite: true,
+          pagingApplied: page.pagingApplied !== false,
+        }
       );
 
       if (page.newRows.length) {
