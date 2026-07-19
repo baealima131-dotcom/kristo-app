@@ -24,6 +24,12 @@ import {
 } from "@/app/api/_lib/subscriptionOwnershipLock";
 import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
+import {
+  CHURCH_MEDIA_SUBSCRIPTION_DECISION_EVENT,
+  classifyChurchSubscriptionDecisionBlocker,
+  type ChurchSubscriptionDecisionSnapshot,
+  type ChurchSubscriptionSyncDiagnostics,
+} from "@/app/api/_lib/churchSubscriptionDecisionDiagnostics";
 
 export const runtime = "nodejs";
 
@@ -79,6 +85,14 @@ export async function GET(req: NextRequest) {
     let hasProfile = Boolean(String(media?.mediaName || "").trim());
     let subscriptionActive = access.subscriptionActive;
 
+    // TEMPORARY diagnostic state — captured across the decision, emitted once at the end.
+    let subscriptionActiveBeforeSync = subscriptionActive;
+    let syncEligible = false;
+    let syncRan = false;
+    let syncSynced: boolean | null = null;
+    let syncReason: string | null = null;
+    let syncDiagnostics: ChurchSubscriptionSyncDiagnostics | null = null;
+
     console.log("KRISTO_CHURCH_MEDIA_GET_BEFORE_SYNC", {
       churchId,
       userId,
@@ -116,7 +130,10 @@ export async function GET(req: NextRequest) {
     // Reconcile only when a profile already exists but subscription is inactive.
     // Missing profiles are created via PATCH activate_church_subscription after an
     // explicit purchase or restore — never from passive GET + RevenueCat login.
-    if (access.canManageMediaHosts && hasProfile && !subscriptionActive) {
+    subscriptionActiveBeforeSync = subscriptionActive;
+    syncEligible = access.canManageMediaHosts && hasProfile && !subscriptionActive;
+    if (syncEligible) {
+      syncRan = true;
       console.log("KRISTO_CHURCH_MEDIA_GET_SYNC_ATTEMPT", {
         churchId,
         userId,
@@ -126,6 +143,9 @@ export async function GET(req: NextRequest) {
         churchId,
         requesterUserId: userId,
       });
+      syncSynced = sync.synced;
+      syncReason = sync.reason;
+      syncDiagnostics = sync.diagnostics ?? null;
       if (sync.media) {
         mediaForResponse = sync.media;
         hasProfile = Boolean(String(sync.media.mediaName || "").trim());
@@ -257,6 +277,39 @@ export async function GET(req: NextRequest) {
       subscriptionUpdatedAt: mediaForResponse?.subscriptionUpdatedAt ?? null,
       hasProfile,
       profileMissing: !hasProfile,
+    });
+
+    // TEMPORARY structured diagnostic: one PII-safe line summarizing the whole
+    // subscription decision so the exact blocking branch is identifiable from a
+    // single request. Store identity is reduced to a boolean; no tx id / receipt /
+    // key / token / raw RevenueCat payload is logged. Remove once diagnosed.
+    const decisionSnapshot: ChurchSubscriptionDecisionSnapshot = {
+      churchId,
+      requesterUserId: userId,
+      hasProfile,
+      isActualPastor: access.isActualChurchPastor,
+      canManageMediaHosts: access.canManageMediaHosts,
+      subscriptionActiveBeforeSync,
+      syncEligible,
+      syncRan,
+      syncSynced,
+      syncReason,
+      revenueCatActive: syncDiagnostics?.revenueCatActive ?? null,
+      revenueCatReason: syncDiagnostics?.revenueCatReason ?? null,
+      detectedEntitlement: syncDiagnostics?.detectedEntitlement ?? null,
+      revenueCatAppUserId: syncDiagnostics?.revenueCatAppUserId ?? null,
+      revenueCatSubscriberAliased: syncDiagnostics?.revenueCatSubscriberAliased ?? null,
+      store: syncDiagnostics?.store ?? null,
+      storeSubscriptionIdentityPresent:
+        syncDiagnostics?.storeSubscriptionIdentityPresent ?? null,
+      ownershipLockAllowed: syncDiagnostics?.ownershipLockAllowed ?? null,
+      ownershipLockReason: syncDiagnostics?.ownershipLockReason ?? null,
+      subscriptionActiveAfterSync: subscriptionActive,
+      canUseMediaToolsAfterSync: access.canUseMediaTools,
+    };
+    console.log(CHURCH_MEDIA_SUBSCRIPTION_DECISION_EVENT, {
+      ...decisionSnapshot,
+      blocker: classifyChurchSubscriptionDecisionBlocker(decisionSnapshot),
     });
 
     const lockOwnerUserId = String(access.actualPastorUserId || userId || "").trim();

@@ -15,6 +15,10 @@ import {
 } from "@/app/api/_lib/subscriptionOwnershipLock";
 import { verifyChurchPremiumEntitlement, isVerifiedChurchPremiumReason } from "@/app/api/_lib/revenuecat";
 import {
+  buildSyncDiagnostics,
+  type ChurchSubscriptionSyncDiagnostics,
+} from "@/app/api/_lib/churchSubscriptionDecisionDiagnostics";
+import {
   getChurchMediaByChurchId,
   patchChurchMediaSubscription,
   type ChurchMediaProfile,
@@ -31,6 +35,8 @@ export type ChurchSubscriptionSyncResult = {
   revenueCatLane?: "production" | "sandbox" | null;
   sandboxPurchase?: boolean;
   ownershipLock?: SubscriptionOwnershipLockRecord | null;
+  /** TEMPORARY diagnostic: PII-safe snapshot of the RevenueCat + ownership decision. */
+  diagnostics?: ChurchSubscriptionSyncDiagnostics;
 };
 
 function resolveRequestedPlan(value?: string | null): "monthly" | "yearly" | null {
@@ -206,6 +212,12 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     subscriptionActivated: false,
     revenueCatLane: null,
     sandboxPurchase: false,
+    diagnostics: buildSyncDiagnostics({
+      churchId,
+      verification: null,
+      ownershipLockAllowed: null,
+      ownershipLockReason: null,
+    }),
   };
 
   if (!churchId || !requesterUserId) return empty;
@@ -263,6 +275,12 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
       media: mediaBefore,
       revenueCatLane: verification.revenueCatLane ?? null,
       sandboxPurchase: verification.sandboxPurchase === true,
+      diagnostics: buildSyncDiagnostics({
+        churchId,
+        verification,
+        ownershipLockAllowed: null,
+        ownershipLockReason: null,
+      }),
     };
   }
 
@@ -287,8 +305,18 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
       revenueCatLane: verification.revenueCatLane ?? null,
       sandboxPurchase: verification.sandboxPurchase === true,
       ownershipLock: lockCheck.lock,
+      diagnostics: buildSyncDiagnostics({
+        churchId,
+        verification,
+        ownershipLockAllowed: false,
+        ownershipLockReason: lockCheck.reason || "subscription-ownership-lock",
+      }),
     };
   }
+
+  // Ownership check passed: reuse this outcome for all remaining diagnostics.
+  const ownershipLockAllowed = lockCheck.allowed;
+  const ownershipLockReason = lockCheck.reason ?? "ok";
 
   let media = await getChurchMediaByChurchId(churchId);
   const hadProfile = Boolean(String(media?.mediaName || "").trim());
@@ -331,6 +359,12 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
       return {
         ...empty,
         reason,
+        diagnostics: buildSyncDiagnostics({
+          churchId,
+          verification,
+          ownershipLockAllowed,
+          ownershipLockReason,
+        }),
       };
     }
   }
@@ -370,6 +404,14 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
         media,
         profileCreated,
         subscriptionActivated: false,
+        revenueCatLane: verification.revenueCatLane ?? null,
+        sandboxPurchase: verification.sandboxPurchase === true,
+        diagnostics: buildSyncDiagnostics({
+          churchId,
+          verification,
+          ownershipLockAllowed,
+          ownershipLockReason,
+        }),
       };
     }
 
@@ -483,5 +525,11 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     subscriptionActivated,
     revenueCatLane: verification.revenueCatLane ?? null,
     sandboxPurchase: verification.sandboxPurchase === true,
+    diagnostics: buildSyncDiagnostics({
+      churchId,
+      verification,
+      ownershipLockAllowed,
+      ownershipLockReason,
+    }),
   };
 }

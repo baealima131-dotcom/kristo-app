@@ -62,6 +62,8 @@ export type ChurchPremiumVerification = {
   willRenew?: boolean | null;
   /** RevenueCat subscriber original_app_user_id from REST (may differ from churchId when aliased). */
   revenueCatOriginalAppUserId?: string | null;
+  /** Detected church-premium entitlement key (church_premium | Premium) for diagnostics; null when none. */
+  detectedEntitlement?: string | null;
 };
 
 type RevenueCatFetchLane = "production" | "sandbox";
@@ -582,6 +584,7 @@ function verifySubscriberSnapshot(
           sandboxPurchase,
           revenueCatLane: lane,
           revenueCatOriginalAppUserId,
+          detectedEntitlement: entitlementMatch.detectedEntitlement,
         },
         productId ? snapshot.subscriptions[productId] : null,
         snapshot
@@ -599,6 +602,7 @@ function verifySubscriberSnapshot(
         sandboxPurchase,
         revenueCatLane: lane,
         revenueCatOriginalAppUserId,
+        detectedEntitlement: entitlementMatch.detectedEntitlement,
       },
       productId ? snapshot.subscriptions[productId] : null,
       snapshot
@@ -635,6 +639,7 @@ function verifySubscriberSnapshot(
         sandboxPurchase,
         revenueCatLane: lane,
         revenueCatOriginalAppUserId,
+        detectedEntitlement: null,
       },
       subscriptionMatch.subscription,
       snapshot
@@ -649,6 +654,7 @@ function verifySubscriberSnapshot(
     bypassed: false,
     expiresAt: null,
     revenueCatLane: lane,
+    detectedEntitlement: null,
   };
 }
 
