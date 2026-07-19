@@ -1,7 +1,6 @@
 import React, { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Image,
   Pressable,
@@ -22,6 +21,7 @@ import {
   type MessagesInboxConversation,
 } from "@/src/lib/messagesInbox";
 import { StartNewChatSheet } from "@/src/components/messages/StartNewChatSheet";
+import { MessagesSecurityGate } from "@/src/components/messageSettings/MessagesSecurityGate";
 import type { DirectMessageThread } from "@/src/lib/directMessagesApi";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -214,8 +214,10 @@ export default function MessagesScreen() {
   }, [router]);
 
   const onMessageSettings = useCallback(() => {
-    Alert.alert("Message settings", "Message settings are not available yet.");
-  }, []);
+    router.push(
+      "/(tabs)/more/my-church-room/messages/settings" as any
+    );
+  }, [router]);
 
   const headerActions = useMemo(
     () => [
@@ -232,6 +234,7 @@ export default function MessagesScreen() {
   );
 
   return (
+    <MessagesSecurityGate>
     <View style={[s.screen, { paddingTop: insets.top + 10 }]}>
       <View style={s.header}>
         <Pressable
@@ -329,6 +332,7 @@ export default function MessagesScreen() {
         }}
       />
     </View>
+    </MessagesSecurityGate>
   );
 }
 

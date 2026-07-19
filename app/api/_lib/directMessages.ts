@@ -38,6 +38,19 @@ import {
   upsertDirectMessageRelationship,
   type DirectMessageRelationshipRecord,
 } from "@/app/api/_lib/store/directMessageRelationshipDb";
+import {
+  assertRecipientAllowsDirectMessage,
+  getPairReadReceiptVisibility,
+} from "@/app/api/_lib/messagePrivacyEnforcement";
+
+export class DirectMessagePrivacyError extends Error {
+  code: string;
+  constructor(message: string, code: string) {
+    super(message);
+    this.name = "DirectMessagePrivacyError";
+    this.code = code;
+  }
+}
 
 export type DirectMessageReportRecord = {
   reporterUserId: string;
@@ -98,6 +111,10 @@ export type DirectMessageConversationSettings = {
   sharesActiveChurch: boolean;
   peerChurchName: string;
   peerChurchRole: string;
+  /** Peer's last-read timestamp (ms) when both users allow receipts. */
+  peerReadAt: number;
+  /** True when both viewer and peer have showReadReceipts enabled. */
+  showReadReceipts: boolean;
 };
 
 export type {
@@ -556,6 +573,28 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
     return null;
   }
 
+  // Cold create via ensure/repair must honor recipient privacy — never let a
+  // client-supplied roomId forge an "existing conversation".
+  {
+    const privacyGate = await assertRecipientAllowsDirectMessage({
+      recipientUserId: peerUserId,
+      shareActiveChurch: sameChurchNow,
+      hasExistingConversation: false,
+      isEstablishedConversation: sameChurchNow,
+      isCrossChurchRequest: !sameChurchNow,
+    });
+    if (!privacyGate.ok) {
+      console.log("KRISTO_DM_ENSURE_CREATE_PRIVACY_DENIED", {
+        roomId: canonicalRoomId,
+        viewerUserId,
+        peerUserId,
+        code: privacyGate.code,
+        intent,
+      });
+      return null;
+    }
+  }
+
   const viewerActive = await getActiveMembership(viewerUserId).catch(() => null);
   const churchId = String(
     sharedChurchId ||
@@ -652,6 +691,29 @@ export async function openDirectMessageThread(args: {
     targetUserId
   );
   const existingRel = await getDirectMessageRelationshipByRoomId(roomId);
+  const hasExistingConversation = Boolean(existing || existingRel);
+  const isEstablishedConversation =
+    Boolean(sharedChurchId) ||
+    String(existingRel?.requestStatus || "") === "accepted";
+  const isCrossChurchRequest =
+    !sharedChurchId && !isEstablishedConversation;
+
+  const privacyGate = await assertRecipientAllowsDirectMessage({
+    recipientUserId: targetUserId,
+    shareActiveChurch: Boolean(sharedChurchId),
+    hasExistingConversation,
+    isEstablishedConversation,
+    isCrossChurchRequest,
+    initiatorOutboundCount: Number(
+      existingRel?.initiatorOutboundCount || 0
+    ),
+  });
+  if (!privacyGate.ok) {
+    throw new DirectMessagePrivacyError(
+      privacyGate.error,
+      privacyGate.code
+    );
+  }
 
   const viewerActive = await getActiveMembership(viewerUserId).catch(() => null);
   const storageChurchId = String(
@@ -909,6 +971,14 @@ export async function getDirectMessageConversationSettings(args: {
     (isRequestInitiator && quota.canSend) ||
     isRequestReceiver;
 
+  const showReadReceipts = await getPairReadReceiptVisibility({
+    viewerUserId: userId,
+    peerUserId,
+  });
+  const peerReadAt = showReadReceipts
+    ? Math.max(0, Number(record.readAtByUserId?.[peerUserId] || 0) || 0)
+    : 0;
+
   return {
     roomId,
     churchId,
@@ -943,6 +1013,8 @@ export async function getDirectMessageConversationSettings(args: {
     sharesActiveChurch: shareActiveChurch,
     peerChurchName,
     peerChurchRole,
+    peerReadAt,
+    showReadReceipts,
   };
 }
 
@@ -1033,6 +1105,24 @@ export async function updateDirectMessageConversationSettings(args: {
     const relBefore = await getDirectMessageRelationshipByRoomId(roomId);
     const previousStatus = String(relBefore?.requestStatus || "none");
     if (previousStatus === "accepted") return null;
+
+    const privacyGate = await assertRecipientAllowsDirectMessage({
+      recipientUserId: peerUserId,
+      shareActiveChurch: false,
+      hasExistingConversation: true,
+      isEstablishedConversation: false,
+      isCrossChurchRequest: true,
+      initiatorOutboundCount: Number(relBefore?.initiatorOutboundCount || 0),
+    });
+    if (!privacyGate.ok) {
+      console.log("KRISTO_DM_REQUEST_RESTART_PRIVACY_DENIED", {
+        roomId,
+        viewerUserId: userId,
+        peerUserId,
+        code: privacyGate.code,
+      });
+      return null;
+    }
 
     const restarted = await restartMessageRequestAsPending({
       roomId,
@@ -1351,6 +1441,43 @@ export async function assertDirectMessageSendAllowed(args: {
           "Messages cannot be sent in this blocked conversation.",
       },
     };
+  }
+
+  // Recipient privacy (user-level) — evaluated before quota claim.
+  {
+    const shareForPrivacy = Boolean(
+      await usersShareActiveChurch(senderUserId, peerUserId)
+    );
+    const relForPrivacy = await getDirectMessageRelationshipByRoomId(roomId);
+    const isEstablishedConversation =
+      shareForPrivacy ||
+      String(relForPrivacy?.requestStatus || "") === "accepted";
+    const isCrossChurchRequest =
+      !shareForPrivacy && !isEstablishedConversation;
+    const privacyGate = await assertRecipientAllowsDirectMessage({
+      recipientUserId: peerUserId,
+      shareActiveChurch: shareForPrivacy,
+      hasExistingConversation: true,
+      isEstablishedConversation,
+      isCrossChurchRequest,
+      initiatorOutboundCount: Number(
+        relForPrivacy?.initiatorOutboundCount ||
+          baseRecord.requestOutboundCountByUserId?.[senderUserId] ||
+          0
+      ),
+    });
+    if (!privacyGate.ok) {
+      return {
+        ok: false,
+        status: 403,
+        body: {
+          ok: false,
+          error: privacyGate.error,
+          code: privacyGate.code,
+          message: privacyGate.error,
+        },
+      };
+    }
   }
 
   let rel = await getDirectMessageRelationshipByRoomId(roomId);
@@ -2081,4 +2208,63 @@ export async function listDirectMessageInbox(args: {
   return items.sort(
     (a, b) => Number(b.timestampMs || 0) - Number(a.timestampMs || 0)
   );
+}
+
+export type DirectMessageSafetyListKind =
+  | "blocked"
+  | "muted"
+  | "hidden";
+
+export type DirectMessageSafetyListItem = {
+  roomId: string;
+  churchId: string;
+  peerUserId: string;
+  title: string;
+  avatarUri: string;
+  kind: DirectMessageSafetyListKind;
+};
+
+export async function listDirectMessageSafetyControls(args: {
+  viewerUserId: string;
+  kind: DirectMessageSafetyListKind;
+}): Promise<DirectMessageSafetyListItem[]> {
+  const viewerUserId = normUserId(args.viewerUserId);
+  const kind = args.kind;
+  if (!viewerUserId) return [];
+
+  const threads = await collectThreadRecordsForViewer("", viewerUserId).catch(
+    () => [] as DirectMessageThreadRecord[]
+  );
+
+  const rows: DirectMessageSafetyListItem[] = [];
+
+  for (const thread of threads) {
+    const participants =
+      (Array.isArray(thread.participantUserIds)
+        ? (thread.participantUserIds.map(normUserId) as [string, string])
+        : parseDirectRoomParticipants(thread.roomId)) || null;
+    if (!participants) continue;
+    if (!participants.includes(viewerUserId)) continue;
+
+    const peerUserId = peerUserIdFromParticipants(participants, viewerUserId);
+    const blockedByMe = thread.blockedByUserId?.[viewerUserId] === true;
+    const muted = thread.mutedByUserId?.[viewerUserId] === true;
+    const hidden = Number(thread.deletedAtByUserId?.[viewerUserId] || 0) > 0;
+
+    if (kind === "blocked" && !blockedByMe) continue;
+    if (kind === "muted" && !muted) continue;
+    if (kind === "hidden" && !hidden) continue;
+
+    const profile = await getProfile(peerUserId).catch(() => null);
+    rows.push({
+      roomId: thread.roomId,
+      churchId: String(thread.churchId || "").trim(),
+      peerUserId,
+      title: String(profile?.fullName || "Member").trim() || "Member",
+      avatarUri: String(profile?.avatarUrl || "").trim(),
+      kind,
+    });
+  }
+
+  return rows.sort((a, b) => a.title.localeCompare(b.title));
 }

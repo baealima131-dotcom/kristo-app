@@ -5101,6 +5101,7 @@ function Bubble({
   profileName,
   profileAvatarUri,
   onEnterLiveFromScheduleCard,
+  receiptLabel,
 }: {
   m: MsgItem;
   showAvatar?: boolean;
@@ -5125,6 +5126,8 @@ function Bubble({
   profileName?: string;
   profileAvatarUri?: string;
   onEnterLiveFromScheduleCard?: (item: any, activeSlot: any) => void;
+  /** DM receipt label when privacy allows; omit to hide status. */
+  receiptLabel?: string;
 }) {
   const mine = m.sender === "me";
   const pastorMessage = isPastorMessage(m, { churchPastorUserId });
@@ -6507,10 +6510,24 @@ function Bubble({
 
             <View style={s.msgMetaRow}>
               <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
-              <View style={s.deliveredRow}>
-                <Ionicons name="checkmark-done" size={11} color="rgba(196,181,253,0.88)" />
-                <Text style={t.deliveredText}>Delivered</Text>
-              </View>
+              {receiptLabel ? (
+                <View style={s.deliveredRow}>
+                  <Ionicons
+                    name={
+                      receiptLabel === "Read"
+                        ? "checkmark-done"
+                        : "checkmark"
+                    }
+                    size={11}
+                    color={
+                      receiptLabel === "Read"
+                        ? "rgba(217,179,95,0.95)"
+                        : "rgba(196,181,253,0.88)"
+                    }
+                  />
+                  <Text style={t.deliveredText}>{receiptLabel}</Text>
+                </View>
+              ) : null}
             </View>
           </View>
 
@@ -8163,6 +8180,20 @@ export default function MessageThreadScreen() {
   >({});
 
   const [draft, setDraft] = useState("");
+  const typingPingAtRef = useRef(0);
+
+  useEffect(() => {
+    if (!isPersonToPersonDm || !backendRoomId) return;
+    if (!String(draft || "").trim()) return;
+    const now = Date.now();
+    if (now - typingPingAtRef.current < 2500) return;
+    typingPingAtRef.current = now;
+    void apiGet(
+      `/api/auth/presence?roomId=${encodeURIComponent(backendRoomId)}&typing=1&heartbeat=1&t=${now}`,
+      { headers: getKristoHeaders() as any },
+      { screen: `DmTyping:${backendRoomId}`, throttleMs: 0, dedupe: false } as any
+    ).catch(() => null);
+  }, [draft, isPersonToPersonDm, backendRoomId]);
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
   const [attachUploading, setAttachUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -8402,7 +8433,12 @@ const displayHeaderTitle = assignmentDisplayTitle;
   }, [kristoSession, params, realMinistry, ministryAvatarFallback, routeAvatar]);
 
   const peerUserIdForPresence = String((params as any)?.peerUserId || "").trim();
-  const [peerPresence, setPeerPresence] = useState<{ online: boolean; text: string; lastSeenAt?: number } | null>(null);
+  const [peerPresence, setPeerPresence] = useState<{
+    online: boolean;
+    text: string;
+    lastSeenAt?: number;
+    typing?: boolean;
+  } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -8552,6 +8588,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
           online: !!data.online,
           text: String(data.text || (data.online ? "online now" : "last seen recently")),
           lastSeenAt: Number(data.lastSeenAt || 0),
+          typing: data.typing === true,
         });
       } catch {
         if (alive) setPeerPresence({ online: false, text: "last seen recently" });
@@ -8570,7 +8607,18 @@ const displayHeaderTitle = assignmentDisplayTitle;
   const presence = useMemo(
     () => {
       if (isPersonToPersonDm) {
-        return peerPresence || { online: false, text: "checking..." };
+        if (!peerPresence) {
+          return { online: false, text: "checking..." };
+        }
+        if (peerPresence.typing) {
+          return {
+            online: peerPresence.online,
+            text: "typing…",
+            lastSeenAt: peerPresence.lastSeenAt,
+            typing: true,
+          };
+        }
+        return peerPresence;
       }
 
       return {
@@ -14014,6 +14062,18 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 profileName={liveScheduleProfileName}
                 profileAvatarUri={liveScheduleProfileAvatarUri}
                 onEnterLiveFromScheduleCard={handleEnterLiveFromChurchScheduleCard}
+                receiptLabel={
+                  isPersonToPersonDm && item.sender === "me"
+                    ? dmConversationSettings?.showReadReceipts === true
+                      ? Number(item.createdAt || 0) <=
+                        Number(dmConversationSettings?.peerReadAt || 0)
+                        ? "Read"
+                        : "Delivered"
+                      : undefined
+                    : item.sender === "me"
+                      ? "Delivered"
+                      : undefined
+                }
               />
             );
           }}
@@ -15583,6 +15643,20 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                         onPress={() =>
                           onThreadMenuAction("media-storage")
                         }
+                      />
+
+                      <MenuTile
+                        icon={
+                          dmConversationSettings?.muted
+                            ? "notifications-outline"
+                            : "notifications-off-outline"
+                        }
+                        label={
+                          dmConversationSettings?.muted
+                            ? "Unmute"
+                            : "Mute"
+                        }
+                        onPress={() => onThreadMenuAction("mute")}
                       />
                     </View>
                   </View>

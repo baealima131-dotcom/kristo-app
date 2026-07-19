@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import { readSession } from "@/app/api/auth/_lib/session";
+import { redactPresenceForPrivacy } from "@/app/api/_lib/messagePrivacySettings";
+import { getMessagePrivacySettings } from "@/app/api/_lib/store/messagePrivacySettingsDb";
 import {
   getMessagePresenceLastSeen,
+  isUserTypingInRoom,
   touchMessagePresence,
+  touchMessageTyping,
 } from "@/app/api/_lib/store/messagePresenceDb";
 
 export const runtime = "nodejs";
@@ -49,6 +53,7 @@ export async function GET(req: Request) {
   const roomId = String(url.searchParams.get("roomId") || "").trim();
   const targetUserId = String(url.searchParams.get("userId") || "").trim();
   const heartbeat = url.searchParams.get("heartbeat") === "1";
+  const typing = url.searchParams.get("typing") === "1";
   const now = Date.now();
 
   if (heartbeat) {
@@ -59,6 +64,13 @@ export async function GET(req: Request) {
       viewerUserId,
       now
     );
+  }
+
+  if (typing && roomId) {
+    const viewerSettings = await getMessagePrivacySettings(viewerUserId);
+    if (viewerSettings.showTypingIndicator) {
+      await touchMessageTyping(roomId, viewerUserId, now);
+    }
   }
 
   if (!targetUserId) {
@@ -91,16 +103,34 @@ export async function GET(req: Request) {
     lastSeenAt > 0 &&
     now - lastSeenAt <= ONLINE_WINDOW_MS;
 
+  const targetSettings = await getMessagePrivacySettings(targetUserId);
+  const redacted = redactPresenceForPrivacy({
+    settings: targetSettings,
+    online,
+    lastSeenAt,
+    text: text(lastSeenAt, now),
+  });
+
+  let peerTyping = false;
+  if (roomId && targetSettings.showTypingIndicator) {
+    const viewerSettings = await getMessagePrivacySettings(viewerUserId);
+    if (viewerSettings.showTypingIndicator) {
+      peerTyping = await isUserTypingInRoom(roomId, targetUserId, now);
+    }
+  }
+
   return NextResponse.json(
     {
       ok: true,
       data: {
         userId: targetUserId,
         roomId,
-        online,
-        lastSeenAt,
+        online: redacted.online,
+        lastSeenAt: redacted.lastSeenAt,
         serverNow: now,
-        text: text(lastSeenAt, now),
+        text: redacted.text,
+        presenceHidden: redacted.presenceHidden,
+        typing: peerTyping,
       },
     },
     {

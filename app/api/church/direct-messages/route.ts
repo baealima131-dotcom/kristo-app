@@ -12,12 +12,14 @@ import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import {
   ensureDirectMessageThreadFromRoomId,
   listDirectMessageInbox,
+  listDirectMessageSafetyControls,
   getDirectMessageConversationSettings,
   markDirectMessageThreadRead,
   openDirectMessageThread,
   reportDirectMessageUser,
   resolveDirectMessagePeerPreview,
   updateDirectMessageConversationSettings,
+  type DirectMessageSafetyListKind,
 } from "@/app/api/_lib/directMessages";
 
 export const runtime = "nodejs";
@@ -104,6 +106,31 @@ export async function GET(req: NextRequest) {
     }
 
     return json({ ok: true, data: settings });
+  }
+
+  if (action === "safety_lists") {
+    const kind = String(url.searchParams.get("kind") || "")
+      .trim()
+      .toLowerCase() as DirectMessageSafetyListKind;
+    if (
+      kind !== "blocked" &&
+      kind !== "muted" &&
+      kind !== "hidden"
+    ) {
+      return json(
+        {
+          ok: false,
+          error: "kind must be blocked, muted, or hidden.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const rows = await listDirectMessageSafetyControls({
+      viewerUserId,
+      kind,
+    });
+    return json({ ok: true, data: rows });
   }
 
   if (action === "resolve") {
@@ -225,10 +252,16 @@ export async function POST(req: NextRequest) {
     });
     return json({ ok: true, data: thread }, { status: 201 });
   } catch (error) {
+    const privacyCode =
+      error &&
+      typeof error === "object" &&
+      (error as any).name === "DirectMessagePrivacyError"
+        ? String((error as any).code || "")
+        : "";
     const message = String((error as Error)?.message || error || "Could not start chat.");
     let status = 400;
     if (message.includes("yourself")) status = 400;
-    else if (message === "conversation_blocked") status = 403;
+    else if (message === "conversation_blocked" || privacyCode) status = 403;
     else if (message.includes("not found")) status = 404;
     return json(
       {
@@ -236,7 +269,9 @@ export async function POST(req: NextRequest) {
         error: message,
         ...(message === "conversation_blocked"
           ? { code: "conversation_blocked" }
-          : {}),
+          : privacyCode
+            ? { code: privacyCode }
+            : {}),
       },
       { status }
     );

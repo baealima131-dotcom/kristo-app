@@ -258,6 +258,8 @@ export type DirectMessageConversationSettings = {
   sharesActiveChurch?: boolean;
   peerChurchName?: string;
   peerChurchRole?: string;
+  peerReadAt?: number;
+  showReadReceipts?: boolean;
 };
 
 /** Canonical cross-church DM request outbound limit (must match backend). */

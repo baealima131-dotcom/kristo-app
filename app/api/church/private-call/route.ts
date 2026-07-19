@@ -7,6 +7,10 @@ import {
   buildDirectRoomId,
   isDirectMessageBlocked,
 } from "@/app/api/_lib/directMessages";
+import { usersShareActiveChurch } from "@/app/api/_lib/directMessageRequests";
+import { assertRecipientAllowsPrivateCall } from "@/app/api/_lib/messagePrivacyEnforcement";
+import { findThreadEntryByRoomId } from "@/app/api/_lib/directMessageRequestLogic";
+import { readDirectMessageThreadStore } from "@/app/api/_lib/store/directMessageThreadDb";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { notifyPastorPrivateCallIncoming } from "@/app/api/_lib/privateCallNotifications";
 import {
@@ -238,6 +242,111 @@ export async function POST(req: NextRequest) {
           error: "pastoral_call_only",
           message:
             "Voice calls are available only between a Pastor and a church member.",
+        },
+        { status: 403 }
+      );
+    }
+  }
+
+  // Calling privacy (receiver settings) — only after pastoral model passes.
+  {
+    const directRoomId = buildDirectRoomId(callerUserId, receiverUserId);
+    const threadStore = await readDirectMessageThreadStore<
+      Record<string, unknown>
+    >({}).catch(() => ({} as Record<string, unknown>));
+    const hasExistingConversation = Boolean(
+      directRoomId &&
+        findThreadEntryByRoomId(threadStore as any, directRoomId)
+    );
+    const shareActiveChurch = Boolean(
+      await usersShareActiveChurch(callerUserId, receiverUserId).catch(
+        () => null
+      )
+    );
+    const callKind =
+      String(body?.callKind || body?.kind || "voice")
+        .trim()
+        .toLowerCase() === "video"
+        ? "video"
+        : "voice";
+
+    const callPrivacy = await assertRecipientAllowsPrivateCall({
+      recipientUserId: receiverUserId,
+      shareActiveChurch,
+      hasExistingConversation,
+      callKind,
+      isUnknownCaller: !hasExistingConversation,
+    });
+
+    if (!callPrivacy.ok && !callPrivacy.autoReject) {
+      console.log("KRISTO_PRIVATE_CALL_PRIVACY_DENIED", {
+        churchId,
+        callerUserId,
+        receiverUserId,
+        code: callPrivacy.code,
+      });
+      return json(
+        {
+          ok: false,
+          error: callPrivacy.code,
+          message: callPrivacy.error,
+          code: callPrivacy.code,
+        },
+        { status: 403 }
+      );
+    }
+
+    if (!callPrivacy.ok && callPrivacy.autoReject) {
+      const [
+        callerNameAuto,
+        receiverNameAuto,
+        receiverProfileAuto,
+        callerProfileAuto,
+      ] = await Promise.all([
+        displayNameForUser(callerUserId, "Church member"),
+        displayNameForUser(receiverUserId, receiverFallbackName),
+        getProfile(receiverUserId).catch(() => null),
+        getProfile(callerUserId).catch(() => null),
+      ]);
+
+      const autoSession = await createPrivateCallSession({
+        churchId,
+        callerUserId,
+        callerName: callerNameAuto,
+        callerAvatarUrl:
+          String(callerProfileAuto?.avatarUrl || "").trim() || undefined,
+        pastorUserId: receiverUserId,
+        pastorName: receiverNameAuto,
+        pastorAvatarUrl:
+          String(receiverProfileAuto?.avatarUrl || "").trim() || undefined,
+        pastorSourceField: receiverSourceField,
+      });
+
+      const declined = await updatePrivateCallSession(
+        autoSession.id,
+        (session) => ({
+          ...session,
+          status: "declined",
+          updatedAt: new Date().toISOString(),
+          endedAt: new Date().toISOString(),
+          endedReason: "auto-reject-unknown-caller",
+        })
+      );
+
+      console.log("KRISTO_PRIVATE_CALL_AUTO_REJECTED", {
+        callId: autoSession.id,
+        callerUserId,
+        receiverUserId,
+        churchId,
+      });
+
+      return json(
+        {
+          ok: false,
+          error: callPrivacy.code,
+          message: callPrivacy.error,
+          code: callPrivacy.code,
+          data: declined || autoSession,
         },
         { status: 403 }
       );
