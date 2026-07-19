@@ -24,11 +24,7 @@ import {
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "@/lib/churchPremiumRevenueCat";
-import {
-  SUBSCRIBER_AUDIT_EVENT,
-  buildSubscriptionRecordAudit,
-  isSubscriberAuditChurch,
-} from "@/app/api/_lib/churchSubscriberAudit";
+import { shortIdentityHash } from "@/app/api/_lib/storeIdentityHash";
 
 export {
   CHURCH_PREMIUM_ENTITLEMENT,
@@ -205,6 +201,15 @@ function entitlementIsActive(expiresDate: unknown): boolean {
   return ms > Date.now();
 }
 
+/** Normalize a list of candidate identity values to the first stable non-empty string. */
+function firstNonEmptyIdentity(values: unknown[]): string | null {
+  for (const value of values) {
+    const normalized = String(value ?? "").trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function resolveStoreOwnershipFromSubscription(subscription: any): {
   store: "app_store" | "play_store" | null;
   storeSubscriptionIdentity: string | null;
@@ -220,15 +225,6 @@ function resolveStoreOwnershipFromSubscription(subscription: any): {
     };
   }
 
-  const storeSubscriptionIdentity =
-    String(
-      subscription.original_transaction_id ||
-        subscription.original_store_transaction_id ||
-        subscription.originalTransactionId ||
-        ""
-    ).trim() || null;
-  const storeTransactionId = String(subscription.store_transaction_id || "").trim() || null;
-
   const storeRaw = String(subscription.store || "").toUpperCase();
   let store: "app_store" | "play_store" | null = null;
   if (storeRaw.includes("APP_STORE") || storeRaw === "MAC_APP_STORE") {
@@ -236,6 +232,43 @@ function resolveStoreOwnershipFromSubscription(subscription: any): {
   } else if (storeRaw.includes("PLAY_STORE") || storeRaw === "GOOGLE_PLAY") {
     store = "play_store";
   }
+
+  // Store-aware identity: App Store records expose original_transaction_id, while
+  // Play Store records only expose store_transaction_id / purchase token / order id.
+  // Derive a single stable identity string per store, with the opposite store's
+  // fields only as a final compatibility fallback. Never log the raw value.
+  const appStoreIdentityCandidates = [
+    subscription.original_transaction_id,
+    subscription.original_store_transaction_id,
+    subscription.originalTransactionId,
+    subscription.store_transaction_id, // final compatibility fallback
+  ];
+  const playStoreIdentityCandidates = [
+    subscription.store_transaction_id,
+    subscription.purchase_token,
+    subscription.google_purchase_token,
+    subscription.order_id,
+    // App Store-style fields only as compatibility fallback
+    subscription.original_transaction_id,
+    subscription.original_store_transaction_id,
+    subscription.originalTransactionId,
+  ];
+
+  let storeSubscriptionIdentity: string | null;
+  if (store === "play_store") {
+    storeSubscriptionIdentity = firstNonEmptyIdentity(playStoreIdentityCandidates);
+  } else if (store === "app_store") {
+    storeSubscriptionIdentity = firstNonEmptyIdentity(appStoreIdentityCandidates);
+  } else {
+    // Unknown store: try App Store-style first (historical behavior), then Play-style.
+    storeSubscriptionIdentity = firstNonEmptyIdentity([
+      ...appStoreIdentityCandidates,
+      subscription.purchase_token,
+      subscription.google_purchase_token,
+      subscription.order_id,
+    ]);
+  }
+  const storeTransactionId = String(subscription.store_transaction_id || "").trim() || null;
 
   let willRenew: boolean | null = null;
   if (subscription.unsubscribe_detected_at) {
@@ -344,8 +377,9 @@ function mergeVerificationStoreOwnership(
     console.log("KRISTO_REVENUECAT_STORE_IDENTITY_RESOLVED", {
       productId: merged.productId,
       store: merged.store,
-      storeSubscriptionIdentity: merged.storeSubscriptionIdentity,
-      storeTransactionId: merged.storeTransactionId,
+      storeSubscriptionIdentityPresent: true,
+      storeSubscriptionIdentityHash: shortIdentityHash(merged.storeSubscriptionIdentity),
+      storeTransactionIdPresent: Boolean(merged.storeTransactionId),
       willRenew: merged.willRenew,
     });
   }
@@ -567,23 +601,6 @@ function verifySubscriberSnapshot(
       revenueCatOriginalAppUserId,
     }),
   });
-
-  // TEMPORARY PII-safe subscriber/source audit, gated to specific church ids.
-  if (isSubscriberAuditChurch(uid)) {
-    const premiumMonthlyRecord = snapshot.subscriptions[PREMIUM_MONTHLY_PRODUCT_ID] ?? null;
-    console.log(SUBSCRIBER_AUDIT_EVENT, {
-      churchId: uid,
-      revenueCatLane: lane,
-      originalAppUserId: revenueCatOriginalAppUserId,
-      subscriberAliased: isRevenueCatSubscriberAliasedFromChurch({
-        churchId: uid,
-        revenueCatOriginalAppUserId,
-      }),
-      entitlementKeys: activeEntitlementKeys,
-      subscriptionKeys: activeSubscriptionKeys,
-      premiumMonthly: buildSubscriptionRecordAudit(premiumMonthlyRecord),
-    });
-  }
 
   if (entitlementMatch.entitlement) {
     const expiresAtRaw = entitlementMatch.entitlement.expires_date;

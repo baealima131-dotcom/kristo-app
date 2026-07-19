@@ -30,11 +30,6 @@ import {
   type ChurchSubscriptionDecisionSnapshot,
   type ChurchSubscriptionSyncDiagnostics,
 } from "@/app/api/_lib/churchSubscriptionDecisionDiagnostics";
-import {
-  SUBSCRIPTION_LOCK_AUDIT_EVENT,
-  buildLockAudit,
-  isSubscriberAuditChurch,
-} from "@/app/api/_lib/churchSubscriberAudit";
 
 export const runtime = "nodejs";
 
@@ -318,17 +313,11 @@ export async function GET(req: NextRequest) {
     });
 
     const lockOwnerUserId = String(access.actualPastorUserId || userId || "").trim();
-    const { lock: ownershipLockRecordForAudit, payload: subscriptionOwnershipLock } =
-      await resolveSubscriptionOwnershipLockForChurch({
-        churchId,
-        ownerUserId: lockOwnerUserId,
-        media: mediaForResponse,
-      });
-
-    // TEMPORARY PII-safe ownership lock audit, gated to specific church ids.
-    if (isSubscriberAuditChurch(churchId)) {
-      console.log(SUBSCRIPTION_LOCK_AUDIT_EVENT, buildLockAudit(ownershipLockRecordForAudit, churchId));
-    }
+    const { payload: subscriptionOwnershipLock } = await resolveSubscriptionOwnershipLockForChurch({
+      churchId,
+      ownerUserId: lockOwnerUserId,
+      media: mediaForResponse,
+    });
 
     return NextResponse.json({
       ok: true,
