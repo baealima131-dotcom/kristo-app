@@ -19,7 +19,7 @@ import {
 import {
   cacheMessageLockStatus,
   clearMessageLockLocalState,
-  markMessageLockUnlocked,
+  notifyMessageLockCredentialChanged,
 } from "@/src/lib/messageLockSession";
 import {
   DEFAULT_MESSAGE_LOCK_STATUS,
@@ -119,18 +119,27 @@ export function MessageLockSettingsSection({ gateUnlocked }: Props) {
     setBusy(false);
   }
 
-  async function afterCredentialChange(next: MessageLockStatus) {
+  async function afterCredentialChange(
+    next: MessageLockStatus,
+    reason: "setup" | "change" | "disable"
+  ) {
     setStatus(next);
     if (userId) {
       await cacheMessageLockStatus(userId, next);
+      // Never auto-unlock after setup/change — only POST /verify may unlock.
       await clearMessageLockLocalState(userId);
-      if (next.enabled && next.hasPin) {
-        await markMessageLockUnlocked({
-          userId,
+      if (__DEV__) {
+        console.log("KRISTO_MESSAGE_LOCK_AFTER_CREDENTIAL", {
+          reason,
+          enabled: next.enabled,
+          hasPin: next.hasPin,
+          pinLength: next.pinLength,
           timeoutSeconds: next.timeoutSeconds,
+          autoUnlocked: false,
         });
       }
     }
+    notifyMessageLockCredentialChanged(reason);
   }
 
   // Auto-submit when PIN length reached in modal flows
@@ -166,7 +175,7 @@ export function MessageLockSettingsSection({ gateUnlocked }: Props) {
             pinLength: flow.pinLength,
             timeoutSeconds: status.timeoutSeconds || 0,
           });
-          await afterCredentialChange(next);
+          await afterCredentialChange(next, "setup");
           closeFlow();
           return;
         }
@@ -214,7 +223,7 @@ export function MessageLockSettingsSection({ gateUnlocked }: Props) {
             confirmPin: pin,
             pinLength: flow.pinLength,
           });
-          await afterCredentialChange(next);
+          await afterCredentialChange(next, "change");
           closeFlow();
           return;
         }
@@ -222,7 +231,7 @@ export function MessageLockSettingsSection({ gateUnlocked }: Props) {
         if (flow.kind === "disable-current" && status.pinLength && pin.length === status.pinLength) {
           setBusy(true);
           const next = await disableMessageLock(pin);
-          await afterCredentialChange(next);
+          await afterCredentialChange(next, "disable");
           closeFlow();
           return;
         }

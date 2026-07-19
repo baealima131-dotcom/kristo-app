@@ -8,6 +8,30 @@ const STATUS_CACHE_PREFIX = "kristo_message_lock_status_v1_";
 /** In-memory unlock for timeout=0 (until background / clear). */
 const memoryUnlocked = new Map<string, true>();
 
+/** Listeners so MessagesLockGate can re-evaluate after setup/change/disable. */
+const gateRefreshListeners = new Set<() => void>();
+
+export function subscribeMessageLockGateRefresh(listener: () => void): () => void {
+  gateRefreshListeners.add(listener);
+  return () => {
+    gateRefreshListeners.delete(listener);
+  };
+}
+
+/** Call after credential enable/change/disable — never after verify. */
+export function notifyMessageLockCredentialChanged(reason: string): void {
+  if (__DEV__) {
+    console.log("KRISTO_MESSAGE_LOCK_CREDENTIAL_CHANGED", { reason });
+  }
+  for (const listener of gateRefreshListeners) {
+    try {
+      listener();
+    } catch {
+      // ignore listener errors
+    }
+  }
+}
+
 function unlockKey(userId: string) {
   return `${UNLOCK_PREFIX}${userId}`;
 }

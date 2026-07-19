@@ -340,6 +340,49 @@ describe("wiring and gate coverage", () => {
     assertIncludes(session, "user_switch", "account switch path remains");
   });
 
+  it("setup/change must not auto-unlock; only verify marks unlock", () => {
+    const section = read(
+      "apps/mobile/src/components/messageSettings/MessageLockSettingsSection.tsx"
+    );
+    assert.ok(
+      !section.includes("markMessageLockUnlocked"),
+      "settings must not auto-unlock after setup/change"
+    );
+    assertIncludes(
+      section,
+      "notifyMessageLockCredentialChanged",
+      "settings notifies gate after credential change"
+    );
+    const gate = read(
+      "apps/mobile/src/components/messageSettings/MessagesLockGate.tsx"
+    );
+    assertIncludes(
+      gate,
+      "subscribeMessageLockGateRefresh",
+      "gate re-evaluates after credential change"
+    );
+    assertIncludes(
+      gate,
+      'refreshGate("credential_changed")',
+      "credential change re-fetches status"
+    );
+    // Must block children during credential-change refresh (no stale pass-through).
+    const credCbIdx = gate.indexOf('refreshGate("credential_changed")');
+    assert.ok(credCbIdx > 0, "credential_changed refresh call exists");
+    const checkSlice = gate.slice(Math.max(0, credCbIdx - 280), credCbIdx);
+    assert.ok(
+      checkSlice.includes("setChecking(true)"),
+      "credential change must set checking before re-fetch"
+    );
+    assertIncludes(gate, "markMessageLockUnlocked", "verify path unlocks");
+    const verifyIdx = gate.indexOf("verifyMessageLockPin");
+    const markIdx = gate.indexOf("markMessageLockUnlocked");
+    assert.ok(
+      verifyIdx >= 0 && markIdx > verifyIdx,
+      "local unlock must follow successful verify"
+    );
+  });
+
   it("no SecureStore or local-authentication for message lock", () => {
     const gate = read(
       "apps/mobile/src/components/messageSettings/MessagesLockGate.tsx"

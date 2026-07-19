@@ -20,6 +20,7 @@ import {
   markMessageLockUnlocked,
   onMessageLockAppBackground,
   readCachedMessageLockStatus,
+  subscribeMessageLockGateRefresh,
 } from "@/src/lib/messageLockSession";
 import {
   DEFAULT_MESSAGE_LOCK_STATUS,
@@ -31,6 +32,11 @@ import { MS_SUB } from "./messageSettingsTheme";
 type Props = {
   children: React.ReactNode;
 };
+
+function debugGate(event: string, payload: Record<string, unknown>) {
+  if (!__DEV__) return;
+  console.log("KRISTO_MESSAGE_LOCK_GATE", { event, ...payload });
+}
 
 export function MessagesLockGate({ children }: Props) {
   const insets = useSafeAreaInsets();
@@ -50,11 +56,20 @@ export function MessagesLockGate({ children }: Props) {
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  const refreshGate = useCallback(async () => {
+  const refreshGate = useCallback(async (source: string) => {
     if (!userId) {
       setChecking(false);
       setUnlocked(true);
       setStatus(DEFAULT_MESSAGE_LOCK_STATUS);
+      debugGate("decision", {
+        source,
+        reason: "no_user",
+        checking: false,
+        enabled: false,
+        hasPin: false,
+        unlocked: true,
+        renderChildren: true,
+      });
       return;
     }
 
@@ -62,13 +77,32 @@ export function MessagesLockGate({ children }: Props) {
     setError("");
     try {
       await clearLegacyMessageLockPrefs();
-      let next = await fetchMessageLockStatus();
+      const next = await fetchMessageLockStatus();
       await cacheMessageLockStatus(userId, next);
       setStatus(next);
+
+      debugGate("get_status", {
+        source,
+        enabled: next.enabled,
+        hasPin: next.hasPin,
+        pinLength: next.pinLength,
+        timeoutSeconds: next.timeoutSeconds,
+        locked: next.locked,
+        cooldownRemainingSec: next.cooldownRemainingSec,
+      });
 
       if (!next.enabled || !next.hasPin) {
         setUnlocked(true);
         setChecking(false);
+        debugGate("decision", {
+          source,
+          reason: "lock_disabled",
+          checking: false,
+          enabled: next.enabled,
+          hasPin: next.hasPin,
+          unlocked: true,
+          renderChildren: true,
+        });
         return;
       }
 
@@ -78,6 +112,17 @@ export function MessagesLockGate({ children }: Props) {
       );
       setUnlocked(localOk);
       setCooldown(next.cooldownRemainingSec || 0);
+      debugGate("decision", {
+        source,
+        reason: localOk ? "local_unlock_valid" : "require_pin",
+        checking: false,
+        enabled: true,
+        hasPin: true,
+        locked: next.locked,
+        localUnlocked: localOk,
+        unlocked: localOk,
+        renderChildren: localOk,
+      });
     } catch {
       const cached = await readCachedMessageLockStatus(userId);
       if (cached?.enabled && cached.hasPin) {
@@ -86,15 +131,27 @@ export function MessagesLockGate({ children }: Props) {
           userId,
           cached.timeoutSeconds
         );
-        // Offline / error after unlock expiry stays locked.
         setUnlocked(localOk);
         if (!localOk) {
           setError("Connect to the internet to unlock Messages.");
         }
+        debugGate("decision", {
+          source,
+          reason: localOk ? "cached_local_unlock" : "offline_locked",
+          enabled: true,
+          hasPin: true,
+          unlocked: localOk,
+          renderChildren: localOk,
+        });
       } else {
-        // Fail open only when we have no evidence lock is enabled.
         setStatus(DEFAULT_MESSAGE_LOCK_STATUS);
         setUnlocked(true);
+        debugGate("decision", {
+          source,
+          reason: "fetch_failed_no_cached_lock",
+          unlocked: true,
+          renderChildren: true,
+        });
       }
     } finally {
       setChecking(false);
@@ -109,8 +166,20 @@ export function MessagesLockGate({ children }: Props) {
     prevUserIdRef.current = userId;
     setPin("");
     setError("");
-    void refreshGate();
+    void refreshGate("mount_or_user");
   }, [userId, refreshGate]);
+
+  // Re-evaluate after setup/change/disable while still inside the Messages subtree.
+  useEffect(() => {
+    return subscribeMessageLockGateRefresh(() => {
+      setPin("");
+      setError("");
+      setUnlocked(false);
+      // Block children immediately — stale status may still say enabled:false.
+      setChecking(true);
+      void refreshGate("credential_changed");
+    });
+  }, [refreshGate]);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -128,6 +197,12 @@ export function MessagesLockGate({ children }: Props) {
         if (statusRef.current.timeoutSeconds === 0 && statusRef.current.enabled) {
           setUnlocked(false);
           setPin("");
+          debugGate("decision", {
+            source: "app_background",
+            reason: "immediate_timeout_relock",
+            unlocked: false,
+            renderChildren: false,
+          });
         }
         return;
       }
@@ -140,6 +215,12 @@ export function MessagesLockGate({ children }: Props) {
         if (!ok) {
           setUnlocked(false);
           setPin("");
+          debugGate("decision", {
+            source: "app_active",
+            reason: "unlock_expired",
+            unlocked: false,
+            renderChildren: false,
+          });
         }
       })();
     };
@@ -168,6 +249,12 @@ export function MessagesLockGate({ children }: Props) {
         setUnlocked(true);
         setPin("");
         setCooldown(0);
+        debugGate("decision", {
+          source: "verify_ok",
+          reason: "pin_verified",
+          unlocked: true,
+          renderChildren: true,
+        });
       } catch (e: any) {
         if (cancelled) return;
         setPin("");
@@ -178,6 +265,12 @@ export function MessagesLockGate({ children }: Props) {
           void cacheMessageLockStatus(userId, e.data);
         }
         setError(String(e?.message || "Incorrect PIN."));
+        debugGate("decision", {
+          source: "verify_fail",
+          reason: "wrong_pin_or_cooldown",
+          unlocked: false,
+          renderChildren: false,
+        });
       } finally {
         if (!cancelled) setBusy(false);
       }
