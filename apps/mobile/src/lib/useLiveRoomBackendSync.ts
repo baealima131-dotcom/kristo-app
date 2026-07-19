@@ -48,6 +48,12 @@ export function useLiveRoomBackendSync(opts: {
         presenceKeys: patch.viewerPresence ? Object.keys(patch.viewerPresence).sort() : [],
         liveId: patch.liveId || "",
         isLive: patch.isLive ?? null,
+        slotTransitionId: patch.slotTransition?.transitionId || "",
+        slotTransitionPhase: patch.slotTransition?.phase || "",
+        slotTransitionEvent: patch.slotTransition?.event || "",
+        activeSlotId: patch.slotClock?.activeSlotId || "",
+        activeOwnerUserId: patch.slotClock?.activeOwnerUserId || "",
+        bigScreenOwnerUserId: patch.bigScreenOwnerUserId || "",
       });
       if (sig === lastPatchRef.current) {
         logLiveTraffic("live patch skipped unchanged");

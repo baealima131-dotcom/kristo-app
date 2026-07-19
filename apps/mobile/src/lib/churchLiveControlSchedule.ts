@@ -403,6 +403,22 @@ export function logChurchLiveControlScheduleCardDiagnostics(input: {
   console.log("KRISTO_CHURCH_LIVE_CONTROL_SCHEDULE_DIAG", input);
 }
 
+function scheduleGroupMatchesCanonicalId(
+  groupScheduleId: string,
+  preferredRaw: string
+): boolean {
+  const preferred = String(preferredRaw || "").trim();
+  const groupId = String(groupScheduleId || "").trim();
+  if (!preferred || !groupId) return false;
+  if (groupId === preferred) return true;
+  const preferredBase = preferred.replace(/-slot-\d+$/i, "").trim();
+  const groupBase = groupId.replace(/-slot-\d+$/i, "").trim();
+  if (preferredBase && groupBase && preferredBase === groupBase) return true;
+  if (preferredBase && groupId.startsWith(`${preferredBase}-`)) return true;
+  if (groupBase && preferred.startsWith(`${groupBase}-`)) return true;
+  return false;
+}
+
 /** Build a feed-shaped schedule row from Church Live Control room messages (Guest Claim Center). */
 export function buildChurchLiveControlGuestCenterScheduleRow(
   roomMessages: Array<{ id?: string; kind?: string; card?: any; createdAt?: number }>,
@@ -411,12 +427,25 @@ export function buildChurchLiveControlGuestCenterScheduleRow(
     churchName?: string;
     mediaName?: string;
     nowMs?: number;
+    /** When set, only hydrate this exact schedule/batch — never largest unrelated group. */
+    scheduleId?: string;
+    batchId?: string;
+    sourceScheduleId?: string;
+    canonicalLiveSessionId?: string;
   } = {}
 ): any | null {
   const scheduleMessages = (Array.isArray(roomMessages) ? roomMessages : []).filter((message) =>
     isChurchLiveControlScheduleRoomMessage(message, CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID)
   );
   if (!scheduleMessages.length) return null;
+
+  const preferredScheduleId = String(
+    opts.canonicalLiveSessionId ||
+      opts.scheduleId ||
+      opts.batchId ||
+      opts.sourceScheduleId ||
+      ""
+  ).trim();
 
   const groups = new Map<string, typeof scheduleMessages>();
   for (const message of scheduleMessages) {
@@ -433,10 +462,30 @@ export function buildChurchLiveControlGuestCenterScheduleRow(
 
   let bestScheduleId = "";
   let bestGroup: typeof scheduleMessages = [];
-  for (const [scheduleId, group] of groups.entries()) {
-    if (group.length > bestGroup.length) {
-      bestGroup = group;
-      bestScheduleId = scheduleId;
+
+  if (preferredScheduleId) {
+    for (const [scheduleId, group] of groups.entries()) {
+      if (!scheduleGroupMatchesCanonicalId(scheduleId, preferredScheduleId)) continue;
+      if (group.length > bestGroup.length) {
+        bestGroup = group;
+        bestScheduleId = scheduleId;
+      }
+    }
+    if (!bestGroup.length) {
+      console.log("KRISTO_LIVE_STALE_SCHEDULE_REJECTED", {
+        reason: "preferred_schedule_not_in_room_messages",
+        requestedLiveId: preferredScheduleId,
+        canonicalLiveSessionId: preferredScheduleId,
+        availableScheduleIds: Array.from(groups.keys()),
+      });
+      return null;
+    }
+  } else {
+    for (const [scheduleId, group] of groups.entries()) {
+      if (group.length > bestGroup.length) {
+        bestGroup = group;
+        bestScheduleId = scheduleId;
+      }
     }
   }
   if (!bestGroup.length) return null;
@@ -526,17 +575,52 @@ export function buildChurchLiveControlLiveRoomScheduleSlots(
     churchName?: string;
     mediaName?: string;
     nowMs?: number;
+    scheduleId?: string;
+    batchId?: string;
+    sourceScheduleId?: string;
+    canonicalLiveSessionId?: string;
   } = {}
 ): { slots: any[]; scheduleId: string } | null {
+  const preferredScheduleId = String(
+    opts.canonicalLiveSessionId ||
+      opts.scheduleId ||
+      opts.batchId ||
+      opts.sourceScheduleId ||
+      ""
+  ).trim();
   const row = buildChurchLiveControlGuestCenterScheduleRow(roomMessages, opts);
   if (!row) return null;
 
   const slots = Array.isArray(row.scheduleSlots) ? row.scheduleSlots : [];
   if (!slots.length) return null;
 
+  const scheduleId = String(row.sourceScheduleId || row.id || "").trim();
+  if (
+    preferredScheduleId &&
+    scheduleId &&
+    !scheduleGroupMatchesCanonicalId(scheduleId, preferredScheduleId)
+  ) {
+    console.log("KRISTO_LIVE_SESSION_ID_MISMATCH_BLOCKED", {
+      reason: "clc_live_room_slots_foreign_schedule",
+      requestedLiveId: preferredScheduleId,
+      canonicalLiveSessionId: preferredScheduleId,
+      hydratedScheduleId: scheduleId,
+      backendSlotCount: slots.length,
+    });
+    return null;
+  }
+
+  console.log("KRISTO_LIVE_EXACT_SCHEDULE_HYDRATED", {
+    requestedLiveId: preferredScheduleId || scheduleId,
+    canonicalLiveSessionId: preferredScheduleId || scheduleId,
+    hydratedScheduleId: scheduleId,
+    backendSlotCount: slots.length,
+    source: "church-live-control-room-messages",
+  });
+
   return {
     slots,
-    scheduleId: String(row.sourceScheduleId || row.id || "").trim(),
+    scheduleId,
   };
 }
 

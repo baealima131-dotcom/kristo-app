@@ -209,6 +209,21 @@ import {
   takePublisherVideoTrackWarmup,
 } from "@/src/lib/livePreflightPublisherWarmup";
 import {
+  cancelLiveSlotPreflight,
+  noteLiveSlotPromotedToBigScreen,
+  resolveNextClaimedSlotForPreflight,
+  syncLiveSlotPreflight,
+} from "@/src/lib/liveSlotPreflight";
+import {
+  applyServerSlotClock,
+  applyServerSlotTransition,
+  buildScheduleSyncPayload,
+  retryAutomaticSlotSoftReentry,
+  tickSlotTransitionWatcher,
+  type SlotTransitionRecord,
+  type SlotTransitionUiStep,
+} from "@/src/lib/liveSlotTransitionClient";
+import {
   beginLivePreflightStartupAttempt,
   clearLivePreflightCompletedLock,
   isLiveKitRoomActuallyConnected,
@@ -833,25 +848,83 @@ async function fetchLightLiveStateWithPerf(
   headers: Record<string, string>,
   screen: string,
   liveId: string | undefined,
-  source: string
+  source: string,
+  opts?: { force?: boolean }
 ) {
-  logLivePerf("fetchLightLiveState_start", { source, liveId: liveId || "" });
-  logLivePerf("api_church_live_start", { source, liveId: liveId || "" });
+  const requestedLiveId = String(liveId || "").trim();
+  let stickyRoomId = "";
   try {
-    const patch = await fetchLightLiveState(headers as any, screen, liveId);
-    logLivePerf("api_church_live_end", { source, liveId: liveId || "", ok: true });
-    logLivePerf("fetchLightLiveState_end", { source, liveId: liveId || "", ok: true });
+    const snap = JSON.parse(String(readLiveKitHostLockSnapshot() || "{}")) as {
+      stickyRoom?: string;
+    };
+    stickyRoomId = String(snap?.stickyRoom || "").trim();
+  } catch {
+    stickyRoomId = "";
+  }
+  console.log("KRISTO_LIVE_EXACT_ID_FETCH_START", {
+    requestedLiveId,
+    canonicalLiveSessionId: requestedLiveId,
+    responseLiveId: "",
+    hydratedScheduleId: "",
+    stickyRoomId,
+    routeSlotCount: 0,
+    backendSlotCount: 0,
+    source,
+    screen,
+    force: opts?.force === true,
+  });
+  logLivePerf("fetchLightLiveState_start", { source, liveId: requestedLiveId });
+  logLivePerf("api_church_live_start", { source, liveId: requestedLiveId });
+  try {
+    const patch = await fetchLightLiveState(headers as any, screen, liveId, {
+      force: opts?.force === true,
+    });
+    const responseLiveId = String(
+      (patch as any)?.liveId ||
+        (patch as any)?.raw?.liveId ||
+        (patch as any)?.raw?.id ||
+        ""
+    ).trim();
+    console.log("KRISTO_LIVE_EXACT_ID_FETCH_RESULT", {
+      requestedLiveId,
+      canonicalLiveSessionId: requestedLiveId,
+      responseLiveId,
+      hydratedScheduleId: "",
+      stickyRoomId,
+      routeSlotCount: 0,
+      backendSlotCount: 0,
+      noBridgeSession: (patch as any)?.noBridgeSession === true,
+      isLive: (patch as any)?.isLive === true,
+      ok: true,
+      source,
+      screen,
+    });
+    logLivePerf("api_church_live_end", { source, liveId: requestedLiveId, ok: true });
+    logLivePerf("fetchLightLiveState_end", { source, liveId: requestedLiveId, ok: true });
     return patch;
   } catch (e: any) {
+    console.log("KRISTO_LIVE_EXACT_ID_FETCH_RESULT", {
+      requestedLiveId,
+      canonicalLiveSessionId: requestedLiveId,
+      responseLiveId: "",
+      hydratedScheduleId: "",
+      stickyRoomId,
+      routeSlotCount: 0,
+      backendSlotCount: 0,
+      ok: false,
+      message: String(e?.message || e),
+      source,
+      screen,
+    });
     logLivePerf("api_church_live_end", {
       source,
-      liveId: liveId || "",
+      liveId: requestedLiveId,
       ok: false,
       message: String(e?.message || e),
     });
     logLivePerf("fetchLightLiveState_end", {
       source,
-      liveId: liveId || "",
+      liveId: requestedLiveId,
       ok: false,
       message: String(e?.message || e),
     });
@@ -3360,7 +3433,8 @@ async function suppressLocalCameraPublication(
         reason === "leave-live-room" ||
         reason === "quit-live-room" ||
         reason === "authority-canPublishCamera-false" ||
-        reason === "room-connected-camera-suppress";
+        reason === "room-connected-camera-suppress" ||
+        reason === "slot-boundary-handoff-out";
       if (!allowSuppress && readyState === "live") {
         console.log("KRISTO_LIVEKIT_CAMERA_SUPPRESS_SKIPPED", {
           reason,
@@ -6503,6 +6577,7 @@ function LiveRoomPreflight({
   onRetry,
   onBack,
   waveAnim,
+  hideRetry = false,
 }: {
   steps: LivePreflightStep[];
   doneCount: number;
@@ -6511,6 +6586,8 @@ function LiveRoomPreflight({
   onRetry: () => void;
   onBack: () => void;
   waveAnim: Animated.Value;
+  /** Slot transitions are automatic — no manual Retry during a normal handoff. */
+  hideRetry?: boolean;
 }) {
   const applicable = steps.filter((step) => step.status !== "skipped");
   const progress = applicable.length ? doneCount / applicable.length : 0;
@@ -6595,13 +6672,15 @@ function LiveRoomPreflight({
             <Ionicons name="chevron-back" size={18} color="#DCE9FF" />
             <Text style={s.livePreflightBackBtnText as any}>Back</Text>
           </Pressable>
-          <Pressable
-            onPress={onRetry}
-            style={({ pressed }) => [s.livePreflightBtn, s.livePreflightRetryBtn, pressed ? s.pressed : null] as any}
-          >
-            <Ionicons name="refresh" size={18} color="#1B1408" />
-            <Text style={s.livePreflightRetryBtnText as any}>Retry</Text>
-          </Pressable>
+          {hideRetry ? null : (
+            <Pressable
+              onPress={onRetry}
+              style={({ pressed }) => [s.livePreflightBtn, s.livePreflightRetryBtn, pressed ? s.pressed : null] as any}
+            >
+              <Ionicons name="refresh" size={18} color="#1B1408" />
+              <Text style={s.livePreflightRetryBtnText as any}>Retry</Text>
+            </Pressable>
+          )}
         </View>
       </View>
     </View>
@@ -6653,6 +6732,27 @@ export default function LiveRoomScreen() {
   const [livePreflightElapsedSec, setLivePreflightElapsedSec] = useState(0);
   const [livePreflightRetryEpoch, setLivePreflightRetryEpoch] = useState(0);
   const [livePreflightConnectEpoch, setLivePreflightConnectEpoch] = useState(0);
+  /** Bumps LiveKit React remount on slot soft re-entry without changing publish identity. */
+  const [slotSoftReentryEpoch, setSlotSoftReentryEpoch] = useState(0);
+  /** Room-wide synchronized slot-boundary preparation overlay (server-authoritative). */
+  const [slotTransitionUiActive, setSlotTransitionUiActive] = useState(false);
+  const [slotTransitionSteps, setSlotTransitionSteps] = useState<LivePreflightStep[]>([]);
+  const [slotTransitionElapsedSec, setSlotTransitionElapsedSec] = useState(0);
+  const [slotTransitionTimedOut, setSlotTransitionTimedOut] = useState(false);
+  const slotTransitionStartedAtRef = useRef(0);
+  const slotTransitionLastActiveSlotIdRef = useRef("");
+  const slotTransitionLastActiveOwnerRef = useRef("");
+  const slotTransitionAdaptersRef = useRef<any>(null);
+  const slotSoftReentryInFlightRef = useRef("");
+  const slotSoftReentryActiveTransitionRef = useRef<SlotTransitionRecord | null>(null);
+  /** Forces applyBackendLivePatch to accept the soft-reentry refetch (bypass sig cache). */
+  const slotSoftReentryForcePatchRef = useRef(false);
+  /** Overrides stale route/claim-enter camera authority after soft re-entry. */
+  const slotSoftReentryAuthorityRef = useRef<{
+    activeSlotId: string;
+    activeOwnerUserId: string;
+    at: number;
+  } | null>(null);
   const livePreflightStartedRef = useRef(false);
   const livePreflightReadyLoggedRef = useRef(false);
   const livePreflightStepLoggedRef = useRef<Record<string, boolean>>({});
@@ -8045,7 +8145,15 @@ export default function LiveRoomScreen() {
     }
 
     const scheduleFeedIdForMerge = routeIsChurchLiveControl
-      ? String(churchLiveControlScheduleId || liveScheduleFeedId || "").trim()
+      ? String(
+          (params as any)?.sourceScheduleId ||
+            params.liveId ||
+            (params as any)?.feedId ||
+            liveBridgeId ||
+            liveScheduleFeedId ||
+            churchLiveControlScheduleId ||
+            ""
+        ).trim()
       : String(liveScheduleFeedId || "").trim();
 
     const feedSlots = scheduleFeedIdForMerge
@@ -8700,9 +8808,43 @@ export default function LiveRoomScreen() {
         ? 0
         : routeCurrentSlotNumber;
 
-  const currentSlotNumber = resolvedSlotNumber;
+  // Server slotClock is authoritative for timed schedules. Soft-reentry override beats stale route.
+  const softReentryAuthority = slotSoftReentryAuthorityRef.current;
+  const serverActiveSlotId = String(
+    softReentryAuthority?.activeSlotId ||
+      backendChurchLive?.slotClock?.activeSlotId ||
+      (globalThis as any).__KRISTO_SERVER_ACTIVE_SLOT_ID__ ||
+      ""
+  ).trim();
+  const serverActiveOwnerId = String(
+    softReentryAuthority?.activeOwnerUserId ||
+      backendChurchLive?.slotClock?.activeOwnerUserId ||
+      backendChurchLive?.bigScreenOwnerUserId ||
+      (globalThis as any).__KRISTO_SERVER_ACTIVE_OWNER_ID__ ||
+      ""
+  ).trim();
+
+  const serverActiveSlotNumber = (() => {
+    if (!serverActiveSlotId) return 0;
+    const match = authorityStageSlots.find(
+      (slot: any) =>
+        String(slot?.id || slot?.slotId || "").trim() === serverActiveSlotId
+    );
+    return Math.max(
+      0,
+      Math.floor(Number(match?.slot ?? match?.slotNumber ?? 0) || 0)
+    );
+  })();
+
+  const currentSlotNumber =
+    hasTimedClaimedSchedule && serverActiveSlotNumber > 0
+      ? serverActiveSlotNumber
+      : resolvedSlotNumber;
 
   const currentSlotOwnerId = (() => {
+    if (hasTimedClaimedSchedule && serverActiveOwnerId) {
+      return serverActiveOwnerId;
+    }
     if (claimEnterLockHeld && claimEnterLock?.routeClaimedByUserId) {
       return claimEnterLock.routeClaimedByUserId;
     }
@@ -8721,8 +8863,16 @@ export default function LiveRoomScreen() {
     );
   })();
 
-  const currentSlotStartMs = Number(currentMainStageSlot?.startMs || 0);
-  const currentSlotEndMs = Number(currentMainStageSlot?.endMs || 0);
+  const currentSlotStartMs = Number(
+    (hasTimedClaimedSchedule && backendChurchLive?.slotClock?.activeSlotStartMs) ||
+      currentMainStageSlot?.startMs ||
+      0
+  );
+  const currentSlotEndMs = Number(
+    (hasTimedClaimedSchedule && backendChurchLive?.slotClock?.activeSlotEndMs) ||
+      currentMainStageSlot?.endMs ||
+      0
+  );
 
   const isMyScheduledLiveTurn =
     !isMediaInstantLive &&
@@ -8992,6 +9142,40 @@ export default function LiveRoomScreen() {
     userHasClaimedScheduleSlot: false,
   });
 
+  // Stable schedule fingerprint — do NOT depend on liveNowMs / current slot owner
+  // or the boundary timer resets every second and never fires AUTO_ADVANCE.
+  const boundaryScheduleSlots = useMemo(() => {
+    return (authorityStageSlots || []).map((slot: any, index: number) => {
+      const win = getScheduleSlotWindow(slot, index);
+      const slotNumber = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+      return {
+        ...slot,
+        slot: slotNumber,
+        slotNumber,
+        id: slot?.id || slot?.slotId || `stage-${slotNumber}`,
+        slotId: slot?.slotId || slot?.id || `stage-${slotNumber}`,
+        startMs: Number(win?.startMs || slot?.startMs || 0),
+        endMs: Number(win?.endMs || slot?.endMs || 0),
+      };
+    });
+  }, [authorityStageSlots]);
+
+  const boundaryScheduleSig = useMemo(() => {
+    return boundaryScheduleSlots
+      .map((slot: any) =>
+        [
+          String(slot?.id || slot?.slotId || ""),
+          String(slot?.claimedByUserId || slot?.claimedBy?.userId || ""),
+          Number(slot?.startMs || 0),
+          Number(slot?.endMs || 0),
+        ].join(":")
+      )
+      .join("|");
+  }, [boundaryScheduleSlots]);
+
+  const boundaryScheduleSlotsRef = useRef(boundaryScheduleSlots);
+  boundaryScheduleSlotsRef.current = boundaryScheduleSlots;
+
   useEffect(() => {
     if (isMediaInstantLive || !hasTimedClaimedSchedule) return;
 
@@ -9003,16 +9187,15 @@ export default function LiveRoomScreen() {
 
       const now = Date.now();
       const boundaries: number[] = [];
+      const slotsNow = boundaryScheduleSlotsRef.current;
 
-      authorityStageSlots.forEach((slot: any, index: number) => {
+      slotsNow.forEach((slot: any) => {
         if (!isClaimedScheduleSlot(slot)) return;
-        const win = getScheduleSlotWindow(slot, index);
-        if (win.startMs > now) boundaries.push(win.startMs);
-        if (win.endMs > now) boundaries.push(win.endMs);
+        const startMs = Number(slot?.startMs || 0);
+        const endMs = Number(slot?.endMs || 0);
+        if (startMs > now) boundaries.push(startMs);
+        if (endMs > now) boundaries.push(endMs);
       });
-
-      const currentEndMs = Number(currentMainStageSlot?.endMs || currentSlotEndMs || 0);
-      if (currentEndMs > now) boundaries.push(currentEndMs);
 
       const nextBoundaryMs = boundaries.length ? Math.min(...boundaries) : null;
       const delayMs = nextBoundaryMs ? Math.max(16, nextBoundaryMs - now + 16) : 1000;
@@ -9020,9 +9203,7 @@ export default function LiveRoomScreen() {
       console.log("KRISTO_LIVE_SLOT_BOUNDARY_TIMER", {
         nextBoundaryMs,
         delayMs,
-        currentSlotNumber,
-        currentSlotOwnerId,
-        currentEndMs,
+        scheduleSigLen: boundaryScheduleSig.length,
         liveNowMs: now,
         focused: isFocused,
       });
@@ -9041,6 +9222,27 @@ export default function LiveRoomScreen() {
           prevSlotOwnerId: prev.currentSlotOwnerId,
           boundaryMs: nextBoundaryMs,
         });
+
+        const adapters = slotTransitionAdaptersRef.current;
+        const slots = boundaryScheduleSlotsRef.current;
+        const scheduleVersion = `${String(liveBridgeIdFromRoute || "").trim()}|${boundaryScheduleSig}`;
+        if (adapters && slots.length) {
+          tickSlotTransitionWatcher({
+            slots,
+            scheduleVersion,
+            adapters,
+            lastActiveSlotIdRef: slotTransitionLastActiveSlotIdRef,
+            lastActiveOwnerRef: slotTransitionLastActiveOwnerRef,
+            forceBoundary: true,
+          });
+          void adapters
+            .pushLiveAction("slot-transition-tick", {
+              ...buildScheduleSyncPayload(slots, scheduleVersion),
+            })
+            .then((res: any) => {
+              if (res?.live) applyServerSlotTransition(res.live, adapters);
+            });
+        }
 
         armBoundaryTimer();
       }, delayMs);
@@ -9064,13 +9266,8 @@ export default function LiveRoomScreen() {
     isMediaInstantLive,
     hasTimedClaimedSchedule,
     isFocused,
-    authorityStageSlots,
-    currentMainStageSlot?.endMs,
-    currentMainStageSlot?.slot,
-    currentMainStageSlot?.claimedByUserId,
-    currentSlotNumber,
-    currentSlotOwnerId,
-    currentSlotEndMs,
+    boundaryScheduleSig,
+    liveBridgeIdFromRoute,
   ]);
 
   useEffect(() => {
@@ -10140,11 +10337,28 @@ export default function LiveRoomScreen() {
           previousSlotNumber: prevSlot,
           reason: "automatic-time-handoff",
         });
+        noteLiveSlotPromotedToBigScreen({
+          liveBridgeId: liveBridgeIdFromRoute,
+          slotId: liveStageSlotLogId(next),
+          slotNumber: nextSlot,
+          ownerUserId: String(
+            next?.claimedByUserId || next?.claimedBy?.userId || ""
+          ).trim(),
+          previousSlotNumber: prevSlot || null,
+        });
       }
     }
 
     prevActiveStageSlotRef.current = next;
-  }, [currentMainStageSlot, liveNowMs, isMediaInstantLive, authorityStageSlots, runtimeScheduleSlots, activeStageSlots]);
+  }, [
+    currentMainStageSlot,
+    liveNowMs,
+    isMediaInstantLive,
+    authorityStageSlots,
+    runtimeScheduleSlots,
+    activeStageSlots,
+    liveBridgeIdFromRoute,
+  ]);
 
   async function claimOpenScheduleSlotFromLive(slot: any) {
     const slotId = String(slot?.id || slot?.slotId || "").trim();
@@ -10382,15 +10596,17 @@ export default function LiveRoomScreen() {
 
   // IMPORTANT: LiveKit room must be the same for pastor/viewer/claimed slots.
   // Prefer liveId first because feed/schedule cards pass the shared live room id there.
+  // Ring/route-selected ID is authoritative for the whole room session.
+  // Never let a later CLC hydrate (e.g. stale batch) rewrite liveBridgeId / LiveKit room.
   const liveBridgeId = isMediaInstantLive
     ? String(params.liveId || (params as any).room || params.title || "media-live-default")
     : routeIsChurchLiveControl
       ? String(
-          churchLiveControlScheduleId ||
-            (params as any)?.sourceScheduleId ||
+          (params as any)?.sourceScheduleId ||
             params.liveId ||
             (params as any)?.feedId ||
             liveScheduleFeedId ||
+            churchLiveControlScheduleId ||
             ""
         ).trim()
       : String(
@@ -11155,6 +11371,612 @@ export default function LiveRoomScreen() {
     [liveApiHeaders]
   );
 
+  // Rolling next-slot Big Screen preflight (N+1 only). Does not change slot timing.
+  useEffect(() => {
+    if (isMediaInstantLive || !hasTimedClaimedSchedule || !liveBridgeId) {
+      cancelLiveSlotPreflight({
+        liveBridgeId,
+        reason: "preflight_inactive_context",
+        clearPublisherWarmup: false,
+      });
+      return;
+    }
+
+    const nextClaimed = resolveNextClaimedSlotForPreflight(
+      authorityStageSlots,
+      liveNowMs
+    );
+    const nextWithAvatar = nextClaimed
+      ? {
+          ...nextClaimed,
+          avatarUri:
+            nextClaimed.avatarUri ||
+            resolveParticipantAvatarUri({
+              claimedByUserId: nextClaimed.ownerUserId,
+              claimedByName: nextClaimed.ownerName,
+              claimedByAvatarUri: nextClaimed.avatarUri,
+            }) ||
+            "",
+        }
+      : null;
+
+    const localUserIsActiveSpeaker =
+      Boolean(currentUserId) &&
+      (String(currentSlotOwnerId || "").trim() ===
+        String(currentUserId).trim() ||
+        cameraPublishAllowedNow === true);
+
+    syncLiveSlotPreflight({
+      liveBridgeId,
+      roomName: liveBridgeId,
+      currentUserId: String(currentUserId || "").trim(),
+      headers: liveKitApiHeaders as Record<string, string>,
+      nextSlot: nextWithAvatar,
+      localUserIsActiveSpeaker,
+    });
+  }, [
+    isMediaInstantLive,
+    hasTimedClaimedSchedule,
+    liveBridgeId,
+    authorityStageSlots,
+    liveNowMs,
+    currentUserId,
+    currentSlotOwnerId,
+    cameraPublishAllowedNow,
+    liveKitApiHeaders,
+    memberAvatarByUserId,
+    resolvedAvatarByUserId,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      cancelLiveSlotPreflight({
+        liveBridgeId,
+        reason: "live_room_unmount",
+        clearPublisherWarmup: false,
+      });
+    };
+  }, [liveBridgeId]);
+
+  const mapSlotTransitionUiSteps = useCallback((steps: SlotTransitionUiStep[]): LivePreflightStep[] => {
+    return steps.map((step) => ({
+      id: step.id as LivePreflightStepId,
+      label: step.label,
+      status: step.status as LivePreflightStepStatus,
+    }));
+  }, []);
+
+  // Keep transition adapters current without restarting the boundary interval.
+  useEffect(() => {
+    const canonicalLiveSessionId = String(
+      liveBridgeId || liveBridgeIdFromRoute || ""
+    ).trim();
+    slotTransitionAdaptersRef.current = {
+      liveBridgeId: canonicalLiveSessionId,
+      canonicalLiveSessionId,
+      currentUserId: String(currentUserId || "").trim(),
+      headers: liveKitApiHeaders as Record<string, string>,
+      reentryInFlightRef: slotSoftReentryInFlightRef,
+      pushLiveAction: (action: string, body?: Record<string, any>) =>
+        pushLiveAction(action, body || {}),
+      suppressLocalCamera: (room: any, reason: string) =>
+        suppressLocalCameraPublication(room, reason),
+      suppressLocalMic: (room: any, reason: string) =>
+        suppressLocalMicPublication(room, reason),
+      publishLocalCamera: async (room: any) => {
+        const lp: any = room?.localParticipant;
+        if (!lp) return false;
+        try {
+          if (typeof lp.setCameraEnabled === "function") {
+            await lp.setCameraEnabled(true);
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      publishLocalMic: async (room: any) => {
+        const lp: any = room?.localParticipant;
+        if (!lp || typeof lp.setMicrophoneEnabled !== "function") {
+          return false;
+        }
+        try {
+          await lp.setMicrophoneEnabled(true);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      resetLocalVideoReady: () => {
+        resetMainStageLocalVideoReady();
+      },
+      bumpLiveNowMs: (at: number) => {
+        setLiveNowMs(at);
+      },
+      clearStaleLiveSessionState: async (input: {
+        transitionId: string;
+        canonicalLiveSessionId: string;
+        incomingSlotId: string;
+        incomingOwnerUserId: string;
+      }) => {
+        const userId = String(currentUserId || "").trim();
+        const roomName = String(
+          input.canonicalLiveSessionId || canonicalLiveSessionId || ""
+        ).trim();
+        const g = globalThis as any;
+
+        try {
+          stopKristoLiveKitRoomTracks(g.__KRISTO_LIVEKIT_CONNECTED_ROOM__);
+        } catch {}
+        g.__KRISTO_LIVEKIT_CONNECTED_ROOM__ = null;
+        try {
+          stopKristoLiveKitRoomTracks(g.__KRISTO_HELD_LIVEKIT_ROOM__);
+        } catch {}
+        g.__KRISTO_HELD_LIVEKIT_ROOM__ = undefined;
+
+        // Clear stale live-session globals only (keep comments/audience).
+        g.__KRISTO_LIVEKIT_ACTIVE_TOKEN_CLAIMS__ = null;
+        g.__KRISTO_LIVEKIT_ACTIVE_ROOM__ = "";
+        g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+        g.__KRISTO_SERVER_ACTIVE_SLOT_ID__ = "";
+        g.__KRISTO_SERVER_ACTIVE_OWNER_ID__ = "";
+        g.__KRISTO_SLOT_HANDOFF_BIG_SCREEN_OWNER__ = "";
+        g.__KRISTO_SLOT_HANDOFF_BIG_SCREEN_SLOT_ID__ = "";
+
+        clearKristoLiveKitGlobalsForSession({
+          userId,
+          roomName,
+          forceReentry: true,
+        });
+        clearLiveKitPublisherStagePin("slot-soft-reentry");
+        clearLiveKitStageMountSticky("slot-soft-reentry");
+        clearClaimEnterSessionLock("slot-soft-reentry");
+        clearPublisherVideoTrackWarmup();
+        resetMainStageLocalVideoReady();
+        setMainStageLocalVideoReady(false);
+
+        // Drop stale schedule hydration / route-derived slot hold — refill via exact refetch.
+        slotSoftReentryAuthorityRef.current = null;
+        stableCurrentSlotRef.current = {
+          slot: 0,
+          ownerId: "",
+          endMs: 0,
+          updatedAt: 0,
+        };
+        setBackendScheduleHydrated(false);
+        // Keep canonical pin / route open — do not navigate, do not clear comments.
+      },
+      refetchExactLiveSession: async (input: {
+        transitionId: string;
+        canonicalLiveSessionId: string;
+        incomingSlotId: string;
+        incomingOwnerUserId: string;
+      }) => {
+        const pinned = String(
+          input.canonicalLiveSessionId || canonicalLiveSessionId || ""
+        ).trim();
+        if (!pinned) {
+          return { ok: false, abortReason: "missing_canonical_live_session_id" };
+        }
+        try {
+          const patch = await fetchLightLiveStateWithPerf(
+            liveApiHeaders as any,
+            "LiveRoomSlotSoftReentry",
+            pinned,
+            "slot-soft-reentry",
+            { force: true }
+          );
+          const responseLiveId = String(
+            patch?.liveId ||
+              (patch as any)?.raw?.liveId ||
+              (patch as any)?.raw?.id ||
+              ""
+          ).trim();
+          if (responseLiveId && responseLiveId !== pinned) {
+            console.log("KRISTO_LIVE_SESSION_ID_MISMATCH_BLOCKED", {
+              requestedLiveId: pinned,
+              canonicalLiveSessionId: pinned,
+              responseLiveId,
+              source: "slot-soft-reentry",
+              transitionId: input.transitionId,
+              reason: "foreign_live_id_rejected",
+            });
+            return { ok: false, abortReason: "foreign_live_id_rejected" };
+          }
+
+          // Bypass patch sig cache so slot clock / transition always apply.
+          slotSoftReentryForcePatchRef.current = true;
+          try {
+            applyBackendLivePatchRef.current?.(patch, "slot-soft-reentry");
+          } finally {
+            slotSoftReentryForcePatchRef.current = false;
+          }
+
+          if (routeIsChurchLiveControl) {
+            try {
+              const res: any = await apiGet(
+                `/api/church/room-messages?roomId=${encodeURIComponent(
+                  CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID
+                )}`,
+                { headers: liveApiHeaders as any },
+                {
+                  screen: "LiveRoomSlotSoftReentryClc",
+                  throttleMs: 0,
+                }
+              );
+              const rows = Array.isArray(res?.data) ? res.data : [];
+              const built = buildChurchLiveControlLiveRoomScheduleSlots(rows, {
+                churchId: liveRouteChurchId,
+                churchName: String(
+                  (params as any)?.churchName || (params as any)?.churchLabel || ""
+                ).trim(),
+                mediaName: String(
+                  (params as any)?.mediaName || params.title || "Church Media"
+                ).trim(),
+                nowMs: Date.now(),
+                canonicalLiveSessionId: pinned,
+                scheduleId: pinned,
+                batchId: pinned,
+                sourceScheduleId: pinned,
+              });
+              if (built) {
+                const slots = normalizeLiveScheduleSlots(built.slots || []);
+                const scheduleId = String(built.scheduleId || pinned || "").trim();
+                if (scheduleId && scheduleId !== pinned) {
+                  console.log("KRISTO_LIVE_STALE_SCHEDULE_REJECTED", {
+                    requestedLiveId: pinned,
+                    canonicalLiveSessionId: pinned,
+                    hydratedScheduleId: scheduleId,
+                    source: "slot-soft-reentry-clc",
+                    transitionId: input.transitionId,
+                  });
+                } else {
+                  if (scheduleId) setChurchLiveControlScheduleId(scheduleId);
+                  setBackendScheduleHydrated(true);
+                  setBackendScheduleExplicitlyEnded(false);
+                  setBackendScheduleSlots(slots);
+                  console.log("KRISTO_LIVE_EXACT_SCHEDULE_HYDRATED", {
+                    requestedLiveId: pinned,
+                    canonicalLiveSessionId: pinned,
+                    hydratedScheduleId: scheduleId || pinned,
+                    backendSlotCount: slots.length,
+                    source: "slot-soft-reentry-clc",
+                    transitionId: input.transitionId,
+                  });
+                }
+              }
+            } catch (clcError: any) {
+              console.log("KRISTO_SLOT_SOFT_REENTRY_CLC_HYDRATE_ERROR", {
+                canonicalLiveSessionId: pinned,
+                transitionId: input.transitionId,
+                message: String(clcError?.message || clcError),
+              });
+            }
+          } else {
+            setBackendScheduleHydrated(true);
+          }
+
+          const live =
+            patch.raw ||
+            ({
+              liveId: pinned,
+              slotTransition: patch.slotTransition,
+              slotClock: patch.slotClock,
+              bigScreenOwnerUserId: patch.bigScreenOwnerUserId,
+            } as any);
+          applyServerSlotClock(live);
+
+          const activeSlotId = String(
+            live?.slotClock?.activeSlotId || input.incomingSlotId || ""
+          ).trim();
+          const activeOwnerUserId = String(
+            live?.slotClock?.activeOwnerUserId ||
+              live?.bigScreenOwnerUserId ||
+              input.incomingOwnerUserId ||
+              ""
+          ).trim();
+
+          return {
+            ok: true,
+            live,
+            activeSlotId,
+            activeOwnerUserId,
+          };
+        } catch (error: any) {
+          return {
+            ok: false,
+            abortReason: String(error?.message || error || "exact_id_refetch_failed"),
+          };
+        }
+      },
+      applyRoleStateFromLive: (input: {
+        transitionId: string;
+        canonicalLiveSessionId: string;
+        incomingSlotId: string;
+        incomingOwnerUserId: string;
+        live?: any;
+      }) => {
+        const activeSlotId = String(
+          input.incomingSlotId ||
+            input.live?.slotClock?.activeSlotId ||
+            ""
+        ).trim();
+        const activeOwnerUserId = String(
+          input.incomingOwnerUserId ||
+            input.live?.slotClock?.activeOwnerUserId ||
+            input.live?.bigScreenOwnerUserId ||
+            ""
+        ).trim();
+        slotSoftReentryAuthorityRef.current = {
+          activeSlotId,
+          activeOwnerUserId,
+          at: Date.now(),
+        };
+        try {
+          const g = globalThis as any;
+          g.__KRISTO_SERVER_ACTIVE_SLOT_ID__ = activeSlotId;
+          g.__KRISTO_SERVER_ACTIVE_OWNER_ID__ = activeOwnerUserId;
+          g.__KRISTO_SLOT_HANDOFF_BIG_SCREEN_OWNER__ = activeOwnerUserId;
+          g.__KRISTO_SLOT_HANDOFF_BIG_SCREEN_SLOT_ID__ = activeSlotId;
+        } catch {}
+        setLiveNowMs(Date.now());
+        const uid = String(currentUserId || "").trim();
+        const isIncoming = !!uid && uid === activeOwnerUserId;
+        if (isIncoming && input.canonicalLiveSessionId) {
+          const stableIdentity = uid.replace(/[^a-zA-Z0-9_]/g, "");
+          pinLiveKitPublisherHostBeforeToken(
+            input.canonicalLiveSessionId,
+            "slot-soft-reentry-role",
+            { stableIdentity }
+          );
+          pinLiveKitPublisherStage(
+            input.canonicalLiveSessionId,
+            "slot-soft-reentry-role",
+            { stableIdentity }
+          );
+        } else {
+          clearLiveKitPublisherStagePin("slot-soft-reentry-not-incoming");
+        }
+      },
+      remountAndReconnectLiveKit: (input: {
+        transitionId: string;
+        canonicalLiveSessionId: string;
+        isIncoming: boolean;
+      }) => {
+        const roomName = String(
+          input.canonicalLiveSessionId || canonicalLiveSessionId || ""
+        ).trim();
+        const userId = String(currentUserId || "").trim();
+        const stableIdentity = String(currentUserId || userId).replace(
+          /[^a-zA-Z0-9_]/g,
+          ""
+        );
+        liveKitPublisherStageStickyRef.current = true;
+        prevShouldMountLiveKitRef.current = null;
+        if (input.isIncoming && roomName && userId) {
+          pinLiveKitPublisherHostBeforeToken(roomName, "slot-soft-reentry", {
+            stableIdentity,
+          });
+          pinLiveKitPublisherStage(roomName, "slot-soft-reentry", {
+            stableIdentity,
+          });
+        }
+        setSlotSoftReentryEpoch((epoch) => epoch + 1);
+      },
+      waitForRoomConnected: async (pinnedId: string, timeoutMs: number) => {
+        const started = Date.now();
+        const target = String(pinnedId || canonicalLiveSessionId || "").trim();
+        while (Date.now() - started < timeoutMs) {
+          const g = globalThis as any;
+          const room = g.__KRISTO_LIVEKIT_CONNECTED_ROOM__ || g.__KRISTO_HELD_LIVEKIT_ROOM__;
+          const connected =
+            !!room &&
+            (room.state === "connected" ||
+              room.state === 1 ||
+              String(room.state || "").includes("connect"));
+          const activeMatch =
+            String(g.__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "").trim() === target &&
+            !!g.__KRISTO_LIVEKIT_ACTIVE_TOKEN_CLAIMS__?.identity;
+          if (connected || activeMatch || isLiveKitRoomActuallyConnected(target)) {
+            return true;
+          }
+          await new Promise<void>((r) => setTimeout(r, 100));
+        }
+        return false;
+      },
+      onShowPreparation: (input: {
+        transition: any;
+        steps: SlotTransitionUiStep[];
+      }) => {
+        slotSoftReentryActiveTransitionRef.current = input.transition || null;
+        slotTransitionStartedAtRef.current = Date.now();
+        setSlotTransitionElapsedSec(0);
+        setSlotTransitionTimedOut(false);
+        setSlotTransitionSteps(mapSlotTransitionUiSteps(input.steps));
+        setSlotTransitionUiActive(true);
+      },
+      onUpdatePreparationSteps: (steps: SlotTransitionUiStep[]) => {
+        setSlotTransitionSteps(mapSlotTransitionUiSteps(steps));
+      },
+      onHidePreparation: () => {
+        setSlotTransitionUiActive(false);
+        setSlotTransitionElapsedSec(0);
+        setSlotTransitionTimedOut(false);
+        slotSoftReentryActiveTransitionRef.current = null;
+      },
+      onSoftReentryFailed: (input: { transition: any; reason: string }) => {
+        slotSoftReentryActiveTransitionRef.current = input.transition || null;
+        // Keep prep UI visible; Retry appears after timeout.
+        setSlotTransitionUiActive(true);
+      },
+      onBigScreenAssigned: (input: {
+        transition: any;
+        ownerUserId: string;
+        slotId: string;
+      }) => {
+        slotTransitionLastActiveSlotIdRef.current = String(input.slotId || "");
+        slotTransitionLastActiveOwnerRef.current = String(input.ownerUserId || "");
+        slotSoftReentryAuthorityRef.current = {
+          activeSlotId: String(input.slotId || ""),
+          activeOwnerUserId: String(input.ownerUserId || ""),
+          at: Date.now(),
+        };
+        const incomingSlotNumber = Math.max(
+          1,
+          Math.floor(
+            Number(
+              authorityStageSlots.find(
+                (slot: any) =>
+                  String(slot?.id || slot?.slotId || "") === String(input.slotId || "")
+              )?.slot ??
+                authorityStageSlots.find(
+                  (slot: any) =>
+                    String(slot?.id || slot?.slotId || "") === String(input.slotId || "")
+                )?.slotNumber ??
+                0
+            ) || 0
+          )
+        );
+        noteLiveSlotPromotedToBigScreen({
+          liveBridgeId: canonicalLiveSessionId,
+          slotId: input.slotId,
+          slotNumber: incomingSlotNumber || currentSlotNumber || 0,
+          ownerUserId: input.ownerUserId,
+          previousSlotNumber: currentSlotNumber || null,
+          fromBoundaryHandoff: true,
+        });
+        const nextAfter = resolveNextClaimedSlotForPreflight(
+          authorityStageSlots,
+          Date.now()
+        );
+        const nextWithAvatar = nextAfter
+          ? {
+              ...nextAfter,
+              avatarUri:
+                nextAfter.avatarUri ||
+                resolveParticipantAvatarUri({
+                  claimedByUserId: nextAfter.ownerUserId,
+                  claimedByName: nextAfter.ownerName,
+                  claimedByAvatarUri: nextAfter.avatarUri,
+                }) ||
+                "",
+            }
+          : null;
+        syncLiveSlotPreflight({
+          liveBridgeId: canonicalLiveSessionId,
+          roomName: canonicalLiveSessionId,
+          currentUserId: String(currentUserId || "").trim(),
+          headers: liveKitApiHeaders as Record<string, string>,
+          nextSlot: nextWithAvatar,
+          localUserIsActiveSpeaker:
+            String(input.ownerUserId || "").trim() ===
+            String(currentUserId || "").trim(),
+        });
+      },
+      canControlMicForOutgoing:
+        String(currentUserId || "").trim().length > 0,
+      canPublishMicForIncoming:
+        String(currentUserId || "").trim().length > 0,
+    };
+  });
+
+  // Server-authoritative slot transition: detect boundary → begin → everyone shows prep UI.
+  useEffect(() => {
+    if (isMediaInstantLive || !hasTimedClaimedSchedule || !liveBridgeId) {
+      return;
+    }
+    if (!isFocused) return;
+
+    const slots = boundaryScheduleSlots;
+    const scheduleVersion =
+      boundaryScheduleSig ||
+      `${slots.length}:${slots
+        .map(
+          (slot: any) =>
+            `${String(slot?.id || slot?.slotId || "")}:${String(
+              slot?.claimedByUserId || ""
+            )}:${Number(slot?.startMs || 0)}:${Number(slot?.endMs || 0)}`
+        )
+        .join("|")}`;
+
+    // Seed / refresh schedule on the live bridge so the server clock can reconcile.
+    void pushLiveAction("sync-slot-schedule", {
+      ...buildScheduleSyncPayload(slots, scheduleVersion),
+    }).then((res) => {
+      const adapters = slotTransitionAdaptersRef.current;
+      if (res?.live && adapters) {
+        applyServerSlotTransition(res.live, adapters);
+      }
+    });
+
+    const timer = setInterval(() => {
+      const adapters = slotTransitionAdaptersRef.current;
+      if (!adapters) return;
+      const latestSlots = boundaryScheduleSlotsRef.current;
+
+      tickSlotTransitionWatcher({
+        slots: latestSlots,
+        scheduleVersion,
+        adapters,
+        lastActiveSlotIdRef: slotTransitionLastActiveSlotIdRef,
+        lastActiveOwnerRef: slotTransitionLastActiveOwnerRef,
+      });
+
+      // Fast server tick while a transition may be active / near boundary.
+      void adapters
+        .pushLiveAction("slot-transition-tick", {
+          ...buildScheduleSyncPayload(latestSlots, scheduleVersion),
+        })
+        .then((res: any) => {
+          if (res?.live) {
+            applyServerSlotTransition(res.live, adapters);
+          }
+        });
+    }, 500);
+
+    return () => clearInterval(timer);
+  }, [
+    isMediaInstantLive,
+    hasTimedClaimedSchedule,
+    liveBridgeId,
+    isFocused,
+    boundaryScheduleSig,
+    boundaryScheduleSlots,
+    currentUserId,
+    liveKitApiHeaders,
+  ]);
+
+  useEffect(() => {
+    if (!slotTransitionUiActive) return;
+    const SLOT_SOFT_REENTRY_TIMEOUT_MS = 45000;
+    const timer = setInterval(() => {
+      const started = slotTransitionStartedAtRef.current || Date.now();
+      const elapsedMs = Date.now() - started;
+      setSlotTransitionElapsedSec(Math.max(0, Math.floor(elapsedMs / 1000)));
+      if (
+        elapsedMs >= SLOT_SOFT_REENTRY_TIMEOUT_MS &&
+        (slotSoftReentryInFlightRef.current ||
+          !!slotSoftReentryActiveTransitionRef.current)
+      ) {
+        setSlotTransitionTimedOut((prev) => (prev ? prev : true));
+      }
+    }, 250);
+    return () => clearInterval(timer);
+  }, [slotTransitionUiActive]);
+
+  function handleSlotSoftReentryRetry() {
+    const adapters = slotTransitionAdaptersRef.current;
+    const transition = slotSoftReentryActiveTransitionRef.current;
+    if (!adapters || !transition?.transitionId) {
+      handleLivePreflightRetry();
+      return;
+    }
+    setSlotTransitionTimedOut(false);
+    slotTransitionStartedAtRef.current = Date.now();
+    setSlotTransitionElapsedSec(0);
+    retryAutomaticSlotSoftReentry(transition, adapters);
+  }
+
   useEffect(() => {
     if (isMediaInstantLive) return;
 
@@ -11419,7 +12241,13 @@ export default function LiveRoomScreen() {
     }
 
     const hydrateFeedId = String(
-      churchLiveControlScheduleId || liveScheduleFeedId || ""
+      (params as any)?.sourceScheduleId ||
+        params.liveId ||
+        (params as any)?.feedId ||
+        liveBridgeId ||
+        liveScheduleFeedId ||
+        churchLiveControlScheduleId ||
+        ""
     ).trim();
     if (!hydrateFeedId || !isBackendFeedScheduleId(hydrateFeedId)) {
       setFeedAvatarEnrichedSlots([]);
@@ -11499,6 +12327,14 @@ export default function LiveRoomScreen() {
           }
         );
         const rows = Array.isArray(res?.data) ? res.data : [];
+        const preferredScheduleId = String(
+          (params as any)?.sourceScheduleId ||
+            params.liveId ||
+            (params as any)?.feedId ||
+            liveBridgeId ||
+            liveBridgeIdFromRoute ||
+            ""
+        ).trim();
         const built = buildChurchLiveControlLiveRoomScheduleSlots(rows, {
           churchId: liveRouteChurchId,
           churchName: String(
@@ -11506,17 +12342,24 @@ export default function LiveRoomScreen() {
           ).trim(),
           mediaName: String((params as any)?.mediaName || params.title || "Church Media").trim(),
           nowMs: Date.now(),
+          canonicalLiveSessionId: preferredScheduleId,
+          scheduleId: preferredScheduleId,
+          batchId: preferredScheduleId,
+          sourceScheduleId: preferredScheduleId,
         });
 
         if (cancelled) return;
 
-        const slots = normalizeLiveScheduleSlots(built?.slots || []);
-        const scheduleId = String(
-          built?.scheduleId ||
-            (params as any)?.sourceScheduleId ||
-            (params as any)?.liveId ||
-            ""
-        ).trim();
+        if (!built) {
+          if (preferredScheduleId) {
+            setChurchLiveControlScheduleId(preferredScheduleId);
+          }
+          setBackendScheduleHydrated(true);
+          return;
+        }
+
+        const slots = normalizeLiveScheduleSlots(built.slots || []);
+        const scheduleId = String(built.scheduleId || preferredScheduleId || "").trim();
 
         if (scheduleId) {
           setChurchLiveControlScheduleId(scheduleId);
@@ -11803,6 +12646,15 @@ export default function LiveRoomScreen() {
           setPinnedGuestId("host");
         }
       }
+
+      const transitionAdapters = slotTransitionAdaptersRef.current;
+      if (nextLive) {
+        applyServerSlotClock(nextLive);
+        if (transitionAdapters) {
+          applyServerSlotTransition(nextLive, transitionAdapters);
+        }
+      }
+
       return res;
     } catch {
       return null;
@@ -11908,10 +12760,27 @@ export default function LiveRoomScreen() {
         presence: patch.viewerPresence || null,
         liveId: patch.liveId || "",
         isLive: patch.isLive || false,
+        slotTransitionId: patch.slotTransition?.transitionId || "",
+        slotTransitionPhase: patch.slotTransition?.phase || "",
+        slotTransitionEvent: patch.slotTransition?.event || "",
+        activeSlotId: patch.slotClock?.activeSlotId || "",
+        activeOwnerUserId: patch.slotClock?.activeOwnerUserId || "",
+        bigScreenOwnerUserId: patch.bigScreenOwnerUserId || "",
         source,
       });
-      if (sig === livePatchSigRef.current) return;
+      if (!slotSoftReentryForcePatchRef.current && sig === livePatchSigRef.current) return;
       livePatchSigRef.current = sig;
+
+      const transitionAdapters = slotTransitionAdaptersRef.current;
+      const liveForAuthority = patch.raw || {
+        slotTransition: patch.slotTransition,
+        slotClock: patch.slotClock,
+        bigScreenOwnerUserId: patch.bigScreenOwnerUserId,
+      };
+      applyServerSlotClock(liveForAuthority);
+      if (transitionAdapters && (patch.slotTransition || patch.raw?.slotTransition || patch.slotClock)) {
+        applyServerSlotTransition(liveForAuthority, transitionAdapters);
+      }
 
       const resolved = resolveChurchLiveStateUpdate({
         patch,
@@ -11919,6 +12788,8 @@ export default function LiveRoomScreen() {
         churchId: String(session?.churchId || ""),
         scheduleLiveActive: scheduleWindowStillLive || !!currentMainStageSlot,
         scheduleExplicitlyEnded: backendScheduleExplicitlyEnded,
+        requestedLiveId: liveBridgeId || liveBridgeIdFromRoute,
+        canonicalLiveSessionId: liveBridgeId || liveBridgeIdFromRoute,
       });
 
       console.log("KRISTO_CHURCH_LIVE_STATE_RESULT", {
@@ -12411,6 +13282,14 @@ export default function LiveRoomScreen() {
                   { screen: "LiveRoomSilentRefreshChurchLiveControl", throttleMs: 44000 }
                 );
                 const rows = Array.isArray(res?.data) ? res.data : [];
+                const preferredScheduleId = String(
+                  (params as any)?.sourceScheduleId ||
+                    params.liveId ||
+                    (params as any)?.feedId ||
+                    liveBridgeId ||
+                    liveBridgeIdFromRoute ||
+                    ""
+                ).trim();
                 const built = buildChurchLiveControlLiveRoomScheduleSlots(rows, {
                   churchId: liveRouteChurchId,
                   churchName: String(
@@ -12418,14 +13297,20 @@ export default function LiveRoomScreen() {
                   ).trim(),
                   mediaName: String((params as any)?.mediaName || params.title || "Church Media").trim(),
                   nowMs: Date.now(),
+                  canonicalLiveSessionId: preferredScheduleId,
+                  scheduleId: preferredScheduleId,
+                  batchId: preferredScheduleId,
+                  sourceScheduleId: preferredScheduleId,
                 });
-                const slots = normalizeLiveScheduleSlots(built?.slots || []);
-                const scheduleId = String(
-                  built?.scheduleId ||
-                    (params as any)?.sourceScheduleId ||
-                    (params as any)?.liveId ||
-                    ""
-                ).trim();
+                if (!built) {
+                  if (preferredScheduleId) {
+                    setChurchLiveControlScheduleId(preferredScheduleId);
+                  }
+                  setBackendScheduleHydrated(true);
+                  return;
+                }
+                const slots = normalizeLiveScheduleSlots(built.slots || []);
+                const scheduleId = String(built.scheduleId || preferredScheduleId || "").trim();
 
                 if (scheduleId) {
                   setChurchLiveControlScheduleId(scheduleId);
@@ -15165,6 +16050,16 @@ export default function LiveRoomScreen() {
   ]);
   const livePreflightSkip = String((params as any)?.preview || "") === "1";
   const livePreflightActive = !livePreflightSkip && !livePreflightComplete;
+  const preparationOverlayActive = livePreflightActive || slotTransitionUiActive;
+  const preparationOverlaySteps = slotTransitionUiActive
+    ? slotTransitionSteps
+    : livePreflightSteps;
+  const preparationOverlayElapsedSec = slotTransitionUiActive
+    ? slotTransitionElapsedSec
+    : livePreflightElapsedSec;
+  const preparationOverlayTimedOut = slotTransitionUiActive
+    ? slotTransitionTimedOut
+    : livePreflightTimedOut;
   const liveKitPublisherStageKey =
     livePreflightRetryEpoch > 0
       ? `lk-publisher-${liveBridgeId}|${currentUserId || "anon"}|r${livePreflightRetryEpoch}`
@@ -15485,11 +16380,12 @@ export default function LiveRoomScreen() {
   );
 
   useEffect(() => {
-    (globalThis as any).__KRISTO_LIVE_PREFLIGHT_ACTIVE__ = livePreflightActive;
+    (globalThis as any).__KRISTO_LIVE_PREFLIGHT_ACTIVE__ =
+      livePreflightActive || slotTransitionUiActive;
     return () => {
       (globalThis as any).__KRISTO_LIVE_PREFLIGHT_ACTIVE__ = false;
     };
-  }, [livePreflightActive]);
+  }, [livePreflightActive, slotTransitionUiActive]);
 
   useEffect(() => {
     if (livePreflightSkip) {
@@ -16124,21 +17020,24 @@ ${scheduleAudienceAccessText}`,
 
 return (
     <SafeAreaView style={s.safe as ViewStyle} edges={layoutMode === "focus" || layoutMode === "grid6" || layoutMode === "audience20" ? [] : ["top", "bottom"]} {...rootPanHandlers}>
-        {livePreflightActive ? (
+        {preparationOverlayActive ? (
           <LiveRoomPreflight
-            steps={livePreflightSteps}
-            doneCount={livePreflightSteps.filter((step) => step.status === "done").length}
-            elapsedSec={livePreflightElapsedSec}
-            timedOut={livePreflightTimedOut}
-            onRetry={handleLivePreflightRetry}
+            steps={preparationOverlaySteps}
+            doneCount={preparationOverlaySteps.filter((step) => step.status === "done").length}
+            elapsedSec={preparationOverlayElapsedSec}
+            timedOut={preparationOverlayTimedOut}
+            onRetry={
+              slotTransitionUiActive ? handleSlotSoftReentryRetry : handleLivePreflightRetry
+            }
             onBack={handleLivePreflightBack}
             waveAnim={waveAnim}
+            hideRetry={slotTransitionUiActive && !slotTransitionTimedOut}
           />
         ) : null}
 
         <View
-          style={[{ flex: 1 }, livePreflightActive ? { opacity: 0 } : null] as any}
-          pointerEvents={livePreflightActive ? "none" : "auto"}
+          style={[{ flex: 1 }, preparationOverlayActive ? { opacity: 0 } : null] as any}
+          pointerEvents={preparationOverlayActive ? "none" : "auto"}
         >
 
         {layoutMode === "focus" ? (
@@ -16201,7 +17100,7 @@ return (
               ) : isMediaInstantLive ? (
                 <>
                   <KristoLiveKitStage
-                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}|pf${livePreflightRetryEpoch}`}
+                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}|pf${livePreflightRetryEpoch}|sr${slotSoftReentryEpoch}`}
                     roomName={liveBridgeId}
                     headers={liveKitViewerApiHeaders}
                     canPublish={false}
@@ -16466,7 +17365,7 @@ return (
                 />
               ) : (
                 <KristoLiveKitStage
-                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}|pf${livePreflightRetryEpoch}`}
+                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}|pf${livePreflightRetryEpoch}|sr${slotSoftReentryEpoch}`}
                   roomName={liveBridgeId}
                   headers={liveKitViewerApiHeaders}
                   canPublish={false}

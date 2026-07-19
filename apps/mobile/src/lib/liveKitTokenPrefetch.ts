@@ -8,7 +8,32 @@ export type LiveKitTokenRequest = {
   canPublish: boolean;
   headers: Record<string, string>;
   source?: string;
+  /** Bypass in-memory cache and fetch a new JWT. */
+  forceRefresh?: boolean;
 };
+
+export function invalidateLiveKitTokenCache(input: {
+  roomName?: string;
+  identity?: string;
+}): void {
+  const g = globalThis as any;
+  const store = g.__KRISTO_LIVEKIT_TOKEN_CACHE__;
+  if (!store || typeof store !== "object") return;
+  const roomName = String(input.roomName || "").trim();
+  const identity = String(input.identity || "").trim();
+  if (!roomName && !identity) {
+    g.__KRISTO_LIVEKIT_TOKEN_CACHE__ = {};
+    return;
+  }
+  for (const key of Object.keys(store)) {
+    const parts = String(key || "").split("|");
+    const keyRoom = String(parts[0] || "");
+    const keyIdentity = String(parts[1] || "");
+    if (roomName && keyRoom !== roomName) continue;
+    if (identity && keyIdentity !== identity) continue;
+    delete store[key];
+  }
+}
 
 type TokenCacheEntry = {
   url: string;
@@ -66,23 +91,28 @@ export async function fetchLiveKitToken(
   if (!roomName || !identity) return null;
 
   const key = cacheKey(input);
-  const cached = readCache(key);
-  if (cached) {
-    logLiveKitTokenResult({
-      source: input.source || "cache",
-      roomName,
-      identity,
-      canPublish: input.canPublish,
-      ok: true,
-      cacheHit: true,
-    });
-    return { url: cached.url, token: cached.token };
-  }
+  if (input.forceRefresh) {
+    invalidateLiveKitTokenCache({ roomName, identity });
+    writeInflight(key, null);
+  } else {
+    const cached = readCache(key);
+    if (cached) {
+      logLiveKitTokenResult({
+        source: input.source || "cache",
+        roomName,
+        identity,
+        canPublish: input.canPublish,
+        ok: true,
+        cacheHit: true,
+      });
+      return { url: cached.url, token: cached.token };
+    }
 
-  const inflight = readInflight(key);
-  if (inflight) {
-    const resolved = await inflight;
-    return resolved ? { url: resolved.url, token: resolved.token } : null;
+    const inflight = readInflight(key);
+    if (inflight) {
+      const resolved = await inflight;
+      return resolved ? { url: resolved.url, token: resolved.token } : null;
+    }
   }
 
   logLiveKitTokenStart({

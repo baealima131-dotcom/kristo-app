@@ -120,12 +120,29 @@ function resolveChurchLiveControlScheduleRow(input: {
   const rows = Array.isArray(cached?.rawRows) ? cached.rawRows : [];
   if (!rows.length) return null;
 
-  const built = buildChurchLiveControlGuestCenterScheduleRow(rows, { churchId });
+  const wantedBatch = String(input.batchId || "").trim();
+  const built = buildChurchLiveControlGuestCenterScheduleRow(rows, {
+    churchId,
+    batchId: wantedBatch || undefined,
+    scheduleId: wantedBatch || undefined,
+    canonicalLiveSessionId: wantedBatch || undefined,
+  });
   if (!built) return null;
 
   const scheduleId = String(built?.sourceScheduleId || built?.id || "").trim();
-  const wantedBatch = String(input.batchId || "").trim();
-  if (wantedBatch && scheduleId && scheduleId !== wantedBatch && !scheduleId.includes(wantedBatch)) {
+  if (
+    wantedBatch &&
+    scheduleId &&
+    scheduleId !== wantedBatch &&
+    !scheduleId.startsWith(`${wantedBatch}-`) &&
+    !wantedBatch.startsWith(`${scheduleId}-`)
+  ) {
+    console.log("KRISTO_LIVE_SESSION_ID_MISMATCH_BLOCKED", {
+      requestedLiveId: wantedBatch,
+      canonicalLiveSessionId: wantedBatch,
+      hydratedScheduleId: scheduleId,
+      source: "resolveChurchLiveControlScheduleRow",
+    });
     return null;
   }
 
@@ -278,7 +295,12 @@ export function resolveLiveRingNavigationTarget(input: {
   let allSlots = initialSlots;
   let remappedFromRm = false;
 
-  if (needsRemap || (liveBridgeId && !isScheduleBatchLiveBridgeId(rawScheduleId))) {
+  const shouldHydrateExactSchedule =
+    needsRemap ||
+    (liveBridgeId && !isScheduleBatchLiveBridgeId(rawScheduleId)) ||
+    (isScheduleBatchLiveBridgeId(liveBridgeId) && initialSlots.length <= 1);
+
+  if (shouldHydrateExactSchedule) {
     let fullRow =
       (liveBridgeId ? findFullScheduleRowForBridge(liveBridgeId, mergedRows) : null) ||
       resolveChurchLiveControlScheduleRow({
@@ -287,33 +309,50 @@ export function resolveLiveRingNavigationTarget(input: {
         batchId: liveBridgeId,
       });
 
-    if (!fullRow && !liveBridgeId) {
-      fullRow = resolveChurchLiveControlScheduleRow({
-        churchId: viewerChurchId,
-        userId: viewerUserId,
-      });
-    }
-
+    // Never fall back to an unbound CLC schedule — that can hydrate a foreign live ID.
     if (fullRow) {
       const fullSlots = normalizeLiveScheduleSlots(
         Array.isArray(fullRow?.scheduleSlots) ? fullRow.scheduleSlots : []
       );
       if (fullSlots.length) {
-        liveBridgeId =
-          pickLiveBridgeScheduleId(
-            fullRow?.sourceScheduleId,
-            fullRow?.id,
-            fullRow?.parentScheduleId,
-            liveBridgeId
-          ) || liveBridgeId;
+        const hydratedId = pickLiveBridgeScheduleId(
+          fullRow?.sourceScheduleId,
+          fullRow?.id,
+          fullRow?.parentScheduleId,
+          liveBridgeId
+        );
+        if (
+          liveBridgeId &&
+          hydratedId &&
+          hydratedId !== liveBridgeId &&
+          !hydratedId.startsWith(`${liveBridgeId}-`) &&
+          !liveBridgeId.startsWith(`${hydratedId}-`)
+        ) {
+          console.log("KRISTO_LIVE_STALE_SCHEDULE_REJECTED", {
+            requestedLiveId: liveBridgeId,
+            canonicalLiveSessionId: liveBridgeId,
+            hydratedScheduleId: hydratedId,
+            source: input.source || "live-ring",
+            reason: "foreign_schedule_during_ring_hydrate",
+          });
+        } else {
+          liveBridgeId = hydratedId || liveBridgeId;
 
-        resolvedItem = {
-          ...fullRow,
-          id: liveBridgeId || fullRow.id,
-          sourceScheduleId: liveBridgeId || fullRow.sourceScheduleId || fullRow.id,
-        };
-        allSlots = fullSlots;
-        remappedFromRm = isRoomMessageScheduleId(rawScheduleId) || initialSlots.length <= 1;
+          resolvedItem = {
+            ...fullRow,
+            id: liveBridgeId || fullRow.id,
+            sourceScheduleId: liveBridgeId || fullRow.sourceScheduleId || fullRow.id,
+          };
+          allSlots = fullSlots;
+          remappedFromRm = isRoomMessageScheduleId(rawScheduleId) || initialSlots.length <= 1;
+          console.log("KRISTO_LIVE_EXACT_SCHEDULE_HYDRATED", {
+            requestedLiveId: liveBridgeId,
+            canonicalLiveSessionId: liveBridgeId,
+            hydratedScheduleId: liveBridgeId,
+            routeSlotCount: fullSlots.length,
+            source: input.source || "live-ring",
+          });
+        }
       }
     }
   }
@@ -322,6 +361,15 @@ export function resolveLiveRingNavigationTarget(input: {
   const sourceScheduleId = String(
     liveBridgeId || resolvedItem?.sourceScheduleId || resolvedItem?.id || rawScheduleId
   ).trim();
+
+  console.log("KRISTO_RING_CANONICAL_LIVE_ID_PINNED", {
+    source: input.source || "live-ring",
+    requestedLiveId: rawScheduleId,
+    canonicalLiveSessionId: sourceScheduleId,
+    routeSlotCount: allSlots.length,
+    routeSlotNumber: input.routeSlotNumber ?? matched.routeSlotNumber,
+    remappedFromRm,
+  });
 
   if (remappedFromRm || (needsRemap && isScheduleBatchLiveBridgeId(sourceScheduleId))) {
     console.log("KRISTO_LIVE_RING_NAV_RM_TO_BATCH_BRIDGE", {
@@ -659,20 +707,46 @@ export function buildChurchLiveControlLiveRoomRouteParamsFromMessages(input: {
   source?: string;
   liveMode?: string;
   preview?: string;
+  /** When set, only this exact live/schedule ID may be used (no foreign fallback). */
+  canonicalLiveSessionId?: string;
+  scheduleId?: string;
+  batchId?: string;
 }): ScheduleLiveRoomRouteParams | null {
   const nowMs = Number(input.nowMs || Date.now());
   const viewerUserId = String(input.viewerUserId || "").trim();
+  const preferredLiveId = String(
+    input.canonicalLiveSessionId || input.batchId || input.scheduleId || ""
+  ).trim();
   const built = buildChurchLiveControlLiveRoomScheduleSlots(input.messages, {
     churchId: input.viewerChurchId,
     churchName: input.churchName,
     mediaName: input.mediaName,
     nowMs,
+    scheduleId: preferredLiveId || undefined,
+    batchId: preferredLiveId || undefined,
+    canonicalLiveSessionId: preferredLiveId || undefined,
   });
   if (!built?.scheduleId || !built.slots?.length) {
     console.log("KRISTO_CHURCH_LIVE_CONTROL_LIVE_NAV_BLOCKED", {
       reason: "no_schedule_slots",
       slotCount: built?.slots?.length || 0,
       scheduleId: String(built?.scheduleId || ""),
+      requestedLiveId: preferredLiveId,
+      canonicalLiveSessionId: preferredLiveId,
+    });
+    return null;
+  }
+
+  if (
+    preferredLiveId &&
+    built.scheduleId !== preferredLiveId &&
+    !built.scheduleId.startsWith(`${preferredLiveId}-`)
+  ) {
+    console.log("KRISTO_LIVE_SESSION_ID_MISMATCH_BLOCKED", {
+      requestedLiveId: preferredLiveId,
+      canonicalLiveSessionId: preferredLiveId,
+      hydratedScheduleId: built.scheduleId,
+      source: "buildChurchLiveControlLiveRoomRouteParamsFromMessages",
     });
     return null;
   }
@@ -682,6 +756,9 @@ export function buildChurchLiveControlLiveRoomRouteParamsFromMessages(input: {
     churchName: input.churchName,
     mediaName: input.mediaName,
     nowMs,
+    scheduleId: preferredLiveId || built.scheduleId,
+    batchId: preferredLiveId || built.scheduleId,
+    canonicalLiveSessionId: preferredLiveId || built.scheduleId,
   });
   if (!row) return null;
 
@@ -754,9 +831,26 @@ export function navigateChurchLiveControlLiveRoomFromMessages(input: {
   source?: string;
   liveMode?: string;
   preview?: string;
+  /** Ring/assignment-selected live ID — must win over any other CLC schedule. */
+  canonicalLiveSessionId?: string;
+  scheduleId?: string;
+  batchId?: string;
+  sourceScheduleId?: string;
 }): boolean {
   const viewerUserId = String(input.viewerUserId || "").trim();
-  const routeParams = buildChurchLiveControlLiveRoomRouteParamsFromMessages(input);
+  const preferredLiveId = String(
+    input.canonicalLiveSessionId ||
+      input.batchId ||
+      input.scheduleId ||
+      input.sourceScheduleId ||
+      ""
+  ).trim();
+  const routeParams = buildChurchLiveControlLiveRoomRouteParamsFromMessages({
+    ...input,
+    canonicalLiveSessionId: preferredLiveId || undefined,
+    scheduleId: preferredLiveId || undefined,
+    batchId: preferredLiveId || undefined,
+  });
   if (!routeParams) return false;
 
   const pathname = "/(tabs)/more/my-church-room/messages/live-room";

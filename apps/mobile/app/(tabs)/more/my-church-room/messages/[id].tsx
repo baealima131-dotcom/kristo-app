@@ -11984,6 +11984,24 @@ function saveAssignmentVideoTrim() {
     // regardless of tone. Gating on tone before this caused LIVE NOW slots to be
     // rejected with "Schedule required".
     if (isChurchLiveControlAssignment && liveAssignmentCtaMeta.canOpenLive) {
+      const preferredScheduleCounts = new Map<string, number>();
+      for (const card of messages as any[]) {
+        if (String(card?.kind || "").trim() !== "schedule_slot") continue;
+        if (isScheduleSlotExpired(card, liveCountdownNow)) continue;
+        const sid = String(
+          card?.sourceScheduleId || card?.sourceFeedId || card?.scheduleBatchId || ""
+        ).trim();
+        if (!sid) continue;
+        preferredScheduleCounts.set(sid, (preferredScheduleCounts.get(sid) || 0) + 1);
+      }
+      let preferredCanonicalLiveSessionId = "";
+      let preferredCount = 0;
+      for (const [sid, count] of preferredScheduleCounts.entries()) {
+        if (count > preferredCount) {
+          preferredCount = count;
+          preferredCanonicalLiveSessionId = sid;
+        }
+      }
       const navigated = navigateChurchLiveControlLiveRoomFromMessages({
         router,
         messages,
@@ -12001,6 +12019,14 @@ function saveAssignmentVideoTrim() {
           liveAssignmentCtaMeta.tone === "scheduled" ? "scheduled-live" : "church-live-control",
         liveMode: liveAssignmentCtaMeta.tone === "scheduled" ? "scheduled" : "instant",
         preview: liveAssignmentCtaMeta.tone === "scheduled" ? "1" : "0",
+        ...(preferredCanonicalLiveSessionId
+          ? {
+              canonicalLiveSessionId: preferredCanonicalLiveSessionId,
+              scheduleId: preferredCanonicalLiveSessionId,
+              batchId: preferredCanonicalLiveSessionId,
+              sourceScheduleId: preferredCanonicalLiveSessionId,
+            }
+          : {}),
       });
       if (navigated) return;
       Alert.alert(
@@ -12136,6 +12162,24 @@ function saveAssignmentVideoTrim() {
       }
 
       if (isChurchLiveControlAssignment) {
+        const preferredScheduleCounts = new Map<string, number>();
+        for (const card of messages as any[]) {
+          if (String(card?.kind || "").trim() !== "schedule_slot") continue;
+          if (isScheduleSlotExpired(card, liveCountdownNow)) continue;
+          const sid = String(
+            card?.sourceScheduleId || card?.sourceFeedId || card?.scheduleBatchId || ""
+          ).trim();
+          if (!sid) continue;
+          preferredScheduleCounts.set(sid, (preferredScheduleCounts.get(sid) || 0) + 1);
+        }
+        let preferredCanonicalLiveSessionId = "";
+        let preferredCount = 0;
+        for (const [sid, count] of preferredScheduleCounts.entries()) {
+          if (count > preferredCount) {
+            preferredCount = count;
+            preferredCanonicalLiveSessionId = sid;
+          }
+        }
         const navigated = navigateChurchLiveControlLiveRoomFromMessages({
           router,
           messages,
@@ -12149,6 +12193,14 @@ function saveAssignmentVideoTrim() {
           source: "church-live-control",
           liveMode: liveAssignmentCtaMeta.tone === "preview" ? "scheduled" : "instant",
           preview: liveAssignmentCtaMeta.tone === "preview" ? "1" : "0",
+          ...(preferredCanonicalLiveSessionId
+            ? {
+                canonicalLiveSessionId: preferredCanonicalLiveSessionId,
+                scheduleId: preferredCanonicalLiveSessionId,
+                batchId: preferredCanonicalLiveSessionId,
+                sourceScheduleId: preferredCanonicalLiveSessionId,
+              }
+            : {}),
         });
         if (navigated) return;
         Alert.alert(

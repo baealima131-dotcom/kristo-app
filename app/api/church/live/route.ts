@@ -16,6 +16,17 @@ import {
 } from "@/app/api/_lib/rbac";
 
 import { evaluateLiveMediaAuthority } from "@/lib/liveMediaAuthority";
+import {
+  applySlotTransitionProgress,
+  beginSlotTransitionFromClient,
+  isSlotTransitionActive,
+  readSlotClock,
+  readSlotTransition,
+  reconcileLiveSlotTransition,
+  slotClockLitePayload,
+  slotTransitionLitePayload,
+  upsertSlotScheduleSnapshot,
+} from "@/lib/liveSlotTransition";
 
 export const runtime = "nodejs";
 
@@ -192,6 +203,7 @@ function reactivateMinistryScheduledLiveBridge(live: any, now: number) {
 
 function liteLivePayload(live: any) {
   if (!live) return null;
+  const transition = readSlotTransition(live);
   return {
     isLive: live.isLive === true && !live.endedAt,
     liveId: live.liveId,
@@ -205,7 +217,99 @@ function liteLivePayload(live: any) {
     scheduleCreatedByUserId: live.scheduleCreatedByUserId,
     mediaHostIds: live.mediaHostIds,
     updatedAt: live.updatedAt,
+    slotTransition: slotTransitionLitePayload(transition),
+    slotClock: slotClockLitePayload(live),
+    bigScreenOwnerUserId: String(
+      live.bigScreenOwnerUserId || readSlotClock(live).activeOwnerUserId || ""
+    ).trim() || null,
   };
+}
+
+function logSlotTransitionServer(
+  event: string,
+  live: any,
+  extra?: Record<string, unknown>
+) {
+  const t = readSlotTransition(live);
+  console.log(event, {
+    liveId: String(live?.liveId || ""),
+    churchId: String(live?.churchId || ""),
+    transitionId: t.transitionId || null,
+    phase: t.phase || null,
+    eventName: t.event || null,
+    outgoingSlotId: t.outgoingSlotId || null,
+    incomingSlotId: t.incomingSlotId || null,
+    incomingUserId: t.incomingUserId || null,
+    scheduleVersion: t.scheduleVersion || null,
+    boundaryTimestamp: t.boundaryTimestamp || null,
+    ...(extra || {}),
+  });
+}
+
+function applyReconcileAndLog(live: any, now: number, source: string) {
+  const beforeClock = readSlotClock(live);
+  const result = reconcileLiveSlotTransition(live, now);
+  const afterClock = readSlotClock(live);
+
+  console.log("KRISTO_SLOT_CLOCK_RECONCILE", {
+    source,
+    liveId: String(live?.liveId || ""),
+    serverNow: now,
+    beforeActiveSlotId: beforeClock.activeSlotId || null,
+    afterActiveSlotId: afterClock.activeSlotId || null,
+    beforeActiveOwnerUserId: beforeClock.activeOwnerUserId || null,
+    afterActiveOwnerUserId: afterClock.activeOwnerUserId || null,
+    activeSlotUpdated: result.activeSlotUpdated === true,
+    abortReason: result.abortReason || null,
+    changed: result.changed === true,
+    slotEnd: afterClock.activeSlotEndMs || null,
+    remainingMs: afterClock.activeSlotEndMs
+      ? Math.max(0, afterClock.activeSlotEndMs - now)
+      : null,
+  });
+
+  if (result.activeSlotUpdated && beforeClock.activeSlotId !== afterClock.activeSlotId) {
+    console.log("KRISTO_ACTIVE_SLOT_UPDATED", {
+      source,
+      liveId: String(live?.liveId || ""),
+      oldSlotId: beforeClock.activeSlotId || null,
+      newSlotId: afterClock.activeSlotId || null,
+      oldOwnerId: beforeClock.activeOwnerUserId || null,
+      newOwnerId: afterClock.activeOwnerUserId || null,
+      scheduleVersion: afterClock.scheduleVersion || null,
+      serverNow: now,
+      slotStart: afterClock.activeSlotStartMs || null,
+      slotEnd: afterClock.activeSlotEndMs || null,
+      remainingMs: afterClock.activeSlotEndMs
+        ? Math.max(0, afterClock.activeSlotEndMs - now)
+        : null,
+    });
+  }
+
+  if (result.cancelled) {
+    logSlotTransitionServer("KRISTO_SLOT_TRANSITION_CANCELLED", live, {
+      source,
+      reason: result.cancelled.failedReason,
+    });
+  }
+  if (result.started) {
+    logSlotTransitionServer("KRISTO_SLOT_TRANSITION_START", live, { source });
+    logSlotTransitionServer("KRISTO_SLOT_TRANSITION_BROADCAST", live, {
+      source,
+      broadcast: "SLOT_TRANSITION_START",
+    });
+  }
+  if (result.completed) {
+    logSlotTransitionServer("KRISTO_SLOT_TRANSITION_BIG_SCREEN_ASSIGNED", live, {
+      source,
+      bigScreenOwnerUserId: result.completed.bigScreenOwnerUserId,
+    });
+    logSlotTransitionServer("KRISTO_SLOT_TRANSITION_COMPLETED", live, {
+      source,
+      broadcast: "SLOT_TRANSITION_READY",
+    });
+  }
+  return result;
 }
 
 function upsertWaitingRequest(
@@ -286,7 +390,10 @@ export async function GET(req: Request) {
   const resolved = resolveLiveForGet(store, a.churchId, queryLiveId || undefined);
   let rawLive = resolved.live;
 
-  if (rawLive?.isLive === true && !rawLive?.endedAt) {
+  // Exact-ID clients (slot soft re-entry / live room pin) must not lose the session
+  // to the short church-wide heartbeat — they are actively requesting this liveId.
+  const exactIdLookup = !!queryLiveId;
+  if (rawLive?.isLive === true && !rawLive?.endedAt && !exactIdLookup) {
     const lastBeat = Number(rawLive.lastPresenceAt || rawLive.updatedAt || rawLive.startedAt || 0);
     if (!lastBeat || Date.now() - lastBeat > LIVE_STALE_MS) {
       rawLive.isLive = false;
@@ -298,7 +405,26 @@ export async function GET(req: Request) {
     }
   }
 
-  const live = rawLive?.isLive === true && !rawLive?.endedAt ? rawLive : null;
+  // Revive heartbeat-killed schedule sessions when the client asks by exact liveId.
+  if (
+    exactIdLookup &&
+    rawLive &&
+    rawLive.endedReason === "heartbeat-timeout" &&
+    String(rawLive.liveId || rawLive.id || "").trim() === queryLiveId
+  ) {
+    const nowRevive = Date.now();
+    rawLive.isLive = true;
+    delete rawLive.endedAt;
+    delete rawLive.endedReason;
+    rawLive.lastPresenceAt = nowRevive;
+    rawLive.updatedAt = nowRevive;
+    if (resolved.key) {
+      store[resolved.key] = rawLive;
+      await writeJsonFile(STORE_FILE, store);
+    }
+  }
+
+  let live = rawLive?.isLive === true && !rawLive?.endedAt ? rawLive : null;
 
   if (live?.blockedUsers?.[a.userId]) {
     return NextResponse.json({
@@ -307,6 +433,22 @@ export async function GET(req: Request) {
       removedFromLive: true,
       message: "You were removed from this live.",
     });
+  }
+
+  if (live) {
+    const beforeSig = JSON.stringify(slotTransitionLitePayload(readSlotTransition(live)));
+    const reconcile = applyReconcileAndLog(live, Date.now(), "GET");
+    if (reconcile.changed && resolved.key) {
+      store[resolved.key] = live;
+      await writeJsonFile(STORE_FILE, store);
+    }
+    const afterSig = JSON.stringify(slotTransitionLitePayload(readSlotTransition(live)));
+    if (beforeSig !== afterSig) {
+      logSlotTransitionServer("KRISTO_SLOT_TRANSITION_BROADCAST", live, {
+        source: "GET",
+        reason: "state_changed",
+      });
+    }
   }
 
   if (lite) {
@@ -451,6 +593,10 @@ export async function PATCH(req: Request) {
     "request-join",
     "comment",
     "clear-claim-request",
+    "sync-slot-schedule",
+    "slot-transition-begin",
+    "slot-transition-progress",
+    "slot-transition-tick",
   ]);
   const isMemberJoinAction =
     memberJoinActions.has(action) || (action === "presence" && !isPastor(a.role));
@@ -714,6 +860,90 @@ export async function PATCH(req: Request) {
     }
   }
 
+  if (action === "sync-slot-schedule") {
+    upsertSlotScheduleSnapshot(live, {
+      scheduleVersion: String(body.scheduleVersion || ""),
+      slots: body.slots,
+      nowMs: now,
+    });
+    applyReconcileAndLog(live, now, "sync-slot-schedule");
+  }
+
+  if (action === "slot-transition-tick") {
+    if (body.scheduleVersion || body.slots) {
+      upsertSlotScheduleSnapshot(live, {
+        scheduleVersion: String(body.scheduleVersion || live?.slotSchedule?.scheduleVersion || ""),
+        slots: body.slots ?? live?.slotSchedule?.slots,
+        nowMs: now,
+      });
+    }
+    applyReconcileAndLog(live, now, "slot-transition-tick");
+  }
+
+  if (action === "slot-transition-begin") {
+    const begin = beginSlotTransitionFromClient(live, body, now);
+    if (begin.created) {
+      logSlotTransitionServer("KRISTO_SLOT_TRANSITION_START", live, {
+        source: "slot-transition-begin",
+        userId: a.userId,
+      });
+      logSlotTransitionServer("KRISTO_SLOT_TRANSITION_BROADCAST", live, {
+        source: "slot-transition-begin",
+        broadcast: "SLOT_TRANSITION_START",
+        userId: a.userId,
+      });
+    } else if (!begin.ok) {
+      logSlotTransitionServer("KRISTO_SLOT_TRANSITION_FAILED", live, {
+        source: "slot-transition-begin",
+        reason: begin.reason,
+        userId: a.userId,
+      });
+    }
+  }
+
+  if (action === "slot-transition-progress") {
+    const progress = applySlotTransitionProgress(
+      live,
+      a.userId,
+      {
+        transitionId: String(body.transitionId || ""),
+        phase: body.phase,
+        videoReady: body.videoReady === true,
+        avatarFallback: body.avatarFallback === true,
+        role: body.role,
+      },
+      now
+    );
+    if (progress.ok) {
+      const phase = progress.transition.phase;
+      if (phase === "loading_schedule") {
+        /* client logs SCHEDULE_READY */
+      }
+      if (progress.completed) {
+        logSlotTransitionServer("KRISTO_SLOT_TRANSITION_BIG_SCREEN_ASSIGNED", live, {
+          source: "slot-transition-progress",
+          userId: a.userId,
+          bigScreenOwnerUserId: progress.completed.bigScreenOwnerUserId,
+        });
+        logSlotTransitionServer("KRISTO_SLOT_TRANSITION_COMPLETED", live, {
+          source: "slot-transition-progress",
+          broadcast: "SLOT_TRANSITION_READY",
+          userId: a.userId,
+        });
+        logSlotTransitionServer("KRISTO_SLOT_TRANSITION_BROADCAST", live, {
+          source: "slot-transition-progress",
+          broadcast: "SLOT_TRANSITION_READY",
+        });
+      }
+    } else if (progress.reason === "stale_transition_id") {
+      logSlotTransitionServer("KRISTO_SLOT_TRANSITION_CANCELLED", live, {
+        source: "slot-transition-progress",
+        reason: progress.reason,
+        userId: a.userId,
+      });
+    }
+  }
+
   if (action === "presence") {
     live.viewerPresence = live.viewerPresence || {};
 
@@ -756,6 +986,27 @@ export async function PATCH(req: Request) {
 
     if (isLiveOwner || isPastor(a.role)) {
       live.lastPresenceAt = now;
+    }
+
+    if (body.scheduleVersion || body.slots) {
+      upsertSlotScheduleSnapshot(live, {
+        scheduleVersion: String(body.scheduleVersion || live?.slotSchedule?.scheduleVersion || ""),
+        slots: body.slots ?? live?.slotSchedule?.slots,
+        nowMs: now,
+      });
+    }
+    applyReconcileAndLog(live, now, "presence");
+  }
+
+  // Always reconcile stored schedule on PATCH so boundaries stay server-clocked.
+  if (
+    action !== "sync-slot-schedule" &&
+    action !== "slot-transition-tick" &&
+    action !== "slot-transition-begin" &&
+    action !== "presence"
+  ) {
+    if (isSlotTransitionActive(readSlotTransition(live)) || live?.slotSchedule?.slots?.length) {
+      applyReconcileAndLog(live, now, `PATCH:${action || "none"}`);
     }
   }
 

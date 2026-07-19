@@ -14,6 +14,11 @@ export type LightLivePayload = {
   viewerCount?: number;
   actualChurchPastorUserId?: string;
   raw?: any;
+  /** Server-authoritative Big Screen slot transition (lite + full). */
+  slotTransition?: any;
+  /** Server-authoritative active slot clock — clients must render this. */
+  slotClock?: any;
+  bigScreenOwnerUserId?: string | null;
   routeFailed?: boolean;
   /** True only when backend returned an ended live object — never for null/missing bridge. */
   explicitlyEnded?: boolean;
@@ -118,6 +123,14 @@ export function extractLightLivePayload(res: any): LightLivePayload {
       live.viewerPresence && typeof live.viewerPresence === "object" ? live.viewerPresence : undefined,
     viewerCount: Number(live.viewerCount || 0),
     actualChurchPastorUserId: String(live.actualChurchPastorUserId || ""),
+    slotTransition: live.slotTransition || null,
+    slotClock: live.slotClock || null,
+    bigScreenOwnerUserId:
+      live.bigScreenOwnerUserId == null
+        ? live.slotClock?.activeOwnerUserId
+          ? String(live.slotClock.activeOwnerUserId || "")
+          : null
+        : String(live.bigScreenOwnerUserId || ""),
     raw: live,
     endpointStatus,
   };
@@ -130,6 +143,28 @@ export type ChurchLiveStateUpdate = {
   source: string;
 };
 
+function liveIdFromChurchLivePatch(value: any): string {
+  return String(
+    value?.liveId ||
+      value?.id ||
+      value?.feedId ||
+      value?.sourceScheduleId ||
+      value?.sourceFeedId ||
+      value?.scheduleBatchId ||
+      ""
+  ).trim();
+}
+
+function liveIdsMatchCanonical(candidateRaw: string, preferredRaw: string): boolean {
+  const candidate = String(candidateRaw || "").trim();
+  const preferred = String(preferredRaw || "").trim();
+  if (!candidate || !preferred) return false;
+  if (candidate === preferred) return true;
+  const candidateBase = candidate.replace(/-slot-\d+$/i, "").trim();
+  const preferredBase = preferred.replace(/-slot-\d+$/i, "").trim();
+  return Boolean(candidateBase && preferredBase && candidateBase === preferredBase);
+}
+
 export function resolveChurchLiveStateUpdate(input: {
   patch: LightLivePayload;
   previousLive: any | null;
@@ -138,11 +173,41 @@ export function resolveChurchLiveStateUpdate(input: {
   scheduleLiveActive?: boolean;
   /** Schedule feed was explicitly ended/deleted on backend. */
   scheduleExplicitlyEnded?: boolean;
+  /**
+   * Exact live/schedule the room/ring requested. When set, never preserve or
+   * adopt a live record belonging to a different schedule/batch.
+   */
+  requestedLiveId?: string;
+  canonicalLiveSessionId?: string;
 }): ChurchLiveStateUpdate {
   const churchId = String(input.churchId || input.previousLive?.churchId || "").trim();
   const scheduleLiveActive = input.scheduleLiveActive === true;
-  const preservedFallback =
+  const requestedLiveId = String(
+    input.canonicalLiveSessionId || input.requestedLiveId || ""
+  ).trim();
+  const preservedFallbackRaw =
     input.previousLive || (churchId ? readPreservedChurchLive(churchId) : null);
+  const preservedFallbackId = liveIdFromChurchLivePatch(preservedFallbackRaw);
+  const preservedFallback =
+    requestedLiveId &&
+    preservedFallbackRaw &&
+    !liveIdsMatchCanonical(preservedFallbackId, requestedLiveId)
+      ? null
+      : preservedFallbackRaw;
+  if (
+    requestedLiveId &&
+    preservedFallbackRaw &&
+    !liveIdsMatchCanonical(preservedFallbackId, requestedLiveId)
+  ) {
+    console.log("KRISTO_LIVE_STALE_SCHEDULE_REJECTED", {
+      reason: "preserved_live_id_mismatch",
+      requestedLiveId,
+      canonicalLiveSessionId: requestedLiveId,
+      responseLiveId: liveIdFromChurchLivePatch(input.patch?.raw),
+      hydratedScheduleId: preservedFallbackId,
+      source: "resolveChurchLiveStateUpdate",
+    });
+  }
 
   if (input.patch.routeFailed) {
     return {
@@ -197,6 +262,23 @@ export function resolveChurchLiveStateUpdate(input: {
   }
 
   if (input.patch.isLive === true && input.patch.raw && !input.patch.raw?.endedAt) {
+    const responseLiveId = liveIdFromChurchLivePatch(input.patch.raw);
+    if (requestedLiveId && !liveIdsMatchCanonical(responseLiveId, requestedLiveId)) {
+      console.log("KRISTO_LIVE_SESSION_ID_MISMATCH_BLOCKED", {
+        reason: "backend_live_active_foreign_id",
+        requestedLiveId,
+        canonicalLiveSessionId: requestedLiveId,
+        responseLiveId,
+        hydratedScheduleId: responseLiveId,
+        source: "resolveChurchLiveStateUpdate",
+      });
+      return {
+        nextLive: null,
+        shouldUpdate: false,
+        preserved: false,
+        source: "backend_live_active_foreign_id_blocked",
+      };
+    }
     if (churchId) rememberPreservedChurchLive(churchId, input.patch.raw);
     return {
       nextLive: input.patch.raw,
@@ -207,6 +289,27 @@ export function resolveChurchLiveStateUpdate(input: {
   }
 
   if (input.patch.noBridgeSession || input.patch.isLive === false) {
+    // Exact-ID room/ring sessions must never adopt a different preserved live.
+    // Caller should sync/create the bridge for this same ID or hold empty state.
+    if (requestedLiveId) {
+      console.log("KRISTO_LIVE_EXACT_ID_FETCH_RESULT", {
+        requestedLiveId,
+        canonicalLiveSessionId: requestedLiveId,
+        responseLiveId: liveIdFromChurchLivePatch(input.patch?.raw) || null,
+        noBridgeSession: input.patch.noBridgeSession === true,
+        isLive: input.patch.isLive === false ? false : input.patch.isLive,
+        scheduleLiveActive,
+        preservedRejected: Boolean(preservedFallbackRaw && !preservedFallback),
+        source: "no_bridge_exact_id_hold",
+      });
+      return {
+        nextLive: null,
+        shouldUpdate: false,
+        preserved: false,
+        source: "no_bridge_exact_id_hold",
+      };
+    }
+
     if (scheduleLiveActive) {
       console.log("KRISTO_LIVE_NULL_PRESERVED_BY_ACTIVE_SCHEDULE", {
         churchId,

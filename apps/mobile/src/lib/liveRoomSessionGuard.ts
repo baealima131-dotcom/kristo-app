@@ -129,20 +129,71 @@ export function pinLiveRoomSession(input: {
   if (!liveBridgeId) return;
 
   const prev = readLiveRoomSessionPin();
+  const prevLiveBridgeId = String(prev?.liveBridgeId || "").trim();
+  const liveIdChanged = !!prevLiveBridgeId && prevLiveBridgeId !== liveBridgeId;
+  const sticky = pinStore().__KRISTO_LIVEKIT_STAGE_MOUNT_STICKY__;
+  const stickyRoomId = String(sticky?.roomName || "").trim();
+  const publisherPin = readLiveKitPublisherStagePin();
+  const beforeToken = readLiveKitPublisherHostBeforeTokenPin();
+  const publisherStageLiveBridgeId = String(publisherPin?.liveBridgeId || "").trim();
+  const beforeTokenLiveBridgeId = String(beforeToken?.liveBridgeId || "").trim();
+  const foreignSticky =
+    !!stickyRoomId && stickyRoomId !== liveBridgeId;
+  const foreignPublisherPin =
+    !!publisherStageLiveBridgeId && publisherStageLiveBridgeId !== liveBridgeId;
+  const foreignBeforeToken =
+    !!beforeTokenLiveBridgeId && beforeTokenLiveBridgeId !== liveBridgeId;
+  const shouldClearForeignLocks =
+    liveIdChanged || foreignSticky || foreignPublisherPin || foreignBeforeToken;
+
+  if (shouldClearForeignLocks) {
+    console.log("KRISTO_LIVE_STALE_ROOM_LOCK_CLEARED", {
+      requestedLiveId: liveBridgeId,
+      canonicalLiveSessionId: liveBridgeId,
+      responseLiveId: "",
+      hydratedScheduleId: "",
+      stickyRoomId,
+      previousLiveBridgeId: prevLiveBridgeId,
+      publisherStageLiveBridgeId,
+      beforeTokenLiveBridgeId,
+      routeSlotCount: Math.max(Number(input.routeSlotCount ?? 0), 0),
+      backendSlotCount: 0,
+      source: input.source || "unknown",
+      reason: liveIdChanged
+        ? "canonical-live-id-changed"
+        : foreignSticky
+          ? "foreign-sticky-room"
+          : foreignPublisherPin
+            ? "foreign-publisher-stage-pin"
+            : "foreign-before-token-pin",
+    });
+    // Dispose/unpin any publisher/viewer locks belonging to a different live.
+    clearLiveKitPublisherStagePin("canonical-live-id-changed");
+    clearLiveKitStageMountSticky("canonical-live-id-changed");
+    clearLiveKitPublisherHostBeforeToken("canonical-live-id-changed");
+  }
+
   pinStore().__KRISTO_LIVE_ROOM_SESSION_PIN__ = {
     liveBridgeId,
-    userId: String(input.userId || prev?.userId || "").trim(),
+    userId: String(input.userId || (liveIdChanged ? "" : prev?.userId) || "").trim(),
     routeSlotCount: Math.max(
-      Number(input.routeSlotCount ?? prev?.routeSlotCount ?? 0),
+      Number(
+        input.routeSlotCount ??
+          (liveIdChanged ? 0 : prev?.routeSlotCount ?? 0)
+      ),
       0
     ),
-    pinnedAt: prev?.pinnedAt || Date.now(),
+    pinnedAt: liveIdChanged ? Date.now() : prev?.pinnedAt || Date.now(),
     liveKitConnected:
       input.liveKitConnected === true ||
-      (prev?.liveBridgeId === liveBridgeId && prev?.liveKitConnected === true),
+      (!liveIdChanged &&
+        prev?.liveBridgeId === liveBridgeId &&
+        prev?.liveKitConnected === true),
     liveKitConnecting:
       input.liveKitConnecting === true ||
-      (prev?.liveBridgeId === liveBridgeId && prev?.liveKitConnecting === true),
+      (!liveIdChanged &&
+        prev?.liveBridgeId === liveBridgeId &&
+        prev?.liveKitConnecting === true),
     source: input.source || prev?.source || "unknown",
   } satisfies LiveRoomSessionPin;
 
