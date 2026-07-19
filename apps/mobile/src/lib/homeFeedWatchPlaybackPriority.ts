@@ -1,5 +1,10 @@
 type PauseListener = (paused: boolean) => void;
 
+/**
+ * Heavy background work deferred while Watch owns playback.
+ * Note: Watch Up Next queue refill uses a dedicated lightweight fetch path and is
+ * intentionally NOT gated by this pause flag.
+ */
 const BACKGROUND_JOB_NAMES = [
   "poster-prewarm",
   "poster-cache-hydrate",

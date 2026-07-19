@@ -6,6 +6,13 @@ import {
 
 const MAX_WATCH_HISTORY = 40;
 const DEFAULT_LIMIT = 20;
+/** Refill when Up Next falls below this many remaining candidates. */
+export const WATCH_QUEUE_REFILL_THRESHOLD = 5;
+/** Prefer keeping this many Up Next rows when backend data exists. */
+export const WATCH_QUEUE_TARGET_DEPTH = 20;
+/** Hard-exclude only the most recent N watched ids when recycling older posts. */
+const WATCH_RECYCLE_RECENT_HARD_EXCLUDE = 8;
+const WATCH_REFILL_MAX_PAGES = 4;
 
 let watchSessionOrder: string[] = [];
 let upNextGeneration = 0;
@@ -127,10 +134,28 @@ export function scoreWatchUpNextCandidate(params: {
   };
 }
 
-/** Track recently watched videos for this app session — most recent first. */
+/** Reset watched-history when the Watch experience fully closes. */
+export function resetWatchUpNextSession() {
+  watchSessionOrder = [];
+  upNextGeneration = 0;
+  console.log("KRISTO_WATCH_UP_NEXT_SESSION_RESET", { at: Date.now() });
+}
+
+/** Track recently watched videos for this Watch session — most recent first. */
 export function recordWatchSessionVideo(postId: string): number {
   const id = normalizePostId({ id: postId });
   if (!id) return upNextGeneration;
+
+  // Repeated tap on the already-current video must not bump generation or reorder history.
+  if (watchSessionOrder[0] === id) {
+    console.log("KRISTO_WATCH_UP_NEXT_SESSION", {
+      postId: id,
+      generation: upNextGeneration,
+      watchedCount: watchSessionOrder.length,
+      duplicateTap: true,
+    });
+    return upNextGeneration;
+  }
 
   watchSessionOrder = [id, ...watchSessionOrder.filter((entry) => entry !== id)].slice(
     0,
@@ -142,6 +167,7 @@ export function recordWatchSessionVideo(postId: string): number {
     postId: id,
     generation: upNextGeneration,
     watchedCount: watchSessionOrder.length,
+    duplicateTap: false,
   });
 
   return upNextGeneration;
@@ -184,6 +210,50 @@ export function mergeWatchUpNextCandidateRows(...rowGroups: any[][]): any[] {
   return merged;
 }
 
+/**
+ * Prefer church diversity in the final Up Next window without discarding score order wholesale.
+ * Walks the ranked list and skips a candidate when its church already fills the soft cap,
+ * then fills remaining slots from leftovers.
+ */
+function diversifyWatchUpNextByChurch(ranked: any[], limit: number): any[] {
+  if (ranked.length <= 1) return ranked.slice(0, limit);
+
+  const softCap = Math.max(2, Math.ceil(limit / 3));
+  const churchCounts = new Map<string, number>();
+  const picked: any[] = [];
+  const deferred: any[] = [];
+
+  for (const row of ranked) {
+    if (picked.length >= limit) break;
+    const churchId = homeFeedRowChurchId(row) || "_unknown";
+    const count = churchCounts.get(churchId) || 0;
+    if (count >= softCap) {
+      deferred.push(row);
+      continue;
+    }
+    churchCounts.set(churchId, count + 1);
+    picked.push(row);
+  }
+
+  for (const row of deferred) {
+    if (picked.length >= limit) break;
+    picked.push(row);
+  }
+
+  if (picked.length < limit) {
+    const pickedIds = new Set(picked.map((row) => normalizePostId(row)));
+    for (const row of ranked) {
+      if (picked.length >= limit) break;
+      const id = normalizePostId(row);
+      if (!id || pickedIds.has(id)) continue;
+      pickedIds.add(id);
+      picked.push(row);
+    }
+  }
+
+  return picked;
+}
+
 export function buildWatchUpNextVideos(params: {
   currentItem: any;
   candidates: any[];
@@ -192,6 +262,8 @@ export function buildWatchUpNextVideos(params: {
   generationSeed?: number;
   /** Defaults to this session's watched post ids (most recent first). */
   excludePostIds?: string[];
+  /** When true, apply a light church diversity pass on the ranked window. */
+  diversifyChurches?: boolean;
 }): any[] {
   const currentId = normalizePostId(params.currentItem);
   const viewerChurchId = String(params.viewerChurchId || "").trim();
@@ -230,7 +302,11 @@ export function buildWatchUpNextVideos(params: {
     return postSortMs(b.candidate) - postSortMs(a.candidate);
   });
 
-  const result = scored.slice(0, limit).map(({ candidate }) => candidate);
+  const ranked = scored.map(({ candidate }) => candidate);
+  const result =
+    params.diversifyChurches === false
+      ? ranked.slice(0, limit)
+      : diversifyWatchUpNextByChurch(ranked, limit);
 
   console.log("KRISTO_WATCH_UP_NEXT_BUILT", {
     currentPostId: currentId,
@@ -244,6 +320,219 @@ export function buildWatchUpNextVideos(params: {
       church: breakdown.sameChurch > 0,
       kind: breakdown.samePostKind > 0,
     })),
+  });
+
+  return result;
+}
+
+export type WatchQueueRefillPage = {
+  rows: any[];
+  hasMore: boolean;
+  source: string;
+};
+
+export type EnsureWatchQueueDepthResult = {
+  items: any[];
+  mergedCandidates: any[];
+  queueSize: number;
+  refillRequested: boolean;
+  refillSource: string;
+  fetchedCount: number;
+  pagesFetched: number;
+  dedupedCount: number;
+  unseenCount: number;
+  recycledCount: number;
+  finalQueueCount: number;
+  backendExhausted: boolean;
+  generation: number;
+};
+
+/**
+ * Keep Up Next deep enough for continuous Watch navigation.
+ * Fetches additional feed pages when the unseen pool is shallow, then recycles
+ * older session-watched videos only after unseen + backend pools are exhausted.
+ */
+export async function ensureWatchQueueDepth(params: {
+  currentItem: any;
+  candidates: any[];
+  viewerChurchId?: string;
+  limit?: number;
+  generationSeed?: number;
+  threshold?: number;
+  targetDepth?: number;
+  hasMore?: boolean;
+  fetchNextPage?: () => Promise<WatchQueueRefillPage | null | undefined>;
+}): Promise<EnsureWatchQueueDepthResult> {
+  const currentId = normalizePostId(params.currentItem);
+  const viewerChurchId = String(params.viewerChurchId || "").trim();
+  const limit = Math.max(1, params.limit ?? DEFAULT_LIMIT);
+  const threshold = Math.max(1, params.threshold ?? WATCH_QUEUE_REFILL_THRESHOLD);
+  const targetDepth = Math.max(threshold, params.targetDepth ?? WATCH_QUEUE_TARGET_DEPTH);
+  const generationSeed = params.generationSeed ?? upNextGeneration;
+
+  let mergedCandidates = mergeWatchUpNextCandidateRows(params.candidates || []);
+  let refillRequested = false;
+  let refillSource = "memory";
+  let fetchedCount = 0;
+  let dedupedCount = 0;
+  let backendExhausted = params.hasMore === false;
+  let pagesFetched = 0;
+
+  const buildUnseen = (candidates: any[]) =>
+    buildWatchUpNextVideos({
+      currentItem: params.currentItem,
+      candidates,
+      viewerChurchId,
+      limit: targetDepth,
+      generationSeed,
+    });
+
+  let items = buildUnseen(mergedCandidates);
+  let unseenCount = items.length;
+
+  console.log("KRISTO_WATCH_QUEUE_DEPTH", {
+    currentPostId: currentId,
+    generation: generationSeed,
+    queueSize: items.length,
+    threshold,
+    targetDepth,
+    hasMore: params.hasMore !== false && !backendExhausted,
+  });
+
+  while (
+    items.length < threshold &&
+    !backendExhausted &&
+    typeof params.fetchNextPage === "function" &&
+    pagesFetched < WATCH_REFILL_MAX_PAGES
+  ) {
+    refillRequested = true;
+    console.log("KRISTO_WATCH_QUEUE_REFILL_REQUESTED", {
+      currentPostId: currentId,
+      generation: generationSeed,
+      queueSize: items.length,
+      threshold,
+      pagesFetched,
+    });
+
+    const page = await params.fetchNextPage();
+    pagesFetched += 1;
+
+    if (!page) {
+      // Transient failure / caller skip — do not treat as backend exhausted.
+      refillSource = refillSource === "memory" ? "fetch-skipped" : refillSource;
+      break;
+    }
+
+    refillSource = String(page.source || "feed-next-page").trim() || "feed-next-page";
+    if (refillSource === "inflight-skip" || refillSource === "stale-skip") {
+      break;
+    }
+    if (refillSource === "no-more") {
+      backendExhausted = true;
+      break;
+    }
+
+    const incoming = Array.isArray(page.rows) ? page.rows : [];
+    fetchedCount += incoming.length;
+
+    const before = mergedCandidates.length;
+    mergedCandidates = mergeWatchUpNextCandidateRows(mergedCandidates, incoming);
+    const added = mergedCandidates.length - before;
+    dedupedCount += Math.max(0, incoming.length - added);
+
+    console.log("KRISTO_WATCH_QUEUE_REFILL_PAGE", {
+      currentPostId: currentId,
+      generation: generationSeed,
+      refillSource,
+      pagesFetched,
+      fetchedCount: incoming.length,
+      dedupedCount: Math.max(0, incoming.length - added),
+      hasMore: page.hasMore === true,
+    });
+
+    if (page.hasMore !== true) {
+      backendExhausted = true;
+    }
+
+    items = buildUnseen(mergedCandidates);
+    unseenCount = items.length;
+
+    if (added === 0 && backendExhausted) break;
+    if (added === 0 && incoming.length === 0) break;
+    if (items.length >= targetDepth) break;
+  }
+
+  let recycledCount = 0;
+  // Recycle only after unseen pool is shallow AND backend pagination is exhausted.
+  if (items.length < threshold && backendExhausted) {
+    const recentHardExclude = watchSessionOrder.slice(0, WATCH_RECYCLE_RECENT_HARD_EXCLUDE);
+    const recycleExclude = Array.from(
+      new Set([currentId, ...recentHardExclude].filter(Boolean))
+    );
+    const recycled = buildWatchUpNextVideos({
+      currentItem: params.currentItem,
+      candidates: mergedCandidates,
+      viewerChurchId,
+      limit: targetDepth,
+      generationSeed,
+      excludePostIds: recycleExclude,
+    });
+
+    const sessionSet = new Set(watchSessionOrder);
+    recycledCount = recycled.filter((row) => sessionSet.has(normalizePostId(row))).length;
+
+    if (recycled.length > items.length) {
+      items = recycled;
+      refillSource =
+        refillSource === "memory" || refillSource === "fetch-skipped"
+          ? "recycle-session"
+          : `${refillSource}+recycle`;
+    }
+
+    console.log("KRISTO_WATCH_QUEUE_RECYCLE", {
+      currentPostId: currentId,
+      generation: generationSeed,
+      unseenCount,
+      recycledCount,
+      finalQueueCount: items.length,
+      backendExhausted,
+    });
+  }
+
+  // Trim to the UI limit after refill/recycle targeting.
+  if (items.length > limit) {
+    items = items.slice(0, limit);
+  }
+
+  const result: EnsureWatchQueueDepthResult = {
+    items,
+    mergedCandidates,
+    queueSize: items.length,
+    refillRequested,
+    refillSource,
+    fetchedCount,
+    pagesFetched,
+    dedupedCount,
+    unseenCount,
+    recycledCount,
+    finalQueueCount: items.length,
+    backendExhausted,
+    generation: generationSeed,
+  };
+
+  console.log("KRISTO_WATCH_QUEUE_ENSURED", {
+    currentPostId: currentId,
+    generation: result.generation,
+    queueSize: result.queueSize,
+    refillRequested: result.refillRequested,
+    refillSource: result.refillSource,
+    pagesFetched: result.pagesFetched,
+    fetchedCount: result.fetchedCount,
+    dedupedCount: result.dedupedCount,
+    unseenCount: result.unseenCount,
+    recycledCount: result.recycledCount,
+    finalQueueCount: result.finalQueueCount,
+    backendExhausted: result.backendExhausted,
   });
 
   return result;
@@ -273,6 +562,7 @@ export function reshuffleHomeFeedRowsAfterWatchSelection(params: {
     viewerChurchId: params.viewerChurchId,
     limit: tail.length,
     generationSeed: params.generationSeed,
+    diversifyChurches: false,
   });
 
   const pickedIds = new Set(reshuffledTail.map((row) => normalizePostId(row)));

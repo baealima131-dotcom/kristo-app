@@ -186,10 +186,14 @@ import {
 } from "@/src/lib/homeFeedEngagement";
 import { HOME_FEED_BG, homeFeedSlideHeight, homeFeedTopBarTotalHeight } from "./theme";
 import {
-  buildWatchUpNextVideos,
+  ensureWatchQueueDepth,
+  getWatchUpNextGeneration,
   mergeWatchUpNextCandidateRows,
   recordWatchSessionVideo,
+  resetWatchUpNextSession,
   reshuffleHomeFeedRowsAfterWatchSelection,
+  WATCH_QUEUE_REFILL_THRESHOLD,
+  WATCH_QUEUE_TARGET_DEPTH,
 } from "@/src/lib/homeFeedWatchUpNext";
 import { subscribeBackgroundMediaJobsPaused, notifyWatchScreenOpened } from "@/src/lib/homeFeedWatchPlaybackPriority";
 import {
@@ -336,6 +340,10 @@ export default function HomeFeedScreen() {
   );
   const [watchUpNextGeneration, setWatchUpNextGeneration] = useState(0);
   const [relatedVideoItems, setRelatedVideoItems] = useState<any[]>([]);
+  const watchUpNextPoolRef = useRef<any[]>([]);
+  const watchQueueRefillInflightRef = useRef(false);
+  /** Bumped on each Up Next rebuild and on full Watch close to ignore stale refill work. */
+  const watchQueueRequestIdRef = useRef(0);
   const [backgroundMediaPaused, setBackgroundMediaPaused] = useState(false);
   const [searchSheetOpen, setSearchSheetOpen] = useState(false);
   const [feedPostFilter, setFeedPostFilter] = useState<HomeFeedPostKindFilter | null>(null);
@@ -2686,7 +2694,14 @@ export default function HomeFeedScreen() {
       console.log("KRISTO_WATCH_OPEN_TAP", { postId, at: Date.now() });
       notifyWatchScreenOpened(postId);
 
+      const previousGeneration = getWatchUpNextGeneration();
       const generation = recordWatchSessionVideo(payload.postId);
+
+      // Duplicate tap on the current Watch video must not reshuffle, refill, or reset payload.
+      if (generation === previousGeneration) {
+        return;
+      }
+
       setWatchUpNextGeneration(generation);
       setVideoModalPayload(payload);
 
@@ -2708,9 +2723,117 @@ export default function HomeFeedScreen() {
   );
 
   const handleCloseVideo = useCallback(() => {
+    watchQueueRequestIdRef.current += 1;
     setVideoModalPayload(null);
     setRelatedVideoItems([]);
+    watchUpNextPoolRef.current = [];
+    resetWatchUpNextSession();
+    setWatchUpNextGeneration(0);
   }, []);
+
+  const fetchWatchQueueNextPage = useCallback(async (requestId: number) => {
+    if (!feedHasMoreRef.current) {
+      return { rows: [] as any[], hasMore: false, source: "no-more" };
+    }
+    if (watchQueueRefillInflightRef.current || appendMoreInflightRef.current) {
+      return {
+        rows: [] as any[],
+        hasMore: feedHasMoreRef.current,
+        source: "inflight-skip",
+      };
+    }
+    if (watchQueueRequestIdRef.current !== requestId) {
+      return {
+        rows: [] as any[],
+        hasMore: feedHasMoreRef.current,
+        source: "stale-skip",
+      };
+    }
+
+    watchQueueRefillInflightRef.current = true;
+    const beforeCount = youtubeLayout
+      ? youtubeStreamRowsRef.current.length
+      : getCachedHomeFeedBackendCount();
+    const cursor = feedNextCursorRef.current ?? String(beforeCount);
+    const pageLimit = youtubeLayout
+      ? homeFeedYoutubeStreamLimitForPage(getHomeFeedLoadedPageCount())
+      : HOME_FEED_PAGE_SIZE;
+
+    console.log("KRISTO_WATCH_QUEUE_FETCH_START", {
+      requestId,
+      cursor,
+      pageLimit,
+    });
+
+    try {
+      // Lightweight page fetch only — skip YouTube cover gates / feed UI append work.
+      const page = await fetchHomeFeedNextPage(cursor, pageLimit);
+
+      // Ignore stale responses so an older Watch generation cannot move cursor/hasMore.
+      if (watchQueueRequestIdRef.current !== requestId) {
+        return {
+          rows: [] as any[],
+          hasMore: feedHasMoreRef.current,
+          source: "stale-skip",
+        };
+      }
+
+      applyFeedPagingState(
+        { hasMore: page.hasMore, nextCursor: page.nextCursor },
+        { allowSessionOverwrite: true }
+      );
+
+      if (page.newRows.length) {
+        watchUpNextPoolRef.current = mergeWatchUpNextCandidateRows(
+          watchUpNextPoolRef.current,
+          page.newRows
+        );
+
+        if (youtubeLayout) {
+          const merged = stableMergeHomeFeedRows(youtubeStreamRowsRef.current, page.newRows);
+          youtubeStreamRowsRef.current = merged.merged;
+          saveHomeFeedYoutubeStreamSession({
+            rows: youtubeStreamRowsRef.current,
+            nextCursor: feedNextCursorRef.current,
+            hasMore: feedHasMoreRef.current,
+            loadedPageCount: getHomeFeedLoadedPageCount(),
+          });
+        } else {
+          applyBackendRowsIfChanged(page.rows);
+          // Keep refs warm for subsequent Up Next rebuilds without forcing a visible
+          // feed reshuffle mid-playback (state update is append-only / stable-merge).
+          setStableDisplayRows((prev) => {
+            if (watchQueueRequestIdRef.current !== requestId) return prev;
+            const base = prev.length ? prev : stableDisplayRowsRef.current;
+            const result = stableMergeHomeFeedRows(base, page.newRows);
+            stableDisplayRowsRef.current = result.merged;
+            return result.merged;
+          });
+        }
+      }
+
+      console.log("KRISTO_WATCH_QUEUE_FETCH_DONE", {
+        requestId,
+        fetchedCount: page.incoming,
+        appended: page.appended,
+        hasMore: page.hasMore,
+      });
+
+      return {
+        rows: page.newRows,
+        hasMore: page.hasMore,
+        source: "watch-queue-feed-page",
+      };
+    } catch (error) {
+      console.log("KRISTO_WATCH_QUEUE_FETCH_ERROR", {
+        requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    } finally {
+      watchQueueRefillInflightRef.current = false;
+    }
+  }, [applyBackendRowsIfChanged, applyFeedPagingState, youtubeLayout]);
 
   useEffect(() => {
     if (!videoModalPayload?.postId || !videoModalPayload?.item) {
@@ -2720,32 +2843,56 @@ export default function HomeFeedScreen() {
 
     const payload = videoModalPayload;
     const generation = watchUpNextGeneration;
+    const currentPostId = String(payload.postId || "").trim();
+    const requestId = ++watchQueueRequestIdRef.current;
     let cancelled = false;
 
     const task = InteractionManager.runAfterInteractions(() => {
       const timeout = setTimeout(() => {
-        requestAnimationFrame(() => {
-          if (cancelled) return;
-          const sourceRows = mergeWatchUpNextCandidateRows(
+        void (async () => {
+          if (cancelled || watchQueueRequestIdRef.current !== requestId) return;
+
+          watchUpNextPoolRef.current = mergeWatchUpNextCandidateRows(
+            watchUpNextPoolRef.current,
             feedListRowsRef.current,
             youtubeStreamRowsRef.current,
             stableDisplayRowsRef.current,
             displayFeedRowsRef.current
           );
-          const items = buildWatchUpNextVideos({
+
+          const ensured = await ensureWatchQueueDepth({
             currentItem: payload.item,
-            candidates: sourceRows,
+            candidates: watchUpNextPoolRef.current,
             viewerChurchId,
-            limit: 20,
+            limit: WATCH_QUEUE_TARGET_DEPTH,
             generationSeed: generation,
+            threshold: WATCH_QUEUE_REFILL_THRESHOLD,
+            targetDepth: WATCH_QUEUE_TARGET_DEPTH,
+            hasMore: feedHasMoreRef.current,
+            fetchNextPage: () => fetchWatchQueueNextPage(requestId),
           });
+
+          if (cancelled || watchQueueRequestIdRef.current !== requestId) return;
+
+          watchUpNextPoolRef.current = ensured.mergedCandidates;
+
           console.log("KRISTO_WATCH_UP_NEXT_DEFERRED", {
-            postId: String(payload.postId || "").trim(),
-            count: items.length,
+            postId: currentPostId,
+            generation: ensured.generation,
+            queueSize: ensured.queueSize,
+            refillRequested: ensured.refillRequested,
+            refillSource: ensured.refillSource,
+            pagesFetched: ensured.pagesFetched,
+            fetchedCount: ensured.fetchedCount,
+            dedupedCount: ensured.dedupedCount,
+            unseenCount: ensured.unseenCount,
+            recycledCount: ensured.recycledCount,
+            finalQueueCount: ensured.finalQueueCount,
             at: Date.now(),
           });
-          setRelatedVideoItems(items);
-        });
+
+          setRelatedVideoItems(ensured.items);
+        })();
       }, 900);
 
       return () => clearTimeout(timeout);
@@ -2757,9 +2904,9 @@ export default function HomeFeedScreen() {
     };
   }, [
     videoModalPayload?.postId,
-    videoModalPayload?.item,
     viewerChurchId,
     watchUpNextGeneration,
+    fetchWatchQueueNextPage,
   ]);
 
   const watchEngagementItem = videoModalPayload?.item ?? null;
