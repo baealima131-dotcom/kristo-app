@@ -697,14 +697,24 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     [onSelectRelated]
   );
 
+  // Watch ownership lifecycle: close ONLY when invisible or unmounted.
+  // Never tie notifyWatchScreenClosed to payload.postId — video-to-video hops
+  // must keep background jobs (poster/thumbnail/disk-cache/feed-polling) paused.
   useEffect(() => {
     if (!visible) {
       setPlaybackStarted(false);
-      return;
+      notifyWatchScreenClosed();
     }
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
     notifyWatchScreenOpened(String(payload?.postId || "").trim());
-    return () => notifyWatchScreenClosed();
   }, [visible, payload?.postId]);
+
+  useEffect(() => {
+    return () => notifyWatchScreenClosed();
+  }, []);
 
   useEffect(() => {
     if (!visible || !payload) return;

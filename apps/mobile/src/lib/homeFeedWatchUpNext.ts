@@ -345,6 +345,7 @@ export type EnsureWatchQueueDepthResult = {
   finalQueueCount: number;
   backendExhausted: boolean;
   generation: number;
+  staleHasMoreProbeAttempted: boolean;
 };
 
 /**
@@ -361,6 +362,15 @@ export async function ensureWatchQueueDepth(params: {
   threshold?: number;
   targetDepth?: number;
   hasMore?: boolean;
+  /** Pages currently loaded into the home-feed stream (YouTube page cache). */
+  loadedPageCount?: number;
+  /**
+   * Allow one stale-exhaustion probe this Watch session when paging reports
+   * exhausted after a single in-memory page. Caller must pass false after use.
+   */
+  allowStaleExhaustionProbe?: boolean;
+  /** Invoked at most once when the stale-exhaustion probe path is taken. */
+  onStaleExhaustionProbe?: () => void;
   fetchNextPage?: () => Promise<WatchQueueRefillPage | null | undefined>;
 }): Promise<EnsureWatchQueueDepthResult> {
   const currentId = normalizePostId(params.currentItem);
@@ -369,6 +379,9 @@ export async function ensureWatchQueueDepth(params: {
   const threshold = Math.max(1, params.threshold ?? WATCH_QUEUE_REFILL_THRESHOLD);
   const targetDepth = Math.max(threshold, params.targetDepth ?? WATCH_QUEUE_TARGET_DEPTH);
   const generationSeed = params.generationSeed ?? upNextGeneration;
+  const loadedPageCount = Number.isFinite(params.loadedPageCount)
+    ? Math.max(0, Number(params.loadedPageCount))
+    : Number.POSITIVE_INFINITY;
 
   let mergedCandidates = mergeWatchUpNextCandidateRows(params.candidates || []);
   let refillRequested = false;
@@ -377,6 +390,7 @@ export async function ensureWatchQueueDepth(params: {
   let dedupedCount = 0;
   let backendExhausted = params.hasMore === false;
   let pagesFetched = 0;
+  let staleHasMoreProbeAttempted = false;
 
   const buildUnseen = (candidates: any[]) =>
     buildWatchUpNextVideos({
@@ -390,17 +404,48 @@ export async function ensureWatchQueueDepth(params: {
   let items = buildUnseen(mergedCandidates);
   let unseenCount = items.length;
 
+  // Consistency guard: shallow queue + reported exhaustion after a single loaded
+  // page is a potentially stale session-paging state. Clear exhaustion once so
+  // refill can probe the backend before we fall back to recycle-only.
+  if (
+    backendExhausted &&
+    items.length < targetDepth &&
+    loadedPageCount <= 1 &&
+    params.allowStaleExhaustionProbe === true &&
+    typeof params.fetchNextPage === "function"
+  ) {
+    staleHasMoreProbeAttempted = true;
+    backendExhausted = false;
+    try {
+      params.onStaleExhaustionProbe?.();
+    } catch {}
+    console.log("KRISTO_WATCH_QUEUE_STALE_HAS_MORE_PROBE", {
+      currentPostId: currentId,
+      generation: generationSeed,
+      queueSize: items.length,
+      targetDepth,
+      loadedPageCount,
+    });
+  }
+
   console.log("KRISTO_WATCH_QUEUE_DEPTH", {
     currentPostId: currentId,
     generation: generationSeed,
     queueSize: items.length,
     threshold,
     targetDepth,
-    hasMore: params.hasMore !== false && !backendExhausted,
+    loadedPageCount: Number.isFinite(loadedPageCount) ? loadedPageCount : null,
+    staleHasMoreProbeAttempted,
+    // After a stale probe clears local exhaustion, treat pagination as available.
+    hasMore: !backendExhausted,
   });
 
+  // After a stale probe clears exhaustion, refill up to targetDepth so we do not
+  // wait until the threshold floor (and risk recycle) while pages may still exist.
+  const refillFloor = staleHasMoreProbeAttempted ? targetDepth : threshold;
+
   while (
-    items.length < threshold &&
+    items.length < refillFloor &&
     !backendExhausted &&
     typeof params.fetchNextPage === "function" &&
     pagesFetched < WATCH_REFILL_MAX_PAGES
@@ -411,7 +456,9 @@ export async function ensureWatchQueueDepth(params: {
       generation: generationSeed,
       queueSize: items.length,
       threshold,
+      refillFloor,
       pagesFetched,
+      staleHasMoreProbeAttempted,
     });
 
     const page = await params.fetchNextPage();
@@ -448,9 +495,12 @@ export async function ensureWatchQueueDepth(params: {
       fetchedCount: incoming.length,
       dedupedCount: Math.max(0, incoming.length - added),
       hasMore: page.hasMore === true,
+      staleHasMoreProbeAttempted,
     });
 
-    if (page.hasMore !== true) {
+    if (page.hasMore === true) {
+      backendExhausted = false;
+    } else {
       backendExhausted = true;
     }
 
@@ -518,6 +568,7 @@ export async function ensureWatchQueueDepth(params: {
     finalQueueCount: items.length,
     backendExhausted,
     generation: generationSeed,
+    staleHasMoreProbeAttempted,
   };
 
   console.log("KRISTO_WATCH_QUEUE_ENSURED", {
@@ -533,6 +584,7 @@ export async function ensureWatchQueueDepth(params: {
     recycledCount: result.recycledCount,
     finalQueueCount: result.finalQueueCount,
     backendExhausted: result.backendExhausted,
+    staleHasMoreProbeAttempted: result.staleHasMoreProbeAttempted,
   });
 
   return result;

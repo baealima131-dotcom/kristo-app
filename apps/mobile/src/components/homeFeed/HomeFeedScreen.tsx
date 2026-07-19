@@ -344,6 +344,13 @@ export default function HomeFeedScreen() {
   const watchQueueRefillInflightRef = useRef(false);
   /** Bumped on each Up Next rebuild and on full Watch close to ignore stale refill work. */
   const watchQueueRequestIdRef = useRef(0);
+  /**
+   * Session paging can report hasMore=false after a single in-memory page even when the
+   * backend still has more. Probe once per Watch open before trusting exhaustion.
+   */
+  const watchQueueHasMoreProbedRef = useRef(false);
+  /** One-shot network allowance after ensureWatchQueueDepth clears stale exhaustion. */
+  const watchQueueStaleProbeNetworkAllowedRef = useRef(false);
   const [backgroundMediaPaused, setBackgroundMediaPaused] = useState(false);
   const [searchSheetOpen, setSearchSheetOpen] = useState(false);
   const [feedPostFilter, setFeedPostFilter] = useState<HomeFeedPostKindFilter | null>(null);
@@ -736,6 +743,8 @@ export default function HomeFeedScreen() {
       setFeedHasMore(paging.hasMore);
       if (!paging.hasMore) {
         youtubeStreamExhaustedRef.current = true;
+      } else {
+        youtubeStreamExhaustedRef.current = false;
       }
 
       saveHomeFeedYoutubeStreamSession({
@@ -2724,6 +2733,8 @@ export default function HomeFeedScreen() {
 
   const handleCloseVideo = useCallback(() => {
     watchQueueRequestIdRef.current += 1;
+    watchQueueHasMoreProbedRef.current = false;
+    watchQueueStaleProbeNetworkAllowedRef.current = false;
     setVideoModalPayload(null);
     setRelatedVideoItems([]);
     watchUpNextPoolRef.current = [];
@@ -2732,7 +2743,13 @@ export default function HomeFeedScreen() {
   }, []);
 
   const fetchWatchQueueNextPage = useCallback(async (requestId: number) => {
-    if (!feedHasMoreRef.current) {
+    const loadedPageCount = getHomeFeedLoadedPageCount();
+    // ensureWatchQueueDepth may clear local exhaustion for a one-shot probe; allow
+    // exactly one matching network call even when feedHasMoreRef is still false.
+    const allowStaleHasMoreProbe =
+      !feedHasMoreRef.current && watchQueueStaleProbeNetworkAllowedRef.current;
+
+    if (!feedHasMoreRef.current && !allowStaleHasMoreProbe) {
       return { rows: [] as any[], hasMore: false, source: "no-more" };
     }
     if (watchQueueRefillInflightRef.current || appendMoreInflightRef.current) {
@@ -2751,18 +2768,24 @@ export default function HomeFeedScreen() {
     }
 
     watchQueueRefillInflightRef.current = true;
+    if (allowStaleHasMoreProbe) {
+      watchQueueStaleProbeNetworkAllowedRef.current = false;
+    }
     const beforeCount = youtubeLayout
       ? youtubeStreamRowsRef.current.length
       : getCachedHomeFeedBackendCount();
     const cursor = feedNextCursorRef.current ?? String(beforeCount);
     const pageLimit = youtubeLayout
-      ? homeFeedYoutubeStreamLimitForPage(getHomeFeedLoadedPageCount())
+      ? homeFeedYoutubeStreamLimitForPage(loadedPageCount)
       : HOME_FEED_PAGE_SIZE;
 
     console.log("KRISTO_WATCH_QUEUE_FETCH_START", {
       requestId,
       cursor,
       pageLimit,
+      staleHasMoreProbe: allowStaleHasMoreProbe,
+      priorHasMore: feedHasMoreRef.current,
+      loadedPageCount,
     });
 
     try {
@@ -2860,6 +2883,10 @@ export default function HomeFeedScreen() {
             displayFeedRowsRef.current
           );
 
+          const loadedPageCount = getHomeFeedLoadedPageCount();
+          const allowStaleExhaustionProbe =
+            !feedHasMoreRef.current && !watchQueueHasMoreProbedRef.current;
+
           const ensured = await ensureWatchQueueDepth({
             currentItem: payload.item,
             candidates: watchUpNextPoolRef.current,
@@ -2869,6 +2896,12 @@ export default function HomeFeedScreen() {
             threshold: WATCH_QUEUE_REFILL_THRESHOLD,
             targetDepth: WATCH_QUEUE_TARGET_DEPTH,
             hasMore: feedHasMoreRef.current,
+            loadedPageCount,
+            allowStaleExhaustionProbe,
+            onStaleExhaustionProbe: () => {
+              watchQueueHasMoreProbedRef.current = true;
+              watchQueueStaleProbeNetworkAllowedRef.current = true;
+            },
             fetchNextPage: () => fetchWatchQueueNextPage(requestId),
           });
 
@@ -2888,6 +2921,8 @@ export default function HomeFeedScreen() {
             unseenCount: ensured.unseenCount,
             recycledCount: ensured.recycledCount,
             finalQueueCount: ensured.finalQueueCount,
+            backendExhausted: ensured.backendExhausted,
+            staleHasMoreProbeAttempted: ensured.staleHasMoreProbeAttempted,
             at: Date.now(),
           });
 
