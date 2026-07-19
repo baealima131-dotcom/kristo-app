@@ -40,7 +40,11 @@ describe("message privacy settings model", () => {
     assert.equal(d.allowVoiceCalls, true);
     assert.equal(d.whoCanCall, "everyone");
     assert.equal(d.showReadReceipts, true);
-    assert.equal(d.requireDeviceAuthForMessages, false);
+    assert.equal(d.privateCallNotifications, true);
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(d, "requireDeviceAuthForMessages"),
+      "Message Lock fields must be removed from defaults"
+    );
   });
 
   it("normalize fills missing fields without inventing follow/verified enums", () => {
@@ -353,7 +357,15 @@ describe("wiring and regression guards", () => {
       "messages/settings",
       "gear navigates to settings"
     );
-    assertIncludes(index, "MessagesSecurityGate", "Face ID gate wired");
+    assert.ok(
+      !index.includes("MessagesSecurityGate"),
+      "Message Lock gate must be removed"
+    );
+    assertIncludes(
+      index,
+      "clearLegacyMessageLockPrefs",
+      "legacy lock prefs cleared on open"
+    );
   });
 
   it("settings UI omits follow and verified options", () => {
@@ -398,16 +410,30 @@ describe("wiring and regression guards", () => {
     );
   });
 
-  it("device lock SecureStore keys are user-scoped", () => {
-    const lock = read("apps/mobile/src/lib/messageSecurityLock.ts");
-    assertIncludes(lock, "kristo_messages_unlocked_at_v1_", "user-scoped unlock key");
-    assertIncludes(lock, "clearMessagesUnlockForUser", "account switch clear");
-    const gate = read(
-      "apps/mobile/src/components/messageSettings/MessagesSecurityGate.tsx"
+  it("Message Lock UI and helpers are fully removed", () => {
+    const settingsUi = read(
+      "apps/mobile/src/components/messageSettings/MessageSettingsScreen.tsx"
     );
-    assertIncludes(gate, "readCachedRequireDeviceAuth", "fail-closed cache");
-    assertIncludes(gate, "not end-to-end encryption", "not presented as E2EE");
-    assertIncludes(gate, "setAppSwitcherCover(false)", "cover clears on active");
+    assert.ok(!settingsUi.includes("Face ID"));
+    assert.ok(!settingsUi.includes("requireDeviceAuthForMessages"));
+    assert.ok(!settingsUi.includes("messageLockTimeout"));
+    assert.ok(!settingsUi.includes("Message Security"));
+    const types = read(
+      "apps/mobile/src/lib/messagePrivacySettingsTypes.ts"
+    );
+    assert.ok(!types.includes("requireDeviceAuthForMessages"));
+    assert.ok(!types.includes("MessageLockTimeout"));
+    const model = read("app/api/_lib/messagePrivacySettings.ts");
+    assert.ok(!model.includes("requireDeviceAuthForMessages"));
+    assert.ok(!model.includes("messageLockTimeout"));
+    assert.ok(!model.includes("hideContentInAppSwitcher"));
+  });
+
+  it("legacy Message Lock PATCH keys are rejected as unknown", () => {
+    const rejected = validateMessagePrivacySettingsPatch({
+      requireDeviceAuthForMessages: true,
+    });
+    assert.equal(rejected.ok, false);
   });
 
   it("block remains highest priority ahead of privacy in send gate", () => {

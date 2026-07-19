@@ -31,8 +31,6 @@ module.exports = {
       "@react-native-community/datetimepicker",
       "expo-asset",
       "expo-audio",
-      "expo-secure-store",
-      "expo-local-authentication",
       [
         "expo-dev-client",
         {

@@ -10,8 +10,6 @@ export type WhoCanCall =
   | "existing_conversations"
   | "nobody";
 
-export type MessageLockTimeout = "immediate" | "1m" | "5m" | "15m";
-
 export type DownloadMode = "wifi_only" | "wifi_and_cellular" | "never";
 
 export type MediaQuality = "high" | "standard" | "data_saver";
@@ -37,9 +35,6 @@ export type MessagePrivacySettingsV1 = {
   showSenderNameInNotifications: boolean;
   muteAllMessageNotifications: boolean;
   privateCallNotifications: boolean;
-  requireDeviceAuthForMessages: boolean;
-  messageLockTimeout: MessageLockTimeout;
-  hideContentInAppSwitcher: boolean;
   autoDownloadPhotos: boolean;
   autoDownloadVideos: boolean;
   autoDownloadAudio: boolean;
@@ -72,9 +67,6 @@ export const DEFAULT_MESSAGE_PRIVACY_SETTINGS: MessagePrivacySettingsV1 = {
   showSenderNameInNotifications: true,
   muteAllMessageNotifications: false,
   privateCallNotifications: true,
-  requireDeviceAuthForMessages: false,
-  messageLockTimeout: "immediate",
-  hideContentInAppSwitcher: false,
   autoDownloadPhotos: true,
   autoDownloadVideos: false,
   autoDownloadAudio: false,
@@ -138,16 +130,6 @@ export const WHO_CAN_CALL_OPTIONS: Array<{
   },
 ];
 
-export const LOCK_TIMEOUT_OPTIONS: Array<{
-  value: MessageLockTimeout;
-  label: string;
-}> = [
-  { value: "immediate", label: "Immediately" },
-  { value: "1m", label: "After 1 minute" },
-  { value: "5m", label: "After 5 minutes" },
-  { value: "15m", label: "After 15 minutes" },
-];
-
 export const DOWNLOAD_MODE_OPTIONS: Array<{
   value: DownloadMode;
   label: string;
@@ -184,10 +166,6 @@ export function labelForWhoCanMessage(value: WhoCanMessage) {
 
 export function labelForWhoCanCall(value: WhoCanCall) {
   return WHO_CAN_CALL_OPTIONS.find((o) => o.value === value)?.label || value;
-}
-
-export function labelForLockTimeout(value: MessageLockTimeout) {
-  return LOCK_TIMEOUT_OPTIONS.find((o) => o.value === value)?.label || value;
 }
 
 export function labelForDownloadMode(value: DownloadMode) {

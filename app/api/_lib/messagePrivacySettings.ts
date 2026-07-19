@@ -17,8 +17,6 @@ export type WhoCanCall =
   | "existing_conversations"
   | "nobody";
 
-export type MessageLockTimeout = "immediate" | "1m" | "5m" | "15m";
-
 export type DownloadMode = "wifi_only" | "wifi_and_cellular" | "never";
 
 export type MediaQuality = "high" | "standard" | "data_saver";
@@ -44,9 +42,6 @@ export type MessagePrivacySettingsV1 = {
   showSenderNameInNotifications: boolean;
   muteAllMessageNotifications: boolean;
   privateCallNotifications: boolean;
-  requireDeviceAuthForMessages: boolean;
-  messageLockTimeout: MessageLockTimeout;
-  hideContentInAppSwitcher: boolean;
   autoDownloadPhotos: boolean;
   autoDownloadVideos: boolean;
   autoDownloadAudio: boolean;
@@ -72,13 +67,6 @@ const WHO_CAN_CALL: ReadonlySet<string> = new Set([
   "church_members",
   "existing_conversations",
   "nobody",
-]);
-
-const LOCK_TIMEOUT: ReadonlySet<string> = new Set([
-  "immediate",
-  "1m",
-  "5m",
-  "15m",
 ]);
 
 const DOWNLOAD_MODE: ReadonlySet<string> = new Set([
@@ -122,9 +110,6 @@ export function defaultMessagePrivacySettings(
     showSenderNameInNotifications: true,
     muteAllMessageNotifications: false,
     privateCallNotifications: true,
-    requireDeviceAuthForMessages: false,
-    messageLockTimeout: "immediate",
-    hideContentInAppSwitcher: false,
     autoDownloadPhotos: true,
     autoDownloadVideos: false,
     autoDownloadAudio: false,
@@ -209,19 +194,6 @@ export function normalizeMessagePrivacySettings(
       src.privateCallNotifications,
       base.privateCallNotifications
     ),
-    requireDeviceAuthForMessages: asBoolean(
-      src.requireDeviceAuthForMessages,
-      base.requireDeviceAuthForMessages
-    ),
-    messageLockTimeout: asEnum(
-      src.messageLockTimeout,
-      LOCK_TIMEOUT,
-      base.messageLockTimeout
-    ),
-    hideContentInAppSwitcher: asBoolean(
-      src.hideContentInAppSwitcher,
-      base.hideContentInAppSwitcher
-    ),
     autoDownloadPhotos: asBoolean(
       src.autoDownloadPhotos,
       base.autoDownloadPhotos
@@ -301,8 +273,6 @@ export function validateMessagePrivacySettingsPatch(
     "showSenderNameInNotifications",
     "muteAllMessageNotifications",
     "privateCallNotifications",
-    "requireDeviceAuthForMessages",
-    "hideContentInAppSwitcher",
     "autoDownloadPhotos",
     "autoDownloadVideos",
     "autoDownloadAudio",
@@ -315,7 +285,6 @@ export function validateMessagePrivacySettingsPatch(
   }> = [
     { key: "whoCanMessage", allowed: WHO_CAN_MESSAGE },
     { key: "whoCanCall", allowed: WHO_CAN_CALL },
-    { key: "messageLockTimeout", allowed: LOCK_TIMEOUT },
     { key: "downloadMode", allowed: DOWNLOAD_MODE },
     { key: "mediaQuality", allowed: MEDIA_QUALITY },
     { key: "autoDeleteDownloadedMedia", allowed: AUTO_DELETE },

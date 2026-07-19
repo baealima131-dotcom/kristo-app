@@ -19,20 +19,17 @@ import {
   AUTO_DELETE_OPTIONS,
   DEFAULT_MESSAGE_PRIVACY_SETTINGS,
   DOWNLOAD_MODE_OPTIONS,
-  LOCK_TIMEOUT_OPTIONS,
   MEDIA_QUALITY_OPTIONS,
   WHO_CAN_CALL_OPTIONS,
   WHO_CAN_MESSAGE_OPTIONS,
   labelForAutoDelete,
   labelForDownloadMode,
-  labelForLockTimeout,
   labelForMediaQuality,
   labelForWhoCanCall,
   labelForWhoCanMessage,
   type AutoDeleteDownloadedMedia,
   type DownloadMode,
   type MediaQuality,
-  type MessageLockTimeout,
   type MessagePrivacySettingsPatch,
   type MessagePrivacySettingsV1,
   type WhoCanCall,
@@ -56,7 +53,6 @@ import {
 type ChoiceSheetState =
   | { kind: "whoCanMessage" }
   | { kind: "whoCanCall" }
-  | { kind: "messageLockTimeout" }
   | { kind: "downloadMode" }
   | { kind: "mediaQuality" }
   | { kind: "autoDeleteDownloadedMedia" }
@@ -128,15 +124,6 @@ export function MessageSettingsScreen() {
         options: WHO_CAN_CALL_OPTIONS,
         selected: settings.whoCanCall,
         onSelect: (value: WhoCanCall) => void applyPatch({ whoCanCall: value }),
-      };
-    }
-    if (sheet.kind === "messageLockTimeout") {
-      return {
-        title: "Lock timeout",
-        options: LOCK_TIMEOUT_OPTIONS,
-        selected: settings.messageLockTimeout,
-        onSelect: (value: MessageLockTimeout) =>
-          void applyPatch({ messageLockTimeout: value }),
       };
     }
     if (sheet.kind === "downloadMode") {
@@ -385,32 +372,6 @@ export function MessageSettingsScreen() {
               last
               onPress={() =>
                 router.push("/(tabs)/more/my-reports" as any)
-              }
-            />
-          </SettingsSectionCard>
-
-          <SettingsSectionCard title="Message Security">
-            <SettingsToggleRow
-              label="Require Face ID / device authentication"
-              description="Unlock Messages with biometrics or device passcode."
-              value={settings.requireDeviceAuthForMessages}
-              onValueChange={(v) =>
-                void applyPatch({ requireDeviceAuthForMessages: v })
-              }
-            />
-            <SettingsChoiceRow
-              label="Lock timeout"
-              valueLabel={labelForLockTimeout(settings.messageLockTimeout)}
-              description="How soon Messages locks after you leave."
-              disabled={!settings.requireDeviceAuthForMessages}
-              onPress={() => setSheet({ kind: "messageLockTimeout" })}
-            />
-            <SettingsToggleRow
-              label="Hide message content in app switcher"
-              description="Covers the Messages screen when the app is backgrounded."
-              value={settings.hideContentInAppSwitcher}
-              onValueChange={(v) =>
-                void applyPatch({ hideContentInAppSwitcher: v })
               }
             />
           </SettingsSectionCard>

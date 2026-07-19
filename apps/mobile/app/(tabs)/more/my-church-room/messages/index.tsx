@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -21,10 +21,10 @@ import {
   type MessagesInboxConversation,
 } from "@/src/lib/messagesInbox";
 import { StartNewChatSheet } from "@/src/components/messages/StartNewChatSheet";
-import { MessagesSecurityGate } from "@/src/components/messageSettings/MessagesSecurityGate";
 import type { DirectMessageThread } from "@/src/lib/directMessagesApi";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { clearLegacyMessageLockPrefs } from "@/src/lib/clearLegacyMessageLockPrefs";
 
 const BG = "#0A1220";
 const TEXT = "rgba(255,255,255,0.94)";
@@ -108,6 +108,10 @@ export default function MessagesScreen() {
   const [loading, setLoading] = useState(true);
   const [conversations, setConversations] = useState<MessagesInboxConversation[]>([]);
   const [composeOpen, setComposeOpen] = useState(false);
+
+  useEffect(() => {
+    void clearLegacyMessageLockPrefs();
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -234,7 +238,6 @@ export default function MessagesScreen() {
   );
 
   return (
-    <MessagesSecurityGate>
     <View style={[s.screen, { paddingTop: insets.top + 10 }]}>
       <View style={s.header}>
         <Pressable
@@ -332,7 +335,6 @@ export default function MessagesScreen() {
         }}
       />
     </View>
-    </MessagesSecurityGate>
   );
 }
 
