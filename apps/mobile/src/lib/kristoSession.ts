@@ -181,6 +181,16 @@ export async function saveSession(s: KristoSession): Promise<void> {
       nextUserId: userId,
     });
   }
+  if (prevUserId && prevUserId !== userId) {
+    try {
+      const { clearMessageLockLocalState } = await import(
+        "@/src/lib/messageLockSession"
+      );
+      await clearMessageLockLocalState(prevUserId);
+    } catch {
+      // non-fatal
+    }
+  }
 
   console.log("KRISTO_SESSION_SAVE_TOKEN", {
     hasSessionToken: Boolean(sessionToken),
@@ -215,10 +225,19 @@ export async function touchMobileSession(): Promise<KristoSession | null> {
 }
 
 export async function clearSession(): Promise<void> {
+  const prevUserId = String(getSessionSync()?.userId || "").trim();
   setSessionSync(null);
   try {
     await AsyncStorage.removeItem(KEY);
   } catch {}
+  try {
+    const { clearMessageLockLocalState } = await import(
+      "@/src/lib/messageLockSession"
+    );
+    await clearMessageLockLocalState(prevUserId || undefined);
+  } catch {
+    // non-fatal
+  }
 }
 
 export type LogoutCleanupParams = {
@@ -244,6 +263,15 @@ export async function performLogoutCleanup(params: LogoutCleanupParams = {}): Pr
   try {
     await AsyncStorage.removeItem(KEY);
   } catch {}
+
+  try {
+    const { clearMessageLockLocalState } = await import(
+      "@/src/lib/messageLockSession"
+    );
+    await clearMessageLockLocalState(userId || undefined);
+  } catch {
+    // non-fatal
+  }
 
   try {
     if (userId) {

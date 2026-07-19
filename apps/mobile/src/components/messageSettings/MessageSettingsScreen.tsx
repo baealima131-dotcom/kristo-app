@@ -35,6 +35,7 @@ import {
   type WhoCanCall,
   type WhoCanMessage,
 } from "@/src/lib/messagePrivacySettingsTypes";
+import { MessageLockSettingsSection } from "./MessageLockSettingsSection";
 import { SettingsChoiceRow } from "./SettingsChoiceRow";
 import { SettingsChoiceSheet } from "./SettingsChoiceSheet";
 import { SettingsNavRow } from "./SettingsNavRow";
@@ -331,6 +332,9 @@ export function MessageSettingsScreen() {
               }
             />
           </SettingsSectionCard>
+
+          {/* Gate already unlocked when this screen is visible with lock on. */}
+          <MessageLockSettingsSection gateUnlocked />
 
           <SettingsSectionCard
             title="Safety & Control"

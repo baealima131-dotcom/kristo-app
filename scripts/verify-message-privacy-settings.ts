@@ -359,7 +359,11 @@ describe("wiring and regression guards", () => {
     );
     assert.ok(
       !index.includes("MessagesSecurityGate"),
-      "Message Lock gate must be removed"
+      "legacy Face ID MessagesSecurityGate must stay removed"
+    );
+    assert.ok(
+      !index.includes("expo-local-authentication"),
+      "device biometrics must not return to inbox"
     );
     assertIncludes(
       index,
@@ -410,7 +414,7 @@ describe("wiring and regression guards", () => {
     );
   });
 
-  it("Message Lock UI and helpers are fully removed", () => {
+  it("Message Privacy stays free of Face ID / device-auth lock fields", () => {
     const settingsUi = read(
       "apps/mobile/src/components/messageSettings/MessageSettingsScreen.tsx"
     );
@@ -418,6 +422,11 @@ describe("wiring and regression guards", () => {
     assert.ok(!settingsUi.includes("requireDeviceAuthForMessages"));
     assert.ok(!settingsUi.includes("messageLockTimeout"));
     assert.ok(!settingsUi.includes("Message Security"));
+    assertIncludes(
+      settingsUi,
+      "MessageLockSettingsSection",
+      "Kristo PIN Message Lock section"
+    );
     const types = read(
       "apps/mobile/src/lib/messagePrivacySettingsTypes.ts"
     );
