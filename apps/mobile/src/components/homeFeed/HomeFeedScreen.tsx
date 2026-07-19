@@ -103,6 +103,7 @@ import {
   isHomeFeedYoutubeSilentNextPagePrepInflight,
   isHomeFeedYoutubeSilentNextPagePrepReady,
   clearHomeFeedYoutubeSilentNextPagePrep,
+  peekLastYoutubeMediaCollectMeta,
   refreshHomeFeedYoutubeBackgroundCache,
   revalidateHomeFeedYoutubeStaleExhaustion,
   shouldRevalidateStaleHomeFeedExhaustion,
@@ -381,6 +382,15 @@ export default function HomeFeedScreen() {
   /** Set after an authoritative revalidate accept/repair (exhaust or recover). */
   const homeFeedStalePagingSettledRef = useRef(false);
   const homeFeedStalePagingInflightRef = useRef(false);
+  const screenFocusedRef = useRef(screenFocused);
+  screenFocusedRef.current = screenFocused;
+  const loadFeedGenerationRef = useRef(0);
+  const runHomeFeedStalePagingRevalidateRef = useRef<
+    (
+      trigger: "mount" | "focus" | "post-cold-start",
+      opts?: { coldStartAuthoritative?: boolean | null }
+    ) => Promise<void>
+  >(async () => {});
   const youtubePaginationStagingRef = useRef(false);
   const youtubeRevealGenerationRef = useRef(0);
   const youtubePageRevealCompleteRef = useRef(youtubeSessionOnMount.pageRevealComplete);
@@ -790,37 +800,125 @@ export default function HomeFeedScreen() {
   }, []);
 
   const runHomeFeedStalePagingRevalidate = useCallback(
-    async (reason: "mount" | "focus") => {
-      if (!youtubeLayout) return;
-      if (homeFeedStalePagingSettledRef.current) return;
-      if (homeFeedStalePagingAttemptedThisFocusRef.current) return;
-      if (homeFeedStalePagingInflightRef.current) return;
-
+    async (
+      trigger: "mount" | "focus" | "post-cold-start",
+      opts?: { coldStartAuthoritative?: boolean | null }
+    ) => {
+      const generation = loadFeedGenerationRef.current;
       const loadedPages = getHomeFeedLoadedPageCount();
       const loadedRows = youtubeStreamRowsRef.current.length;
+      const hasMore = feedHasMoreRef.current;
+      const nextCursor = feedNextCursorRef.current;
+      const nextCursorPresent = nextCursor != null && String(nextCursor).trim() !== "";
       const eligible = shouldRevalidateStaleHomeFeedExhaustion({
         loadedPages,
         loadedRows,
         firstPageSize: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
-        hasMore: feedHasMoreRef.current,
-        nextCursor: feedNextCursorRef.current,
+        hasMore,
+        nextCursor,
       });
-      if (!eligible) return;
+      const coldStartAuthoritative =
+        opts?.coldStartAuthoritative === undefined ? null : opts.coldStartAuthoritative;
+
+      const logEligibility = (args: {
+        reason: string;
+        attemptStarted: boolean;
+        attemptSettled?: boolean;
+        eligibleOverride?: boolean;
+      }) => {
+        console.log("KRISTO_HOME_FEED_PAGING_REVALIDATE_ELIGIBILITY", {
+          trigger,
+          eligible: args.eligibleOverride ?? eligible,
+          reason: args.reason,
+          rowCount: loadedRows,
+          loadedPages,
+          hasMore,
+          nextCursorPresent,
+          attemptStarted: args.attemptStarted,
+          attemptSettled:
+            args.attemptSettled ?? homeFeedStalePagingSettledRef.current,
+          coldStartAuthoritative,
+          generation,
+        });
+      };
+
+      if (!youtubeLayout) {
+        logEligibility({ reason: "not-youtube-layout", attemptStarted: false });
+        return;
+      }
+      if (homeFeedStalePagingSettledRef.current) {
+        logEligibility({ reason: "already-settled", attemptStarted: false });
+        return;
+      }
+      if (homeFeedStalePagingAttemptedThisFocusRef.current) {
+        logEligibility({ reason: "already-attempted-this-focus", attemptStarted: false });
+        return;
+      }
+      if (homeFeedStalePagingInflightRef.current) {
+        logEligibility({ reason: "inflight", attemptStarted: false });
+        return;
+      }
+      if (
+        trigger === "post-cold-start" &&
+        coldStartAuthoritative === false
+      ) {
+        logEligibility({
+          reason: "cold-start-not-authoritative",
+          attemptStarted: false,
+        });
+        return;
+      }
+      if (generation !== loadFeedGenerationRef.current) {
+        logEligibility({ reason: "stale-generation", attemptStarted: false });
+        return;
+      }
+      if (!screenFocusedRef.current && trigger !== "mount") {
+        logEligibility({ reason: "blurred", attemptStarted: false });
+        return;
+      }
+      if (!eligible) {
+        logEligibility({ reason: "not-eligible", attemptStarted: false });
+        return;
+      }
 
       homeFeedStalePagingAttemptedThisFocusRef.current = true;
       homeFeedStalePagingInflightRef.current = true;
+      logEligibility({ reason: "eligible", attemptStarted: true, attemptSettled: false });
       try {
         const result = await revalidateHomeFeedYoutubeStaleExhaustion({
-          reason,
+          reason: trigger,
           loadedPages,
           loadedRows,
           hasMore: feedHasMoreRef.current,
           nextCursor: feedNextCursorRef.current,
         });
+
+        if (generation !== loadFeedGenerationRef.current || !screenFocusedRef.current) {
+          console.log("KRISTO_HOME_FEED_PAGING_REVALIDATE_ELIGIBILITY", {
+            trigger,
+            eligible: true,
+            reason: "cancelled-after-await",
+            rowCount: youtubeStreamRowsRef.current.length,
+            loadedPages: getHomeFeedLoadedPageCount(),
+            hasMore: feedHasMoreRef.current,
+            nextCursorPresent:
+              feedNextCursorRef.current != null &&
+              String(feedNextCursorRef.current).trim() !== "",
+            attemptStarted: true,
+            attemptSettled: false,
+            coldStartAuthoritative,
+            generation,
+          });
+          // Allow a later focus to retry when blur/generation invalidated the attempt.
+          homeFeedStalePagingAttemptedThisFocusRef.current = false;
+          return;
+        }
+
         if (!result.attempted) return;
 
         if (result.preserved) {
           // Failed/stale/uncertain — keep prior paging; allow a later focus to retry.
+          homeFeedStalePagingAttemptedThisFocusRef.current = false;
           return;
         }
 
@@ -838,12 +936,29 @@ export default function HomeFeedScreen() {
           youtubeStreamExhaustedRef.current = false;
           void prepareHomeFeedYoutubeNextPageSilently();
         }
+
+        console.log("KRISTO_HOME_FEED_PAGING_REVALIDATE_ELIGIBILITY", {
+          trigger,
+          eligible: true,
+          reason: result.repaired ? "settled-repaired" : "settled-exhausted",
+          rowCount: youtubeStreamRowsRef.current.length,
+          loadedPages: getHomeFeedLoadedPageCount(),
+          hasMore: feedHasMoreRef.current,
+          nextCursorPresent:
+            feedNextCursorRef.current != null &&
+            String(feedNextCursorRef.current).trim() !== "",
+          attemptStarted: true,
+          attemptSettled: true,
+          coldStartAuthoritative,
+          generation,
+        });
       } finally {
         homeFeedStalePagingInflightRef.current = false;
       }
     },
     [applyFeedPagingState, commitYoutubeStreamAppend, youtubeLayout]
   );
+  runHomeFeedStalePagingRevalidateRef.current = runHomeFeedStalePagingRevalidate;
 
   const logYoutubePrefetchSkipThrottled = useCallback(
     (reason: string, payload: Record<string, unknown>) => {
@@ -1106,8 +1221,6 @@ export default function HomeFeedScreen() {
     });
   }, [bumpYoutubeRows]);
 
-  const loadFeedGenerationRef = useRef(0);
-
   const loadFeed = useCallback(async (reason = "load", opts?: { force?: boolean }) => {
     if (isHomeFeedRenderPaused()) return;
 
@@ -1266,7 +1379,8 @@ export default function HomeFeedScreen() {
                 youtubeStreamRowsRef.current,
                 rows
               );
-              void restoreYoutubeStreamRows(merged, { coldStart: true });
+              // Await so page/rows settle before post-cold-start revalidation.
+              await restoreYoutubeStreamRows(merged, { coldStart: true });
             } else if (
               Platform.OS === "android" &&
               loadGeneration === loadFeedGenerationRef.current
@@ -1328,6 +1442,38 @@ export default function HomeFeedScreen() {
       if (!hasHomeFeedYoutubeStreamSession() || shouldReplaceHomeFeedYoutubeStreamUi(reason, forceFetch)) {
         const paging = getHomeFeedPagingState();
         applyFeedPagingState(paging, { allowSessionOverwrite: true });
+      }
+
+      // Cold-start often leaves one-page hasMore:false after mount/focus skipped
+      // revalidate (temporary hasMore:true, then coldStartRotationPending return).
+      // Re-evaluate only after paging refs reflect the settled cold-start result.
+      if (reason === "cold-start-rotate" && youtubeLayout) {
+        if (loadGeneration !== loadFeedGenerationRef.current) {
+          console.log("KRISTO_HOME_FEED_PAGING_REVALIDATE_ELIGIBILITY", {
+            trigger: "post-cold-start",
+            eligible: false,
+            reason: "stale-generation",
+            rowCount: youtubeStreamRowsRef.current.length,
+            loadedPages: getHomeFeedLoadedPageCount(),
+            hasMore: feedHasMoreRef.current,
+            nextCursorPresent:
+              feedNextCursorRef.current != null &&
+              String(feedNextCursorRef.current).trim() !== "",
+            attemptStarted: false,
+            attemptSettled: homeFeedStalePagingSettledRef.current,
+            coldStartAuthoritative: false,
+            generation: loadGeneration,
+          });
+        } else {
+          const collectMeta = peekLastYoutubeMediaCollectMeta();
+          const coldStartAuthoritative =
+            collectMeta?.reason === "cold-start-rotate" &&
+            collectMeta.disposition === "network" &&
+            collectMeta.pagingApplied === true;
+          await runHomeFeedStalePagingRevalidateRef.current("post-cold-start", {
+            coldStartAuthoritative,
+          });
+        }
       }
     } catch {
       setBackendRows((prev) => prev);

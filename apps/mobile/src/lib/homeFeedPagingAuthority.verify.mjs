@@ -162,8 +162,14 @@ function testSourceContracts() {
   assert.match(apiSrc, /throttleMs: 0/);
   assert.match(apiSrc, /dedupe: false/);
   assert.match(apiSrc, /params\.set\("cursor"/);
+  assert.match(apiSrc, /peekLastYoutubeMediaCollectMeta/);
   assert.match(screenSrc, /runHomeFeedStalePagingRevalidate/);
   assert.match(screenSrc, /pagingApplied/);
+  assert.match(screenSrc, /post-cold-start/);
+  assert.match(screenSrc, /KRISTO_HOME_FEED_PAGING_REVALIDATE_ELIGIBILITY/);
+  assert.match(screenSrc, /coldStartAuthoritative/);
+  assert.match(screenSrc, /await restoreYoutubeStreamRows\(merged, \{ coldStart: true \}\)/);
+  assert.match(screenSrc, /runHomeFeedStalePagingRevalidateRef\.current\("post-cold-start"/);
   assert.match(apiSrc, /KRISTO_HOME_FEED_PAGING_REVALIDATE_START/);
   assert.match(apiSrc, /KRISTO_HOME_FEED_PAGING_REVALIDATE_RESULT/);
   assert.match(src, /KRISTO_HOME_FEED_PAGING_STATE_DECISION/);
@@ -171,7 +177,125 @@ function testSourceContracts() {
   // Watch queue file must remain untouched by this fix surface.
   assert.doesNotMatch(watchSrc, /revalidateHomeFeedYoutubeStaleExhaustion/);
   assert.doesNotMatch(watchSrc, /homeFeedPagingAuthority/);
+  assert.doesNotMatch(watchSrc, /post-cold-start/);
   console.log("✓ source contracts");
+}
+
+/**
+ * Simulates Home Feed cold-start revalidate wiring (no RN).
+ * Mirrors guard ordering in HomeFeedScreen.runHomeFeedStalePagingRevalidate.
+ */
+function createStaleRevalidateWiring() {
+  const state = {
+    youtubeLayout: true,
+    settled: false,
+    attemptedThisFocus: false,
+    inflight: false,
+    focused: true,
+    generation: 1,
+    loadedPages: 1,
+    loadedRows: 20,
+    hasMore: true,
+    nextCursor: null,
+    probeStarts: 0,
+    probeResults: [],
+  };
+
+  function eligibility(trigger, opts = {}) {
+    const eligible = shouldRevalidateStaleHomeFeedExhaustion({
+      loadedPages: state.loadedPages,
+      loadedRows: state.loadedRows,
+      firstPageSize: 20,
+      hasMore: state.hasMore,
+      nextCursor: state.nextCursor,
+    });
+    const coldStartAuthoritative =
+      opts.coldStartAuthoritative === undefined ? null : opts.coldStartAuthoritative;
+
+    if (!state.youtubeLayout) {
+      return { eligible: false, reason: "not-youtube-layout", attemptStarted: false };
+    }
+    if (state.settled) {
+      return { eligible: false, reason: "already-settled", attemptStarted: false };
+    }
+    if (state.attemptedThisFocus) {
+      return { eligible: false, reason: "already-attempted-this-focus", attemptStarted: false };
+    }
+    if (state.inflight) {
+      return { eligible: false, reason: "inflight", attemptStarted: false };
+    }
+    if (trigger === "post-cold-start" && coldStartAuthoritative === false) {
+      return { eligible, reason: "cold-start-not-authoritative", attemptStarted: false };
+    }
+    if (!state.focused && trigger !== "mount") {
+      return { eligible: false, reason: "blurred", attemptStarted: false };
+    }
+    if (!eligible) {
+      return { eligible: false, reason: "not-eligible", attemptStarted: false };
+    }
+    return { eligible: true, reason: "eligible", attemptStarted: true };
+  }
+
+  function run(trigger, opts = {}, probeOutcome = "exhausted") {
+    const genAtStart = state.generation;
+    const gate = eligibility(trigger, opts);
+    if (!gate.attemptStarted) return gate;
+
+    state.attemptedThisFocus = true;
+    state.inflight = true;
+    state.probeStarts += 1;
+
+    // blur/unmount cancel
+    if (opts.cancelAfterStart) {
+      state.focused = false;
+      state.generation += 1;
+      state.inflight = false;
+      state.attemptedThisFocus = false;
+      return { eligible: true, reason: "cancelled-after-await", attemptStarted: true, attemptSettled: false };
+    }
+    if (genAtStart !== state.generation || !state.focused) {
+      state.inflight = false;
+      state.attemptedThisFocus = false;
+      return { eligible: true, reason: "cancelled-after-await", attemptStarted: true, attemptSettled: false };
+    }
+
+    if (probeOutcome === "preserve") {
+      state.inflight = false;
+      state.attemptedThisFocus = false;
+      state.probeResults.push(probeOutcome);
+      return { eligible: true, reason: "preserved", attemptStarted: true, attemptSettled: false };
+    }
+
+    state.settled = true;
+    state.inflight = false;
+    if (probeOutcome === "repair") {
+      state.hasMore = true;
+      state.nextCursor = "20";
+    } else {
+      state.hasMore = false;
+      state.nextCursor = null;
+    }
+    state.probeResults.push(probeOutcome);
+    return {
+      eligible: true,
+      reason: probeOutcome === "repair" ? "settled-repaired" : "settled-exhausted",
+      attemptStarted: true,
+      attemptSettled: true,
+    };
+  }
+
+  function applyColdStart(paging, { authoritative }) {
+    // cold-start force path clears once-per-focus guards (matches loadFeed).
+    state.settled = false;
+    state.attemptedThisFocus = false;
+    state.hasMore = paging.hasMore;
+    state.nextCursor = paging.nextCursor;
+    state.loadedPages = 1;
+    state.loadedRows = 20;
+    return run("post-cold-start", { coldStartAuthoritative: authoritative });
+  }
+
+  return { state, eligibility, run, applyColdStart };
 }
 
 function testThrottleEmptyDoesNotExhaust() {
@@ -349,6 +473,97 @@ function testThrottlePromoteHasMore() {
   console.log("✓ throttle may promote hasMore:true only");
 }
 
+function testColdStartWiringMountSkipsTemporaryHasMoreTrue() {
+  const wiring = createStaleRevalidateWiring();
+  // Mount sees temporary hasMore:true (session create before cold-start settle).
+  wiring.state.hasMore = true;
+  wiring.state.nextCursor = null;
+  const mount = wiring.run("mount");
+  assert.equal(mount.reason, "not-eligible");
+  assert.equal(mount.attemptStarted, false);
+  assert.equal(wiring.state.probeStarts, 0);
+  console.log("✓ mount skips while temporary hasMore:true");
+}
+
+function testColdStartWiringPostColdStartProbeOnce() {
+  const wiring = createStaleRevalidateWiring();
+  wiring.state.hasMore = true;
+  assert.equal(wiring.run("mount").attemptStarted, false);
+
+  // Cold-start settles one-page exhausted authoritatively → probe runs once.
+  const post = wiring.applyColdStart(
+    { hasMore: false, nextCursor: null },
+    { authoritative: true }
+  );
+  assert.equal(post.reason, "settled-exhausted");
+  assert.equal(post.attemptStarted, true);
+  assert.equal(wiring.state.probeStarts, 1);
+
+  // Second post-cold-start / focus must not start another probe.
+  const again = wiring.run("post-cold-start", { coldStartAuthoritative: true });
+  assert.equal(again.reason, "already-settled");
+  assert.equal(wiring.state.probeStarts, 1);
+  console.log("✓ post-cold-start probe runs exactly once");
+}
+
+function testColdStartWiringTrueExhaustionAndRepair() {
+  const exhausted = createStaleRevalidateWiring();
+  exhausted.state.hasMore = false;
+  const trueExhaust = exhausted.applyColdStart(
+    { hasMore: false, nextCursor: null },
+    { authoritative: true }
+  );
+  assert.equal(trueExhaust.reason, "settled-exhausted");
+  assert.equal(exhausted.state.hasMore, false);
+
+  const repairWiring = createStaleRevalidateWiring();
+  repairWiring.state.hasMore = false;
+  const repaired = repairWiring.run(
+    "post-cold-start",
+    { coldStartAuthoritative: true },
+    "repair"
+  );
+  assert.equal(repaired.reason, "settled-repaired");
+  assert.equal(repairWiring.state.hasMore, true);
+  assert.equal(repairWiring.state.nextCursor, "20");
+  console.log("✓ true exhaustion settles; page2 repair clears exhausted");
+}
+
+function testColdStartWiringFailedColdStartDoesNotProbe() {
+  const wiring = createStaleRevalidateWiring();
+  wiring.state.hasMore = true;
+  const failed = wiring.applyColdStart(
+    { hasMore: true, nextCursor: null },
+    { authoritative: false }
+  );
+  assert.equal(failed.reason, "cold-start-not-authoritative");
+  assert.equal(failed.attemptStarted, false);
+  assert.equal(wiring.state.probeStarts, 0);
+
+  // Even if prior disk exhaustion is present, non-authoritative cold-start must not probe.
+  wiring.state.hasMore = false;
+  wiring.state.nextCursor = null;
+  const skipped = wiring.run("post-cold-start", { coldStartAuthoritative: false });
+  assert.equal(skipped.reason, "cold-start-not-authoritative");
+  assert.equal(wiring.state.probeStarts, 0);
+  console.log("✓ failed/non-authoritative cold-start does not trigger probe");
+}
+
+function testColdStartWiringBlurCancelsSafely() {
+  const wiring = createStaleRevalidateWiring();
+  wiring.state.hasMore = false;
+  const cancelled = wiring.run(
+    "post-cold-start",
+    { coldStartAuthoritative: true, cancelAfterStart: true },
+    "exhausted"
+  );
+  assert.equal(cancelled.reason, "cancelled-after-await");
+  assert.equal(cancelled.attemptSettled, false);
+  assert.equal(wiring.state.settled, false);
+  assert.equal(wiring.state.attemptedThisFocus, false);
+  console.log("✓ blur/unmount cancels follow-up safely");
+}
+
 function main() {
   testSourceContracts();
   testThrottleEmptyDoesNotExhaust();
@@ -359,6 +574,11 @@ function main() {
   testPage2Recovery();
   testRevalidateEligibilityBounds();
   testThrottlePromoteHasMore();
+  testColdStartWiringMountSkipsTemporaryHasMoreTrue();
+  testColdStartWiringPostColdStartProbeOnce();
+  testColdStartWiringTrueExhaustionAndRepair();
+  testColdStartWiringFailedColdStartDoesNotProbe();
+  testColdStartWiringBlurCancelsSafely();
   console.log("\nAll Home Feed paging authority checks passed.");
 }
 

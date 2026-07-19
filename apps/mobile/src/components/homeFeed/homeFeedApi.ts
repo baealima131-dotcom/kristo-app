@@ -84,6 +84,22 @@ import {
 
 let lastFetchedHomeFeedRows: any[] = [];
 
+/** Last YouTube page-0 collect paging disposition (for cold-start follow-up). */
+export type YoutubeMediaCollectPagingMeta = {
+  reason: string;
+  disposition: HomeFeedRequestDisposition | null;
+  pagingApplied: boolean;
+  hasMore: boolean;
+  nextCursor: string | null;
+  apiPasses: number;
+};
+
+let lastYoutubeMediaCollectMeta: YoutubeMediaCollectPagingMeta | null = null;
+
+export function peekLastYoutubeMediaCollectMeta(): YoutubeMediaCollectPagingMeta | null {
+  return lastYoutubeMediaCollectMeta;
+}
+
 function peekPriorYoutubePaging(): HomeFeedPagingState {
   const session = peekHomeFeedYoutubeStreamSession();
   if (session.rows.length > 0) {
@@ -766,6 +782,8 @@ async function collectYoutubeHomeFeedMediaRows(args: {
   paging: HomeFeedPagingState;
   apiPasses: number;
   lastApiRowCount: number;
+  disposition: HomeFeedRequestDisposition | null;
+  pagingApplied: boolean;
 }> {
   const {
     targetCount,
@@ -894,20 +912,46 @@ async function collectYoutubeHomeFeedMediaRows(args: {
   }
 
   const prior = peekPriorYoutubePaging();
-  const paging: HomeFeedPagingState = lastRes
-    ? pagingFromApiResponse(lastRes, collected.length, {
-        throttleMs: throttleMs > 0 ? throttleMs : 0,
-        prior,
-      })
-    : { ...prior };
+  const passThrottleMsForDecision = throttleMs > 0 ? throttleMs : 0;
+  let disposition: HomeFeedRequestDisposition | null = null;
+  let pagingApplied = false;
+  let paging: HomeFeedPagingState = { ...prior };
+  if (lastRes) {
+    disposition = classifyFeedApiResponse(lastRes, {
+      throttleMs: passThrottleMsForDecision,
+    });
+    const decision = decideHomeFeedPagingState({
+      disposition,
+      prior,
+      responseHasMore: readFeedResponseHasMore(lastRes),
+      responseNextCursor: readFeedResponseNextCursor(lastRes),
+      responseTotal: readFeedResponseTotal(lastRes),
+      rawRowCount: Array.isArray(lastRes?.data) ? lastRes.data.length : collected.length,
+      mappedRowCount: collected.length,
+      loadedRows: collected.length,
+    });
+    pagingApplied = decision.action !== "preserve";
+    paging = pagingApplied ? decision.paging : { ...prior };
+  }
 
   const rows = finalizeYoutubeCollectedRows(collected, targetCount, rankPoolSize, reason);
+
+  lastYoutubeMediaCollectMeta = {
+    reason,
+    disposition,
+    pagingApplied,
+    hasMore: paging.hasMore,
+    nextCursor: paging.nextCursor,
+    apiPasses,
+  };
 
   return {
     rows,
     paging,
     apiPasses,
     lastApiRowCount,
+    disposition,
+    pagingApplied,
   };
 }
 
