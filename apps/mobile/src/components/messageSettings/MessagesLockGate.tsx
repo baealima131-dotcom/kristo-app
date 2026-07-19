@@ -13,6 +13,7 @@ import {
   fetchMessageLockStatus,
   verifyMessageLockPin,
 } from "@/src/lib/messageLockApi";
+import { messageLockVerifyFailureUi } from "@/src/lib/messageLockVerifyUi";
 import {
   cacheMessageLockStatus,
   clearMessageLockUnlock,
@@ -55,6 +56,8 @@ export function MessagesLockGate({ children }: Props) {
   const [cooldown, setCooldown] = useState(0);
   const statusRef = useRef(status);
   statusRef.current = status;
+  /** Guards in-flight verify without putting `busy` in effect deps (that re-cancel race). */
+  const verifyingRef = useRef(false);
 
   const refreshGate = useCallback(async (source: string) => {
     if (!userId) {
@@ -231,14 +234,18 @@ export function MessagesLockGate({ children }: Props) {
   useEffect(() => {
     if (!status.enabled || !status.hasPin || !status.pinLength) return;
     if (pin.length !== status.pinLength) return;
-    if (busy || cooldown > 0) return;
+    if (cooldown > 0) return;
+    if (verifyingRef.current) return;
 
+    const pinToVerify = pin;
     let cancelled = false;
-    (async () => {
-      setBusy(true);
-      setError("");
+    verifyingRef.current = true;
+    setBusy(true);
+    setError("");
+
+    void (async () => {
       try {
-        const next = await verifyMessageLockPin(pin);
+        const next = await verifyMessageLockPin(pinToVerify);
         if (cancelled) return;
         setStatus(next);
         await cacheMessageLockStatus(userId, next);
@@ -249,6 +256,7 @@ export function MessagesLockGate({ children }: Props) {
         setUnlocked(true);
         setPin("");
         setCooldown(0);
+        setError("");
         debugGate("decision", {
           source: "verify_ok",
           reason: "pin_verified",
@@ -257,29 +265,40 @@ export function MessagesLockGate({ children }: Props) {
         });
       } catch (e: any) {
         if (cancelled) return;
-        setPin("");
-        const sec = Math.max(0, Number(e?.cooldownRemainingSec || 0));
-        setCooldown(sec);
-        if (e?.data) {
-          setStatus(e.data);
-          void cacheMessageLockStatus(userId, e.data);
+        const ui = messageLockVerifyFailureUi({
+          code: e?.code,
+          reason: e?.reason,
+          message: e?.message,
+          cooldownRemainingSec: e?.cooldownRemainingSec,
+          data: e?.data,
+        });
+        setPin(ui.pin);
+        setUnlocked(ui.unlocked);
+        setError(ui.error);
+        setCooldown(ui.cooldown);
+        if (ui.status) {
+          setStatus(ui.status);
+          void cacheMessageLockStatus(userId, ui.status);
         }
-        setError(String(e?.message || "Incorrect PIN."));
         debugGate("decision", {
           source: "verify_fail",
-          reason: "wrong_pin_or_cooldown",
+          reason: String(e?.code || "verify_failed"),
           unlocked: false,
           renderChildren: false,
+          cooldownRemainingSec: ui.cooldown,
+          // Never log PIN digits.
         });
       } finally {
-        if (!cancelled) setBusy(false);
+        verifyingRef.current = false;
+        // Always clear spinner — never leave keypad stuck if effect cleanup raced.
+        setBusy(false);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [pin, status.enabled, status.hasPin, status.pinLength, busy, cooldown, userId]);
+  }, [pin, status.enabled, status.hasPin, status.pinLength, cooldown, userId]);
 
   if (checking) {
     return (

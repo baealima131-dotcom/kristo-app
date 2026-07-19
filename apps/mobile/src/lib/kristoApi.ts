@@ -131,6 +131,11 @@ function httpError(path: string, res: Response, body: any): ApiErrorResult {
     expiresAt,
     debug: body?.details ?? body?.debug,
     activeSchedule: body?.activeSchedule,
+    // Preserve Message Lock (and similar) structured error payloads for UI.
+    ...(body?.data !== undefined ? { data: body.data } : {}),
+    ...(body?.cooldownRemainingSec !== undefined
+      ? { cooldownRemainingSec: body.cooldownRemainingSec }
+      : {}),
   };
 }
 

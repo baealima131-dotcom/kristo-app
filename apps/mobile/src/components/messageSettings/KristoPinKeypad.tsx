@@ -75,7 +75,7 @@ export function KristoPinKeypad({
       </View>
 
       {error ? (
-        <Text style={s.error} accessibilityLiveRegion="polite">
+        <Text style={s.error} accessibilityLiveRegion="polite" accessibilityRole="alert">
           {error}
         </Text>
       ) : null}
@@ -86,7 +86,7 @@ export function KristoPinKeypad({
         </Text>
       ) : null}
 
-      {busy ? (
+      {busy && cooldownRemainingSec <= 0 ? (
         <ActivityIndicator color={MS_GOLD} style={{ marginVertical: 12 }} />
       ) : null}
 

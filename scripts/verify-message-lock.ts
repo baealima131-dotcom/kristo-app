@@ -391,4 +391,116 @@ describe("wiring and gate coverage", () => {
     assert.ok(!gate.includes("LocalAuthentication"));
     assert.ok(!gate.includes("expo-local-authentication"));
   });
+
+  it("wrong PIN verify UI resets busy/keypad and never renders children", () => {
+    const gate = read(
+      "apps/mobile/src/components/messageSettings/MessagesLockGate.tsx"
+    );
+    const api = read("apps/mobile/src/lib/messageLockApi.ts");
+    const uiHelper = read("apps/mobile/src/lib/messageLockVerifyUi.ts");
+    const keypad = read(
+      "apps/mobile/src/components/messageSettings/KristoPinKeypad.tsx"
+    );
+    const kristoApi = read("apps/mobile/src/lib/kristoApi.ts");
+
+    // Race fix: busy must not be an effect dependency (setBusy(true) was cancelling verify).
+    assertIncludes(gate, "verifyingRef", "in-flight verify guard");
+    assertIncludes(gate, "messageLockVerifyFailureUi", "shared failure UI reset");
+    assert.ok(
+      gate.includes("verifyMessageLockPin(pinToVerify)"),
+      "verify uses captured pinToVerify"
+    );
+    const depsLine = gate
+      .split("\n")
+      .find((line) =>
+        line.includes("[pin, status.enabled, status.hasPin, status.pinLength")
+      );
+    assert.ok(depsLine, "verify effect dependency array present");
+    assert.ok(
+      !depsLine!.includes("busy"),
+      "verify effect must not depend on busy (cancel race)"
+    );
+    assertIncludes(gate, "setBusy(false)", "spinner cleared after verify");
+
+    // Failure keeps gate locked (children only when unlocked).
+    assertIncludes(
+      gate,
+      "status.enabled && status.hasPin && !unlocked",
+      "protected children gated on unlocked"
+    );
+    assertIncludes(gate, 'source: "verify_fail"', "failure path logs without PIN");
+    assert.ok(!gate.includes("console.log(pin"), "gate must not log PIN");
+    assert.ok(!api.includes("console.log(pin"), "api must not log PIN");
+
+    assertIncludes(
+      uiHelper,
+      '"Incorrect PIN. Try again."',
+      "wrong_pin user message"
+    );
+    assertIncludes(
+      uiHelper,
+      "Check your connection",
+      "network errors use a distinct message"
+    );
+    assertIncludes(
+      kristoApi,
+      "cooldownRemainingSec: body.cooldownRemainingSec",
+      "httpError preserves Message Lock cooldown for UI"
+    );
+    assertIncludes(keypad, 'accessibilityRole="alert"', "inline error announced");
+    assertIncludes(
+      keypad,
+      "cooldownRemainingSec > 0 || disabled || busy",
+      "keypad disables during busy/cooldown"
+    );
+  });
+});
+
+describe("message lock verify failure UI (pure)", () => {
+  it("401 wrong_pin clears keypad, stops spinner, shows error, keeps unlocked false", async () => {
+    const {
+      messageLockVerifyFailureUi,
+      messageLockVerifyUserMessage,
+    } = await import("../apps/mobile/src/lib/messageLockVerifyUi.ts");
+
+    assert.equal(
+      messageLockVerifyUserMessage({ code: "wrong_pin", message: "Incorrect PIN." }),
+      "Incorrect PIN. Try again."
+    );
+    assert.equal(
+      messageLockVerifyUserMessage({ reason: "network_error" }),
+      "Could not verify PIN. Check your connection and try again."
+    );
+
+    const noCooldown = messageLockVerifyFailureUi({
+      code: "wrong_pin",
+      cooldownRemainingSec: 0,
+      data: {
+        enabled: true,
+        hasPin: true,
+        pinLength: 4,
+        timeoutSeconds: 0,
+        locked: false,
+        cooldownRemainingSec: 0,
+        failedAttempts: 2,
+      },
+    });
+    assert.equal(noCooldown.pin, "");
+    assert.equal(noCooldown.busy, false);
+    assert.equal(noCooldown.unlocked, false);
+    assert.equal(noCooldown.error, "Incorrect PIN. Try again.");
+    assert.equal(noCooldown.cooldown, 0);
+    assert.equal(noCooldown.keypadDisabled, false);
+
+    const cooling = messageLockVerifyFailureUi({
+      code: "locked",
+      cooldownRemainingSec: 30,
+    });
+    assert.equal(cooling.pin, "");
+    assert.equal(cooling.busy, false);
+    assert.equal(cooling.unlocked, false);
+    assert.equal(cooling.cooldown, 30);
+    assert.equal(cooling.keypadDisabled, true);
+    assert.equal(cooling.error, "Incorrect PIN. Try again.");
+  });
 });

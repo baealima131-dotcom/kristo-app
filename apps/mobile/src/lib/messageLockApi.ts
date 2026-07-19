@@ -6,6 +6,13 @@ import {
   type MessageLockStatus,
   type MessageLockTimeoutSeconds,
 } from "@/src/lib/messageLockTypes";
+import { messageLockVerifyUserMessage } from "@/src/lib/messageLockVerifyUi";
+
+export {
+  messageLockVerifyFailureUi,
+  messageLockVerifyUserMessage,
+  type MessageLockVerifyFailure,
+} from "@/src/lib/messageLockVerifyUi";
 
 function authHeaders() {
   return getKristoHeaders();
@@ -78,10 +85,25 @@ export async function verifyMessageLockPin(pin: string): Promise<MessageLockStat
     { headers: authHeaders() }
   );
   if (!res?.ok || !res?.data) {
-    throw Object.assign(new Error(errMessage(res, "Incorrect PIN.")), {
-      code: res?.code,
-      cooldownRemainingSec: res?.cooldownRemainingSec,
-      data: res?.data ? normalizeStatus(res.data) : undefined,
+    const code = String(res?.code || "").trim() || undefined;
+    const reason = String(res?.reason || "").trim() || undefined;
+    const data = res?.data ? normalizeStatus(res.data) : undefined;
+    const cooldownRemainingSec = Math.max(
+      0,
+      Number(res?.cooldownRemainingSec ?? data?.cooldownRemainingSec ?? 0)
+    );
+    const message = messageLockVerifyUserMessage({
+      code,
+      reason,
+      message: errMessage(res, ""),
+      cooldownRemainingSec,
+      data,
+    });
+    throw Object.assign(new Error(message), {
+      code,
+      reason,
+      cooldownRemainingSec,
+      data,
     });
   }
   return normalizeStatus(res.data);
