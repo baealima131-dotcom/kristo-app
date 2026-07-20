@@ -171,6 +171,7 @@ import {
   resolveHomeFeedAvatarCacheContext,
   type HomeFeedPostKindFilter,
 } from "./homeFeedUtils";
+import { resolveHomeFeedSearchSelection } from "./homeFeedSearchApi";
 import {
   ensureHomeFeedAvatar,
   peekHomeFeedAvatar,
@@ -2944,7 +2945,10 @@ export default function HomeFeedScreen() {
   ]);
 
   const handleVideoPress = useCallback(
-    (payload: HomeFeedVideoOpenPayload) => {
+    (
+      payload: HomeFeedVideoOpenPayload,
+      options?: { preserveFeedOrder?: boolean }
+    ) => {
       const postId = String(payload.postId || "").trim();
       console.log("KRISTO_WATCH_OPEN_TAP", { postId, at: Date.now() });
       notifyWatchScreenOpened(postId);
@@ -2959,6 +2963,11 @@ export default function HomeFeedScreen() {
 
       setWatchUpNextGeneration(generation);
       setVideoModalPayload(payload);
+
+      // Search/backend-only opens must not reshuffle or mutate Home Feed order/session.
+      if (options?.preserveFeedOrder) {
+        return;
+      }
 
       InteractionManager.runAfterInteractions(() => {
         setStableDisplayRows((prev) => {
@@ -3202,6 +3211,46 @@ export default function HomeFeedScreen() {
     setFeedPostFilter(null);
     setSearchSheetOpen(false);
   }, []);
+
+  const handleSearchSelectRow = useCallback(
+    (row: any) => {
+      const feedRows = youtubeLayout
+        ? youtubeStreamRowsRef.current
+        : stableDisplayRowsRef.current.length
+          ? stableDisplayRowsRef.current
+          : [];
+      const decision = resolveHomeFeedSearchSelection({ selectedRow: row, feedRows });
+
+      console.log("KRISTO_HOME_FEED_SEARCH_DECISION", {
+        reason: decision.action,
+        generation: null,
+        disposition: decision.action,
+        staleIgnored: false,
+        rawCount: 0,
+        mappedCount: 0,
+        total: null,
+        hasMore: false,
+        normalizedQueryLength: null,
+        inFeed: decision.action === "scroll-in-feed",
+        preserveFeedOrder: decision.action === "open-watch",
+      });
+
+      // Close search first so pending debounce/generation cannot replace Watch later.
+      setSearchSheetOpen(false);
+
+      if (decision.action === "scroll-in-feed") {
+        pendingScrollRowKeyRef.current = decision.rowKey;
+        setFeedPostFilter(null);
+        return;
+      }
+
+      if (decision.action === "open-watch") {
+        handleVideoPress(decision.payload, { preserveFeedOrder: true });
+        return;
+      }
+    },
+    [youtubeLayout, handleVideoPress]
+  );
 
   useEffect(() => {
     const rowKey = pendingScrollRowKeyRef.current;
@@ -3726,7 +3775,7 @@ export default function HomeFeedScreen() {
         visible={searchSheetOpen}
         rows={youtubeLayout ? youtubeStreamRows : stableDisplayRows.length ? stableDisplayRows : displayFeedRows}
         onClose={() => setSearchSheetOpen(false)}
-        onSelectRow={scrollFeedToRow}
+        onSelectRow={handleSearchSelectRow}
       />
 
       {!videoModalPayload ? (

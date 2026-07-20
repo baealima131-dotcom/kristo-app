@@ -122,6 +122,10 @@ import {
   storageKeyFromPublicUrl,
 } from "@/app/api/_lib/media/objectStorage";
 import { reconcileMediaScheduleFeedRowsForChurch } from "@/app/api/_lib/reconcileMediaScheduleFeed";
+import {
+  filterHomeFeedRowsBySearchQuery,
+  parseHomeFeedSearchQueryParam,
+} from "@/app/api/_lib/homeFeedSearch";
 
 export const runtime = "nodejs";
 
@@ -2840,6 +2844,7 @@ async function handleFeedGet(
         ? Math.min(Math.floor(limitParamRaw), 100)
         : 0;
     const pageOffset = Math.max(0, Math.floor(Number(cursorParamRaw) || 0));
+    const searchQueryParse = parseHomeFeedSearchQueryParam(url.searchParams);
 
     if (storageMode === "media" || storageMode === "church") {
       const membershipOrRes = await guard(req);
@@ -3161,9 +3166,28 @@ async function handleFeedGet(
       .slice()
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
-    const totalListRows = listRows.length;
+    // Optional `q`: filter full eligible list before pagination (empty/rejected → unchanged).
+    const searchableRows = searchQueryParse.active
+      ? filterHomeFeedRowsBySearchQuery(listRows, searchQueryParse.normalizedQuery)
+      : listRows;
+    if (searchQueryParse.active || searchQueryParse.rejected) {
+      console.log("KRISTO_FEED_SEARCH_PAGE", {
+        scope: isGlobalFeedScope ? "GLOBAL" : "CHURCH",
+        mediaOnly,
+        active: searchQueryParse.active,
+        rejected: searchQueryParse.rejected,
+        reason: searchQueryParse.reason,
+        normalizedQueryLength: searchQueryParse.normalizedQuery.length,
+        eligibleCount: listRows.length,
+        matchedCount: searchableRows.length,
+        offset: pageOffset,
+        limit: pageLimit,
+      });
+    }
+
+    const totalListRows = searchableRows.length;
     const pageRows =
-      pageLimit > 0 ? listRows.slice(pageOffset, pageOffset + pageLimit) : listRows;
+      pageLimit > 0 ? searchableRows.slice(pageOffset, pageOffset + pageLimit) : searchableRows;
     const nextOffset = pageOffset + (pageLimit > 0 ? pageLimit : pageRows.length);
     const pageHasMore = pageLimit > 0 ? nextOffset < totalListRows : false;
     const pageNextCursor = pageHasMore ? String(nextOffset) : null;
@@ -3211,6 +3235,10 @@ async function handleFeedGet(
         churchId,
         scope: isGlobalFeedScope ? "GLOBAL" : "CHURCH",
         mediaOnly,
+        searchActive: searchQueryParse.active,
+        normalizedQueryLength: searchQueryParse.active
+          ? searchQueryParse.normalizedQuery.length
+          : 0,
         offset: pageOffset,
         limit: pageLimit,
         total: totalListRows,

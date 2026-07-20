@@ -198,7 +198,21 @@ export function filterHomeFeedYoutubeStreamRows(rows: any[]): any[] {
   return rows.filter(isHomeFeedYoutubeVideoMediaRow);
 }
 
+/** Align with backend `normalizeHomeFeedSearchQuery` (trim / lower / collapse spaces). */
+export function normalizeHomeFeedSearchQuery(input: unknown): string {
+  if (input == null || typeof input !== "string") return "";
+  return input.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 export function buildHomeFeedSearchHaystack(item: any): string {
+  const ministryName = String(
+    item?.ministryName ||
+      item?.ministry?.name ||
+      item?.roomName ||
+      item?.ministryTitle ||
+      item?.ministryLabel ||
+      ""
+  ).trim();
   const parts = [
     resolvePostTitle(item),
     resolvePostBody(item),
@@ -207,17 +221,18 @@ export function buildHomeFeedSearchHaystack(item: any): string {
     resolveFeedIdentityHeadline(item),
     resolveFeedPostTypeTitle(item),
     String(item?.authorName || item?.author?.name || ""),
+    ministryName,
   ];
   return parts
-    .map((part) => String(part || "").trim())
+    .map((part) => normalizeHomeFeedSearchQuery(part))
     .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
+    .join(" ");
 }
 
 export function filterHomeFeedRowsBySearchQuery(rows: any[], query: string): any[] {
-  const needle = String(query || "").trim().toLowerCase();
-  if (!needle || !Array.isArray(rows)) return rows;
+  const needle = normalizeHomeFeedSearchQuery(query);
+  if (!needle) return [];
+  if (!Array.isArray(rows)) return [];
   return rows.filter((row) => buildHomeFeedSearchHaystack(row).includes(needle));
 }
 
