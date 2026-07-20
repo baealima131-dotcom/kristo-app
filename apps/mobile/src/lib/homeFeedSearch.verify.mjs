@@ -70,12 +70,18 @@ function parseHomeFeedSearchQueryParam(searchParams) {
   return { normalizedQuery: normalized, active: true, rejected: false, reason: "ok" };
 }
 
-function buildHomeFeedSearchHaystack(item) {
+function resolveTitle(item) {
+  return normalizeHomeFeedSearchQuery(item?.title || item?.postTitle || "");
+}
+
+function resolveCaption(item) {
+  return normalizeHomeFeedSearchQuery(
+    [item?.text, item?.caption, item?.body, item?.description].filter(Boolean).join(" ")
+  );
+}
+
+function resolveMeta(item) {
   const parts = [
-    item?.title,
-    item?.text,
-    item?.caption,
-    item?.body,
     item?.churchName,
     item?.mediaName,
     item?.actorLabel || item?.authorName || item?.churchName,
@@ -90,11 +96,29 @@ function buildHomeFeedSearchHaystack(item) {
     .join(" ");
 }
 
+function rankHomeFeedSearchMatch(item, normalizedQuery) {
+  const needle = normalizeHomeFeedSearchQuery(normalizedQuery);
+  if (!needle) return Number.POSITIVE_INFINITY;
+  const title = resolveTitle(item);
+  if (title && title === needle) return 0;
+  if (title && title.startsWith(needle)) return 1;
+  if (title && title.includes(needle)) return 2;
+  const caption = resolveCaption(item);
+  if (caption && caption.includes(needle)) return 3;
+  const meta = resolveMeta(item);
+  if (meta && meta.includes(needle)) return 4;
+  return Number.POSITIVE_INFINITY;
+}
+
 function filterHomeFeedRowsBySearchQuery(rows, normalizedQuery) {
   const needle = normalizeHomeFeedSearchQuery(normalizedQuery);
   if (!needle) return Array.isArray(rows) ? rows : [];
   if (!Array.isArray(rows)) return [];
-  return rows.filter((row) => buildHomeFeedSearchHaystack(row).includes(needle));
+  return rows
+    .map((row, index) => ({ row, index, rank: rankHomeFeedSearchMatch(row, needle) }))
+    .filter((entry) => Number.isFinite(entry.rank))
+    .sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : a.index - b.index))
+    .map((entry) => entry.row);
 }
 
 function createSearchController() {
@@ -286,7 +310,10 @@ function testSourceWiring() {
   assert.match(searchApiSrc, /KRISTO_HOME_FEED_SEARCH_DECISION/);
   assert.match(searchApiSrc, /resolveHomeFeedSearchSelection/);
   assert.match(searchApiSrc, /buildHomeFeedVideoOpenPayload/);
-  assert.match(searchApiSrc, /preserveFeedOrder|open-watch/);
+  assert.match(searchApiSrc, /preserveFeedOrder:\s*true/);
+  assert.match(searchApiSrc, /action:\s*["']open-watch["']/);
+  assert.doesNotMatch(searchApiSrc, /scroll-in-feed/);
+  assert.match(backendSearchSrc, /rankHomeFeedSearchMatch/);
 
   assert.match(sheetSrc, /HOME_FEED_SEARCH_DEBOUNCE_MS/);
   assert.match(sheetSrc, /fetchHomeFeedVideoSearchPage/);
@@ -300,6 +327,8 @@ function testSourceWiring() {
   assert.match(screenSrc, /preserveFeedOrder:\s*true/);
   assert.match(screenSrc, /options\?\.preserveFeedOrder/);
   assert.match(screenSrc, /onSelectRow=\{handleSearchSelectRow\}/);
+  assert.doesNotMatch(screenSrc, /scroll-in-feed/);
+  assert.match(screenSrc, /reason:\s*decision\.action === ["']open-watch["'] \? ["']open-watch["']/);
 
   assert.match(utilsSrc, /ministryName/);
   assert.match(utilsSrc, /normalizeHomeFeedSearchQuery/);
@@ -327,25 +356,28 @@ function testPaginationUnaffectedPattern() {
 
 function resolveSelection({ selectedRow, feedRows }) {
   const rowKey = String(selectedRow?.id || "").trim();
-  if (!rowKey) return { action: "noop", mutatesPaging: false };
   const inFeed = feedRows.some((r) => String(r?.id || "").trim() === rowKey);
-  if (inFeed) {
-    return { action: "scroll-in-feed", rowKey, mutatesPaging: false, preserveFeedOrder: false };
+  if (!rowKey) {
+    return { action: "noop", inFeed, mutatesPaging: false, preserveFeedOrder: false };
   }
   const canOpen =
     Boolean(selectedRow?.videoUrl || selectedRow?.videoUri) ||
     String(selectedRow?.type || "").toLowerCase() === "video";
-  if (!canOpen) return { action: "noop", rowKey, mutatesPaging: false };
+  if (!canOpen) {
+    return { action: "noop", rowKey, inFeed, mutatesPaging: false, preserveFeedOrder: false };
+  }
   return {
     action: "open-watch",
     rowKey,
+    inFeed,
     mutatesPaging: false,
     preserveFeedOrder: true,
     postId: rowKey,
+    watchPostId: rowKey,
   };
 }
 
-function testInFeedScrolls() {
+function testInFeedOpensWatchDirectly() {
   const feedRows = Array.from({ length: 20 }, (_, i) => ({
     id: `feed_${i}`,
     type: "video",
@@ -353,8 +385,12 @@ function testInFeedScrolls() {
   }));
   const selected = feedRows[3];
   const decision = resolveSelection({ selectedRow: selected, feedRows });
-  assert.equal(decision.action, "scroll-in-feed");
+  assert.equal(decision.action, "open-watch");
+  assert.equal(decision.inFeed, true);
+  assert.equal(decision.preserveFeedOrder, true);
+  assert.equal(decision.watchPostId, selected.id);
   assert.equal(decision.mutatesPaging, false);
+  assert.notEqual(decision.action, "scroll-in-feed");
 }
 
 function testOutsideOpensWatchDirectly() {
@@ -375,9 +411,46 @@ function testOutsideOpensWatchDirectly() {
   };
   const decision = resolveSelection({ selectedRow: selected, feedRows });
   assert.equal(decision.action, "open-watch");
+  assert.equal(decision.inFeed, false);
   assert.equal(decision.postId, "feed_22");
+  assert.equal(decision.watchPostId, "feed_22");
   assert.equal(decision.preserveFeedOrder, true);
   assert.equal(decision.mutatesPaging, false);
+}
+
+function testNoSearchResultUsesScrollInFeed() {
+  assert.doesNotMatch(searchApiSrc, /scroll-in-feed/);
+  assert.doesNotMatch(screenSrc, /scroll-in-feed/);
+  const feedRows = [{ id: "in", type: "video", videoUrl: "https://cdn.example/in.mp4" }];
+  const a = resolveSelection({ selectedRow: feedRows[0], feedRows });
+  const b = resolveSelection({
+    selectedRow: { id: "out", type: "video", videoUrl: "https://cdn.example/out.mp4" },
+    feedRows,
+  });
+  assert.equal(a.action, "open-watch");
+  assert.equal(b.action, "open-watch");
+}
+
+function testTitleRankingOrder() {
+  const rows = [
+    { id: "meta", title: "Other", churchName: "gpt church" },
+    { id: "caption", title: "Other", text: "talk about gpt tools" },
+    { id: "contains", title: "Learning gpt today" },
+    { id: "prefix", title: "gpt workshop" },
+    { id: "exact", title: "gpt" },
+  ];
+  const ranked = filterHomeFeedRowsBySearchQuery(rows, "gpt").map((r) => r.id);
+  assert.deepEqual(ranked, ["exact", "prefix", "contains", "caption", "meta"]);
+}
+
+function testCaptionBelowTitle() {
+  const rows = [
+    { id: "caption-only", title: "Sunday", text: "gpt notes" },
+    { id: "title-hit", title: "gpt sermon", text: "hello" },
+  ];
+  const ranked = filterHomeFeedRowsBySearchQuery(rows, "gpt");
+  assert.equal(ranked[0].id, "title-hit");
+  assert.equal(ranked[1].id, "caption-only");
 }
 
 function testSelectionDoesNotMutatePagingSession() {
@@ -461,8 +534,11 @@ const tests = [
   ["parse query param", testParseQueryParam],
   ["source wiring", testSourceWiring],
   ["pipeline order before pagination", testPaginationUnaffectedPattern],
-  ["in-feed result scrolls", testInFeedScrolls],
+  ["in-feed result opens Watch", testInFeedOpensWatchDirectly],
   ["outside first 20 opens Watch", testOutsideOpensWatchDirectly],
+  ["no scroll-in-feed selection path", testNoSearchResultUsesScrollInFeed],
+  ["title ranking order", testTitleRankingOrder],
+  ["caption ranks below title", testCaptionBelowTitle],
   ["selection does not mutate paging/session", testSelectionDoesNotMutatePagingSession],
   ["stale cannot override selection", testStaleCannotOverrideSelection],
   ["search URL/query encoding", testSearchUrlEncoding],

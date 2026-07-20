@@ -28,9 +28,15 @@ export type HomeFeedSearchDisposition =
   | "skipped";
 
 export type HomeFeedSearchSelectionAction =
-  | { action: "scroll-in-feed"; rowKey: string; row: any }
-  | { action: "open-watch"; rowKey: string; row: any; payload: HomeFeedVideoOpenPayload }
-  | { action: "noop"; rowKey: string; reason: string };
+  | {
+      action: "open-watch";
+      rowKey: string;
+      row: any;
+      payload: HomeFeedVideoOpenPayload;
+      inFeed: boolean;
+      preserveFeedOrder: true;
+    }
+  | { action: "noop"; rowKey: string; reason: string; inFeed: boolean; preserveFeedOrder: false };
 
 export function homeFeedSearchRowKey(row: any): string {
   return feedRenderKey(row) || String(row?.id || "").trim();
@@ -43,7 +49,8 @@ export function isHomeFeedSearchRowInFeed(row: any, feedRows: any[]): boolean {
 }
 
 /**
- * In-feed → scroll/select. Outside loaded feed → open Watch via payload (no feed inject).
+ * Every search result opens Watch on the exact selected video.
+ * Never scrolls the Home Feed. Never mutates paging/session/order.
  */
 export function resolveHomeFeedSearchSelection(args: {
   selectedRow: any;
@@ -51,17 +58,29 @@ export function resolveHomeFeedSearchSelection(args: {
 }): HomeFeedSearchSelectionAction {
   const row = args.selectedRow;
   const rowKey = homeFeedSearchRowKey(row);
-  if (!rowKey) return { action: "noop", rowKey: "", reason: "missing-row-key" };
-
-  if (isHomeFeedSearchRowInFeed(row, args.feedRows)) {
-    return { action: "scroll-in-feed", rowKey, row };
+  const inFeed = isHomeFeedSearchRowInFeed(row, args.feedRows);
+  if (!rowKey) {
+    return { action: "noop", rowKey: "", reason: "missing-row-key", inFeed, preserveFeedOrder: false };
   }
 
   const payload = buildHomeFeedVideoOpenPayload(row);
   if (!payload) {
-    return { action: "noop", rowKey, reason: "missing-watch-payload" };
+    return {
+      action: "noop",
+      rowKey,
+      reason: "missing-watch-payload",
+      inFeed,
+      preserveFeedOrder: false,
+    };
   }
-  return { action: "open-watch", rowKey, row, payload };
+  return {
+    action: "open-watch",
+    rowKey,
+    row,
+    payload,
+    inFeed,
+    preserveFeedOrder: true,
+  };
 }
 
 /** Build search query string with safe URL encoding for `q`. */

@@ -3222,7 +3222,7 @@ export default function HomeFeedScreen() {
       const decision = resolveHomeFeedSearchSelection({ selectedRow: row, feedRows });
 
       console.log("KRISTO_HOME_FEED_SEARCH_DECISION", {
-        reason: decision.action,
+        reason: decision.action === "open-watch" ? "open-watch" : decision.reason,
         generation: null,
         disposition: decision.action,
         staleIgnored: false,
@@ -3231,23 +3231,18 @@ export default function HomeFeedScreen() {
         total: null,
         hasMore: false,
         normalizedQueryLength: null,
-        inFeed: decision.action === "scroll-in-feed",
-        preserveFeedOrder: decision.action === "open-watch",
+        inFeed: decision.inFeed,
+        preserveFeedOrder: decision.preserveFeedOrder,
       });
 
-      // Close search first so pending debounce/generation cannot replace Watch later.
+      if (decision.action !== "open-watch") {
+        setSearchSheetOpen(false);
+        return;
+      }
+
+      // Open Watch first with exact selected payload, then close search (no feed mutate).
+      handleVideoPress(decision.payload, { preserveFeedOrder: true });
       setSearchSheetOpen(false);
-
-      if (decision.action === "scroll-in-feed") {
-        pendingScrollRowKeyRef.current = decision.rowKey;
-        setFeedPostFilter(null);
-        return;
-      }
-
-      if (decision.action === "open-watch") {
-        handleVideoPress(decision.payload, { preserveFeedOrder: true });
-        return;
-      }
     },
     [youtubeLayout, handleVideoPress]
   );

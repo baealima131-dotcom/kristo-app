@@ -1,5 +1,5 @@
 /**
- * Home Feed video search helpers (PII-safe, substring match).
+ * Home Feed video search helpers (PII-safe, substring match + title-first ranking).
  * Applied after eligibility filters and before pagination.
  */
 
@@ -58,8 +58,19 @@ function fieldText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
-/** Logical haystack aligned with mobile Home Feed search (+ ministry name). */
-export function buildHomeFeedSearchHaystack(item: any): string {
+export function resolveHomeFeedSearchTitle(item: any): string {
+  return normalizeHomeFeedSearchQuery(
+    item?.title || item?.postTitle || item?.name || item?.heading || ""
+  );
+}
+
+export function resolveHomeFeedSearchCaption(item: any): string {
+  return normalizeHomeFeedSearchQuery(
+    [item?.text, item?.caption, item?.body, item?.description].filter(Boolean).join(" ")
+  );
+}
+
+function resolveHomeFeedSearchMetaHaystack(item: any): string {
   if (!item || typeof item !== "object") return "";
 
   const postTypeTitle = (() => {
@@ -82,11 +93,6 @@ export function buildHomeFeedSearchHaystack(item: any): string {
   );
 
   const parts = [
-    item?.title,
-    item?.text,
-    item?.caption,
-    item?.body,
-    item?.description,
     item?.churchName,
     item?.churchLabel,
     item?.mediaName,
@@ -108,15 +114,55 @@ export function buildHomeFeedSearchHaystack(item: any): string {
     .join(" ");
 }
 
+/** Logical haystack aligned with mobile Home Feed search (+ ministry name). */
+export function buildHomeFeedSearchHaystack(item: any): string {
+  if (!item || typeof item !== "object") return "";
+  return [
+    resolveHomeFeedSearchTitle(item),
+    resolveHomeFeedSearchCaption(item),
+    resolveHomeFeedSearchMetaHaystack(item),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/**
+ * Lower rank = higher priority.
+ * 0 exact title, 1 title prefix, 2 title contains, 3 caption/body, 4 meta fields.
+ */
+export function rankHomeFeedSearchMatch(item: any, normalizedQuery: string): number {
+  const needle = normalizeHomeFeedSearchQuery(normalizedQuery);
+  if (!needle) return Number.POSITIVE_INFINITY;
+
+  const title = resolveHomeFeedSearchTitle(item);
+  if (title && title === needle) return 0;
+  if (title && title.startsWith(needle)) return 1;
+  if (title && title.includes(needle)) return 2;
+
+  const caption = resolveHomeFeedSearchCaption(item);
+  if (caption && caption.includes(needle)) return 3;
+
+  const meta = resolveHomeFeedSearchMetaHaystack(item);
+  if (meta && meta.includes(needle)) return 4;
+
+  return Number.POSITIVE_INFINITY;
+}
+
 export function homeFeedItemMatchesSearchQuery(item: any, normalizedQuery: string): boolean {
   const needle = normalizeHomeFeedSearchQuery(normalizedQuery);
   if (!needle) return true;
-  return buildHomeFeedSearchHaystack(item).includes(needle);
+  return Number.isFinite(rankHomeFeedSearchMatch(item, needle));
 }
 
+/** Filter matches, then title-first ranking (stable within equal ranks). */
 export function filterHomeFeedRowsBySearchQuery<T>(rows: T[], normalizedQuery: string): T[] {
   const needle = normalizeHomeFeedSearchQuery(normalizedQuery);
   if (!needle) return Array.isArray(rows) ? rows : [];
   if (!Array.isArray(rows)) return [];
-  return rows.filter((row) => homeFeedItemMatchesSearchQuery(row, needle));
+
+  return rows
+    .map((row, index) => ({ row, index, rank: rankHomeFeedSearchMatch(row, needle) }))
+    .filter((entry) => Number.isFinite(entry.rank))
+    .sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : a.index - b.index))
+    .map((entry) => entry.row);
 }
