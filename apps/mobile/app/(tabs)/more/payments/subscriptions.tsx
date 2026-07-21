@@ -414,6 +414,165 @@ function PrimaryCta({
   );
 }
 
+/**
+ * iOS-only Monthly Plan offer — presentation polish only.
+ * Trial vs paid copy is supplied by existing eligibility props; no purchase logic here.
+ */
+function IosMonthlyPlanOfferCard({
+  planName,
+  description,
+  displayPrice,
+  showTrial,
+  trialHeadline,
+  trialThenLabel,
+  trialBadge,
+  ctaLabel,
+  onPress,
+  loading,
+}: {
+  planName: string;
+  description: string;
+  displayPrice: string;
+  showTrial: boolean;
+  trialHeadline?: string | null;
+  trialThenLabel?: string | null;
+  trialBadge?: string | null;
+  ctaLabel: string;
+  onPress: () => void;
+  loading?: boolean;
+}) {
+  const priceAccessibilityLabel = showTrial
+    ? `${trialHeadline || "Free trial"}. ${trialThenLabel || `Then ${displayPrice} per month`}`.trim()
+    : `${displayPrice} per month`;
+
+  return (
+    <View style={s.iosMonthlyOuter}>
+      <LinearGradient
+        colors={[
+          "rgba(214,190,130,0.16)",
+          "rgba(255,255,255,0.05)",
+          "rgba(12,16,28,0.94)",
+          "rgba(8,11,20,0.98)",
+        ]}
+        locations={[0, 0.18, 0.55, 1]}
+        start={{ x: 0.05, y: 0 }}
+        end={{ x: 0.95, y: 1 }}
+        style={s.iosMonthlyCard}
+      >
+        <View pointerEvents="none" style={s.iosMonthlyTopGloss} />
+        <View pointerEvents="none" style={s.iosMonthlySheen} />
+        <View pointerEvents="none" style={s.iosMonthlyInnerBorder} />
+
+        {trialBadge ? (
+          <View style={s.iosMonthlyBadgeRow}>
+            <StatusChip label={trialBadge} tone="green" />
+          </View>
+        ) : null}
+
+        <View style={s.iosMonthlyTopRow}>
+          <View style={s.iosMonthlyLeft}>
+            <View style={s.iosMonthlyIconTile}>
+              <LinearGradient
+                colors={["rgba(232,212,168,0.22)", "rgba(196,171,114,0.08)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={s.iosMonthlyIconTileFill}
+              >
+                <Ionicons name="calendar-outline" size={20} color="rgba(232,212,168,0.98)" />
+              </LinearGradient>
+            </View>
+            <View style={s.iosMonthlyCopy}>
+              <Text style={s.iosMonthlyTitle} numberOfLines={1}>
+                {planName}
+              </Text>
+              <Text style={s.iosMonthlySubtitle} numberOfLines={2}>
+                {description}
+              </Text>
+            </View>
+          </View>
+
+          <View
+            style={s.iosMonthlyPriceCol}
+            accessible
+            accessibilityLabel={priceAccessibilityLabel}
+          >
+            {showTrial ? (
+              <>
+                <Text
+                  style={s.iosMonthlyTrialPrice}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.82}
+                >
+                  {trialHeadline}
+                </Text>
+                <Text
+                  style={s.iosMonthlyTrialThen}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.85}
+                >
+                  Then {displayPrice}
+                </Text>
+                <Text style={s.iosMonthlyPeriod} numberOfLines={1}>
+                  per month
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text
+                  style={s.iosMonthlyPrice}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.85}
+                >
+                  {displayPrice}
+                </Text>
+                <Text style={s.iosMonthlyPeriod} numberOfLines={1}>
+                  per month
+                </Text>
+              </>
+            )}
+          </View>
+        </View>
+
+        <Pressable
+          onPress={onPress}
+          disabled={loading}
+          accessibilityRole="button"
+          accessibilityLabel={ctaLabel}
+          accessibilityState={{ disabled: !!loading, busy: !!loading }}
+          style={({ pressed }) => [
+            s.iosMonthlyCtaOuter,
+            pressed ? s.iosMonthlyCtaPressed : null,
+            loading ? s.ctaDisabled : null,
+          ]}
+        >
+          <LinearGradient
+            colors={["#F0E0B8", "#D4B878", "#B89858"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={s.iosMonthlyCtaGradient}
+          >
+            <View pointerEvents="none" style={s.iosMonthlyCtaTopHighlight} />
+            {loading ? (
+              <ActivityIndicator color="#1A1610" size="small" />
+            ) : (
+              <Text
+                style={s.iosMonthlyCtaText}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.88}
+              >
+                {ctaLabel}
+              </Text>
+            )}
+          </LinearGradient>
+        </Pressable>
+      </LinearGradient>
+    </View>
+  );
+}
 function CompactSecondaryCta({
   label,
   onPress,
@@ -2140,18 +2299,35 @@ export default function PaymentsSubscriptionsScreen() {
                     ? "Unlock Media Premium for your church"
                     : "Premium ministries live access"}
                 </Text>
-                <PlanOfferCard
-                  icon="calendar-outline"
-                  planName="Monthly Plan"
-                  description="Flexible monthly billing"
-                  price={monthlyPriceText}
-                  period=""
-                  subPrice={monthlySubPriceText}
-                  trialBadge={monthlyTrialBadge}
-                  ctaLabel={monthlyCtaLabel}
-                  onPress={() => handlePurchasePlan("monthly")}
-                  loading={monthlyPurchaseLoading}
-                />
+                {Platform.OS === "ios" ? (
+                  <IosMonthlyPlanOfferCard
+                    planName="Monthly Plan"
+                    description="Flexible monthly billing"
+                    displayPrice={monthlyDisplayPrice}
+                    showTrial={showMonthlyFreeTrial}
+                    trialHeadline={
+                      showMonthlyFreeTrial ? `${monthlyTrialDays} Days Free` : null
+                    }
+                    trialThenLabel={monthlySubPriceText}
+                    trialBadge={monthlyTrialBadge}
+                    ctaLabel={monthlyCtaLabel}
+                    onPress={() => handlePurchasePlan("monthly")}
+                    loading={monthlyPurchaseLoading}
+                  />
+                ) : (
+                  <PlanOfferCard
+                    icon="calendar-outline"
+                    planName="Monthly Plan"
+                    description="Flexible monthly billing"
+                    price={monthlyPriceText}
+                    period=""
+                    subPrice={monthlySubPriceText}
+                    trialBadge={monthlyTrialBadge}
+                    ctaLabel={monthlyCtaLabel}
+                    onPress={() => handlePurchasePlan("monthly")}
+                    loading={monthlyPurchaseLoading}
+                  />
+                )}
                 {Platform.OS !== "ios" ? (
                   <PlanOfferCard
                     icon="diamond-outline"
@@ -2579,6 +2755,199 @@ const s = StyleSheet.create({
     fontSize: 15,
     fontWeight: "900",
     letterSpacing: -0.1,
+  },
+
+  iosMonthlyOuter: {
+    borderRadius: 24,
+    shadowColor: "rgba(196,171,114,0.55)",
+    shadowOpacity: 0.28,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+
+  iosMonthlyCard: {
+    borderRadius: 24,
+    paddingTop: 16,
+    paddingBottom: 14,
+    paddingHorizontal: 18,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(214,190,130,0.34)",
+    gap: 12,
+  },
+
+  iosMonthlyTopGloss: {
+    position: "absolute",
+    top: 0,
+    left: 18,
+    right: 18,
+    height: 1.5,
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
+
+  iosMonthlySheen: {
+    position: "absolute",
+    top: -40,
+    right: -30,
+    width: 160,
+    height: 160,
+    borderRadius: 999,
+    backgroundColor: "rgba(232,212,168,0.07)",
+  },
+
+  iosMonthlyInnerBorder: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+
+  iosMonthlyBadgeRow: {
+    marginBottom: -2,
+  },
+
+  iosMonthlyTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingTop: 2,
+  },
+
+  iosMonthlyLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    minWidth: 0,
+  },
+
+  iosMonthlyIconTile: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(214,190,130,0.36)",
+    shadowColor: "rgba(196,171,114,0.4)",
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+  },
+
+  iosMonthlyIconTileFill: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(18,22,34,0.55)",
+  },
+
+  iosMonthlyCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+    paddingTop: 2,
+  },
+
+  iosMonthlyTitle: {
+    color: "#FFFFFF",
+    fontSize: 19,
+    fontWeight: "800",
+    letterSpacing: -0.4,
+    lineHeight: 23,
+  },
+
+  iosMonthlySubtitle: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 16,
+  },
+
+  iosMonthlyPriceCol: {
+    alignItems: "flex-end",
+    justifyContent: "flex-start",
+    flexShrink: 0,
+    maxWidth: "40%",
+    minWidth: 96,
+    paddingTop: 1,
+    gap: 2,
+  },
+
+  iosMonthlyPrice: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "900",
+    letterSpacing: -0.6,
+    lineHeight: 26,
+    textAlign: "right",
+    width: "100%",
+  },
+
+  iosMonthlyPeriod: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.1,
+    lineHeight: 15,
+    textAlign: "right",
+  },
+
+  iosMonthlyTrialPrice: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: -0.35,
+    lineHeight: 20,
+    textAlign: "right",
+    width: "100%",
+  },
+
+  iosMonthlyTrialThen: {
+    color: "rgba(232,212,168,0.95)",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 15,
+    textAlign: "right",
+    width: "100%",
+  },
+
+  iosMonthlyCtaOuter: {
+    marginTop: 2,
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(240,224,184,0.35)",
+  },
+
+  iosMonthlyCtaGradient: {
+    minHeight: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    overflow: "hidden",
+  },
+
+  iosMonthlyCtaTopHighlight: {
+    position: "absolute",
+    top: 0,
+    left: 12,
+    right: 12,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.45)",
+  },
+
+  iosMonthlyCtaText: {
+    color: "#1A1610",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: -0.2,
+  },
+
+  iosMonthlyCtaPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
   },
 
   compactSecondaryCta: {
