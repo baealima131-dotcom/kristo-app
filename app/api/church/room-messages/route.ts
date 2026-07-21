@@ -567,7 +567,11 @@ export async function POST(req: Request) {
       );
     }
 
-    if (!appointmentMessage) {
+    const hasVoiceNotes =
+      Array.isArray(card?.voiceNotes) &&
+      card.voiceNotes.length > 0;
+
+    if (!appointmentMessage && !hasVoiceNotes) {
       return NextResponse.json(
         {
           ok: false,
@@ -598,20 +602,6 @@ export async function POST(req: Request) {
           error: "Invalid appointment requester.",
         },
         { status: 403 }
-      );
-    }
-
-    if (
-      Array.isArray(card?.voiceNotes) &&
-      card.voiceNotes.length > 0
-    ) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error:
-            "Voice appointment requests are not enabled yet.",
-        },
-        { status: 400 }
       );
     }
   }
