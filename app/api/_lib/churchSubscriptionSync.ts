@@ -13,6 +13,7 @@ import {
   ensureSubscriptionOwnershipLockFromActiveMediaProfile,
   upsertSubscriptionOwnershipLockAfterAppStoreActivation,
 } from "@/app/api/_lib/subscriptionOwnershipLock";
+import { confirmIosPremiumReservationAfterPurchase } from "@/app/api/_lib/iosPremiumProductAssignment";
 import { verifyChurchPremiumEntitlement, isVerifiedChurchPremiumReason } from "@/app/api/_lib/revenuecat";
 import {
   buildSyncDiagnostics,
@@ -501,6 +502,19 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
         subscriptionPlan: resolvedPlan,
         expiresAtMs,
       });
+      try {
+        await confirmIosPremiumReservationAfterPurchase({
+          churchId,
+          ownerUserId,
+          verification,
+        });
+      } catch (confirmError: any) {
+        console.log("KRISTO_IOS_PREMIUM_RESERVATION_CONFIRM_FAILED", {
+          churchId,
+          ownerUserId,
+          message: String(confirmError?.message || confirmError),
+        });
+      }
     }
   }
 

@@ -19,10 +19,10 @@
   },
   "subscriptionGroups" : [
     {
-      "id" : "A4F8C2E1",
+      "id" : "LEGACYPREM1",
       "localizations" : [
         {
-          "description" : "Kristo church premium subscriptions.",
+          "description" : "Kristo church premium — primary monthly group.",
           "displayName" : "Kristo Premium",
           "locale" : "en_US"
         }
@@ -39,10 +39,10 @@
           "displayPrice" : "49.99",
           "familyShareable" : false,
           "groupNumber" : 1,
-          "internalID" : "M0N7H3L9",
+          "internalID" : "LEGACYMON1",
           "introductoryOffer" : {
             "displayPrice" : "0",
-            "internalID" : "M0N7H3L9_INTRO",
+            "internalID" : "LEGACYMON1_INTRO",
             "numberOfPeriods" : 1,
             "paymentMode" : "free",
             "subscriptionPeriod" : "P14D"
@@ -57,9 +57,22 @@
           "productID" : "premium_monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "Premium Monthly",
-          "subscriptionGroupID" : "A4F8C2E1",
+          "subscriptionGroupID" : "LEGACYPREM1",
           "type" : "RecurringSubscription"
-        },
+        }
+      ]
+    },
+    {
+      "id" : "G2A8C2E1",
+      "localizations" : [
+        {
+          "description" : "Kristo church premium — rotation group G2.",
+          "displayName" : "Kristo Premium G2",
+          "locale" : "en_US"
+        }
+      ],
+      "name" : "Kristo Premium G2",
+      "subscriptions" : [
         {
           "adHocOffers" : [
 
@@ -67,22 +80,132 @@
           "codeOffers" : [
 
           ],
-          "displayPrice" : "499.99",
+          "displayPrice" : "49.99",
           "familyShareable" : false,
-          "groupNumber" : 2,
-          "internalID" : "Y3A5R8K2",
-          "introductoryOffer" : null,
+          "groupNumber" : 1,
+          "internalID" : "G2M0N7H3",
           "localizations" : [
             {
-              "description" : "Kristo church premium yearly access.",
-              "displayName" : "Premium Yearly",
+              "description" : "Kristo church premium monthly access (G2).",
+              "displayName" : "Premium Monthly G2",
               "locale" : "en_US"
             }
           ],
-          "productID" : "premium_yearly",
-          "recurringSubscriptionPeriod" : "P1Y",
-          "referenceName" : "Premium Yearly",
-          "subscriptionGroupID" : "A4F8C2E1",
+          "productID" : "church_premium_monthly_g2",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Premium Monthly G2",
+          "subscriptionGroupID" : "G2A8C2E1",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    },
+    {
+      "id" : "G3B9D3F2",
+      "localizations" : [
+        {
+          "description" : "Kristo church premium — rotation group G3.",
+          "displayName" : "Kristo Premium G3",
+          "locale" : "en_US"
+        }
+      ],
+      "name" : "Kristo Premium G3",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "49.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "G3M1N8H4",
+          "localizations" : [
+            {
+              "description" : "Kristo church premium monthly access (G3).",
+              "displayName" : "Premium Monthly G3",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "church_premium_monthly_g3",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Premium Monthly G3",
+          "subscriptionGroupID" : "G3B9D3F2",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    },
+    {
+      "id" : "G4C0E4G3",
+      "localizations" : [
+        {
+          "description" : "Kristo church premium — rotation group G4.",
+          "displayName" : "Kristo Premium G4",
+          "locale" : "en_US"
+        }
+      ],
+      "name" : "Kristo Premium G4",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "49.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "G4M2N9H5",
+          "localizations" : [
+            {
+              "description" : "Kristo church premium monthly access (G4).",
+              "displayName" : "Premium Monthly G4",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "church_premium_monthly_g4",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Premium Monthly G4",
+          "subscriptionGroupID" : "G4C0E4G3",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    },
+    {
+      "id" : "G5D1F5H4",
+      "localizations" : [
+        {
+          "description" : "Kristo church premium — rotation group G5.",
+          "displayName" : "Kristo Premium G5",
+          "locale" : "en_US"
+        }
+      ],
+      "name" : "Kristo Premium G5",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "49.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "G5M3N0H6",
+          "localizations" : [
+            {
+              "description" : "Kristo church premium monthly access (G5).",
+              "displayName" : "Premium Monthly G5",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "church_premium_monthly_g5",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Premium Monthly G5",
+          "subscriptionGroupID" : "G5D1F5H4",
           "type" : "RecurringSubscription"
         }
       ]

@@ -25,6 +25,8 @@ export type ChurchMediaProfile = {
   subscriptionExpiresAt?: number;
   subscriptionSource?: "app_store" | "stripe" | "offline_activation" | "backend_activation";
   subscriptionActivatedAt?: number;
+  /** Sticky iOS rotating App Store product (church_premium_monthly_g2…g5). */
+  iosPremiumProductId?: string;
   offlineActivationCode?: string;
   offlineActivationBatchId?: string;
   createdAt: number;

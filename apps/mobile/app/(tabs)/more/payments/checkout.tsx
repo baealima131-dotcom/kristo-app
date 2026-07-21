@@ -51,8 +51,12 @@ import {
   resolveSubscriptionPackagesUnavailableMessage,
   monthlyPackageHasIntroOffer,
   purchaseSubscriptionPackage,
+  purchaseSubscriptionProductId,
   resolveMonthlyPackage,
   resolveYearlyPackage,
+  collectDeviceOwnedPremiumProductIds,
+  getOrCreateDevicePurchaseScope,
+  getOrCreateIosPurchaseSessionId,
   describeCurrentOfferingPackages,
   logMonthlyIntroOfferFromStoreKit,
   setRevenueCatDebugRouteEnabled,
@@ -63,9 +67,16 @@ import {
   EXISTING_STORE_SUBSCRIPTION_SYNC_MESSAGE,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
+  IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
+  PREMIUM_MONTHLY_PRODUCT_ID,
+  isIosPremiumRotationMonthlyProductId,
+} from "../../../../src/lib/payments/churchPremiumRevenueCat";
+import {
   isPastorSessionRole,
   syncChurchSubscriptionAfterPurchase,
   fetchChurchMediaPremiumServerStatus,
+  fetchChurchPurchaseProductAssignment,
+  releaseChurchPurchaseProductReservation,
   logChurchSubscriptionContext,
   recoverChurchSubscriptionFromExistingStore,
   resolvePrepurchaseOwnershipGateUiAction,
@@ -138,6 +149,12 @@ export default function PaymentsCheckoutScreen() {
   const [paymentsState, setPaymentsState] = useState(() => getPaymentsState());
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
+  const [assignedMonthlyProductId, setAssignedMonthlyProductId] = useState<string | null>(null);
+  const [activeReservationId, setActiveReservationId] = useState<string | null>(null);
+  const [purchaseSessionId, setPurchaseSessionId] = useState<string | null>(null);
+  /** Session-accumulated Apple already-owned G2–G5 IDs (CustomerInfo can lag). */
+  const [sessionBlockedProductIds, setSessionBlockedProductIds] = useState<string[]>([]);
+  const [alreadyOwnedRecoveryCount, setAlreadyOwnedRecoveryCount] = useState(0);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const [monthlyIntroEligibility, setMonthlyIntroEligibility] =
     useState<INTRO_ELIGIBILITY_STATUS | null>(null);
@@ -176,10 +193,13 @@ export default function PaymentsCheckoutScreen() {
   );
 
   const paramPlan = params.plan;
+  // iOS checkout is monthly-only for new purchases; legacy yearly access still shows via customerInfo.
   const safePlan: SubscriptionPlanKey =
-    paramPlan === "monthly" || paramPlan === "yearly"
-      ? paramPlan
-      : paymentsState.subscriptions.selectedPlan;
+    Platform.OS === "ios"
+      ? "monthly"
+      : paramPlan === "monthly" || paramPlan === "yearly"
+        ? paramPlan
+        : paymentsState.subscriptions.selectedPlan;
 
   const sessionRole = String(
     (session as any)?.role || (session as any)?.churchRole || ""
@@ -334,14 +354,47 @@ export default function PaymentsCheckoutScreen() {
           throw new Error("RevenueCat is not configured yet.");
         }
 
+        const devicePurchaseScope = await getOrCreateDevicePurchaseScope();
+        const sessionId = await getOrCreateIosPurchaseSessionId(churchId);
+        const assignment = await fetchChurchPurchaseProductAssignment({
+          churchId,
+          platform: Platform.OS === "android" ? "android" : "ios",
+          headers,
+          devicePurchaseScope,
+          purchaseSessionId: sessionId,
+          deviceOwnedProductIds: [
+            ...new Set([
+              ...collectDeviceOwnedPremiumProductIds(configuredCustomerInfo),
+              ...sessionBlockedProductIds,
+            ]),
+          ],
+        });
+        const preferredMonthlyProductId = String(
+          assignment?.monthlyProductId || assignment?.productId || ""
+        ).trim();
+
         const offerings = await getSubscriptionOfferings();
-        const monthly = resolveMonthlyPackage(offerings);
-        const yearly = resolveYearlyPackage(offerings);
+        const monthly = resolveMonthlyPackage(offerings, preferredMonthlyProductId || null);
+        const yearly =
+          Platform.OS === "ios"
+            ? null
+            : resolveYearlyPackage(
+                offerings,
+                Platform.OS === "android" ? assignment?.yearlyProductId || null : null
+              );
 
         if (!didLogCheckoutPackagesRef.current) {
           console.log(
             "RevenueCat checkout packages:\n" + describeCurrentOfferingPackages(offerings)
           );
+          console.log("KRISTO_CHECKOUT_ASSIGNED_PRODUCT", {
+            churchId,
+            preferredMonthlyProductId: preferredMonthlyProductId || null,
+            monthlyResolved: monthly?.product.identifier || null,
+            group: assignment?.group ?? null,
+            reservationId: assignment?.reservationId ?? null,
+            coordination: assignment?.coordination ?? null,
+          });
           didLogCheckoutPackagesRef.current = true;
         }
 
@@ -362,6 +415,11 @@ export default function PaymentsCheckoutScreen() {
         setSubscriptionStatusSource(server.subscriptionSource ?? null);
         setSubscriptionOwnershipLock(server.subscriptionOwnershipLock);
         setLockStatusKnown(server.lockStatusKnown === true);
+        if (preferredMonthlyProductId) setAssignedMonthlyProductId(preferredMonthlyProductId);
+        if (assignment?.reservationId) setActiveReservationId(assignment.reservationId);
+        if (assignment?.purchaseSessionId || sessionId) {
+          setPurchaseSessionId(assignment?.purchaseSessionId || sessionId);
+        }
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         setCustomerInfo(info);
@@ -382,7 +440,9 @@ export default function PaymentsCheckoutScreen() {
         });
 
         try {
-          const introEligibility = await fetchMonthlyIntroTrialEligibility();
+          const introEligibility = await fetchMonthlyIntroTrialEligibility(
+            monthly?.product.identifier || preferredMonthlyProductId || null
+          );
           if (!alive) return;
           setMonthlyIntroEligibility(introEligibility);
         } catch {
@@ -391,7 +451,11 @@ export default function PaymentsCheckoutScreen() {
         }
 
         const planPackage = safePlan === "monthly" ? monthly : yearly;
-        if (!planPackage && !hasPremiumEntitlement(info)) {
+        if (
+          !planPackage &&
+          !(safePlan === "monthly" && preferredMonthlyProductId) &&
+          !hasPremiumEntitlement(info)
+        ) {
           setPackagesError(resolveSubscriptionPackagesLoadingMessage());
         }
       } catch (error: any) {
@@ -432,6 +496,20 @@ export default function PaymentsCheckoutScreen() {
   const monthlyTrialEligible =
     safePlan === "monthly" &&
     resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
+  const assignedProductId = String(
+    assignedMonthlyProductId || monthlyPackage?.product.identifier || ""
+  ).trim();
+  const selectedProductHasOwnIntro = monthlyPackageHasIntroOffer(monthlyPackage);
+  const iosAllowsTrialWording =
+    Platform.OS !== "ios" ||
+    assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID ||
+    (isIosPremiumRotationMonthlyProductId(assignedProductId) && selectedProductHasOwnIntro);
+  const showMonthlyFreeTrial =
+    safePlan === "monthly" &&
+    !isSubscribedForCurrentChurch &&
+    monthlyTrialEligible &&
+    selectedProductHasOwnIntro &&
+    iosAllowsTrialWording;
   const ownershipLockBlocksPurchase =
     isSubscriptionOwnershipLockBlockingPurchase(subscriptionOwnershipLock);
   const failClosedSubscriptionPurchase = shouldFailClosedSubscriptionPurchase({
@@ -459,21 +537,24 @@ export default function PaymentsCheckoutScreen() {
 
   const priceLine = useMemo(() => {
     if (displayPlan === "monthly") {
-      return formatMonthlySubscriptionPrice(livePrice, monthlyPackage, monthlyTrialEligible);
+      return formatMonthlySubscriptionPrice(livePrice, monthlyPackage, showMonthlyFreeTrial);
     }
     return formatYearlySubscriptionPrice(livePrice, displayPackage);
-  }, [displayPlan, livePrice, monthlyTrialEligible, monthlyPackage, displayPackage]);
+  }, [displayPlan, livePrice, showMonthlyFreeTrial, monthlyPackage, displayPackage]);
 
   const confirmLabel =
     safePlan === "monthly"
-      ? monthlyTrialEligible
+      ? showMonthlyFreeTrial
         ? "Start 14-Day Free Trial"
         : "Subscribe Monthly"
       : "Subscribe Yearly";
   const revenueCatErrorCode = extractRevenueCatErrorCode(packagesError);
   const hasMonthlyPackage = Boolean(monthlyPackage);
-  const hasOfferings = Boolean(monthlyPackage || yearlyPackage);
-  const hasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
+  const hasOfferings =
+    Platform.OS === "ios"
+      ? Boolean(monthlyPackage || assignedMonthlyProductId)
+      : Boolean(monthlyPackage || yearlyPackage);
+  const hasIntroOffer = selectedProductHasOwnIntro;
 
   useEffect(() => {
     if (Platform.OS !== "ios") return;
@@ -481,7 +562,7 @@ export default function PaymentsCheckoutScreen() {
     if (isSubscribedForCurrentChurch) return;
 
     let reasonTrialHidden: string | null = null;
-    if (!monthlyTrialEligible) {
+    if (!showMonthlyFreeTrial) {
       if (!hasMonthlyPackage) {
         reasonTrialHidden =
           revenueCatErrorCode != null
@@ -489,6 +570,19 @@ export default function PaymentsCheckoutScreen() {
             : "missing-package";
       } else if (!hasIntroOffer) {
         reasonTrialHidden = "missing-intro-offer";
+      } else if (
+        Platform.OS === "ios" &&
+        assignedProductId &&
+        assignedProductId !== PREMIUM_MONTHLY_PRODUCT_ID &&
+        !isIosPremiumRotationMonthlyProductId(assignedProductId)
+      ) {
+        reasonTrialHidden = "assigned-product-not-trial-slot";
+      } else if (
+        Platform.OS === "ios" &&
+        isIosPremiumRotationMonthlyProductId(assignedProductId) &&
+        !hasIntroOffer
+      ) {
+        reasonTrialHidden = "rotation-product-no-own-intro-offer";
       } else if (
         monthlyIntroEligibility ===
         INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_INELIGIBLE
@@ -516,7 +610,8 @@ export default function PaymentsCheckoutScreen() {
   }, [
     safePlan,
     isSubscribedForCurrentChurch,
-    monthlyTrialEligible,
+    showMonthlyFreeTrial,
+    assignedProductId,
     hasMonthlyPackage,
     hasOfferings,
     revenueCatErrorCode,
@@ -532,7 +627,7 @@ export default function PaymentsCheckoutScreen() {
     if (isSubscribedForCurrentChurch) return;
 
     const hasIntroOfferConfigured = monthlyPackageHasIntroOffer(monthlyPackage);
-    if (!hasIntroOfferConfigured || !monthlyTrialEligible) return;
+    if (!hasIntroOfferConfigured || !showMonthlyFreeTrial) return;
 
     console.log("KRISTO_IOS_MONTHLY_TRIAL_ELIGIBLE", {
       productId: monthlyPackage.product.identifier || null,
@@ -545,7 +640,7 @@ export default function PaymentsCheckoutScreen() {
     safePlan,
     monthlyPackage,
     isSubscribedForCurrentChurch,
-    monthlyTrialEligible,
+    showMonthlyFreeTrial,
     monthlyIntroEligibility,
   ]);
 
@@ -553,7 +648,8 @@ export default function PaymentsCheckoutScreen() {
     if (Platform.OS !== "ios") return;
     if (safePlan !== "monthly") return;
     if (loadingPackages || isSubscribedForCurrentChurch) return;
-    if (monthlyTrialEligible) return;
+    if (showMonthlyFreeTrial) return;
+    if (assignedProductId !== PREMIUM_MONTHLY_PRODUCT_ID) return;
 
     const hasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
     if (hasIntroOffer) return;
@@ -565,13 +661,14 @@ export default function PaymentsCheckoutScreen() {
       expectedTrial: "14-day free trial",
       expectedPostTrialPrice: "$49.99/month",
       action:
-        "Configure an introductory free trial for premium_monthly in App Store Connect and attach it to the active RevenueCat offering.",
+        "Configure an introductory free trial for premium_monthly in App Store Connect and attach it to a RevenueCat offering.",
     });
   }, [
     safePlan,
     loadingPackages,
     isSubscribedForCurrentChurch,
-    monthlyTrialEligible,
+    showMonthlyFreeTrial,
+    assignedProductId,
     monthlyPackage,
     monthlyIntroEligibility,
     checkoutChurchId,
@@ -700,7 +797,16 @@ export default function PaymentsCheckoutScreen() {
       return;
     }
 
-    if (!targetPackage) {
+    if (Platform.OS === "ios" && safePlan === "yearly") {
+      console.log("KRISTO_IOS_YEARLY_CHECKOUT_PURCHASE_BLOCKED", { churchId });
+      setPackagesError("Yearly plans are no longer available for new iOS purchases.");
+      return;
+    }
+
+    if (
+      !targetPackage &&
+      !(safePlan === "monthly" && String(assignedMonthlyProductId || "").trim())
+    ) {
       setPackagesError(resolveSubscriptionPackagesUnavailableMessage());
       return;
     }
@@ -716,13 +822,23 @@ export default function PaymentsCheckoutScreen() {
 
       setSubmitting(true);
 
-      const purchaseResult = await purchaseSubscriptionPackage(targetPackage, {
-        identityContext: {
-          churchId,
-          userId: sessionUserId,
-          serverSubscriptionActive: freshStatus.serverSubscriptionActive,
-        },
-      });
+      const assignedProductId = String(assignedMonthlyProductId || "").trim();
+      const purchaseResult =
+        safePlan === "monthly" && assignedProductId && !targetPackage
+          ? await purchaseSubscriptionProductId(assignedProductId, {
+              identityContext: {
+                churchId,
+                userId: sessionUserId,
+                serverSubscriptionActive: freshStatus.serverSubscriptionActive,
+              },
+            })
+          : await purchaseSubscriptionPackage(targetPackage!, {
+              identityContext: {
+                churchId,
+                userId: sessionUserId,
+                serverSubscriptionActive: freshStatus.serverSubscriptionActive,
+              },
+            });
       const initialInfo = purchaseResult.customerInfo;
       setCustomerInfo(initialInfo);
 
@@ -768,10 +884,92 @@ export default function PaymentsCheckoutScreen() {
       if (/cancel/i.test(msg) || detail.userCancelled) {
         Alert.alert("Purchase cancelled", "No charge was made.");
       } else if (isExistingStoreSubscriptionError(error)) {
-        console.log("KRISTO_SUBSCRIPTION_ALREADY_OWNED_RECOVER", {
+        console.log("KRISTO_SUBSCRIPTION_ALREADY_OWNED", {
           plan: safePlan,
           churchId: checkoutChurchId,
+          assignedProductId: assignedMonthlyProductId,
+          reservationId: activeReservationId,
         });
+
+        if (Platform.OS === "ios" && safePlan === "monthly") {
+          const failedProductId = String(
+            assignedMonthlyProductId || targetPackage?.product.identifier || ""
+          ).trim();
+          const nextRecoveryCount = alreadyOwnedRecoveryCount + 1;
+          if (nextRecoveryCount > IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS.length) {
+            Alert.alert(
+              "No free subscription group left",
+              "We already tried every Kristo Premium monthly slot available for this purchase session."
+            );
+            return;
+          }
+          setAlreadyOwnedRecoveryCount(nextRecoveryCount);
+
+          if (activeReservationId) {
+            await releaseChurchPurchaseProductReservation({
+              churchId,
+              reservationId: activeReservationId,
+              headers,
+            });
+          }
+
+          let refreshedInfo: CustomerInfo | null = customerInfo;
+          try {
+            refreshedInfo = await getCustomerSubscriptionInfo();
+            setCustomerInfo(refreshedInfo);
+          } catch {
+            // keep prior
+          }
+
+          const owned = new Set([
+            ...collectDeviceOwnedPremiumProductIds(refreshedInfo),
+            ...sessionBlockedProductIds,
+          ]);
+          if (failedProductId) owned.add(failedProductId);
+          const nextSessionBlocked = [...owned].filter((id) =>
+            (IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS as readonly string[]).includes(id)
+          );
+          setSessionBlockedProductIds(nextSessionBlocked);
+
+          const devicePurchaseScope = await getOrCreateDevicePurchaseScope();
+          const sessionId =
+            purchaseSessionId || (await getOrCreateIosPurchaseSessionId(churchId));
+          const nextAssignment = await fetchChurchPurchaseProductAssignment({
+            churchId,
+            platform: "ios",
+            headers,
+            devicePurchaseScope,
+            purchaseSessionId: sessionId,
+            deviceOwnedProductIds: [...owned],
+          });
+
+          if (nextAssignment?.productId) {
+            setAssignedMonthlyProductId(nextAssignment.productId);
+            setActiveReservationId(nextAssignment.reservationId || null);
+            setPurchaseSessionId(nextAssignment.purchaseSessionId || sessionId);
+            try {
+              const offerings = await getSubscriptionOfferings();
+              setMonthlyPackage(
+                resolveMonthlyPackage(offerings, nextAssignment.productId)
+              );
+            } catch {
+              // ignore
+            }
+            const nextGroup = String(nextAssignment.group || "").toUpperCase() || "next";
+            Alert.alert(
+              "This subscription group is already active on Apple",
+              `We released that plan and reserved Kristo Premium ${nextGroup} (${nextAssignment.productId}). Tap Pay again when ready — purchase will not retry automatically.`
+            );
+            return;
+          }
+
+          Alert.alert(
+            "No free subscription group left",
+            "This store account already appears to own every Kristo Premium monthly slot we can assign."
+          );
+          return;
+        }
+
         const freshStatus = await fetchChurchMediaPremiumServerStatus(churchId, headers, {
           bustCache: true,
         }).catch(() => null);
@@ -1027,7 +1225,7 @@ export default function PaymentsCheckoutScreen() {
 
           <Text style={s.planTitle}>{planMeta.title}</Text>
           <Text style={s.priceLine}>{priceLine}</Text>
-          {!isSubscribedForCurrentChurch && safePlan === "monthly" && monthlyTrialEligible ? (
+          {!isSubscribedForCurrentChurch && safePlan === "monthly" && showMonthlyFreeTrial ? (
             <Text style={s.trialThenPrice}>Then $49.99/month</Text>
           ) : null}
           {isSubscribedForCurrentChurch ? (
@@ -1036,7 +1234,7 @@ export default function PaymentsCheckoutScreen() {
             </Text>
           ) : null}
 
-          {monthlyTrialEligible ? (
+          {showMonthlyFreeTrial ? (
             <Text style={s.trialNote}>Free trial for new subscribers. Cancel anytime.</Text>
           ) : null}
 
@@ -1142,7 +1340,7 @@ export default function PaymentsCheckoutScreen() {
             <Text style={s.footText}>
               {resolveCheckoutFooterText({
                 subscribed: isSubscribedForCurrentChurch,
-                monthlyTrialEligible,
+                monthlyTrialEligible: showMonthlyFreeTrial,
               })}
             </Text>
 

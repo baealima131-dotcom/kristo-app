@@ -21,6 +21,8 @@ import {
   CHURCH_PREMIUM_ENTITLEMENT_IDS,
   CHURCH_PREMIUM_PRODUCT_IDS,
   IOS_REVENUECAT_PUBLIC_API_KEY,
+  isMonthlyChurchPremiumProductId,
+  isYearlyChurchPremiumProductId,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "@/lib/churchPremiumRevenueCat";
@@ -32,6 +34,8 @@ export {
   LEGACY_PREMIUM_ENTITLEMENT,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
+  IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
+  CHURCH_PREMIUM_PRODUCT_IDS,
 } from "@/lib/churchPremiumRevenueCat";
 
 const REVENUECAT_API_BASE = "https://api.revenuecat.com/v1";
@@ -184,12 +188,8 @@ export function isSubscriptionVerificationBypassed(): boolean {
 export function planFromProductId(productId: string | null | undefined): SubscriptionPlan | null {
   const id = String(productId || "").trim();
   if (!id) return null;
-  if (id === PREMIUM_YEARLY_PRODUCT_ID || /yearly|annual|\$rc_annual/i.test(id)) {
-    return "yearly";
-  }
-  if (id === PREMIUM_MONTHLY_PRODUCT_ID || /monthly|\$rc_monthly/i.test(id)) {
-    return "monthly";
-  }
+  if (isYearlyChurchPremiumProductId(id)) return "yearly";
+  if (isMonthlyChurchPremiumProductId(id)) return "monthly";
   return null;
 }
 
@@ -479,6 +479,19 @@ function resolvePremiumFromSubscriptions(subscriptions: Record<string, any>): {
     const candidate = subscriptions[productId];
     if (!candidate) continue;
     if (entitlementIsActive(candidate.expires_date)) {
+      return {
+        productId,
+        subscription: candidate,
+        active: true,
+      };
+    }
+  }
+
+  // Also accept any active subscription whose product id maps to church premium
+  // (covers newly added rotation SKUs before constants are redeployed everywhere).
+  for (const [productId, candidate] of Object.entries(subscriptions || {})) {
+    if (!candidate || !entitlementIsActive(candidate.expires_date)) continue;
+    if (planFromProductId(productId) || planFromProductId(candidate.product_identifier)) {
       return {
         productId,
         subscription: candidate,

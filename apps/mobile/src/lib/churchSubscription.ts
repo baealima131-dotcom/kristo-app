@@ -1,6 +1,6 @@
 import { Alert, Platform } from "react-native";
 import type { CustomerInfo } from "react-native-purchases";
-import { apiGet, apiPatch } from "./kristoApi";
+import { apiGet, apiPatch, apiPost } from "./kristoApi";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import {
   evaluateStrictChurchMediaLiveSubscriptionGate,
@@ -49,6 +49,7 @@ import {
   refreshCustomerInfoAfterStorePurchase,
   recoverStoreSubscriptionForChurch,
   resolveActiveSubscriptionPlan,
+  enumerateIosRotationProductsInCustomerInfo,
 } from "./payments/mobileSubscriptions";
 
 export const CHURCH_SUBSCRIPTION_REQUIRED_CODE = "CHURCH_SUBSCRIPTION_REQUIRED";
@@ -1069,6 +1070,158 @@ export type SubscriptionPrepurchaseOwnershipResult =
   | { status: "unavailable"; reason?: string | null; httpStatus?: number | null; ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null };
 
 const PREPURCHASE_OWNERSHIP_ENDPOINT = "/api/church/subscription/prepurchase-ownership-check";
+const PURCHASE_PRODUCT_ENDPOINT = "/api/church/subscription/purchase-product";
+
+export type ChurchPurchaseProductAssignment = {
+  ok: true;
+  platform: "ios" | "android" | string;
+  plan: "monthly" | "yearly" | string;
+  productId: string;
+  monthlyProductId?: string | null;
+  yearlyProductId?: string | null;
+  group?: string | null;
+  subscriptionGroupName?: string | null;
+  sticky?: boolean;
+  reservationId?: string | null;
+  purchaseSessionId?: string | null;
+  devicePurchaseScope?: string | null;
+  appOwnerScope?: string | null;
+  coordination?: string | null;
+  legacyProductIds?: string[];
+};
+
+/**
+ * Server authority: reserve which store Product ID this church should purchase.
+ * iOS returns church_premium_monthly_g2…g5 under best-effort device/owner coordination.
+ * Never treat originalTransactionId as Apple ID / purchaser identity.
+ */
+export async function fetchChurchPurchaseProductAssignment(args: {
+  churchId: string;
+  platform?: "ios" | "android";
+  headers?: Record<string, string>;
+  devicePurchaseScope?: string | null;
+  purchaseSessionId?: string | null;
+  deviceOwnedProductIds?: string[] | null;
+}): Promise<ChurchPurchaseProductAssignment | null> {
+  const churchId = String(args.churchId || "").trim();
+  if (!churchId) return null;
+
+  const platform = args.platform || (Platform.OS === "android" ? "android" : "ios");
+
+  try {
+    const res = await apiPost<{
+      ok?: boolean;
+      error?: string;
+      platform?: string;
+      plan?: string;
+      productId?: string;
+      monthlyProductId?: string | null;
+      yearlyProductId?: string | null;
+      group?: string | null;
+      subscriptionGroupName?: string | null;
+      sticky?: boolean;
+      reservationId?: string | null;
+      purchaseSessionId?: string | null;
+      devicePurchaseScope?: string | null;
+      appOwnerScope?: string | null;
+      coordination?: string | null;
+      legacyProductIds?: string[];
+    }>(
+      PURCHASE_PRODUCT_ENDPOINT,
+      {
+        churchId,
+        platform,
+        action: "reserve",
+        devicePurchaseScope: args.devicePurchaseScope || null,
+        purchaseSessionId: args.purchaseSessionId || null,
+        deviceOwnedProductIds: args.deviceOwnedProductIds || [],
+      },
+      args.headers
+    );
+
+    const productId = String(res?.productId || res?.monthlyProductId || "").trim();
+    if (!productId || res?.ok === false) {
+      console.log("KRISTO_PURCHASE_PRODUCT_ASSIGN_FAILED", {
+        churchId,
+        platform,
+        error: res?.error ?? null,
+      });
+      return null;
+    }
+
+    console.log("KRISTO_PURCHASE_PRODUCT_ASSIGNED", {
+      churchId,
+      platform,
+      productId,
+      group: res.group ?? null,
+      sticky: res.sticky ?? null,
+      reservationId: res.reservationId ?? null,
+      purchaseSessionId: res.purchaseSessionId ?? null,
+      coordination: res.coordination ?? null,
+    });
+
+    return {
+      ok: true,
+      platform: String(res.platform || platform),
+      plan: String(res.plan || "monthly"),
+      productId,
+      monthlyProductId: res.monthlyProductId ?? productId,
+      yearlyProductId: res.yearlyProductId ?? null,
+      group: res.group ?? null,
+      subscriptionGroupName: res.subscriptionGroupName ?? null,
+      sticky: res.sticky,
+      reservationId: res.reservationId ?? null,
+      purchaseSessionId: res.purchaseSessionId ?? null,
+      devicePurchaseScope: res.devicePurchaseScope ?? null,
+      appOwnerScope: res.appOwnerScope ?? null,
+      coordination: res.coordination ?? null,
+      legacyProductIds: res.legacyProductIds,
+    };
+  } catch (error) {
+    console.log("KRISTO_PURCHASE_PRODUCT_ASSIGN_ERROR", {
+      churchId,
+      platform,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+export async function releaseChurchPurchaseProductReservation(args: {
+  churchId: string;
+  reservationId: string;
+  headers?: Record<string, string>;
+}): Promise<boolean> {
+  const churchId = String(args.churchId || "").trim();
+  const reservationId = String(args.reservationId || "").trim();
+  if (!churchId || !reservationId) return false;
+
+  try {
+    const res = await apiPost<{ ok?: boolean; released?: boolean }>(
+      PURCHASE_PRODUCT_ENDPOINT,
+      {
+        churchId,
+        platform: Platform.OS === "android" ? "android" : "ios",
+        action: "release",
+        reservationId,
+      },
+      args.headers
+    );
+    console.log("KRISTO_PURCHASE_PRODUCT_RESERVATION_RELEASED", {
+      churchId,
+      reservationId,
+      released: res?.released === true,
+    });
+    return res?.ok !== false && res?.released !== false;
+  } catch (error) {
+    console.log("KRISTO_PURCHASE_PRODUCT_RESERVATION_RELEASE_ERROR", {
+      churchId,
+      reservationId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
 
 export const CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED =
   "cancelled-subscription-new-purchase-permitted";
@@ -2372,11 +2525,21 @@ export async function recoverChurchSubscriptionFromExistingStore(args: {
     source: "existing-store-subscription",
   });
 
+  const rotationProductsOnDevice = enumerateIosRotationProductsInCustomerInfo(
+    recovered.customerInfo
+  );
+  console.log("KRISTO_CHURCH_SUBSCRIPTION_RESTORE_ENUMERATE_G2_G5", {
+    churchId,
+    rotationProductsOnDevice,
+    note: "Existing originalTransactionId→church mappings stay server-side; unmapped lineages are NOT auto-assigned to the open church.",
+  });
+
   if (!recovered.churchScopedEntitlementActive) {
     console.log("KRISTO_CHURCH_SUBSCRIPTION_EXISTING_STORE_RECOVER_NO_ENTITLEMENT", {
       churchId,
       entitlementActive: recovered.entitlementActive,
       resolvedPlan: recovered.resolvedPlan,
+      rotationProductsOnDevice,
     });
     return {
       sync: emptySync,
@@ -2385,6 +2548,8 @@ export async function recoverChurchSubscriptionFromExistingStore(args: {
     };
   }
 
+  // Sync/activate only if server ownership + verified lineage allow this church.
+  // Unmapped store transactions must not be auto-bound here — activation is fail-closed.
   const plan = recovered.resolvedPlan || args.subscriptionPlan || "monthly";
   const sync = await syncChurchSubscriptionAfterPurchase({
     churchId,

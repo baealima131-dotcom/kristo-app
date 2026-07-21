@@ -11,6 +11,7 @@ import Purchases, {
   PACKAGE_TYPE,
   STORE_REPLACEMENT_MODE,
 } from "react-native-purchases";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { Alert, Linking, Platform } from "react-native";
 import type { PlanStatus, SubscriptionPlanKey } from "../../store/paymentsStore";
@@ -22,20 +23,30 @@ import { shouldEnableRevenueCatDebug } from "../kristoDebugFlags";
 import {
   CHURCH_PREMIUM_ENTITLEMENT,
   CHURCH_PREMIUM_ENTITLEMENT_IDS,
+  CHURCH_PREMIUM_PRODUCT_IDS,
   detectPremiumEntitlementKey,
   isChurchPremiumEntitlementId,
+  isChurchPremiumProductId,
+  isIosPremiumRotationMonthlyProductId,
+  isMonthlyChurchPremiumProductId,
+  isYearlyChurchPremiumProductId,
   LEGACY_PREMIUM_ENTITLEMENT,
   PREMIUM_MONTHLY_INTRO_TRIAL_DAYS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
+  IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
 } from "./churchPremiumRevenueCat";
 
 export {
   CHURCH_PREMIUM_ENTITLEMENT,
   CHURCH_PREMIUM_ENTITLEMENT_IDS,
+  CHURCH_PREMIUM_PRODUCT_IDS,
   LEGACY_PREMIUM_ENTITLEMENT,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
+  isChurchPremiumProductId,
+  isMonthlyChurchPremiumProductId,
+  isYearlyChurchPremiumProductId,
 } from "./churchPremiumRevenueCat";
 
 const extra =
@@ -1206,8 +1217,9 @@ function subscriptionStoreSetupHint(): string {
     );
   }
   return (
-    "App Store products are not available yet. Submit premium_monthly and premium_yearly " +
-    "in App Store Connect (or attach a StoreKit config in Xcode)."
+    "App Store products are not available yet. Configure church_premium_monthly_g2…g5 " +
+    "in App Store Connect (Kristo Premium G2–G5), attach them to RevenueCat entitlement Premium, " +
+    "and ensure the backend purchase-product assignment is reachable."
   );
 }
 
@@ -1684,13 +1696,7 @@ export function hasRealActiveEntitlement(
 }
 
 function isPremiumProductIdentifier(productId: string): boolean {
-  const id = String(productId || "").trim();
-  if (!id) return false;
-  return (
-    id === PREMIUM_MONTHLY_PRODUCT_ID ||
-    id === PREMIUM_YEARLY_PRODUCT_ID ||
-    /premium_monthly|premium_yearly|monthly|\$rc_monthly|yearly|annual|\$rc_annual/i.test(id)
-  );
+  return isChurchPremiumProductId(productId);
 }
 
 function subscriptionExpirationIsActive(expires: string | null | undefined): boolean {
@@ -1700,7 +1706,7 @@ function subscriptionExpirationIsActive(expires: string | null | undefined): boo
   return ms > Date.now();
 }
 
-/** True when StoreKit/RC shows an active premium_monthly or premium_yearly product, even if church_premium entitlement is delayed. */
+/** True when StoreKit/RC shows an active church premium product (G2–G5 or legacy), even if entitlement is delayed. */
 export function hasActivePremiumProduct(
   customerInfo: CustomerInfo | null | undefined
 ): boolean {
@@ -1875,10 +1881,7 @@ export function canShowChurchSubscriptionRestore(args: {
   if (!hasPremiumEntitlement(info)) return false;
 
   const activeSubscriptions = info.activeSubscriptions || [];
-  return (
-    activeSubscriptions.includes(PREMIUM_MONTHLY_PRODUCT_ID) ||
-    activeSubscriptions.includes(PREMIUM_YEARLY_PRODUCT_ID)
-  );
+  return activeSubscriptions.some(isPremiumProductIdentifier);
 }
 
 /** Re-check RC App User ID ownership before allowing restore/sync for the current church. */
@@ -1949,17 +1952,11 @@ export function resolvePremiumPlanFromCustomerInfo(
       continue;
     }
 
-    if (
-      productId === PREMIUM_YEARLY_PRODUCT_ID ||
-      /premium_yearly|yearly|annual|\$rc_annual/i.test(productId)
-    ) {
+    if (isYearlyChurchPremiumProductId(productId)) {
       return "yearly";
     }
 
-    if (
-      productId === PREMIUM_MONTHLY_PRODUCT_ID ||
-      /premium_monthly|monthly|\$rc_monthly/i.test(productId)
-    ) {
+    if (isMonthlyChurchPremiumProductId(productId)) {
       return "monthly";
     }
   }
@@ -2300,17 +2297,11 @@ export function resolveActiveSubscriptionPlan(
 }
 
 function isYearlyPremiumProductId(productId: string): boolean {
-  return (
-    productId === PREMIUM_YEARLY_PRODUCT_ID ||
-    /premium_yearly|yearly|annual|\$rc_annual/i.test(productId)
-  );
+  return isYearlyChurchPremiumProductId(productId);
 }
 
 function isMonthlyPremiumProductId(productId: string): boolean {
-  return (
-    productId === PREMIUM_MONTHLY_PRODUCT_ID ||
-    /premium_monthly|monthly|\$rc_monthly/i.test(productId)
-  );
+  return isMonthlyChurchPremiumProductId(productId);
 }
 
 export type MediaPremiumPlanUiState = {
@@ -2711,17 +2702,164 @@ export function isPlanActive(
   return planStatus === "active";
 }
 
-export function resolveMonthlyPackage(
-  offerings: PurchasesOfferings
+export function collectDeviceOwnedPremiumProductIds(
+  customerInfo: CustomerInfo | null | undefined
+): string[] {
+  if (!customerInfo) return [];
+  const tracked = new Set<string>([
+    PREMIUM_MONTHLY_PRODUCT_ID,
+    ...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
+    PREMIUM_YEARLY_PRODUCT_ID,
+  ]);
+  const ids = new Set<string>();
+
+  const consider = (raw: string) => {
+    const id = String(raw || "").trim();
+    if (!id) return;
+    if (tracked.has(id) || isChurchPremiumProductId(id)) ids.add(id);
+  };
+
+  for (const id of customerInfo.activeSubscriptions || []) consider(String(id));
+  for (const id of customerInfo.allPurchasedProductIdentifiers || []) consider(String(id));
+  for (const id of Object.keys(customerInfo.subscriptionsByProductIdentifier || {})) {
+    consider(id);
+  }
+  for (const entitlement of Object.values(customerInfo.entitlements?.all || {})) {
+    consider(String(entitlement?.productIdentifier || ""));
+  }
+  return [...ids];
+}
+
+/** G2–G5 product IDs currently visible in CustomerInfo (for restore enumeration). */
+export function enumerateIosRotationProductsInCustomerInfo(
+  customerInfo: CustomerInfo | null | undefined
+): string[] {
+  return collectDeviceOwnedPremiumProductIds(customerInfo).filter((id) =>
+    isIosPremiumRotationMonthlyProductId(id)
+  );
+}
+
+const DEVICE_PURCHASE_SCOPE_KEY = "kristo.ios.devicePurchaseScope.v1";
+const PURCHASE_SESSION_KEY_PREFIX = "kristo.ios.purchaseSession.v1:";
+
+/**
+ * Best-effort non-sensitive app installation scope for reservation coordination.
+ * This is NOT an Apple ID and must never be described as verified purchaser identity.
+ */
+export async function getOrCreateDevicePurchaseScope(): Promise<string> {
+  try {
+    const existing = String((await AsyncStorage.getItem(DEVICE_PURCHASE_SCOPE_KEY)) || "").trim();
+    if (existing) return existing;
+    const next = `dev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    await AsyncStorage.setItem(DEVICE_PURCHASE_SCOPE_KEY, next);
+    return next;
+  } catch {
+    return `dev_ephemeral_${Date.now().toString(36)}`;
+  }
+}
+
+export async function getOrCreateIosPurchaseSessionId(churchId: string): Promise<string> {
+  const cid = String(churchId || "").trim();
+  const key = `${PURCHASE_SESSION_KEY_PREFIX}${cid || "unknown"}`;
+  try {
+    const existing = String((await AsyncStorage.getItem(key)) || "").trim();
+    if (existing) return existing;
+    const next = `ps_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    await AsyncStorage.setItem(key, next);
+    return next;
+  } catch {
+    return `ps_ephemeral_${Date.now().toString(36)}`;
+  }
+}
+
+export async function clearIosPurchaseSessionId(churchId: string): Promise<void> {
+  const cid = String(churchId || "").trim();
+  if (!cid) return;
+  try {
+    await AsyncStorage.removeItem(`${PURCHASE_SESSION_KEY_PREFIX}${cid}`);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Store transaction id from CustomerInfo when present.
+ * This is a subscription lineage hint at best — NOT Apple ID / purchaser identity.
+ * Server still verifies original_transaction_id via RevenueCat REST after purchase.
+ */
+export function extractSubscriptionLineageHintFromCustomerInfo(
+  customerInfo: CustomerInfo | null | undefined
+): string | null {
+  if (!customerInfo) return null;
+
+  const subscriptions = customerInfo.subscriptionsByProductIdentifier || {};
+  for (const [productId, subscription] of Object.entries(subscriptions)) {
+    if (!isPremiumProductIdentifier(productId)) continue;
+    const storeTransactionId = String(
+      (subscription as { storeTransactionId?: string | null })?.storeTransactionId || ""
+    ).trim();
+    if (storeTransactionId) return storeTransactionId;
+  }
+  return null;
+}
+
+/** @deprecated Use extractSubscriptionLineageHintFromCustomerInfo — never call this purchaser identity. */
+export function extractKnownStoreSubscriptionIdentityFromCustomerInfo(
+  customerInfo: CustomerInfo | null | undefined
+): string | null {
+  return extractSubscriptionLineageHintFromCustomerInfo(customerInfo);
+}
+
+export function findPackageByProductId(
+  offerings: PurchasesOfferings | null | undefined,
+  productId: string | null | undefined
 ): PurchasesPackage | null {
+  const target = String(productId || "").trim();
+  if (!target || !offerings) return null;
+
+  const searchOffering = (offering: PurchasesOfferings["current"]) => {
+    if (!offering?.availablePackages?.length) return null;
+    return (
+      offering.availablePackages.find(
+        (pkg) => String(pkg.product.identifier || "") === target
+      ) || null
+    );
+  };
+
+  const fromCurrent = searchOffering(offerings.current);
+  if (fromCurrent) return fromCurrent;
+
+  for (const offering of Object.values(offerings.all || {})) {
+    const match = searchOffering(offering);
+    if (match) return match;
+  }
+
+  return null;
+}
+
+/**
+ * Resolve the monthly package for purchase.
+ * Prefer the backend-assigned Product ID (iOS G2–G5). Do not hardcode legacy IDs for new iOS buys.
+ */
+export function resolveMonthlyPackage(
+  offerings: PurchasesOfferings,
+  preferredProductId?: string | null
+): PurchasesPackage | null {
+  const preferred = String(preferredProductId || "").trim();
+  if (preferred) {
+    const byAssigned = findPackageByProductId(offerings, preferred);
+    if (byAssigned) return byAssigned;
+  }
+
+  // Android / fallback: match any known monthly premium product in offerings.
+  for (const productId of CHURCH_PREMIUM_PRODUCT_IDS) {
+    if (!isMonthlyChurchPremiumProductId(productId)) continue;
+    const match = findPackageByProductId(offerings, productId);
+    if (match) return match;
+  }
+
   const current = offerings.current;
   if (!current) return null;
-
-  const byProductId =
-    current.availablePackages?.find(
-      (pkg) => String(pkg.product.identifier || "") === PREMIUM_MONTHLY_PRODUCT_ID
-    ) || null;
-  if (byProductId) return byProductId;
 
   if (current.monthly) return current.monthly;
 
@@ -2731,7 +2869,7 @@ export function resolveMonthlyPackage(
 
   const byText =
     current.availablePackages?.find((pkg) =>
-      /premium_monthly|month|monthly/i.test(
+      /church_premium_monthly_g[2-5]|premium_monthly|month|monthly/i.test(
         `${pkg.packageType} ${pkg.identifier} ${pkg.product.identifier} ${pkg.product.title} ${pkg.product.description}`
       )
     ) || null;
@@ -2740,16 +2878,27 @@ export function resolveMonthlyPackage(
 }
 
 export function resolveYearlyPackage(
-  offerings: PurchasesOfferings
+  offerings: PurchasesOfferings,
+  preferredProductId?: string | null
 ): PurchasesPackage | null {
+  // iOS no longer offers yearly for new purchases — do not expose a yearly package.
+  // Legacy premium_yearly recognition for existing subscribers remains elsewhere.
+  if (Platform.OS === "ios") return null;
+
+  const preferred = String(preferredProductId || "").trim();
+  if (preferred) {
+    const byAssigned = findPackageByProductId(offerings, preferred);
+    if (byAssigned) return byAssigned;
+  }
+
+  for (const productId of CHURCH_PREMIUM_PRODUCT_IDS) {
+    if (!isYearlyChurchPremiumProductId(productId)) continue;
+    const match = findPackageByProductId(offerings, productId);
+    if (match) return match;
+  }
+
   const current = offerings.current;
   if (!current) return null;
-
-  const byProductId =
-    current.availablePackages?.find(
-      (pkg) => String(pkg.product.identifier || "") === PREMIUM_YEARLY_PRODUCT_ID
-    ) || null;
-  if (byProductId) return byProductId;
 
   if (current.annual) return current.annual;
 
@@ -2765,6 +2914,83 @@ export function resolveYearlyPackage(
     ) || null;
 
   return byText;
+}
+
+/**
+ * Build / resolve the purchase target from a backend-assigned Product ID.
+ * Searches all RevenueCat offerings; falls back to StoreKit/Play getProducts.
+ */
+export async function resolvePurchaseTargetForProductId(productId: string): Promise<{
+  package: PurchasesPackage | null;
+  storeProduct: PurchasesStoreProduct | null;
+  productId: string;
+}> {
+  const target = String(productId || "").trim();
+  if (!target) {
+    return { package: null, storeProduct: null, productId: "" };
+  }
+
+  const offerings = await getSubscriptionOfferings({ force: true });
+  const pkg = findPackageByProductId(offerings, target);
+  if (pkg) {
+    return { package: pkg, storeProduct: pkg.product, productId: target };
+  }
+
+  try {
+    const products = await runRevenueCatGetProducts([target], "resolvePurchaseTargetForProductId");
+    const storeProduct = products.find((p) => String(p.identifier || "") === target) || null;
+    return { package: null, storeProduct, productId: target };
+  } catch {
+    return { package: null, storeProduct: null, productId: target };
+  }
+}
+
+export async function purchaseSubscriptionProductId(
+  productId: string,
+  opts?: PurchaseSubscriptionPackageOptions & {
+    identityContext?: {
+      churchId: string;
+      userId?: string | null;
+      serverSubscriptionActive?: boolean | null;
+    };
+  }
+) {
+  const target = await resolvePurchaseTargetForProductId(productId);
+  if (target.package) {
+    return purchaseSubscriptionPackage(target.package, opts);
+  }
+
+  if (!target.storeProduct) {
+    throw new Error(
+      `Subscription product ${productId} is not available in RevenueCat offerings or the store.`
+    );
+  }
+
+  if (opts?.identityContext?.churchId) {
+    await verifyRevenueCatIdentityBeforePurchase({
+      churchId: opts.identityContext.churchId,
+      userId: opts.identityContext.userId,
+      serverSubscriptionActive: opts.identityContext.serverSubscriptionActive,
+      source: "purchaseSubscriptionProductId",
+    });
+  }
+
+  await requireConfiguredPurchases("purchase");
+
+  console.log("KRISTO_RC_PURCHASE_STORE_PRODUCT", {
+    productId: target.storeProduct.identifier,
+    platform: Platform.OS,
+  });
+
+  const result = await Purchases.purchaseStoreProduct(target.storeProduct);
+
+  try {
+    await Purchases.syncPurchases();
+  } catch (error) {
+    logRevenueCatException("syncPurchases", error, { phase: "after-store-product-purchase" });
+  }
+
+  return result;
 }
 
 export function describeIntroOffer(
@@ -2808,10 +3034,7 @@ export function isEligibleForMonthlyIntroTrial(
   if (hasPremiumEntitlement(customerInfo)) return false;
 
   const purchased = customerInfo.allPurchasedProductIdentifiers ?? [];
-  if (
-    purchased.includes(PREMIUM_MONTHLY_PRODUCT_ID) ||
-    purchased.includes(PREMIUM_YEARLY_PRODUCT_ID)
-  ) {
+  if (purchased.some(isPremiumProductIdentifier)) {
     return false;
   }
 
@@ -2939,17 +3162,22 @@ export function logMonthlyIntroOfferFromStoreKit(
   });
 }
 
-export async function fetchMonthlyIntroTrialEligibility(): Promise<INTRO_ELIGIBILITY_STATUS | null> {
+export async function fetchMonthlyIntroTrialEligibility(
+  productId?: string | null
+): Promise<INTRO_ELIGIBILITY_STATUS | null> {
   if (isRevenueCatPurchasingDisabled()) return null;
 
   const ready = await ensurePurchasesConfigured();
   if (!ready) return null;
 
+  const targetProductId = String(productId || "").trim();
+  if (!targetProductId) return null;
+
   try {
     const result = await Purchases.checkTrialOrIntroductoryPriceEligibility([
-      PREMIUM_MONTHLY_PRODUCT_ID,
+      targetProductId,
     ]);
-    return result[PREMIUM_MONTHLY_PRODUCT_ID]?.status ?? null;
+    return result[targetProductId]?.status ?? null;
   } catch (error) {
     logRevenueCatException("checkTrialOrIntroductoryPriceEligibility", error);
     return null;
