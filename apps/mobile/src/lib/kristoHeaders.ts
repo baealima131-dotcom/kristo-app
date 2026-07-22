@@ -28,7 +28,13 @@ export function getKristoAuth(): KristoAuth {
 
 export function getKristoHeaders(auth?: Partial<KristoAuth> & { sessionToken?: string }) {
   const s = getSessionSync();
-  const a = { ...getKristoAuth(), ...(auth || {}) };
+  const base = getKristoAuth();
+  // Do not let explicit `undefined` overrides wipe session identity.
+  const a: KristoAuth = {
+    userId: String(auth?.userId ?? base.userId ?? "").trim() || base.userId,
+    role: (String(auth?.role ?? base.role ?? "").trim() || base.role) as KristoRole,
+    churchId: String(auth?.churchId ?? base.churchId ?? "").trim() || base.churchId,
+  };
   const displayName = String(s?.displayName || s?.name || "").trim();
   // Signed token proving server-verified identity. Prefer an explicit override
   // (used right after login before the session is persisted), else the stored

@@ -1222,9 +1222,16 @@ export default function PaymentsSubscriptionsScreen() {
     const sessionId = await getOrCreateIosPurchaseSessionId(resolvedChurchId);
     setPurchaseSessionId(sessionId);
 
+    const headers = getKristoHeaders({
+      userId: sessionUserId,
+      role: sessionRole as any,
+      churchId: resolvedChurchId,
+    }) as Record<string, string>;
+
     const assignment = await fetchChurchPurchaseProductAssignment({
       churchId: resolvedChurchId,
       platform: Platform.OS === "android" ? "android" : "ios",
+      headers,
       devicePurchaseScope,
       purchaseSessionId: sessionId,
       deviceOwnedProductIds: [
@@ -1248,7 +1255,12 @@ export default function PaymentsSubscriptionsScreen() {
     }
 
     const offerings = await getSubscriptionOfferings({ force: opts?.forceOfferings === true });
-    const monthly = resolveMonthlyPackage(offerings, preferredMonthlyProductId || null);
+    // iOS: product selection is server-authoritative. Do not fall back to premium_monthly
+    // when reservation/assignment failed — that masks membership or API errors.
+    const monthly =
+      Platform.OS === "ios" && !preferredMonthlyProductId
+        ? null
+        : resolveMonthlyPackage(offerings, preferredMonthlyProductId || null);
     const yearly =
       Platform.OS === "ios"
         ? null
@@ -1281,10 +1293,18 @@ export default function PaymentsSubscriptionsScreen() {
         const sessionId =
           purchaseSessionId ||
           (churchId ? await getOrCreateIosPurchaseSessionId(churchId) : null);
+        const headers = churchId
+          ? (getKristoHeaders({
+              userId: sessionUserId,
+              role: sessionRole as any,
+              churchId,
+            }) as Record<string, string>)
+          : undefined;
         const assignment = churchId
           ? await fetchChurchPurchaseProductAssignment({
               churchId,
               platform: Platform.OS === "android" ? "android" : "ios",
+              headers,
               devicePurchaseScope,
               purchaseSessionId: sessionId,
               deviceOwnedProductIds: [
@@ -1299,7 +1319,10 @@ export default function PaymentsSubscriptionsScreen() {
           assignment?.monthlyProductId || assignment?.productId || assignedMonthlyProductId || ""
         ).trim();
         const offerings = await getSubscriptionOfferings({ force: true });
-        const monthly = resolveMonthlyPackage(offerings, preferredMonthlyProductId || null);
+        const monthly =
+          Platform.OS === "ios" && !preferredMonthlyProductId
+            ? null
+            : resolveMonthlyPackage(offerings, preferredMonthlyProductId || null);
         const yearly =
           Platform.OS === "ios"
             ? null
@@ -2163,6 +2186,7 @@ export default function PaymentsSubscriptionsScreen() {
           const nextAssignment = await fetchChurchPurchaseProductAssignment({
             churchId,
             platform: "ios",
+            headers,
             devicePurchaseScope,
             purchaseSessionId: sessionId,
             deviceOwnedProductIds: [...owned],

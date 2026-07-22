@@ -395,7 +395,10 @@ export default function PaymentsCheckoutScreen() {
         ).trim();
 
         const offerings = await getSubscriptionOfferings();
-        const monthly = resolveMonthlyPackage(offerings, preferredMonthlyProductId || null);
+        const monthly =
+          Platform.OS === "ios" && !preferredMonthlyProductId
+            ? null
+            : resolveMonthlyPackage(offerings, preferredMonthlyProductId || null);
         const yearly =
           Platform.OS === "ios"
             ? null

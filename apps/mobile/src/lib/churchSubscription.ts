@@ -10,6 +10,7 @@ import { refreshChurchMediaIfNeeded } from "./churchResourceRefresh";
 import { refreshChurchMediaAccess } from "./refreshCoordinator";
 import { announceChurchPremiumAccessUnlocked, churchIdsMatch, reconcileChurchPremiumAccessFromServer } from "./churchPremiumAccess";
 import { getSessionSync } from "./kristoSession";
+import { getKristoHeaders } from "./kristoHeaders";
 import { getPaymentsState, type SubscriptionPlanKey } from "../store/paymentsStore";
 import {
   isChurchMediaRouteFailure,
@@ -1122,6 +1123,15 @@ export async function fetchChurchPurchaseProductAssignment(args: {
   if (!churchId) return null;
 
   const platform = args.platform || (Platform.OS === "android" ? "android" : "ios");
+  const session = getSessionSync();
+  const headers =
+    args.headers ||
+    (getKristoHeaders({
+      userId: String(session?.userId || "").trim() || undefined,
+      role: (String(session?.role || "").trim() || undefined) as any,
+      churchId,
+      sessionToken: String(session?.sessionToken || "").trim() || undefined,
+    }) as Record<string, string>);
 
   try {
     const res = await apiPost<{
@@ -1151,7 +1161,7 @@ export async function fetchChurchPurchaseProductAssignment(args: {
         purchaseSessionId: args.purchaseSessionId || null,
         deviceOwnedProductIds: args.deviceOwnedProductIds || [],
       },
-      args.headers
+      headers
     );
 
     const productId = String(res?.productId || res?.monthlyProductId || "").trim();
@@ -1211,6 +1221,16 @@ export async function releaseChurchPurchaseProductReservation(args: {
   const reservationId = String(args.reservationId || "").trim();
   if (!churchId || !reservationId) return false;
 
+  const session = getSessionSync();
+  const headers =
+    args.headers ||
+    (getKristoHeaders({
+      userId: String(session?.userId || "").trim() || undefined,
+      role: (String(session?.role || "").trim() || undefined) as any,
+      churchId,
+      sessionToken: String(session?.sessionToken || "").trim() || undefined,
+    }) as Record<string, string>);
+
   try {
     const res = await apiPost<{ ok?: boolean; released?: boolean }>(
       PURCHASE_PRODUCT_ENDPOINT,
@@ -1220,7 +1240,7 @@ export async function releaseChurchPurchaseProductReservation(args: {
         action: "release",
         reservationId,
       },
-      args.headers
+      headers
     );
     console.log("KRISTO_PURCHASE_PRODUCT_RESERVATION_RELEASED", {
       churchId,

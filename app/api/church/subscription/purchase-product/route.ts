@@ -2,12 +2,14 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
+import { countsAsRealActiveMembership } from "@/app/api/_lib/demoMemberships";
 import {
   releaseIosPremiumReservation,
   reserveIosPremiumPurchaseProduct,
   IosSubscriptionSlotsExhaustedError,
 } from "@/app/api/_lib/iosPremiumProductAssignment";
-import { guard } from "@/app/api/_lib/rbac";
+import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
+import { guardAuth } from "@/app/api/_lib/rbac";
 import {
   IOS_SUBSCRIPTION_SLOTS_EXHAUSTED,
   LEGACY_CHURCH_PREMIUM_PRODUCT_IDS,
@@ -21,10 +23,89 @@ function json(data: unknown, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
 
+function userIdsMatch(a: unknown, b: unknown): boolean {
+  const left = String(a || "").trim().toLowerCase();
+  const right = String(b || "").trim().toLowerCase();
+  return Boolean(left && right && left === right);
+}
+
+/**
+ * Same Active-membership authority media uses via evaluateChurchMediaAccess:
+ * getMembershipsForChurch(churchId, "Active") for the requested church.
+ * Do not use a different "any active membership" path that can disagree with media.
+ */
+async function requireActiveMembershipForChurch(args: {
+  userId: string;
+  churchId: string;
+}): Promise<
+  | { ok: true; churchRole: string }
+  | { ok: false; response: NextResponse }
+> {
+  const churchId = String(args.churchId || "").trim();
+  const userId = String(args.userId || "").trim();
+  if (!churchId || !userId) {
+    return {
+      ok: false,
+      response: json(
+        {
+          ok: false,
+          error: "No active church membership",
+          details: { hint: "Join a church first (send a request)." },
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  if (!countsAsRealActiveMembership(churchId)) {
+    return {
+      ok: false,
+      response: json(
+        {
+          ok: false,
+          error: "No active church membership",
+          details: { hint: "Join a church first (send a request).", churchId },
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  const members = await getMembershipsForChurch(churchId, "Active");
+  const membership = members.find((row) => userIdsMatch(row.userId, userId));
+  if (!membership) {
+    console.log("KRISTO_PURCHASE_PRODUCT_MEMBERSHIP_MISS", {
+      churchId,
+      userId,
+      activeMemberCount: members.length,
+      source: "getMembershipsForChurch:Active",
+    });
+    return {
+      ok: false,
+      response: json(
+        {
+          ok: false,
+          error: "No active church membership",
+          details: {
+            hint: "Join a church first (send a request).",
+            churchId,
+          },
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    churchRole: String(membership.churchRole || ""),
+  };
+}
+
 /**
  * Server authority for App Store / Play product selection.
  *
- * iOS: reserves church_premium_monthly_g2…g5 using best-effort device coordination:
+ * iOS: reserves premium_monthly → g2…g5 using best-effort device coordination:
  *   deviceOwnedProductIds + owner/device active reservations + owner church mappings.
  * Does NOT treat originalTransactionId as Apple ID / purchaser identity.
  *
@@ -41,11 +122,11 @@ export async function POST(req: NextRequest) {
 }
 
 async function handlePurchaseProduct(req: NextRequest) {
-  const ctxOrRes = await guard(req);
-  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+  const authOrRes = await guardAuth(req);
+  if (authOrRes instanceof NextResponse) return authOrRes;
 
-  const { viewer, churchId: headerChurchId } = ctxOrRes;
-  let bodyChurchId = headerChurchId;
+  const userId = String(authOrRes.viewer.userId || "").trim();
+  let bodyChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
   let platform = "ios";
   let action = "reserve";
   let deviceOwnedProductIds: string[] = [];
@@ -88,9 +169,12 @@ async function handlePurchaseProduct(req: NextRequest) {
     return json({ ok: false, error: "churchId is required" }, { status: 400 });
   }
 
+  const membershipOrRes = await requireActiveMembershipForChurch({ userId, churchId });
+  if (!membershipOrRes.ok) return membershipOrRes.response;
+
   const access = await evaluateChurchMediaAccess({
     churchId,
-    userId: viewer.userId,
+    userId,
   });
   if (!access.isActualChurchPastor || !access.canManageChurchSubscription) {
     return json(
@@ -103,7 +187,7 @@ async function handlePurchaseProduct(req: NextRequest) {
     );
   }
 
-  const ownerUserId = String(access.actualPastorUserId || viewer.userId || "").trim();
+  const ownerUserId = String(access.actualPastorUserId || userId || "").trim();
 
   if (platform === "android") {
     return json({

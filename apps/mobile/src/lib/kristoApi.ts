@@ -150,12 +150,23 @@ function mergeHeaders(h?: HeadersRec) {
 /** Merge signed session token + identity headers into every authenticated request. */
 function withAuthHeaders(init: RequestInit | undefined, path: string): RequestInit {
   const caller = mergeHeaders(init?.headers as any);
-  const authInput = {
-    userId: String(caller["x-kristo-user-id"] || "").trim() || undefined,
-    role: (String(caller["x-kristo-role"] || "").trim() || undefined) as any,
-    churchId: String(caller["x-kristo-church-id"] || "").trim() || undefined,
-    sessionToken: String(caller["x-kristo-session-token"] || "").trim() || undefined,
-  };
+  // Only pass defined identity fields — undefined overrides would wipe getSessionSync() values
+  // inside getKristoHeaders and leave purchase/media calls with token-only empty church/user headers.
+  const authInput: {
+    userId?: string;
+    role?: any;
+    churchId?: string;
+    sessionToken?: string;
+  } = {};
+  const callerUserId = String(caller["x-kristo-user-id"] || "").trim();
+  const callerRole = String(caller["x-kristo-role"] || "").trim();
+  const callerChurchId = String(caller["x-kristo-church-id"] || "").trim();
+  const callerSessionToken = String(caller["x-kristo-session-token"] || "").trim();
+  if (callerUserId) authInput.userId = callerUserId;
+  if (callerRole) authInput.role = callerRole;
+  if (callerChurchId) authInput.churchId = callerChurchId;
+  if (callerSessionToken) authInput.sessionToken = callerSessionToken;
+
   const tokenMeta = describeKristoSessionToken(authInput);
   const auth = getKristoHeaders(authInput);
   const headers = { ...auth, ...caller };
