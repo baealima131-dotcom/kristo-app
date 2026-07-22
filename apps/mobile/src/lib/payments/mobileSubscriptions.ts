@@ -2839,7 +2839,8 @@ export function findPackageByProductId(
 
 /**
  * Resolve the monthly package for purchase.
- * Prefer the backend-assigned Product ID (iOS G2–G5). Do not hardcode legacy IDs for new iOS buys.
+ * When preferredProductId is set, ONLY an exact product.identifier match is valid —
+ * never silently fall through to premium_monthly / current.monthly.
  */
 export function resolveMonthlyPackage(
   offerings: PurchasesOfferings,
@@ -2848,10 +2849,14 @@ export function resolveMonthlyPackage(
   const preferred = String(preferredProductId || "").trim();
   if (preferred) {
     const byAssigned = findPackageByProductId(offerings, preferred);
-    if (byAssigned) return byAssigned;
+    if (byAssigned && String(byAssigned.product.identifier || "") === preferred) {
+      return byAssigned;
+    }
+    // Assigned ID present but not in offerings — caller must use getProducts / fail closed.
+    return null;
   }
 
-  // Android / fallback: match any known monthly premium product in offerings.
+  // No assigned preference (Android / legacy): match any known monthly premium product.
   for (const productId of CHURCH_PREMIUM_PRODUCT_IDS) {
     if (!isMonthlyChurchPremiumProductId(productId)) continue;
     const match = findPackageByProductId(offerings, productId);
@@ -2876,6 +2881,131 @@ export function resolveMonthlyPackage(
 
   return byText;
 }
+
+export type IosAssignedProductPurchasePath = "package" | "store_product" | "unavailable";
+
+export type IosAssignedProductPurchaseResolution = {
+  assignedProductId: string;
+  resolvedPackageProductId: string | null;
+  resolvedStoreProductId: string | null;
+  path: IosAssignedProductPurchasePath;
+  package: PurchasesPackage | null;
+  storeProduct: PurchasesStoreProduct | null;
+};
+
+/** True only when package productIdentifier exactly equals the assigned Product ID. */
+export function packageMatchesAssignedProductId(
+  pkg: PurchasesPackage | null | undefined,
+  assignedProductId: string | null | undefined
+): boolean {
+  const assigned = String(assignedProductId || "").trim();
+  const resolved = String(pkg?.product?.identifier || "").trim();
+  return Boolean(assigned && resolved && assigned === resolved);
+}
+
+/**
+ * Exact-match purchase resolution for a backend-assigned iOS Product ID.
+ * Order: offerings package (exact) → Purchases.getProducts([id], SUBS) → unavailable.
+ * Never returns premium_monthly unless that is the assigned ID.
+ */
+export async function resolveIosAssignedProductPurchasePath(
+  assignedProductId: string,
+  offerings?: PurchasesOfferings | null
+): Promise<IosAssignedProductPurchaseResolution> {
+  const assigned = String(assignedProductId || "").trim();
+  if (!assigned) {
+    const empty: IosAssignedProductPurchaseResolution = {
+      assignedProductId: "",
+      resolvedPackageProductId: null,
+      resolvedStoreProductId: null,
+      path: "unavailable",
+      package: null,
+      storeProduct: null,
+    };
+    console.log("KRISTO_IOS_ASSIGNED_PRODUCT_PURCHASE_PATH", {
+      assignedProductId: empty.assignedProductId,
+      resolvedPackageProductId: empty.resolvedPackageProductId,
+      resolvedStoreProductId: empty.resolvedStoreProductId,
+      path: empty.path,
+    });
+    return empty;
+  }
+
+  let offeringsResolved = offerings || null;
+  if (!offeringsResolved) {
+    try {
+      offeringsResolved = await getSubscriptionOfferings({ force: true });
+    } catch {
+      offeringsResolved = null;
+    }
+  }
+
+  const pkg = findPackageByProductId(offeringsResolved, assigned);
+  if (packageMatchesAssignedProductId(pkg, assigned)) {
+    const resolution: IosAssignedProductPurchaseResolution = {
+      assignedProductId: assigned,
+      resolvedPackageProductId: assigned,
+      resolvedStoreProductId: null,
+      path: "package",
+      package: pkg,
+      storeProduct: pkg!.product,
+    };
+    console.log("KRISTO_IOS_ASSIGNED_PRODUCT_PURCHASE_PATH", {
+      assignedProductId: resolution.assignedProductId,
+      resolvedPackageProductId: resolution.resolvedPackageProductId,
+      resolvedStoreProductId: resolution.resolvedStoreProductId,
+      path: resolution.path,
+    });
+    return resolution;
+  }
+
+  try {
+    const products = await runRevenueCatGetProducts(
+      [assigned],
+      "resolveIosAssignedProductPurchasePath"
+    );
+    const storeProduct =
+      products.find((p) => String(p.identifier || "").trim() === assigned) || null;
+    if (storeProduct) {
+      const resolution: IosAssignedProductPurchaseResolution = {
+        assignedProductId: assigned,
+        resolvedPackageProductId: null,
+        resolvedStoreProductId: assigned,
+        path: "store_product",
+        package: null,
+        storeProduct,
+      };
+      console.log("KRISTO_IOS_ASSIGNED_PRODUCT_PURCHASE_PATH", {
+        assignedProductId: resolution.assignedProductId,
+        resolvedPackageProductId: resolution.resolvedPackageProductId,
+        resolvedStoreProductId: resolution.resolvedStoreProductId,
+        path: resolution.path,
+      });
+      return resolution;
+    }
+  } catch {
+    // fall through to unavailable
+  }
+
+  const unavailable: IosAssignedProductPurchaseResolution = {
+    assignedProductId: assigned,
+    resolvedPackageProductId: null,
+    resolvedStoreProductId: null,
+    path: "unavailable",
+    package: null,
+    storeProduct: null,
+  };
+  console.log("KRISTO_IOS_ASSIGNED_PRODUCT_PURCHASE_PATH", {
+    assignedProductId: unavailable.assignedProductId,
+    resolvedPackageProductId: unavailable.resolvedPackageProductId,
+    resolvedStoreProductId: unavailable.resolvedStoreProductId,
+    path: unavailable.path,
+  });
+  return unavailable;
+}
+
+export const IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE =
+  "This subscription product isn’t available in the App Store configuration yet. Try again later.";
 
 export function resolveYearlyPackage(
   offerings: PurchasesOfferings,
@@ -2919,29 +3049,47 @@ export function resolveYearlyPackage(
 /**
  * Build / resolve the purchase target from a backend-assigned Product ID.
  * Searches all RevenueCat offerings; falls back to StoreKit/Play getProducts.
+ * Exact product ID only — never substitutes another monthly SKU.
  */
 export async function resolvePurchaseTargetForProductId(productId: string): Promise<{
   package: PurchasesPackage | null;
   storeProduct: PurchasesStoreProduct | null;
   productId: string;
+  path: IosAssignedProductPurchasePath;
 }> {
   const target = String(productId || "").trim();
   if (!target) {
-    return { package: null, storeProduct: null, productId: "" };
+    return { package: null, storeProduct: null, productId: "", path: "unavailable" };
+  }
+
+  // iOS assigned buys use the exact-match path (package → getProducts → unavailable).
+  if (Platform.OS === "ios") {
+    const resolved = await resolveIosAssignedProductPurchasePath(target);
+    return {
+      package: resolved.package,
+      storeProduct: resolved.storeProduct,
+      productId: target,
+      path: resolved.path,
+    };
   }
 
   const offerings = await getSubscriptionOfferings({ force: true });
   const pkg = findPackageByProductId(offerings, target);
-  if (pkg) {
-    return { package: pkg, storeProduct: pkg.product, productId: target };
+  if (pkg && String(pkg.product.identifier || "") === target) {
+    return { package: pkg, storeProduct: pkg.product, productId: target, path: "package" };
   }
 
   try {
     const products = await runRevenueCatGetProducts([target], "resolvePurchaseTargetForProductId");
     const storeProduct = products.find((p) => String(p.identifier || "") === target) || null;
-    return { package: null, storeProduct, productId: target };
+    return {
+      package: null,
+      storeProduct,
+      productId: target,
+      path: storeProduct ? "store_product" : "unavailable",
+    };
   } catch {
-    return { package: null, storeProduct: null, productId: target };
+    return { package: null, storeProduct: null, productId: target, path: "unavailable" };
   }
 }
 
@@ -2956,14 +3104,16 @@ export async function purchaseSubscriptionProductId(
   }
 ) {
   const target = await resolvePurchaseTargetForProductId(productId);
-  if (target.package) {
+  if (target.path === "unavailable" || (!target.package && !target.storeProduct)) {
+    throw new Error(IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);
+  }
+
+  if (target.package && packageMatchesAssignedProductId(target.package, productId)) {
     return purchaseSubscriptionPackage(target.package, opts);
   }
 
-  if (!target.storeProduct) {
-    throw new Error(
-      `Subscription product ${productId} is not available in RevenueCat offerings or the store.`
-    );
+  if (!target.storeProduct || String(target.storeProduct.identifier || "") !== String(productId || "").trim()) {
+    throw new Error(IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);
   }
 
   if (opts?.identityContext?.churchId) {
@@ -2980,6 +3130,7 @@ export async function purchaseSubscriptionProductId(
   console.log("KRISTO_RC_PURCHASE_STORE_PRODUCT", {
     productId: target.storeProduct.identifier,
     platform: Platform.OS,
+    path: target.path,
   });
 
   const result = await Purchases.purchaseStoreProduct(target.storeProduct);

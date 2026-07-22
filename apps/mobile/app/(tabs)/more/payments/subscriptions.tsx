@@ -56,6 +56,9 @@ import {
   resolveActiveSubscriptionPlan,
   resolveMonthlyPackage,
   resolveYearlyPackage,
+  resolveIosAssignedProductPurchasePath,
+  packageMatchesAssignedProductId,
+  IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE,
   collectDeviceOwnedPremiumProductIds,
   getOrCreateDevicePurchaseScope,
   getOrCreateIosPurchaseSessionId,
@@ -1969,7 +1972,14 @@ export default function PaymentsSubscriptionsScreen() {
 
     const targetPackage = plan === "monthly" ? monthlyPackage : yearlyPackage;
     const assignedProductId = String(assignedMonthlyProductId || "").trim();
-    if (plan === "monthly" && !targetPackage && !assignedProductId) {
+    const exactMonthlyPackage =
+      plan === "monthly" && packageMatchesAssignedProductId(targetPackage, assignedProductId)
+        ? targetPackage
+        : plan === "monthly" && assignedProductId
+          ? null
+          : targetPackage;
+
+    if (plan === "monthly" && !exactMonthlyPackage && !assignedProductId) {
       setSubscriptionError(resolveSubscriptionPackagesLoadingMessage());
       return;
     }
@@ -2000,9 +2010,28 @@ export default function PaymentsSubscriptionsScreen() {
         return;
       }
 
+      if (Platform.OS === "ios" && plan === "monthly" && assignedProductId) {
+        const purchasePath = await resolveIosAssignedProductPurchasePath(
+          assignedProductId
+        );
+        if (purchasePath.path === "unavailable") {
+          if (activeReservationId) {
+            await releaseChurchPurchaseProductReservation({
+              churchId,
+              reservationId: activeReservationId,
+              headers,
+            });
+            setActiveReservationId(null);
+          }
+          setSubscriptionError(IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);
+          Alert.alert("Subscription unavailable", IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);
+          return;
+        }
+      }
+
       setSubmittingPlan(plan);
       const purchaseResult =
-        plan === "monthly" && assignedProductId && !targetPackage
+        Platform.OS === "ios" && plan === "monthly" && assignedProductId
           ? await purchaseSubscriptionProductId(assignedProductId, {
               identityContext: {
                 churchId,
@@ -2010,14 +2039,22 @@ export default function PaymentsSubscriptionsScreen() {
                 serverSubscriptionActive: freshStatus.serverSubscriptionActive,
               },
             })
-          : await purchaseSubscriptionPackage(targetPackage!, {
-              upgradeFromProductId: switchingFromMonthly ? activeMonthlyProductId || null : null,
-              identityContext: {
-                churchId,
-                userId: sessionUserId,
-                serverSubscriptionActive: freshStatus.serverSubscriptionActive,
-              },
-            });
+          : plan === "monthly" && assignedProductId && !exactMonthlyPackage
+            ? await purchaseSubscriptionProductId(assignedProductId, {
+                identityContext: {
+                  churchId,
+                  userId: sessionUserId,
+                  serverSubscriptionActive: freshStatus.serverSubscriptionActive,
+                },
+              })
+            : await purchaseSubscriptionPackage(exactMonthlyPackage || targetPackage!, {
+                upgradeFromProductId: switchingFromMonthly ? activeMonthlyProductId || null : null,
+                identityContext: {
+                  churchId,
+                  userId: sessionUserId,
+                  serverSubscriptionActive: freshStatus.serverSubscriptionActive,
+                },
+              });
 
       let info = purchaseResult.customerInfo;
       if (switchingFromMonthly) {
@@ -2363,27 +2400,32 @@ export default function PaymentsSubscriptionsScreen() {
   const tabBarClearance = 96;
 
   const churchSubscriptionActive = serverSubscriptionActive;
-  const assignedProductId = String(
-    assignedMonthlyProductId || monthlyPackage?.product.identifier || ""
-  ).trim();
+  // Prefer server assignment — never treat a non-matching package SKU as the assigned product.
+  const assignedProductId = String(assignedMonthlyProductId || "").trim();
+  const exactAssignedMonthlyPackage = packageMatchesAssignedProductId(
+    monthlyPackage,
+    assignedProductId
+  )
+    ? monthlyPackage
+    : null;
   const monthlyTrialEligible = resolveMonthlyIntroTrialEligible(
     customerInfo,
-    monthlyPackage,
+    exactAssignedMonthlyPackage,
     monthlyIntroEligibility
   );
-  const selectedProductHasOwnIntro = monthlyPackageHasIntroOffer(monthlyPackage);
-  // iOS: trial wording only for premium_monthly (when eligible), or G2–G5 when
-  // that exact selected product has its own StoreKit/RC intro offer.
+  const selectedProductHasOwnIntro = monthlyPackageHasIntroOffer(exactAssignedMonthlyPackage);
+  // iOS: trial wording only for the exact assigned product's own intro — never inherit
+  // premium_monthly's trial when assignment is church_premium_monthly_g2…g5.
   const iosAllowsTrialWording =
     Platform.OS !== "ios" ||
-    assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID ||
+    (assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID && selectedProductHasOwnIntro) ||
     (isIosPremiumRotationMonthlyProductId(assignedProductId) && selectedProductHasOwnIntro);
   const showMonthlyFreeTrial =
     !churchSubscriptionActive &&
     monthlyTrialEligible &&
     selectedProductHasOwnIntro &&
     iosAllowsTrialWording;
-  const monthlyIntro = resolveMonthlyProductIntro(monthlyPackage);
+  const monthlyIntro = resolveMonthlyProductIntro(exactAssignedMonthlyPackage);
   const monthlyTrialDays = resolveIntroTrialDays(monthlyIntro) ?? 14;
   const monthlyTrialBadge = showMonthlyFreeTrial
     ? `${monthlyTrialDays}-DAY FREE TRIAL`
@@ -2400,10 +2442,10 @@ export default function PaymentsSubscriptionsScreen() {
   const monthlyPurchaseLoading = submittingPlan === "monthly";
   const yearlyPurchaseLoading = submittingPlan === "yearly";
   const revenueCatErrorCode = extractRevenueCatErrorCode(subscriptionError);
-  const hasMonthlyPackage = Boolean(monthlyPackage);
+  const hasMonthlyPackage = Boolean(exactAssignedMonthlyPackage || (!assignedProductId && monthlyPackage));
   const hasOfferings =
     Platform.OS === "ios"
-      ? Boolean(monthlyPackage || assignedMonthlyProductId)
+      ? Boolean(exactAssignedMonthlyPackage || assignedMonthlyProductId)
       : Boolean(monthlyPackage || yearlyPackage);
   const hasIntroOffer = selectedProductHasOwnIntro;
 

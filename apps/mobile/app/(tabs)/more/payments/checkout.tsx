@@ -56,6 +56,9 @@ import {
   purchaseSubscriptionProductId,
   resolveMonthlyPackage,
   resolveYearlyPackage,
+  resolveIosAssignedProductPurchasePath,
+  packageMatchesAssignedProductId,
+  IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE,
   collectDeviceOwnedPremiumProductIds,
   getOrCreateDevicePurchaseScope,
   getOrCreateIosPurchaseSessionId,
@@ -517,16 +520,24 @@ export default function PaymentsCheckoutScreen() {
   const planMeta = PLAN_META[displayPlan];
   const livePrice =
     displayPackage?.product.priceString || planMeta.fallbackPrice;
+  const assignedProductId = String(assignedMonthlyProductId || "").trim();
+  const exactAssignedMonthlyPackage = packageMatchesAssignedProductId(
+    monthlyPackage,
+    assignedProductId
+  )
+    ? monthlyPackage
+    : null;
   const monthlyTrialEligible =
     safePlan === "monthly" &&
-    resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
-  const assignedProductId = String(
-    assignedMonthlyProductId || monthlyPackage?.product.identifier || ""
-  ).trim();
-  const selectedProductHasOwnIntro = monthlyPackageHasIntroOffer(monthlyPackage);
+    resolveMonthlyIntroTrialEligible(
+      customerInfo,
+      exactAssignedMonthlyPackage,
+      monthlyIntroEligibility
+    );
+  const selectedProductHasOwnIntro = monthlyPackageHasIntroOffer(exactAssignedMonthlyPackage);
   const iosAllowsTrialWording =
     Platform.OS !== "ios" ||
-    assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID ||
+    (assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID && selectedProductHasOwnIntro) ||
     (isIosPremiumRotationMonthlyProductId(assignedProductId) && selectedProductHasOwnIntro);
   const showMonthlyFreeTrial =
     safePlan === "monthly" &&
@@ -573,10 +584,12 @@ export default function PaymentsCheckoutScreen() {
         : "Subscribe Monthly"
       : "Subscribe Yearly";
   const revenueCatErrorCode = extractRevenueCatErrorCode(packagesError);
-  const hasMonthlyPackage = Boolean(monthlyPackage);
+  const hasMonthlyPackage = Boolean(
+    exactAssignedMonthlyPackage || (!assignedProductId && monthlyPackage)
+  );
   const hasOfferings =
     Platform.OS === "ios"
-      ? Boolean(monthlyPackage || assignedMonthlyProductId)
+      ? Boolean(exactAssignedMonthlyPackage || assignedMonthlyProductId)
       : Boolean(monthlyPackage || yearlyPackage);
   const hasIntroOffer = selectedProductHasOwnIntro;
 
@@ -851,8 +864,35 @@ export default function PaymentsCheckoutScreen() {
       setSubmitting(true);
 
       const assignedProductId = String(assignedMonthlyProductId || "").trim();
+      const exactMonthlyPackage = packageMatchesAssignedProductId(
+        targetPackage,
+        assignedProductId
+      )
+        ? targetPackage
+        : null;
+
+      // iOS monthly: only purchase the exact assigned Product ID.
+      if (Platform.OS === "ios" && safePlan === "monthly" && assignedProductId) {
+        const purchasePath = await resolveIosAssignedProductPurchasePath(assignedProductId);
+        if (purchasePath.path === "unavailable") {
+          if (activeReservationId) {
+            await releaseChurchPurchaseProductReservation({
+              churchId,
+              reservationId: activeReservationId,
+              headers,
+            });
+            setActiveReservationId(null);
+          }
+          setSubmitting(false);
+          setPackagesError(IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);
+          Alert.alert("Subscription unavailable", IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);
+          return;
+        }
+      }
+
       const purchaseResult =
-        safePlan === "monthly" && assignedProductId && !targetPackage
+        (Platform.OS === "ios" && safePlan === "monthly" && assignedProductId) ||
+        (safePlan === "monthly" && assignedProductId && !exactMonthlyPackage)
           ? await purchaseSubscriptionProductId(assignedProductId, {
               identityContext: {
                 churchId,
@@ -860,7 +900,7 @@ export default function PaymentsCheckoutScreen() {
                 serverSubscriptionActive: freshStatus.serverSubscriptionActive,
               },
             })
-          : await purchaseSubscriptionPackage(targetPackage!, {
+          : await purchaseSubscriptionPackage(exactMonthlyPackage || targetPackage!, {
               identityContext: {
                 churchId,
                 userId: sessionUserId,
