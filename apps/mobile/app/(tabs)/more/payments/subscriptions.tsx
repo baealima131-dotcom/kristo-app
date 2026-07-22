@@ -418,6 +418,76 @@ function PrimaryCta({
  * iOS-only Monthly Plan offer — presentation polish only.
  * Trial vs paid copy is supplied by existing eligibility props; no purchase logic here.
  */
+const IOS_MONTHLY_MINISTRY_BENEFITS: ReadonlyArray<{
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  microLabel: string;
+  support: string;
+  index: string;
+  accent: "gold" | "cyan" | "violet";
+}> = [
+  {
+    icon: "radio-outline",
+    title: "Serve God through media",
+    microLabel: "MEDIA",
+    support: "Sermons • Teachings • Church messages",
+    index: "01",
+    accent: "gold",
+  },
+  {
+    icon: "people-outline",
+    title: "Shepherd your flock",
+    microLabel: "CARE",
+    support: "Members • Ministries • Connection",
+    index: "02",
+    accent: "cyan",
+  },
+  {
+    icon: "sparkles-outline",
+    title: "Grow your church ministry",
+    microLabel: "GROW",
+    support: "Live streaming • Premium media tools",
+    index: "03",
+    accent: "violet",
+  },
+];
+
+const IOS_MONTHLY_ACCENT = {
+  gold: {
+    iconBg: ["rgba(240,208,140,0.28)", "rgba(168,120,40,0.12)"] as const,
+    iconBorder: "rgba(232,200,120,0.55)",
+    iconColor: "rgba(242,220,160,1)",
+    glow: "rgba(220,180,90,0.35)",
+    cardBorder: "rgba(214,180,110,0.28)",
+    cardBg: ["rgba(48,38,22,0.55)", "rgba(18,16,24,0.72)"] as const,
+    micro: "rgba(232,208,150,0.88)",
+    index: "rgba(232,208,150,0.55)",
+    dot: "rgba(240,210,130,0.95)",
+  },
+  cyan: {
+    iconBg: ["rgba(120,220,220,0.24)", "rgba(30,110,120,0.14)"] as const,
+    iconBorder: "rgba(110,210,210,0.48)",
+    iconColor: "rgba(170,240,235,1)",
+    glow: "rgba(80,200,200,0.32)",
+    cardBorder: "rgba(100,200,200,0.26)",
+    cardBg: ["rgba(18,40,48,0.58)", "rgba(14,18,28,0.74)"] as const,
+    micro: "rgba(150,230,225,0.86)",
+    index: "rgba(150,230,225,0.52)",
+    dot: "rgba(130,230,220,0.95)",
+  },
+  violet: {
+    iconBg: ["rgba(180,150,255,0.24)", "rgba(80,60,160,0.16)"] as const,
+    iconBorder: "rgba(170,140,245,0.48)",
+    iconColor: "rgba(210,190,255,1)",
+    glow: "rgba(140,110,230,0.34)",
+    cardBorder: "rgba(160,130,235,0.28)",
+    cardBg: ["rgba(36,28,58,0.58)", "rgba(16,14,28,0.74)"] as const,
+    micro: "rgba(200,180,255,0.86)",
+    index: "rgba(200,180,255,0.52)",
+    dot: "rgba(180,160,255,0.95)",
+  },
+} as const;
+
 function IosMonthlyPlanOfferCard({
   planName,
   description,
@@ -445,134 +515,303 @@ function IosMonthlyPlanOfferCard({
     ? `${trialHeadline || "Free trial"}. ${trialThenLabel || `Then ${displayPrice} per month`}`.trim()
     : `${displayPrice} per month`;
 
+  const benefitsAccessibilityLabel = IOS_MONTHLY_MINISTRY_BENEFITS.map(
+    (benefit) => `${benefit.index}. ${benefit.title}. ${benefit.support}`
+  ).join(" ");
+
   return (
     <View style={s.iosMonthlyOuter}>
-      <LinearGradient
-        colors={[
-          "rgba(214,190,130,0.16)",
-          "rgba(255,255,255,0.05)",
-          "rgba(12,16,28,0.94)",
-          "rgba(8,11,20,0.98)",
-        ]}
-        locations={[0, 0.18, 0.55, 1]}
-        start={{ x: 0.05, y: 0 }}
-        end={{ x: 0.95, y: 1 }}
-        style={s.iosMonthlyCard}
-      >
-        <View pointerEvents="none" style={s.iosMonthlyTopGloss} />
-        <View pointerEvents="none" style={s.iosMonthlySheen} />
-        <View pointerEvents="none" style={s.iosMonthlyInnerBorder} />
+      {/* Outer ambient glows (static — reduced-motion safe) */}
+      <View pointerEvents="none" style={s.iosMonthlyAmbientCyan} />
+      <View pointerEvents="none" style={s.iosMonthlyAmbientViolet} />
 
-        {trialBadge ? (
-          <View style={s.iosMonthlyBadgeRow}>
-            <StatusChip label={trialBadge} tone="green" />
-          </View>
-        ) : null}
+      <View style={s.iosMonthlyShell}>
+        <LinearGradient
+          colors={[
+            "rgba(28,42,72,0.92)",
+            "rgba(16,22,38,0.96)",
+            "rgba(10,12,22,0.98)",
+            "rgba(8,10,18,0.99)",
+          ]}
+          locations={[0, 0.32, 0.7, 1]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.9, y: 1 }}
+          style={s.iosMonthlyCard}
+        >
+          {/* Atmosphere layers */}
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(232,208,150,0.14)", "transparent", "transparent"]}
+            locations={[0, 0.22, 1]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={s.iosMonthlyAtmosphereTop}
+          />
+          <LinearGradient
+            pointerEvents="none"
+            colors={[
+              "transparent",
+              "rgba(90,210,210,0.08)",
+              "transparent",
+              "rgba(150,120,240,0.07)",
+              "transparent",
+            ]}
+            locations={[0, 0.28, 0.5, 0.72, 1]}
+            start={{ x: 0, y: 0.15 }}
+            end={{ x: 1, y: 0.9 }}
+            style={s.iosMonthlyDiagonalSheen}
+          />
+          <View pointerEvents="none" style={s.iosMonthlyTopGloss} />
+          <View pointerEvents="none" style={s.iosMonthlySheenBloom} />
+          <View pointerEvents="none" style={s.iosMonthlyInnerBorder} />
+          <View pointerEvents="none" style={s.iosMonthlyGoldEdge} />
 
-        <View style={s.iosMonthlyTopRow}>
-          <View style={s.iosMonthlyLeft}>
-            <View style={s.iosMonthlyIconTile}>
+          {/* Status + optional trial pill */}
+          <View style={s.iosMonthlyStatusRow}>
+            <View style={s.iosMonthlyStatusPill}>
               <LinearGradient
-                colors={["rgba(232,212,168,0.22)", "rgba(196,171,114,0.08)"]}
+                colors={["rgba(232,208,150,0.22)", "rgba(80,200,200,0.12)"]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
-                style={s.iosMonthlyIconTileFill}
+                style={s.iosMonthlyStatusPillFill}
               >
-                <Ionicons name="calendar-outline" size={20} color="rgba(232,212,168,0.98)" />
+                <View style={s.iosMonthlyStatusDot} />
+                <View style={s.iosMonthlyStatusCopy}>
+                  <Text style={s.iosMonthlyStatusEyebrow} maxFontSizeMultiplier={1.15}>
+                    MEDIA PREMIUM
+                  </Text>
+                  <Text style={s.iosMonthlyStatusSub} numberOfLines={1} maxFontSizeMultiplier={1.2}>
+                    Built for ministry growth
+                  </Text>
+                </View>
               </LinearGradient>
             </View>
-            <View style={s.iosMonthlyCopy}>
-              <Text style={s.iosMonthlyTitle} numberOfLines={1}>
-                {planName}
-              </Text>
-              <Text style={s.iosMonthlySubtitle} numberOfLines={2}>
-                {description}
-              </Text>
+            {showTrial && trialBadge ? (
+              <View style={s.iosMonthlyTrialPill}>
+                <Text style={s.iosMonthlyTrialPillText} numberOfLines={1} maxFontSizeMultiplier={1.15}>
+                  {trialBadge}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          {/* Header: plan + price tile */}
+          <View style={s.iosMonthlyTopRow}>
+            <View style={s.iosMonthlyLeft}>
+              <View style={s.iosMonthlyIconTile}>
+                <LinearGradient
+                  colors={["rgba(250,230,180,0.38)", "rgba(180,140,60,0.16)"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={s.iosMonthlyIconTileFill}
+                >
+                  <Ionicons name="calendar-outline" size={20} color="rgba(250,230,180,1)" />
+                </LinearGradient>
+              </View>
+              <View style={s.iosMonthlyCopy}>
+                <Text style={s.iosMonthlyTitle} numberOfLines={1} maxFontSizeMultiplier={1.2}>
+                  {planName}
+                </Text>
+                <Text style={s.iosMonthlySubtitle} numberOfLines={2} maxFontSizeMultiplier={1.25}>
+                  {description}
+                </Text>
+              </View>
+            </View>
+
+            <View style={s.iosMonthlyHeaderDivider} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
+
+            <View
+              style={s.iosMonthlyPriceTile}
+              accessible
+              accessibilityLabel={priceAccessibilityLabel}
+            >
+              <LinearGradient
+                colors={["rgba(255,255,255,0.1)", "rgba(20,24,36,0.55)"]}
+                start={{ x: 0.2, y: 0 }}
+                end={{ x: 0.8, y: 1 }}
+                style={s.iosMonthlyPriceTileFill}
+              >
+                {showTrial ? (
+                  <>
+                    <Text
+                      style={s.iosMonthlyTrialPrice}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                      maxFontSizeMultiplier={1.2}
+                    >
+                      {trialHeadline}
+                    </Text>
+                    <Text
+                      style={s.iosMonthlyTrialThen}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.82}
+                      maxFontSizeMultiplier={1.2}
+                    >
+                      Then {displayPrice}
+                    </Text>
+                    <Text style={s.iosMonthlyPeriod} numberOfLines={1} maxFontSizeMultiplier={1.2}>
+                      per month
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text
+                      style={s.iosMonthlyPrice}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.82}
+                      maxFontSizeMultiplier={1.2}
+                    >
+                      {displayPrice}
+                    </Text>
+                    <Text style={s.iosMonthlyPeriod} numberOfLines={1} maxFontSizeMultiplier={1.2}>
+                      per month
+                    </Text>
+                  </>
+                )}
+              </LinearGradient>
             </View>
           </View>
 
+          {/* Distinct benefit cards */}
           <View
-            style={s.iosMonthlyPriceCol}
+            style={s.iosMonthlyBenefits}
             accessible
-            accessibilityLabel={priceAccessibilityLabel}
+            accessibilityRole="summary"
+            accessibilityLabel={benefitsAccessibilityLabel}
           >
-            {showTrial ? (
-              <>
-                <Text
-                  style={s.iosMonthlyTrialPrice}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.82}
+            {IOS_MONTHLY_MINISTRY_BENEFITS.map((benefit) => {
+              const accent = IOS_MONTHLY_ACCENT[benefit.accent];
+              return (
+                <View
+                  key={benefit.title}
+                  style={[
+                    s.iosMonthlyBenefitCard,
+                    {
+                      borderColor: accent.cardBorder,
+                      shadowColor: accent.glow,
+                    },
+                  ]}
                 >
-                  {trialHeadline}
-                </Text>
-                <Text
-                  style={s.iosMonthlyTrialThen}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.85}
-                >
-                  Then {displayPrice}
-                </Text>
-                <Text style={s.iosMonthlyPeriod} numberOfLines={1}>
-                  per month
-                </Text>
-              </>
-            ) : (
-              <>
-                <Text
-                  style={s.iosMonthlyPrice}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.85}
-                >
-                  {displayPrice}
-                </Text>
-                <Text style={s.iosMonthlyPeriod} numberOfLines={1}>
-                  per month
-                </Text>
-              </>
-            )}
-          </View>
-        </View>
+                  <LinearGradient
+                    colors={[...accent.cardBg]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.iosMonthlyBenefitCardFill}
+                  >
+                    <View style={s.iosMonthlyBenefitIndexCol}>
+                      <Text style={[s.iosMonthlyBenefitIndex, { color: accent.index }]}>
+                        {benefit.index}
+                      </Text>
+                      <View style={[s.iosMonthlyBenefitDot, { backgroundColor: accent.dot }]} />
+                      <View style={[s.iosMonthlyBenefitConnector, { backgroundColor: accent.dot }]} />
+                    </View>
 
-        <Pressable
-          onPress={onPress}
-          disabled={loading}
-          accessibilityRole="button"
-          accessibilityLabel={ctaLabel}
-          accessibilityState={{ disabled: !!loading, busy: !!loading }}
-          style={({ pressed }) => [
-            s.iosMonthlyCtaOuter,
-            pressed ? s.iosMonthlyCtaPressed : null,
-            loading ? s.ctaDisabled : null,
-          ]}
-        >
-          <LinearGradient
-            colors={["#F0E0B8", "#D4B878", "#B89858"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={s.iosMonthlyCtaGradient}
+                    <View
+                      style={[
+                        s.iosMonthlyBenefitIcon,
+                        {
+                          borderColor: accent.iconBorder,
+                          shadowColor: accent.glow,
+                        },
+                      ]}
+                    >
+                      <LinearGradient
+                        colors={[...accent.iconBg]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={s.iosMonthlyBenefitIconFill}
+                      >
+                        <Ionicons name={benefit.icon} size={15} color={accent.iconColor} />
+                      </LinearGradient>
+                    </View>
+
+                    <View style={s.iosMonthlyBenefitCopy}>
+                      <View style={s.iosMonthlyBenefitTitleRow}>
+                        <Text
+                          style={s.iosMonthlyBenefitTitle}
+                          numberOfLines={1}
+                          maxFontSizeMultiplier={1.2}
+                        >
+                          {benefit.title}
+                        </Text>
+                        <Text
+                          style={[s.iosMonthlyBenefitMicro, { color: accent.micro }]}
+                          numberOfLines={1}
+                          maxFontSizeMultiplier={1.1}
+                        >
+                          {benefit.microLabel}
+                        </Text>
+                      </View>
+                      <Text
+                        style={s.iosMonthlyBenefitDesc}
+                        numberOfLines={2}
+                        maxFontSizeMultiplier={1.25}
+                      >
+                        {benefit.support}
+                      </Text>
+                    </View>
+                  </LinearGradient>
+                </View>
+              );
+            })}
+          </View>
+
+          {/* CTA */}
+          <Pressable
+            onPress={onPress}
+            disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel={ctaLabel}
+            accessibilityState={{ disabled: !!loading, busy: !!loading }}
+            style={({ pressed }) => [
+              s.iosMonthlyCtaOuter,
+              pressed ? s.iosMonthlyCtaPressed : null,
+              loading ? s.iosMonthlyCtaDisabled : null,
+            ]}
           >
-            <View pointerEvents="none" style={s.iosMonthlyCtaTopHighlight} />
-            {loading ? (
-              <ActivityIndicator color="#1A1610" size="small" />
-            ) : (
-              <Text
-                style={s.iosMonthlyCtaText}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.88}
-              >
-                {ctaLabel}
-              </Text>
-            )}
-          </LinearGradient>
-        </Pressable>
-      </LinearGradient>
+            <LinearGradient
+              colors={["#F6E6C0", "#E0C07A", "#C4A05A", "#B08A48"]}
+              locations={[0, 0.35, 0.75, 1]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={s.iosMonthlyCtaGradient}
+            >
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(255,255,255,0.55)", "rgba(255,255,255,0.08)", "transparent"]}
+                locations={[0, 0.35, 1]}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 1 }}
+                style={s.iosMonthlyCtaShine}
+              />
+              <View pointerEvents="none" style={s.iosMonthlyCtaTopHighlight} />
+              {loading ? (
+                <ActivityIndicator color="#1A1610" size="small" />
+              ) : (
+                <View style={s.iosMonthlyCtaContent}>
+                  <Text
+                    style={s.iosMonthlyCtaText}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.86}
+                    maxFontSizeMultiplier={1.2}
+                  >
+                    {ctaLabel}
+                  </Text>
+                  <Ionicons name="arrow-forward" size={16} color="#1A1610" />
+                </View>
+              )}
+            </LinearGradient>
+          </Pressable>
+        </LinearGradient>
+      </View>
     </View>
   );
 }
+
 function CompactSecondaryCta({
   label,
   onPress,
@@ -2758,68 +2997,175 @@ const s = StyleSheet.create({
   },
 
   iosMonthlyOuter: {
-    borderRadius: 24,
-    shadowColor: "rgba(196,171,114,0.55)",
-    shadowOpacity: 0.28,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
+    position: "relative",
+  },
+
+  iosMonthlyAmbientCyan: {
+    position: "absolute",
+    top: 28,
+    left: -10,
+    width: 100,
+    height: 100,
+    borderRadius: 999,
+    backgroundColor: "rgba(70,200,205,0.09)",
+  },
+
+  iosMonthlyAmbientViolet: {
+    position: "absolute",
+    right: -12,
+    bottom: 48,
+    width: 110,
+    height: 110,
+    borderRadius: 999,
+    backgroundColor: "rgba(130,100,230,0.08)",
+  },
+
+  iosMonthlyShell: {
+    borderRadius: 26,
+    shadowColor: "rgba(196,160,90,0.65)",
+    shadowOpacity: 0.35,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 10,
   },
 
   iosMonthlyCard: {
-    borderRadius: 24,
-    paddingTop: 16,
+    borderRadius: 26,
+    paddingTop: 14,
     paddingBottom: 14,
-    paddingHorizontal: 18,
+    paddingHorizontal: 14,
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(214,190,130,0.34)",
-    gap: 12,
+    borderColor: "rgba(214,190,130,0.42)",
+    gap: 14,
+  },
+
+  iosMonthlyAtmosphereTop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+
+  iosMonthlyDiagonalSheen: {
+    ...StyleSheet.absoluteFillObject,
   },
 
   iosMonthlyTopGloss: {
     position: "absolute",
     top: 0,
-    left: 18,
-    right: 18,
+    left: 20,
+    right: 20,
     height: 1.5,
-    backgroundColor: "rgba(255,255,255,0.22)",
+    backgroundColor: "rgba(255,255,255,0.28)",
   },
 
-  iosMonthlySheen: {
+  iosMonthlySheenBloom: {
     position: "absolute",
-    top: -40,
-    right: -30,
-    width: 160,
-    height: 160,
+    top: -50,
+    right: -20,
+    width: 180,
+    height: 180,
     borderRadius: 999,
-    backgroundColor: "rgba(232,212,168,0.07)",
+    backgroundColor: "rgba(232,208,150,0.08)",
   },
 
   iosMonthlyInnerBorder: {
     ...StyleSheet.absoluteFillObject,
-    borderRadius: 24,
+    borderRadius: 26,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderColor: "rgba(255,255,255,0.07)",
   },
 
-  iosMonthlyBadgeRow: {
-    marginBottom: -2,
+  iosMonthlyGoldEdge: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 26,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(232,208,150,0.22)",
+  },
+
+  iosMonthlyStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+
+  iosMonthlyStatusPill: {
+    borderRadius: 999,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(214,190,130,0.38)",
+    shadowColor: "rgba(120,210,210,0.45)",
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+  },
+
+  iosMonthlyStatusPillFill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 11,
+    backgroundColor: "rgba(12,18,30,0.55)",
+  },
+
+  iosMonthlyStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(130,230,220,0.95)",
+  },
+
+  iosMonthlyStatusCopy: {
+    gap: 1,
+    minWidth: 0,
+  },
+
+  iosMonthlyStatusEyebrow: {
+    color: "rgba(232,208,150,0.95)",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1.1,
+  },
+
+  iosMonthlyStatusSub: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: -0.1,
+  },
+
+  iosMonthlyTrialPill: {
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: "rgba(196,171,114,0.16)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(232,208,150,0.45)",
+    shadowColor: "rgba(220,180,90,0.55)",
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+  },
+
+  iosMonthlyTrialPillText: {
+    color: "rgba(242,220,160,0.98)",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.6,
   },
 
   iosMonthlyTopRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
-    paddingTop: 2,
+    gap: 10,
   },
 
   iosMonthlyLeft: {
     flex: 1,
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
+    alignItems: "center",
+    gap: 11,
     minWidth: 0,
   },
 
@@ -2828,34 +3174,33 @@ const s = StyleSheet.create({
     height: 44,
     borderRadius: 14,
     overflow: "hidden",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(214,190,130,0.36)",
-    shadowColor: "rgba(196,171,114,0.4)",
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
+    borderWidth: 1,
+    borderColor: "rgba(240,220,160,0.55)",
+    shadowColor: "rgba(220,180,90,0.7)",
+    shadowOpacity: 0.55,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
   },
 
   iosMonthlyIconTileFill: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(18,22,34,0.55)",
+    backgroundColor: "rgba(24,20,14,0.55)",
   },
 
   iosMonthlyCopy: {
     flex: 1,
     minWidth: 0,
     gap: 3,
-    paddingTop: 2,
   },
 
   iosMonthlyTitle: {
     color: "#FFFFFF",
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: "800",
-    letterSpacing: -0.4,
-    lineHeight: 23,
+    letterSpacing: -0.35,
+    lineHeight: 22,
   },
 
   iosMonthlySubtitle: {
@@ -2865,52 +3210,172 @@ const s = StyleSheet.create({
     lineHeight: 16,
   },
 
-  iosMonthlyPriceCol: {
-    alignItems: "flex-end",
-    justifyContent: "flex-start",
+  iosMonthlyHeaderDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: "stretch",
+    marginVertical: 6,
+    backgroundColor: "rgba(232,208,150,0.28)",
+  },
+
+  iosMonthlyPriceTile: {
     flexShrink: 0,
-    maxWidth: "40%",
-    minWidth: 96,
-    paddingTop: 1,
+    maxWidth: "38%",
+    minWidth: 92,
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+    shadowColor: "rgba(232,208,150,0.4)",
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+  },
+
+  iosMonthlyPriceTileFill: {
+    paddingVertical: 8,
+    paddingHorizontal: 9,
+    alignItems: "flex-end",
     gap: 2,
+    backgroundColor: "rgba(10,14,24,0.45)",
   },
 
   iosMonthlyPrice: {
-    color: "#FFFFFF",
-    fontSize: 22,
+    color: "#F6E6C0",
+    fontSize: 20,
     fontWeight: "900",
-    letterSpacing: -0.6,
-    lineHeight: 26,
+    letterSpacing: -0.55,
+    lineHeight: 24,
     textAlign: "right",
     width: "100%",
   },
 
   iosMonthlyPeriod: {
     color: "rgba(255,255,255,0.55)",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
-    letterSpacing: 0.1,
-    lineHeight: 15,
+    letterSpacing: 0.15,
+    lineHeight: 14,
     textAlign: "right",
   },
 
   iosMonthlyTrialPrice: {
-    color: "#FFFFFF",
-    fontSize: 16,
+    color: "#F6E6C0",
+    fontSize: 15,
     fontWeight: "900",
-    letterSpacing: -0.35,
-    lineHeight: 20,
+    letterSpacing: -0.3,
+    lineHeight: 18,
     textAlign: "right",
     width: "100%",
   },
 
   iosMonthlyTrialThen: {
-    color: "rgba(232,212,168,0.95)",
+    color: "rgba(255,255,255,0.88)",
     fontSize: 12,
     fontWeight: "700",
     lineHeight: 15,
     textAlign: "right",
     width: "100%",
+  },
+
+  iosMonthlyBenefits: {
+    gap: 8,
+  },
+
+  iosMonthlyBenefitCard: {
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+  },
+
+  iosMonthlyBenefitCardFill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    minWidth: 0,
+  },
+
+  iosMonthlyBenefitIndexCol: {
+    width: 18,
+    alignItems: "center",
+    gap: 4,
+  },
+
+  iosMonthlyBenefitIndex: {
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+
+  iosMonthlyBenefitDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 999,
+  },
+
+  iosMonthlyBenefitConnector: {
+    width: 1,
+    height: 14,
+    opacity: 0.35,
+  },
+
+  iosMonthlyBenefitIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+  },
+
+  iosMonthlyBenefitIconFill: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  iosMonthlyBenefitCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+
+  iosMonthlyBenefitTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 0,
+  },
+
+  iosMonthlyBenefitTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: "rgba(255,255,255,0.96)",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+    lineHeight: 17,
+  },
+
+  iosMonthlyBenefitMicro: {
+    flexShrink: 0,
+    fontSize: 8,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    opacity: 0.78,
+  },
+
+  iosMonthlyBenefitDesc: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 11,
+    fontWeight: "600",
+    lineHeight: 15,
   },
 
   iosMonthlyCtaOuter: {
@@ -2918,24 +3383,41 @@ const s = StyleSheet.create({
     borderRadius: 16,
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(240,224,184,0.35)",
+    borderColor: "rgba(246,230,192,0.5)",
+    shadowColor: "rgba(220,180,90,0.75)",
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
 
   iosMonthlyCtaGradient: {
-    minHeight: 52,
+    minHeight: 54,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     overflow: "hidden",
+  },
+
+  iosMonthlyCtaShine: {
+    ...StyleSheet.absoluteFillObject,
   },
 
   iosMonthlyCtaTopHighlight: {
     position: "absolute",
     top: 0,
-    left: 12,
-    right: 12,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.45)",
+    left: 14,
+    right: 14,
+    height: 1.5,
+    backgroundColor: "rgba(255,255,255,0.55)",
+  },
+
+  iosMonthlyCtaContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    maxWidth: "100%",
   },
 
   iosMonthlyCtaText: {
@@ -2943,11 +3425,18 @@ const s = StyleSheet.create({
     fontSize: 16,
     fontWeight: "900",
     letterSpacing: -0.2,
+    flexShrink: 1,
   },
 
   iosMonthlyCtaPressed: {
-    opacity: 0.9,
-    transform: [{ scale: 0.985 }],
+    opacity: 0.88,
+    transform: [{ scale: 0.982 }],
+    shadowOpacity: 0.2,
+  },
+
+  iosMonthlyCtaDisabled: {
+    opacity: 0.7,
+    shadowOpacity: 0.12,
   },
 
   compactSecondaryCta: {
