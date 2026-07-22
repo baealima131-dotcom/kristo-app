@@ -213,6 +213,39 @@ export function applyImmediateChurchPremiumMediaAccessUnlock(args: {
   return publishMediaAccess(cachedMediaAccess, next, session);
 }
 
+/** Clear temporary Premium media-access flags for a church after authoritative inactive. */
+export function applyImmediateChurchPremiumMediaAccessRevoke(args: {
+  churchId: string;
+  userId: string;
+  role?: string;
+  churchRole?: string;
+}) {
+  const session: ChurchMediaAccessSession = {
+    userId: args.userId,
+    role: args.role,
+    churchRole: args.churchRole,
+  };
+  const baseline = evaluateChurchMediaAccessFromSession(session);
+  const key = mediaAccessCacheKey(
+    args.userId,
+    args.churchId,
+    args.role,
+    args.churchRole
+  );
+  if (cachedMediaAccessKey && cachedMediaAccessKey !== key) {
+    // Do not mutate another church's cached access while this church is inactive.
+    return cachedMediaAccess;
+  }
+  const next: ChurchMediaAccessState = {
+    ...(cachedMediaAccess || baseline),
+    ...baseline,
+    subscriptionActive: false,
+    canUseMediaTools: false,
+  };
+  cachedMediaAccessKey = key;
+  return publishMediaAccess(cachedMediaAccess, next, session);
+}
+
 export function seedChurchMediaAccessFromSession(
   session?: ChurchMediaAccessSession | null,
   churchId?: string

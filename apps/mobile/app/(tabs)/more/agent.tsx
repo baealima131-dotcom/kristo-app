@@ -119,6 +119,7 @@ async function refreshSessionChurchSubscriptionCacheIfNeeded(args: {
             ? "monthly"
             : null,
       source: "offline-agent-activation",
+      persistedChurchActivation: true,
     });
   }
 }

@@ -8,7 +8,7 @@ import {
 } from "./churchSubscriptionGate";
 import { refreshChurchMediaIfNeeded } from "./churchResourceRefresh";
 import { refreshChurchMediaAccess } from "./refreshCoordinator";
-import { announceChurchPremiumAccessUnlocked, churchIdsMatch } from "./churchPremiumAccess";
+import { announceChurchPremiumAccessUnlocked, churchIdsMatch, reconcileChurchPremiumAccessFromServer } from "./churchPremiumAccess";
 import { getSessionSync } from "./kristoSession";
 import { getPaymentsState, type SubscriptionPlanKey } from "../store/paymentsStore";
 import {
@@ -699,6 +699,18 @@ export async function fetchChurchMediaPremiumServerStatus(
     explicitServerActive: explicitActive,
   });
 
+  // Authoritative inactive must revoke temporary local unlock (after grace).
+  if (!routeFailed && explicitActive === false && userId) {
+    reconcileChurchPremiumAccessFromServer({
+      churchId: cid,
+      userId,
+      serverSubscriptionActive: false,
+      canUseMediaTools: false,
+      routeFailed: false,
+      source: bustCache ? "server-status-bust-cache" : "server-status-refresh",
+    });
+  }
+
   return {
     churchId: cid,
     serverSubscriptionActive,
@@ -1049,9 +1061,12 @@ export type SyncChurchSubscriptionAfterPurchaseResult = {
   churchActivated: boolean;
   churchSubscriptionActive: boolean;
   canUseMediaTools: boolean;
+  featuresUnlocked?: boolean;
   subscriptionPlan?: "monthly" | "yearly";
   storeOwnershipConflict?: boolean;
   ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
+  /** Backend activation failure message — never unlock when this is set without activation. */
+  activationError?: string | null;
 };
 
 export type SubscriptionPrepurchaseOwnershipResult =
@@ -2085,9 +2100,11 @@ async function attemptChurchSubscriptionActivationWithRetries(args: {
   activated: boolean;
   ownershipConflict?: boolean;
   ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
+  error?: string | null;
 }> {
   const maxAttempts = args.purchaseConfirmed ? (__DEV__ ? 8 : 6) : 3;
   const baseDelayMs = args.purchaseConfirmed ? 1500 : 800;
+  let lastError: string | null = null;
 
   console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_START", {
     churchId: args.churchId,
@@ -2120,14 +2137,35 @@ async function attemptChurchSubscriptionActivationWithRetries(args: {
         activationSource: args.activationSource,
         attempt,
       });
+      console.log("KRISTO_PREMIUM_BACKEND_VERIFIED", {
+        churchId: args.churchId,
+        userId: args.userId,
+        source: args.activationSource === "restore" ? "restore" : args.activationSource === "explicit_sync" ? "explicit_sync" : "purchase",
+        activationSource: args.activationSource,
+        subscriptionPlan: args.subscriptionPlan,
+        attempt,
+      });
+      console.log("KRISTO_PREMIUM_CHURCH_ACTIVATED", {
+        churchId: args.churchId,
+        userId: args.userId,
+        source: args.activationSource === "restore" ? "restore" : args.activationSource === "explicit_sync" ? "explicit_sync" : "purchase",
+        activationSource: args.activationSource,
+        subscriptionPlan: args.subscriptionPlan,
+      });
       return { activated: true };
     }
+
+    lastError =
+      String(result.error || result.reason || "").trim() ||
+      lastError ||
+      "Church subscription could not be verified.";
 
     if (result.ownershipConflict) {
       return {
         activated: false,
         ownershipConflict: true,
         ownershipLock: result.ownershipLock ?? null,
+        error: lastError,
       };
     }
 
@@ -2139,7 +2177,7 @@ async function attemptChurchSubscriptionActivationWithRetries(args: {
         error: result.error,
         status: result.status,
       });
-      return { activated: false };
+      return { activated: false, error: lastError };
     }
 
     if (attempt < maxAttempts - 1) {
@@ -2155,7 +2193,7 @@ async function attemptChurchSubscriptionActivationWithRetries(args: {
     purchaseConfirmed: args.purchaseConfirmed,
     activationSource: args.activationSource,
   });
-  return { activated: false };
+  return { activated: false, error: lastError };
 }
 
 async function syncChurchSubscriptionAfterPurchaseInner(
@@ -2184,6 +2222,20 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     purchaseConfirmed,
     activationSource: activationSource || null,
     isPastor,
+  });
+  console.log("KRISTO_PREMIUM_PURCHASE_SUCCESS", {
+    churchId,
+    userId,
+    source:
+      activationSource === "restore"
+        ? "restore"
+        : activationSource === "explicit_sync"
+          ? "explicit_sync"
+          : "purchase",
+    subscriptionPlan: args.subscriptionPlan,
+    purchaseConfirmed,
+    activationSource: activationSource || null,
+    platform: Platform.OS,
   });
 
   const premiumStatus = await fetchChurchMediaPremiumServerStatus(churchId, args.headers, {
@@ -2303,6 +2355,7 @@ async function syncChurchSubscriptionAfterPurchaseInner(
 
   let storeOwnershipConflict = false;
   let ownershipConflictLock: ChurchMediaSubscriptionOwnershipLock | null = null;
+  let activationError: string | null = null;
 
   if (shouldAttemptChurchActivation && activationSource) {
     const activationResult = await attemptChurchSubscriptionActivationWithRetries({
@@ -2314,6 +2367,7 @@ async function syncChurchSubscriptionAfterPurchaseInner(
       activationSource,
     });
     churchActivated = activationResult.activated;
+    activationError = activationResult.error || null;
     if (activationResult.ownershipConflict) {
       storeOwnershipConflict = true;
       ownershipConflictLock = activationResult.ownershipLock ?? ownershipConflictLock;
@@ -2358,6 +2412,7 @@ async function syncChurchSubscriptionAfterPurchaseInner(
           activationSource: "purchase",
         });
         churchActivated = activationResult.activated;
+        if (activationResult.error) activationError = activationResult.error;
         if (activationResult.ownershipConflict) {
           storeOwnershipConflict = true;
           ownershipConflictLock = activationResult.ownershipLock ?? ownershipConflictLock;
@@ -2390,16 +2445,33 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     force: true,
   });
 
-  const churchSubscriptionActive = Boolean(
+  // Bust-cache server premium status so UI does not wait for a focus refresh.
+  let freshPremiumStatus: ChurchMediaPremiumServerStatus | null = null;
+  try {
+    freshPremiumStatus = await fetchChurchMediaPremiumServerStatus(churchId, args.headers, {
+      bustCache: true,
+    });
+  } catch {
+    freshPremiumStatus = null;
+  }
+
+  const mediaReportedActive = Boolean(
     mediaRefresh.mediaRes?.subscriptionActive ||
       mediaRefresh.mediaRes?.media?.subscriptionActive ||
-      mediaAccess.subscriptionActive === true
+      mediaAccess.subscriptionActive === true ||
+      freshPremiumStatus?.serverSubscriptionActive === true
   );
+
+  // Backend activation is authority: once persisted, unlock immediately even if a
+  // follow-up media GET briefly lags.
+  const churchSubscriptionActive = Boolean(mediaReportedActive || churchActivated);
 
   const canUseMediaTools = Boolean(
     mediaAccess.canUseMediaTools ||
       mediaRefresh.mediaRes?.canUseMediaTools ||
-      mediaRefresh.hostsRes?.canUseMediaTools
+      mediaRefresh.hostsRes?.canUseMediaTools ||
+      freshPremiumStatus?.canUseMediaTools === true ||
+      churchActivated
   );
 
   console.log("KRISTO_MEDIA_ACCESS_REFRESH_AFTER_PURCHASE", {
@@ -2409,24 +2481,65 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     canUseMediaTools,
     churchActivated,
     entitlementActive,
+    mediaReportedActive,
   });
 
-  if (churchSubscriptionActive || canUseMediaTools || churchActivated) {
-    announceChurchPremiumAccessUnlocked({
+  let featuresUnlocked = false;
+  // Unlock event fires ONLY after backend persisted church activation.
+  // Media GET / RC entitlement alone must never emit FEATURES_UNLOCKED.
+  if (churchActivated && !storeOwnershipConflict) {
+    const announced = announceChurchPremiumAccessUnlocked({
       churchId,
       userId,
       role: args.role,
       churchRole: args.churchRole,
       headers: args.headers,
       subscriptionPlan: args.subscriptionPlan,
-      subscriptionActive: churchSubscriptionActive,
-      backendSubscriptionActive: Boolean(
-        mediaRefresh.mediaRes?.media?.subscriptionActive ||
-          mediaRefresh.mediaRes?.subscriptionActive ||
-          churchActivated
-      ),
-      canUseMediaTools,
-      source: "subscription-purchase-activated",
+      subscriptionActive: true,
+      backendSubscriptionActive: true,
+      canUseMediaTools: true,
+      persistedChurchActivation: true,
+      source:
+        activationSource === "restore"
+          ? "subscription-restore-activated"
+          : activationSource === "explicit_sync"
+            ? "subscription-explicit-sync-activated"
+            : "subscription-purchase-activated",
+    });
+    featuresUnlocked = announced;
+    if (announced) {
+      const source =
+        activationSource === "restore"
+          ? "restore"
+          : activationSource === "explicit_sync"
+            ? "explicit_sync"
+            : "purchase";
+      console.log("KRISTO_PREMIUM_FEATURES_UNLOCKED", {
+        churchId,
+        userId,
+        source,
+        activationSource: activationSource || null,
+        subscriptionPlan: args.subscriptionPlan,
+      });
+    }
+  } else if (
+    (purchaseConfirmed || activationSource === "restore" || activationSource === "explicit_sync") &&
+    shouldAttemptChurchActivation
+  ) {
+    console.log("KRISTO_PREMIUM_FEATURES_NOT_UNLOCKED", {
+      churchId,
+      userId,
+      source:
+        activationSource === "restore"
+          ? "restore"
+          : activationSource === "explicit_sync"
+            ? "explicit_sync"
+            : "purchase",
+      activationSource: activationSource || null,
+      activationError,
+      entitlementActive,
+      storeOwnershipConflict,
+      note: "backend verification did not persist church activation — UI stays non-premium",
     });
   }
 
@@ -2435,9 +2548,11 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     churchActivated,
     churchSubscriptionActive,
     canUseMediaTools,
+    featuresUnlocked,
     subscriptionPlan: args.subscriptionPlan,
     storeOwnershipConflict,
     ownershipLock: ownershipConflictLock,
+    activationError: churchActivated ? null : activationError,
   };
 }
 

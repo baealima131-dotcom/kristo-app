@@ -158,6 +158,8 @@ import {
   seedChurchMediaAccessFromSession,
   subscribeChurchMediaAccess,
 } from "../../../src/lib/refreshCoordinator";
+import { churchIdsMatch } from "../../../src/lib/churchPremiumAccess";
+import { onChurchPremiumAccessChanged } from "../../../src/lib/kristoProfileEvents";
 import { logFirstPaintReady } from "../../../src/lib/firstPaint";
 import {
   CHURCH_RESOURCE_REFRESH_MS,
@@ -708,6 +710,29 @@ export default function MediaStudioScreen() {
       );
     });
   }, [session?.userId, session?.role, (session as any)?.churchRole, churchSubscriptionActiveFromApi]);
+
+  useEffect(() => {
+    const cid = String(session?.churchId || "").trim();
+    if (!cid) return;
+    return onChurchPremiumAccessChanged((payload) => {
+      if (!churchIdsMatch(payload.churchId, cid)) return;
+      if (payload.backendSubscriptionActive === true || payload.subscriptionActive === true) {
+        setChurchSubscriptionActiveFromApi(true);
+        setBackendMedia((prev: any) =>
+          prev && typeof prev === "object"
+            ? { ...prev, subscriptionActive: true }
+            : prev
+        );
+        return;
+      }
+      setChurchSubscriptionActiveFromApi(false);
+      setBackendMedia((prev: any) =>
+        prev && typeof prev === "object"
+          ? { ...prev, subscriptionActive: false }
+          : prev
+      );
+    });
+  }, [session?.churchId]);
   const [trustedHosts, setTrustedHosts] = useState<any[]>(mediaSessionPeek?.trustedHosts || []);
   const mediaFetchCountRef = useRef(0);
   const [activeBackendLive, setActiveBackendLive] = useState<any>(null);

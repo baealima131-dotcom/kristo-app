@@ -1187,7 +1187,15 @@ export default function PaymentsSubscriptionsScreen() {
     if (!churchId) return;
     return onChurchPremiumAccessChanged((payload) => {
       if (!churchIdsMatch(payload.churchId, churchId)) return;
-      if (payload.backendSubscriptionActive !== true) return;
+      if (payload.backendSubscriptionActive === true || payload.subscriptionActive === true) {
+        if (payload.subscriptionPlan === "monthly" || payload.subscriptionPlan === "yearly") {
+          setSubscriptionSelectedPlan(payload.subscriptionPlan);
+        }
+        setSubscriptionPlanStatus("active");
+        void refreshMediaPremiumServerStatus(churchId, { bustCache: true });
+        return;
+      }
+      // Authoritative revoke / inactive — clear local Premium Active UI for this church only.
       void refreshMediaPremiumServerStatus(churchId, { bustCache: true });
     });
   }, [churchId, sessionUserId, sessionRole]);
@@ -1606,10 +1614,13 @@ export default function PaymentsSubscriptionsScreen() {
         expiresAt: lock?.expiresAt ?? null,
       });
       return {
+        activated: false,
+        skipped: false as const,
         entitlementActive: false,
         churchActivated: false,
         churchSubscriptionActive: false,
         canUseMediaTools: false,
+        activationError: "This store subscription is locked to another church.",
       };
     }
 
@@ -1637,8 +1648,10 @@ export default function PaymentsSubscriptionsScreen() {
       setStoreConflictModalOpen(true);
     }
 
-    if (sync.churchSubscriptionActive || sync.canUseMediaTools) {
+    if (sync.churchSubscriptionActive || sync.canUseMediaTools || sync.churchActivated) {
       await refreshMediaPremiumServerStatus(resolvedChurchId, { bustCache: true });
+      setSubscriptionSelectedPlan(resolvedPlan);
+      setSubscriptionPlanStatus("active");
     }
 
     return {
@@ -1646,7 +1659,9 @@ export default function PaymentsSubscriptionsScreen() {
       skipped: false as const,
       canUseMediaTools: sync.canUseMediaTools,
       churchSubscriptionActive: sync.churchSubscriptionActive,
+      featuresUnlocked: sync.featuresUnlocked === true,
       storeOwnershipConflict: sync.storeOwnershipConflict === true,
+      activationError: sync.activationError || null,
     };
   }
 
@@ -1850,21 +1865,30 @@ export default function PaymentsSubscriptionsScreen() {
       setStoreConflictModalOpen(true);
       return;
     }
-    if (sync.canUseMediaTools || sync.churchSubscriptionActive) {
+    if (
+      sync.canUseMediaTools ||
+      sync.churchSubscriptionActive ||
+      sync.churchActivated ||
+      sync.featuresUnlocked
+    ) {
       const activePlan = sync.subscriptionPlan || plan;
       setSubscriptionSelectedPlan(activePlan);
       setSubscriptionPlanStatus("active");
+      await refreshMediaPremiumServerStatus(churchId, { bustCache: true });
       Alert.alert(
-        "Subscription synced",
-        "Your church subscription is active and media tools are unlocked."
+        "Premium Active",
+        "Your church subscription is active and Premium Media features are unlocked."
       );
       return;
     }
 
     if (recovery.churchScopedEntitlementActive || sync.entitlementActive) {
       Alert.alert(
-        "Sync in progress",
-        "Subscription found on this device. Church sync is still completing — open Media again in a moment."
+        "Subscription not activated",
+        String(
+          sync.activationError ||
+            "A store subscription was found, but the church could not be verified as Premium yet. No Premium features were unlocked."
+        )
       );
       return;
     }
@@ -2024,6 +2048,21 @@ export default function PaymentsSubscriptionsScreen() {
           initialCustomerInfo: info,
         });
         if (activation.storeOwnershipConflict) return;
+        if (
+          !activation.skipped &&
+          !activation.activated &&
+          !activation.churchSubscriptionActive &&
+          !activation.canUseMediaTools
+        ) {
+          Alert.alert(
+            "Subscription not activated",
+            String(
+              activation.activationError ||
+                "Purchase succeeded, but the church could not be verified as Premium yet. No Premium features were unlocked."
+            )
+          );
+          return;
+        }
         await refreshAfterCustomerInfoChange(info);
       } else if (plan === "monthly") {
         setSubscriptionPlanStatus("active");
@@ -2033,13 +2072,34 @@ export default function PaymentsSubscriptionsScreen() {
           initialCustomerInfo: info,
         });
         if (activation.storeOwnershipConflict) return;
+        if (
+          !activation.skipped &&
+          !activation.activated &&
+          !activation.churchSubscriptionActive &&
+          !activation.canUseMediaTools
+        ) {
+          Alert.alert(
+            "Subscription not activated",
+            String(
+              activation.activationError ||
+                "Purchase succeeded, but the church could not be verified as Premium yet. No Premium features were unlocked."
+            )
+          );
+          return;
+        }
         await refreshAfterCustomerInfoChange(info);
       }
 
       if (plan === "monthly") {
-        Alert.alert("Monthly plan active", "Your church monthly subscription is now active.");
+        Alert.alert(
+          "Premium Active",
+          "Your church monthly subscription is now active. Premium Media features are unlocked."
+        );
       } else if (activeBackendPlan === "yearly") {
-        Alert.alert("Yearly plan active", "Your church yearly subscription is now active.");
+        Alert.alert(
+          "Premium Active",
+          "Your church yearly subscription is now active. Premium Media features are unlocked."
+        );
       }
     } catch (error: any) {
       const detail = getRevenueCatPurchaseErrorDetail(error);
@@ -2531,11 +2591,17 @@ export default function PaymentsSubscriptionsScreen() {
             {screenState === "none" && !failClosedSubscriptionPurchase && !ownershipLockBlocksPurchase ? (
               <>
                 <Text style={s.sectionHeading}>
-                  {Platform.OS === "ios" ? "Start your free trial" : "Choose a plan"}
+                  {Platform.OS === "ios"
+                    ? showMonthlyFreeTrial
+                      ? "Start your free trial"
+                      : "Unlock Media Premium"
+                    : "Choose a plan"}
                 </Text>
                 <Text style={s.sectionSub}>
                   {Platform.OS === "ios"
-                    ? "Unlock Media Premium for your church"
+                    ? showMonthlyFreeTrial
+                      ? "Unlock Media Premium for your church"
+                      : "Power your church with premium media tools"
                     : "Premium ministries live access"}
                 </Text>
                 {Platform.OS === "ios" ? (

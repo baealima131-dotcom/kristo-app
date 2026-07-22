@@ -26,6 +26,8 @@ import {
   type SubscriptionPlanKey,
 } from "../../../../src/store/paymentsStore";
 import { SubscriptionLegalDisclosure } from "../../../../src/components/payments/SubscriptionLegalDisclosure";
+import { churchIdsMatch } from "../../../../src/lib/churchPremiumAccess";
+import { onChurchPremiumAccessChanged } from "../../../../src/lib/kristoProfileEvents";
 import {
   configureChurchMobileSubscriptions,
   formatMonthlySubscriptionPrice,
@@ -185,6 +187,23 @@ export default function PaymentsCheckoutScreen() {
     });
   }, []);
 
+  useEffect(() => {
+    const cid = String(checkoutChurchId || "").trim();
+    if (!cid) return;
+    return onChurchPremiumAccessChanged((payload) => {
+      if (!churchIdsMatch(payload.churchId, cid)) return;
+      if (payload.backendSubscriptionActive === true || payload.subscriptionActive === true) {
+        setServerSubscriptionActive(true);
+        setSubscriptionPlanStatus("active");
+        if (payload.subscriptionPlan === "monthly" || payload.subscriptionPlan === "yearly") {
+          setSubscriptionSelectedPlan(payload.subscriptionPlan);
+        }
+        return;
+      }
+      setServerSubscriptionActive(false);
+    });
+  }, [checkoutChurchId]);
+
   useFocusEffect(
     React.useCallback(() => {
       setRevenueCatDebugRouteEnabled(true);
@@ -278,7 +297,9 @@ export default function PaymentsCheckoutScreen() {
       skipped: false as const,
       canUseMediaTools: sync.canUseMediaTools,
       churchSubscriptionActive: sync.churchSubscriptionActive,
+      featuresUnlocked: sync.featuresUnlocked === true,
       storeOwnershipConflict: sync.storeOwnershipConflict === true,
+      activationError: sync.activationError || null,
     };
   }
 
@@ -679,13 +700,17 @@ export default function PaymentsCheckoutScreen() {
     canUseMediaTools?: boolean;
     churchSubscriptionActive?: boolean;
     activated?: boolean;
+    featuresUnlocked?: boolean;
+    activationError?: string | null;
   }) {
     if (activation.skipped) return "";
-    if (activation.canUseMediaTools) return " Media tools are now unlocked.";
-    if (activation.churchSubscriptionActive || activation.activated) {
-      return " Church subscription synced. Open Media to refresh if tools are still locked.";
+    if (activation.featuresUnlocked || activation.canUseMediaTools) {
+      return " Premium Media features are unlocked.";
     }
-    return " Church subscription sync is still completing. Open Media again in a moment.";
+    if (activation.churchSubscriptionActive || activation.activated) {
+      return " Your church Premium subscription is active.";
+    }
+    return "";
   }
 
   async function handleSyncMediaTools() {
@@ -857,9 +882,36 @@ export default function PaymentsCheckoutScreen() {
         return;
       }
 
-      if (hasPremiumEntitlement(initialInfo)) {
+      if (
+        !activation.skipped &&
+        !activation.activated &&
+        !activation.churchSubscriptionActive &&
+        !activation.canUseMediaTools
+      ) {
+        Alert.alert(
+          "Subscription not activated",
+          String(
+            activation.activationError ||
+              "Purchase succeeded, but the church could not be verified as Premium yet. No Premium features were unlocked."
+          )
+        );
+        return;
+      }
+
+      if (activation.activated || activation.churchSubscriptionActive || activation.canUseMediaTools) {
+        setServerSubscriptionActive(true);
         setSubscriptionPlanStatus("active");
-      } else if (activation.canUseMediaTools || activation.churchSubscriptionActive) {
+        try {
+          const refreshed = await fetchChurchMediaPremiumServerStatus(churchId, headers, {
+            bustCache: true,
+          });
+          setServerSubscriptionActive(refreshed.serverSubscriptionActive === true);
+          setSubscriptionOwnershipLock(refreshed.subscriptionOwnershipLock);
+          setLockStatusKnown(refreshed.lockStatusKnown === true);
+        } catch {
+          // Keep optimistic unlock from activation result.
+        }
+      } else if (hasPremiumEntitlement(initialInfo)) {
         setSubscriptionPlanStatus("active");
       }
 
@@ -875,7 +927,7 @@ export default function PaymentsCheckoutScreen() {
           : "Yearly subscription is now active.";
       const churchNote = churchActivationNote(activation);
 
-      Alert.alert("Success", `${successMessage}${churchNote}`, [
+      Alert.alert("Premium Active", `${successMessage}${churchNote}`, [
         { text: "OK", onPress: () => router.back() },
       ]);
     } catch (error: any) {
@@ -1028,17 +1080,26 @@ export default function PaymentsCheckoutScreen() {
             return;
           }
 
-          if (recovery.sync.canUseMediaTools || recovery.sync.churchSubscriptionActive) {
+          if (
+            recovery.sync.canUseMediaTools ||
+            recovery.sync.churchSubscriptionActive ||
+            recovery.sync.churchActivated ||
+            recovery.sync.featuresUnlocked
+          ) {
             setSubscriptionPlanStatus("active");
+            setServerSubscriptionActive(true);
             Alert.alert(
-              "Subscription synced",
-              "Your church subscription is active and media tools are unlocked.",
+              "Premium Active",
+              "Your church subscription is active and Premium Media features are unlocked.",
               [{ text: "OK", onPress: () => router.back() }]
             );
           } else if (recovery.churchScopedEntitlementActive || recovery.sync.entitlementActive) {
             Alert.alert(
-              "Sync in progress",
-              "Subscription found on this device. Church sync is still completing — open Media again in a moment."
+              "Subscription not activated",
+              String(
+                recovery.sync.activationError ||
+                  "A store subscription was found, but the church could not be verified as Premium yet. No Premium features were unlocked."
+              )
             );
           } else {
             Alert.alert(
