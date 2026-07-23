@@ -5,10 +5,28 @@ import { getUserById } from "@/app/api/auth/_lib/session";
 
 export const RAW_USER_ID_RX = /^u_[a-f0-9]{8,}$/i;
 
+/** Matches local@domain.tld style addresses (privacy: never show as actor names). */
+export const EMAIL_LIKE_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+
+/** Matches an email substring anywhere in notification title/body/preview text. */
+export const EMAIL_IN_TEXT_RX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+
 export function isRawUserId(value?: string | null): boolean {
   const s = String(value || "").trim();
   if (!s) return false;
   return RAW_USER_ID_RX.test(s);
+}
+
+export function isEmailLike(value?: string | null): boolean {
+  const s = String(value || "").trim();
+  if (!s) return false;
+  return EMAIL_LIKE_RX.test(s);
+}
+
+export function isUnsafeActorDisplayName(value?: string | null): boolean {
+  const s = String(value || "").trim();
+  if (!s) return true;
+  return isRawUserId(s) || isEmailLike(s);
 }
 
 export function roleFallbackLabel(role?: string | null): string {
@@ -22,15 +40,28 @@ export function roleFallbackLabel(role?: string | null): string {
   return "Church Admin";
 }
 
+function firstSafePublicName(...candidates: unknown[]): string {
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (value && !isUnsafeActorDisplayName(value)) return value;
+  }
+  return "";
+}
+
 function pickProfileName(profile: any, user: any): string {
-  return String(
-    profile?.fullName ||
-      profile?.displayName ||
-      profile?.name ||
-      user?.displayName ||
-      user?.name ||
-      ""
-  ).trim();
+  // Public-name preference: display name → Kristo ID → (caller applies role/neutral).
+  return firstSafePublicName(
+    profile?.displayName,
+    profile?.fullName,
+    profile?.name,
+    user?.displayName,
+    user?.fullName,
+    user?.name,
+    profile?.kristoId,
+    user?.kristoId,
+    profile?.username,
+    user?.username
+  );
 }
 
 function pickProfileAvatar(profile: any, user: any): string {
@@ -95,15 +126,17 @@ export async function resolveActorFromViewer(
   const actorRole = String(viewer.role || "Member").trim();
   const identity = actorUserId ? await resolveActorIdentity(actorUserId) : { name: "", avatar: "" };
 
+  // Prefer public display name from profile, then Kristo ID / other safe labels,
+  // then request headers / viewer seed (never email). Role is the final fallback.
   const candidates = [
-    String(viewer.name || "").trim(),
-    headerDisplayName(req),
     identity.name,
+    headerDisplayName(req),
+    String(viewer.name || "").trim(),
   ].filter(Boolean);
 
   let actorName = "";
   for (const candidate of candidates) {
-    if (!isRawUserId(candidate)) {
+    if (!isUnsafeActorDisplayName(candidate)) {
       actorName = candidate;
       break;
     }
@@ -121,19 +154,27 @@ export async function resolveActorFromViewer(
   };
 }
 
+export function redactEmailsInText(text: string, replacement = "Member"): string {
+  const safe = String(replacement || "").trim() || "Member";
+  const redacted = isEmailLike(safe) ? "Member" : safe;
+  return String(text || "")
+    .replace(EMAIL_IN_TEXT_RX, redacted)
+    .trim();
+}
+
 export function sanitizeActorInText(text: string, actorUserId?: string, actorName?: string): string {
   let out = String(text || "");
   const safeName = String(actorName || "").trim();
   const uid = String(actorUserId || "").trim();
+  const replacement =
+    safeName && !isUnsafeActorDisplayName(safeName) ? safeName : "Church Admin";
 
-  if (uid && safeName && !isRawUserId(safeName)) {
-    out = out.split(uid).join(safeName);
+  if (uid && replacement) {
+    out = out.split(uid).join(replacement);
   }
 
-  out = out.replace(/\bu_[a-f0-9]{8,}\b/gi, (match) => {
-    if (safeName && !isRawUserId(safeName)) return safeName;
-    return "Church Admin";
-  });
+  out = out.replace(/\bu_[a-f0-9]{8,}\b/gi, replacement);
+  out = redactEmailsInText(out, replacement);
 
   return out.trim();
 }

@@ -1,4 +1,5 @@
 import { createNotification, type NotificationType } from "@/app/api/_lib/notifications";
+import { isUnsafeActorDisplayName } from "@/app/api/_lib/notificationActor";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 
 export type ChurchFeedPostNotificationKind = "testimony" | "prayer_request" | "media";
@@ -16,6 +17,12 @@ function shortCaption(item: unknown): string {
   const text = String((item as any)?.text || (item as any)?.body || "").trim();
   const caption = title || text;
   return caption.slice(0, 140);
+}
+
+function publicActorName(actorName?: string | null): string | undefined {
+  const raw = String(actorName || "").trim();
+  if (!raw || isUnsafeActorDisplayName(raw)) return undefined;
+  return raw;
 }
 
 export async function listActiveChurchMemberUserIds(
@@ -61,7 +68,7 @@ async function fanOutChurchMemberNotifications(args: {
       title: args.title,
       message: args.message,
       targetUserId,
-      actorName: args.actorName,
+      actorName: publicActorName(args.actorName),
       actorUserId: args.actorUserId || authorUserId || undefined,
     });
     sent += 1;
@@ -186,7 +193,7 @@ export async function notifyChurchFeedPostPublished(args: {
     type: copy.type,
     title: copy.title,
     message: copy.message,
-    actorName: args.actorName,
+    actorName: publicActorName(args.actorName),
     actorUserId: authorUserId,
   });
 }

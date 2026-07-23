@@ -169,11 +169,25 @@ const CATEGORY_STYLES: Record<
 };
 
 const RAW_USER_ID_RX = /^u_[a-f0-9]{8,}$/i;
+const EMAIL_LIKE_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+const EMAIL_IN_TEXT_RX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 
 export function isRawUserId(value?: string | null): boolean {
   const s = String(value || "").trim();
   if (!s) return false;
   return RAW_USER_ID_RX.test(s);
+}
+
+export function isEmailLike(value?: string | null): boolean {
+  const s = String(value || "").trim();
+  if (!s) return false;
+  return EMAIL_LIKE_RX.test(s);
+}
+
+export function isUnsafeActorDisplayName(value?: string | null): boolean {
+  const s = String(value || "").trim();
+  if (!s) return true;
+  return isRawUserId(s) || isEmailLike(s);
 }
 
 export function roleFallbackLabel(role?: string | null): string {
@@ -346,7 +360,7 @@ function extractActorNameFromBody(body: string): string {
   for (const rx of patterns) {
     const m = text.match(rx);
     const candidate = String(m?.[1] || "").trim();
-    if (candidate && !isRawUserId(candidate)) return candidate;
+    if (candidate && !isUnsafeActorDisplayName(candidate)) return candidate;
   }
 
   return "";
@@ -358,9 +372,17 @@ function sanitizeUserIdsInText(text: string, replacement = "Church Admin"): stri
   return out.trim();
 }
 
+function redactEmailsInText(text: string, replacement = "Member"): string {
+  const safe = String(replacement || "").trim() || "Member";
+  const redacted = isEmailLike(safe) ? "Member" : safe;
+  return String(text || "")
+    .replace(EMAIL_IN_TEXT_RX, redacted)
+    .trim();
+}
+
 export function safeDisplayName(notification: NotificationLike): string {
   const actorName = String(notification?.actorName || "").trim();
-  if (actorName && !isRawUserId(actorName)) return actorName;
+  if (actorName && !isUnsafeActorDisplayName(actorName)) return actorName;
 
   const body = String(notification?.body || notification?.message || notification?.text || "");
   const fromBody = extractActorNameFromBody(body);
@@ -376,8 +398,20 @@ export function safeDisplayName(notification: NotificationLike): string {
 export function safeBody(notification: NotificationLike): string {
   const raw = String(notification?.body || notification?.message || notification?.text || "");
   const displayName = safeDisplayName(notification);
-  const replacement = isRawUserId(displayName) ? roleFallbackLabel(notification?.actorRole) : displayName;
-  return sanitizeUserIdsInText(raw, replacement || "Church Admin");
+  const replacement = isUnsafeActorDisplayName(displayName)
+    ? roleFallbackLabel(notification?.actorRole)
+    : displayName;
+  const withoutIds = sanitizeUserIdsInText(raw, replacement || "Church Admin");
+  return redactEmailsInText(withoutIds, replacement || "Church Admin");
+}
+
+export function safeNotificationTitle(notification: NotificationLike): string {
+  const raw = String(notification?.title || "Notification").trim() || "Notification";
+  return redactEmailsInText(raw, safeDisplayName(notification));
+}
+
+export function safeNotificationPreview(notification: NotificationLike): string {
+  return safeBody(notification);
 }
 
 function toAbsoluteAvatarUri(raw: string): string {

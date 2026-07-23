@@ -1,4 +1,5 @@
 import { createNotification, getNotificationById } from "@/app/api/_lib/notifications";
+import { isUnsafeActorDisplayName } from "@/app/api/_lib/notificationActor";
 
 export type FeedEngagementNotificationType =
   | "FeedCommentOnPost"
@@ -15,6 +16,12 @@ function previewText(raw: unknown, max = 120): string {
   return String(raw || "")
     .trim()
     .slice(0, max);
+}
+
+function publicActorLabel(actorName?: string | null, fallback = "Someone"): string {
+  const raw = String(actorName || "").trim();
+  if (raw && !isUnsafeActorDisplayName(raw)) return raw;
+  return fallback;
 }
 
 function normalizeCommentId(commentId?: string | null) {
@@ -247,7 +254,7 @@ export async function notifyFeedCommentOnPost(args: {
   }
 
   const snippet = previewText(args.commentText);
-  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const actorLabel = publicActorLabel(args.actorName);
   const message = snippet
     ? `${actorLabel}: ${snippet}`
     : `${actorLabel} commented on your post.`;
@@ -259,7 +266,7 @@ export async function notifyFeedCommentOnPost(args: {
     commentId: args.commentId,
     actorUserId: args.commenterUserId,
     targetUserId: postAuthorUserId,
-    actorName: args.actorName,
+    actorName: actorLabel,
     title: "New comment on your post",
     message,
     logStartEvent: "KRISTO_FEED_COMMENT_NOTIFICATION_CREATE_START",
@@ -280,7 +287,7 @@ export async function notifyFeedReplyToComment(args: {
   actorName?: string;
 }): Promise<boolean> {
   const snippet = previewText(args.replyText);
-  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const actorLabel = publicActorLabel(args.actorName);
   const message = snippet
     ? `${actorLabel}: ${snippet}`
     : `${actorLabel} replied to your comment.`;
@@ -292,7 +299,7 @@ export async function notifyFeedReplyToComment(args: {
     commentId: args.replyCommentId,
     actorUserId: args.replierUserId,
     targetUserId: args.parentCommentAuthorUserId,
-    actorName: args.actorName,
+    actorName: actorLabel,
     title: "New reply to your comment",
     message,
   });
@@ -310,7 +317,7 @@ export async function notifyFeedPostLiked(args: {
   const postAuthorUserId = resolveFeedPostAuthorUserId(args.feedItem);
   if (!postAuthorUserId) return false;
 
-  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const actorLabel = publicActorLabel(args.actorName);
   const message = `${actorLabel} liked your post.`;
 
   const result = await createFeedEngagementNotification({
@@ -319,7 +326,7 @@ export async function notifyFeedPostLiked(args: {
     postId: args.postId,
     actorUserId: args.actorUserId,
     targetUserId: postAuthorUserId,
-    actorName: args.actorName,
+    actorName: actorLabel,
     title: "New like on your post",
     message,
   });
@@ -335,7 +342,7 @@ export async function notifyFeedCommentLiked(args: {
   commentAuthorUserId: string;
   actorName?: string;
 }): Promise<boolean> {
-  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const actorLabel = publicActorLabel(args.actorName);
   const message = `${actorLabel} liked your comment.`;
 
   const result = await createFeedEngagementNotification({
@@ -345,7 +352,7 @@ export async function notifyFeedCommentLiked(args: {
     commentId: args.commentId,
     actorUserId: args.actorUserId,
     targetUserId: args.commentAuthorUserId,
-    actorName: args.actorName,
+    actorName: actorLabel,
     title: "New like on your comment",
     message,
   });
@@ -362,7 +369,7 @@ export async function notifyFeedMention(args: {
   actorName?: string;
   previewText?: string;
 }): Promise<boolean> {
-  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const actorLabel = publicActorLabel(args.actorName);
   const snippet = previewText(args.previewText);
   const message = snippet
     ? `${actorLabel} mentioned you: ${snippet}`
@@ -375,7 +382,7 @@ export async function notifyFeedMention(args: {
     commentId: args.commentId,
     actorUserId: args.actorUserId,
     targetUserId: args.targetUserId,
-    actorName: args.actorName,
+    actorName: actorLabel,
     title: "You were mentioned",
     message,
   });
@@ -399,7 +406,7 @@ export async function notifyPrayerRequestPrayedFor(args: {
   if (!actorUserId || actorUserId === authorUserId) return false;
   if (!isPrayerRequestFeedItem(args.feedItem)) return false;
 
-  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const actorLabel = publicActorLabel(args.actorName);
   const caption = previewText((args.feedItem as any)?.title || (args.feedItem as any)?.text);
   const message = caption
     ? `${actorLabel} prayed for your request: ${caption}`
@@ -412,7 +419,7 @@ export async function notifyPrayerRequestPrayedFor(args: {
     title: "Someone prayed for your request",
     message,
     targetUserId: authorUserId,
-    actorName: args.actorName,
+    actorName: actorLabel,
     actorUserId,
   });
 

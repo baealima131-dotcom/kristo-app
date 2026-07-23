@@ -1,4 +1,5 @@
 import { createNotification } from "@/app/api/_lib/notifications";
+import { isUnsafeActorDisplayName } from "@/app/api/_lib/notificationActor";
 import type { PrivateCallSession } from "@/app/api/_lib/privateCallSessions";
 import { getMessagePrivacySettings } from "@/app/api/_lib/store/messagePrivacySettingsDb";
 
@@ -7,7 +8,11 @@ export function privateCallNotificationId(callId: string, pastorUserId: string) 
 }
 
 export async function notifyPastorPrivateCallIncoming(session: PrivateCallSession) {
-  const callerName = String(session.callerName || "A church member").trim();
+  const rawCallerName = String(session.callerName || "A church member").trim();
+  const callerName =
+    rawCallerName && !isUnsafeActorDisplayName(rawCallerName)
+      ? rawCallerName
+      : "A church member";
   const pastorUserId = String(session.pastorUserId || "").trim();
   const privacy = await getMessagePrivacySettings(pastorUserId);
 

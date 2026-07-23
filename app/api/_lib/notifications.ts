@@ -1,10 +1,10 @@
 import {
   extractLeadingActorUserId,
-  isRawUserId,
+  isUnsafeActorDisplayName,
+  redactEmailsInText,
   resolveActorIdentity,
   roleFallbackLabel,
   sanitizeActorInText,
-  type ActorIdentity,
 } from "@/app/api/_lib/notificationActor";
 import {
   dbCountNotifications,
@@ -97,10 +97,27 @@ export type ClientNotification = {
 
 export { resolveNotificationStoreMode };
 
+function sanitizeStoredActorName(raw?: string | null): string | undefined {
+  const value = String(raw || "").trim();
+  if (!value || isUnsafeActorDisplayName(value)) return undefined;
+  return value;
+}
+
 export async function createNotification(
   input: Omit<AppNotification, "id" | "createdAt" | "isRead"> & { id?: string }
 ): Promise<AppNotification> {
-  return dbCreateNotification(input);
+  const actorName = sanitizeStoredActorName(input.actorName);
+  const message = input.message
+    ? sanitizeActorInText(String(input.message), input.actorUserId, actorName)
+    : input.message;
+  const title = redactEmailsInText(String(input.title || "Notification"), actorName || "Member");
+
+  return dbCreateNotification({
+    ...input,
+    title,
+    message,
+    actorName,
+  });
 }
 
 export async function toClientNotification(n: AppNotification): Promise<ClientNotification> {
@@ -114,9 +131,9 @@ export async function toClientNotification(n: AppNotification): Promise<ClientNo
     actorUserId = extractLeadingActorUserId(rawMessage);
   }
 
-  if ((!actorName || isRawUserId(actorName)) && actorUserId) {
+  if (isUnsafeActorDisplayName(actorName) && actorUserId) {
     const identity = await resolveActorIdentity(actorUserId);
-    if (!actorName || isRawUserId(actorName)) {
+    if (!isUnsafeActorDisplayName(identity.name)) {
       actorName = identity.name;
     }
     if (!actorAvatarUri) {
@@ -124,7 +141,7 @@ export async function toClientNotification(n: AppNotification): Promise<ClientNo
     }
   }
 
-  if (!actorName || isRawUserId(actorName)) {
+  if (isUnsafeActorDisplayName(actorName)) {
     const fallbackRole =
       actorRole ||
       (n.type === "ChurchProfileUpdated" ? "Church_Admin" : "");
@@ -137,14 +154,15 @@ export async function toClientNotification(n: AppNotification): Promise<ClientNo
   const displayBody = isPrivateCallIncoming
     ? `${actorName} is calling you`
     : body;
+  const title = redactEmailsInText(String(n.title || "Notification"), actorName);
 
   return {
     id: n.id,
     churchId: n.churchId,
     type: n.type,
-    title: String(n.title || "Notification"),
+    title,
     body: displayBody,
-    message: isPrivateCallIncoming ? rawMessage : body,
+    message: isPrivateCallIncoming ? redactEmailsInText(rawMessage, actorName) : body,
     actorName,
     actorUserId: actorUserId || undefined,
     actorAvatarUri: actorAvatarUri || undefined,

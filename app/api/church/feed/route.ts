@@ -253,6 +253,11 @@ function emailPrefixFromAddress(email: string) {
   return raw.split("@")[0]?.trim() || "";
 }
 
+function looksLikeEmailAddress(value: string) {
+  const s = String(value || "").trim();
+  return Boolean(s) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(s);
+}
+
 function pickSafeUserDisplayName(args: { userId: string; profile?: any; user?: any }) {
   const { userId, profile, user } = args;
   const emailPrefix = emailPrefixFromAddress(
@@ -263,16 +268,22 @@ function pickSafeUserDisplayName(args: { userId: string; profile?: any; user?: a
     profile?.displayName,
     profile?.name,
     profile?.username,
+    profile?.kristoId,
     user?.fullName,
     user?.displayName,
     user?.name,
     user?.username,
+    user?.kristoId,
     emailPrefix,
   ];
 
   for (const candidate of candidates) {
     const value = String(candidate || "").trim();
-    if (value && !commentAuthorNameLooksLikeUserId(value, userId)) {
+    if (
+      value &&
+      !looksLikeEmailAddress(value) &&
+      !commentAuthorNameLooksLikeUserId(value, userId)
+    ) {
       return value;
     }
   }
@@ -488,11 +499,13 @@ function nameFromViewer(viewer: any) {
     viewer?.displayName,
     viewer?.name,
     viewer?.username,
+    viewer?.kristoId,
     emailPrefix,
   ];
   for (const candidate of candidates) {
     const value = String(candidate || "").trim();
-    if (value) return value;
+    // Never use a full email address as a public actor/author display name.
+    if (value && !looksLikeEmailAddress(value)) return value;
   }
   return "";
 }

@@ -30,7 +30,14 @@ async function devAutoViewer(): Promise<Viewer | null> {
   const role = (process.env.KRISTO_DEV_ROLE as AppRole) || "Member";
   const u = await getUserById(userId);
 
-  return { userId, churchId, role, name: u?.email || u?.id || userId };
+  // Never use email as a public display name (notification privacy).
+  return { userId, churchId, role, name: u?.kristoId || undefined };
+}
+
+function publicViewerName(user?: { kristoId?: string; id?: string } | null): string | undefined {
+  const kristoId = String(user?.kristoId || "").trim();
+  if (kristoId) return kristoId;
+  return undefined;
 }
 
 export async function getViewer(req: NextRequest): Promise<Viewer> {
@@ -43,10 +50,20 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
     const headerUid = String(req.headers.get("x-kristo-user-id") || "").trim();
     const headerRole = String(req.headers.get("x-kristo-role") || "Member").trim();
     const headerChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
+    const headerName = String(
+      req.headers.get("x-kristo-user-name") ||
+        req.headers.get("x-kristo-display-name") ||
+        req.headers.get("x-kristo-name") ||
+        ""
+    ).trim();
 
     if (headerUid) {
       const role = (headerRole as AppRole) || "Member";
-      return { userId: headerUid, name: headerUid, role, churchId: headerChurchId };
+      const name =
+        headerName && !headerName.includes("@") && headerName !== headerUid
+          ? headerName
+          : undefined;
+      return { userId: headerUid, name, role, churchId: headerChurchId };
     }
 
     if (process.env.NODE_ENV === "development" && qDev === "1") {
@@ -54,7 +71,7 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
       const churchId = process.env.KRISTO_DEV_CHURCH_ID || "c-demo-1";
       const role = (process.env.KRISTO_DEV_ROLE as AppRole) || "System_Admin";
       const u = await getUserById(userId);
-      return { userId, churchId, role, name: u?.email || u?.id || userId };
+      return { userId, churchId, role, name: publicViewerName(u) };
     }
   }
 
@@ -68,7 +85,7 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
     const headerChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
     return {
       userId: resolved.userId,
-      name: u?.email || u?.id || resolved.userId,
+      name: publicViewerName(u),
       role: (headerRole as AppRole) || "Member",
       churchId: headerChurchId,
     };
@@ -84,7 +101,7 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
 
   return {
     userId: sess.userId,
-    name: u?.email,
+    name: publicViewerName(u),
     role: "Member",
     churchId: "",
   };

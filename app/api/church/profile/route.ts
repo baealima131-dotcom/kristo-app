@@ -6,6 +6,7 @@ import type { NextRequest } from "next/server";
 import { guard } from "@/app/api/_lib/rbac";
 import { getChurchById, patchChurchProfile } from "@/app/api/_lib/churches";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
+import { resolveActorFromViewer } from "@/app/api/_lib/notificationActor";
 import { addNotification } from "@/app/api/_lib/notifications";
 import { isChurchDatabaseError } from "@/app/api/_lib/store/churchDb";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
@@ -160,7 +161,8 @@ export async function PATCH(req: NextRequest) {
 
     const prevName = String(before?.name || churchId);
     const nextName = String(saved.name || churchId);
-    const actorName = String(viewer.name || viewer.userId || "A leader");
+    const actor = await resolveActorFromViewer(viewer, req);
+    const actorName = actor.actorName || "A leader";
 
     const message =
       prevName !== nextName
@@ -175,6 +177,10 @@ export async function PATCH(req: NextRequest) {
         title: "Church profile updated",
         message,
         targetUserId: m.userId,
+        actorName,
+        actorUserId: actor.actorUserId || viewer.userId,
+        actorAvatarUri: actor.actorAvatarUri || undefined,
+        actorRole: actor.actorRole || viewer.role,
       });
     }
 

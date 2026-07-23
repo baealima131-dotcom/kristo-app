@@ -23,6 +23,7 @@ import {
   safeAvatarUri,
   safeBody,
   safeDisplayName,
+  safeNotificationTitle,
   type NotificationListScope,
 } from "@/src/lib/notificationDisplay";
 import {
@@ -371,6 +372,7 @@ export default function MoreNotificationsScreen() {
     const avatarUri = safeAvatarUri(n);
     const actorName = safeDisplayName(n);
     const displayBody = safeBody(n);
+    const displayTitle = safeNotificationTitle(n);
     const route = resolveNotificationRoute(n);
 
     return (
@@ -417,11 +419,11 @@ export default function MoreNotificationsScreen() {
 
               {!n.read ? (
                 <Text style={s.cardTitle} numberOfLines={expanded ? 3 : 1}>
-                  {n.title}
+                  {displayTitle}
                 </Text>
               ) : (
                 <Text style={s.cardTitleRead} numberOfLines={expanded ? 3 : 1}>
-                  {n.title}
+                  {displayTitle}
                 </Text>
               )}
 

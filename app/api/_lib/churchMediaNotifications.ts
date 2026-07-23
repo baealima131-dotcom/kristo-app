@@ -1,11 +1,18 @@
 import { resolveActualChurchPastorUserId } from "@/app/api/_lib/churchMediaAccess";
 import { createNotification } from "@/app/api/_lib/notifications";
+import { isUnsafeActorDisplayName } from "@/app/api/_lib/notificationActor";
 import {
   patchChurchMediaSubscription,
   type ChurchMediaProfile,
 } from "@/app/api/_lib/store/mediaDb";
 
 const EXPIRING_SOON_MS = 7 * 24 * 60 * 60 * 1000;
+
+function publicHostLabel(hostName?: string | null): string {
+  const raw = String(hostName || "").trim();
+  if (raw && !isUnsafeActorDisplayName(raw)) return raw;
+  return "A church member";
+}
 
 function mediaHostAddedHostId(churchId: string, hostUserId: string) {
   return `ntf_media_host_added_host_${churchId}_${hostUserId}`;
@@ -58,7 +65,7 @@ export async function notifyTrustedMediaHostAdded(args: {
   const pastorUserId =
     String(args.pastorUserId || "").trim() ||
     (await resolveActualChurchPastorUserId(churchId));
-  const hostName = String(args.hostName || "A church member").trim() || "A church member";
+  const hostName = publicHostLabel(args.hostName);
 
   let sent = 0;
 
@@ -102,7 +109,7 @@ export async function notifyTrustedMediaHostRemoved(args: {
   const pastorUserId =
     String(args.pastorUserId || "").trim() ||
     (await resolveActualChurchPastorUserId(churchId));
-  const hostName = String(args.hostName || "A church member").trim() || "A church member";
+  const hostName = publicHostLabel(args.hostName);
 
   let sent = 0;
 

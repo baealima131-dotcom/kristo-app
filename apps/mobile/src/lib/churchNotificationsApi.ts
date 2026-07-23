@@ -2,6 +2,7 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   safeBody,
   safeDisplayName,
+  safeNotificationTitle,
   type NotificationLike,
   type NotificationListScope,
 } from "@/src/lib/notificationDisplay";
@@ -127,9 +128,9 @@ function mapApiNotice(x: any, i: number): ChurchNotificationItem {
     postId: deepLink.postId,
     commentId: deepLink.commentId,
     id: noticeId,
-    title: String(raw.title || "Notification"),
+    title: safeNotificationTitle(raw),
     body: safeBody(raw),
-    message: String(x?.message || x?.body || x?.text || ""),
+    message: safeBody(raw),
     createdAt: String(x?.createdAt || x?.date || ""),
     read: !!(x?.readAt || x?.isRead || x?.read),
     type: String(x?.type || ""),
