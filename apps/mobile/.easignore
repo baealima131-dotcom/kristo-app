@@ -1,13 +1,17 @@
 # EAS reads .easignore from the directory containing eas.json (apps/mobile).
+# Keep the committed native iOS project in the archive; exclude only generated/heavy paths.
 
 node_modules
 .expo
 dist
 build
+DerivedData
 android/app/build
 android/.gradle
 android/build
-ios
+# Generated CocoaPods / Xcode build outputs only — do not exclude the native project.
+ios/Pods
+ios/build
 *.apk
 *.aab
 *.ipa

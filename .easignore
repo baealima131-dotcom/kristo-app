@@ -1,0 +1,55 @@
+# EAS reads .easignore from the git repository root (not apps/mobile).
+# When this file exists, .gitignore files are not used for the upload archive.
+# See https://expo.fyi/eas-build-archive
+
+# Always-heavy / generated
+node_modules
+.expo
+dist
+build
+DerivedData
+.git
+.cursor
+.next
+coverage
+*.log
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Mobile local artifacts
+*.apk
+*.aab
+*.ipa
+*.tar.gz
+*.zip
+*.tgz
+
+# Android generated
+apps/mobile/android/app/build
+apps/mobile/android/.gradle
+apps/mobile/android/build
+
+# iOS: keep the committed native project; exclude generated CocoaPods / Xcode outputs only
+apps/mobile/ios/Pods
+apps/mobile/ios/build
+
+# Local / backup / unused paths
+_restore
+__bak__
+backups
+_disabled-hermes-patch
+.ui-preview
+apps/mobile/_restore
+apps/mobile/__bak__
+apps/mobile/backups
+apps/mobile/_disabled-hermes-patch
+apps/mobile/.ui-preview
+apps/mobile/_ios_backup
+apps/mobile/_bak
+apps/mobile/homeFeedUtils
+apps/mobile/liveSlotsCatalog
+apps/mobile/mediaScheduleLock
+apps/mobile/mediaScheduleSlotTimes
+apps/mobile/scripts/audit-rebuild-parity-report.json
