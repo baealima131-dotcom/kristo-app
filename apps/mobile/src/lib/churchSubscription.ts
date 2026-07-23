@@ -1829,9 +1829,17 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
 
     console.log("KRISTO_SUBSCRIPTION_PREPURCHASE_ROUTE_RESPONSE", {
       status: res.status,
-      body: body ?? (rawText ? rawText.slice(0, 500) : null),
       churchId,
       endpoint,
+      allowed: body?.allowed ?? null,
+      reason: body?.reason ?? null,
+      // Observed store lineage only — not /purchase-product assignment.
+      existingStoreProductId:
+        body?.existingStoreProductId ?? body?.productId ?? null,
+      storeSubscriptionIdentity: body?.storeSubscriptionIdentity ?? null,
+      willRenew: body?.willRenew ?? null,
+      cancelledOverlapPurchasePermitted:
+        body?.cancelledOverlapPurchasePermitted ?? null,
     });
 
     if (body && res.status === 423) {
@@ -2001,6 +2009,10 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
       allowed: true,
       reason: body?.reason ?? "ok",
       storeSubscriptionIdentity: body?.storeSubscriptionIdentity ?? null,
+      existingStoreProductId:
+        body?.existingStoreProductId ?? body?.productId ?? null,
+      note:
+        "existingStoreProductId is observed App Store lineage (may be expired legacy); purchase SKU comes from purchase-product assignment",
       endpoint,
     });
 

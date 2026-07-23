@@ -1406,14 +1406,18 @@ export default function PaymentsSubscriptionsScreen() {
   }) {
     if (Platform.OS !== "ios") return;
     if (args.hasIntroOffer) return;
+    const productId = String(args.monthlyProductId || "").trim();
+    // G2–G5 intentionally have no intro; only premium_monthly carries the 14-day trial.
+    if (!productId || isIosPremiumRotationMonthlyProductId(productId)) return;
+    if (productId !== PREMIUM_MONTHLY_PRODUCT_ID) return;
     console.log("KRISTO_IOS_MONTHLY_TRIAL_NOT_CONFIGURED", {
       churchId: args.churchId,
-      monthlyProductId: args.monthlyProductId,
+      monthlyProductId: productId,
       introEligibility: args.introEligibility ?? null,
       expectedTrial: "14-day free trial",
       expectedPostTrialPrice: "$49.99/month",
       action:
-        "Configure an introductory free trial for the assigned church_premium_monthly_g2…g5 product in App Store Connect and attach it to a RevenueCat offering.",
+        "Configure an introductory free trial for premium_monthly in App Store Connect and attach it to the RevenueCat default offering.",
     });
   }
 
@@ -2414,12 +2418,10 @@ export default function PaymentsSubscriptionsScreen() {
     monthlyIntroEligibility
   );
   const selectedProductHasOwnIntro = monthlyPackageHasIntroOffer(exactAssignedMonthlyPackage);
-  // iOS: trial wording only for the exact assigned product's own intro — never inherit
-  // premium_monthly's trial when assignment is church_premium_monthly_g2…g5.
+  // iOS: trial wording only for premium_monthly. G2–G5 never advertise a free trial.
   const iosAllowsTrialWording =
     Platform.OS !== "ios" ||
-    (assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID && selectedProductHasOwnIntro) ||
-    (isIosPremiumRotationMonthlyProductId(assignedProductId) && selectedProductHasOwnIntro);
+    (assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID && selectedProductHasOwnIntro);
   const showMonthlyFreeTrial =
     !churchSubscriptionActive &&
     monthlyTrialEligible &&
@@ -2460,6 +2462,9 @@ export default function PaymentsSubscriptionsScreen() {
           revenueCatErrorCode != null
             ? `missing-package-offerings-error-${revenueCatErrorCode}`
             : "missing-package";
+      } else if (isIosPremiumRotationMonthlyProductId(assignedProductId)) {
+        // Policy: G2–G5 never advertise a free trial.
+        reasonTrialHidden = "rotation-slot-no-trial-by-policy";
       } else if (!hasIntroOffer) {
         reasonTrialHidden = "missing-intro-offer";
       } else if (
@@ -2495,6 +2500,7 @@ export default function PaymentsSubscriptionsScreen() {
     hasIntroOffer,
     monthlyCtaLabel,
     showMonthlyFreeTrial,
+    assignedProductId,
   ]);
 
   useEffect(() => {

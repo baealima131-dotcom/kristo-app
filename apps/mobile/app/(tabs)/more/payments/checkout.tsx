@@ -535,10 +535,10 @@ export default function PaymentsCheckoutScreen() {
       monthlyIntroEligibility
     );
   const selectedProductHasOwnIntro = monthlyPackageHasIntroOffer(exactAssignedMonthlyPackage);
+  // iOS: trial wording only for premium_monthly. G2–G5 never advertise a free trial.
   const iosAllowsTrialWording =
     Platform.OS !== "ios" ||
-    (assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID && selectedProductHasOwnIntro) ||
-    (isIosPremiumRotationMonthlyProductId(assignedProductId) && selectedProductHasOwnIntro);
+    (assignedProductId === PREMIUM_MONTHLY_PRODUCT_ID && selectedProductHasOwnIntro);
   const showMonthlyFreeTrial =
     safePlan === "monthly" &&
     !isSubscribedForCurrentChurch &&
@@ -605,21 +605,16 @@ export default function PaymentsCheckoutScreen() {
           revenueCatErrorCode != null
             ? `missing-package-offerings-error-${revenueCatErrorCode}`
             : "missing-package";
+      } else if (isIosPremiumRotationMonthlyProductId(assignedProductId)) {
+        reasonTrialHidden = "rotation-slot-no-trial-by-policy";
       } else if (!hasIntroOffer) {
         reasonTrialHidden = "missing-intro-offer";
       } else if (
         Platform.OS === "ios" &&
         assignedProductId &&
-        assignedProductId !== PREMIUM_MONTHLY_PRODUCT_ID &&
-        !isIosPremiumRotationMonthlyProductId(assignedProductId)
+        assignedProductId !== PREMIUM_MONTHLY_PRODUCT_ID
       ) {
         reasonTrialHidden = "assigned-product-not-trial-slot";
-      } else if (
-        Platform.OS === "ios" &&
-        isIosPremiumRotationMonthlyProductId(assignedProductId) &&
-        !hasIntroOffer
-      ) {
-        reasonTrialHidden = "rotation-product-no-own-intro-offer";
       } else if (
         monthlyIntroEligibility ===
         INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_INELIGIBLE

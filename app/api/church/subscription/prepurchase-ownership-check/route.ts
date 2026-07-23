@@ -83,12 +83,17 @@ export async function POST(req: NextRequest) {
     return json(conflict, { status: 409 });
   }
 
+  // existingStoreProductId is observed App Store lineage (may be expired legacy).
+  // It is NOT the purchase SKU — that comes from /purchase-product assignment.
+  const existingStoreProductId = result.verification?.productId ?? null;
   return json({
     ok: true,
     allowed: true,
     reason: result.reason ?? "ok",
     storeSubscriptionIdentity: result.verification?.storeSubscriptionIdentity ?? null,
-    productId: result.verification?.productId ?? null,
+    existingStoreProductId,
+    /** @deprecated Prefer existingStoreProductId — not the assigned purchase product. */
+    productId: existingStoreProductId,
     store: result.verification?.store ?? null,
     willRenew: result.verification?.willRenew ?? result.lock?.willRenew ?? null,
     cancelledOverlapPurchasePermitted:
