@@ -1153,7 +1153,7 @@ export type ChurchPurchaseProductSlotInspection = {
 
 /**
  * Server authority: reserve which store Product ID this church should purchase.
- * iOS returns church_premium_monthly_g2…g5 under best-effort device/owner coordination.
+ * iOS new purchases return premium_monthly only. G2–G5 remain recognition/restore only.
  * Never treat originalTransactionId as Apple ID / purchaser identity.
  */
 export async function fetchChurchPurchaseProductAssignment(args: {

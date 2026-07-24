@@ -2,10 +2,8 @@
  * Mobile-local RevenueCat church premium identifiers.
  * Values must match lib/churchPremiumRevenueCat.ts (server) and RevenueCat Dashboard.
  *
- * iOS new-purchase slot order (monthly only):
- *   1) premium_monthly
- *   2–5) church_premium_monthly_g2…g5
- * premium_yearly is recognition-only and is never offered for new iOS purchases.
+ * iOS new purchases: premium_monthly only ($rc_monthly).
+ * G2–G5 + premium_yearly remain recognition-only for ownership, entitlement, inspect, and restore.
  */
 export const CHURCH_PREMIUM_ENTITLEMENT = "Premium";
 

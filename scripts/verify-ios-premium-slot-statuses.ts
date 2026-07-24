@@ -182,11 +182,17 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
   assert.equal(slots.length, 5);
   assert.equal(slots[0]?.status, "used_by_another_church"); // monthly owned
   assert.equal(slots[1]?.status, "used_by_another_church"); // G2 other church
-  assert.equal(slots[2]?.status, "available"); // G3
-  assert.equal(slots[2]?.purchaseEnabled, true);
+  assert.equal(slots[2]?.status, "available"); // G3 recognized, never purchasable
+  assert.equal(slots[2]?.purchaseEnabled, false);
   assert.equal(slots[3]?.status, "used_by_another_church"); // G4 blocked
   assert.equal(slots[4]?.status, "unavailable_from_apple"); // G5 missing
-  assert.equal(areAllIosPremiumSlotsOccupied(slots), false);
+  // New-purchase pool is only premium_monthly; when it is occupied, catalog is exhausted
+  // even if legacy G slots still report status "available".
+  assert.equal(areAllIosPremiumSlotsOccupied(slots), true);
+  assert.equal(
+    areAllIosPremiumSlotsOccupied(selectIosPremiumNewPurchaseCatalogSlots(slots)),
+    true
+  );
 }
 
 // All slots occupied
@@ -199,7 +205,7 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
   assert.equal(areAllIosPremiumSlotsOccupied(slots), true);
 }
 
-// Purchase buttons only on available
+// Purchase button only on premium_monthly when available — never on G2–G5
 {
   const slots = resolveAllIosPremiumSlotStatuses({
     appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
@@ -207,7 +213,24 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
     deviceOwnedProductIds: [PREMIUM_MONTHLY_PRODUCT_ID],
   });
   const purchasable = slots.filter((slot) => slot.purchaseEnabled).map((s) => s.productId);
-  assert.deepEqual(purchasable, [G4, G5]);
+  assert.deepEqual(purchasable, [], "owned premium_monthly blocks new purchase");
+
+  const freeMonthly = resolveAllIosPremiumSlotStatuses({
+    appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
+    otherChurchProductIds: [G2, G3],
+  });
+  assert.deepEqual(
+    freeMonthly.filter((slot) => slot.purchaseEnabled).map((s) => s.productId),
+    [PREMIUM_MONTHLY_PRODUCT_ID],
+    "only premium_monthly can be purchase-enabled"
+  );
+  assert.equal(
+    freeMonthly.filter((slot) => slot.productId !== PREMIUM_MONTHLY_PRODUCT_ID).every(
+      (slot) => slot.purchaseEnabled === false
+    ),
+    true,
+    "legacy G2–G5 never purchase-enabled even when available"
+  );
 }
 
 // Subscribed church catalog: all five stay visible, none purchasable here
@@ -240,7 +263,7 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
   assert.equal(areAllIosPremiumSlotsOccupied(slots), true);
 }
 
-// currentChurchSubscribed=false keeps free slots purchasable
+// currentChurchSubscribed=false keeps premium_monthly purchasable only
 {
   const slots = resolveAllIosPremiumSlotStatuses({
     appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
@@ -252,7 +275,8 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
     slots.filter((slot) => slot.status === "available_for_another_church").length,
     0
   );
-  assert.equal(slots.filter((slot) => slot.purchaseEnabled).length, 4);
+  assert.equal(slots.filter((slot) => slot.purchaseEnabled).length, 1);
+  assert.equal(slots.find((slot) => slot.purchaseEnabled)?.productId, PREMIUM_MONTHLY_PRODUCT_ID);
 }
 
 // --- Ownership attribution ---

@@ -1218,8 +1218,8 @@ function subscriptionStoreSetupHint(): string {
     );
   }
   return (
-    "App Store products are not available yet. Configure church_premium_monthly_g2…g5 " +
-    "in App Store Connect (Kristo Premium G2–G5), attach them to RevenueCat entitlement Premium, " +
+    "App Store products are not available yet. Configure premium_monthly " +
+    "in App Store Connect (Current Offering $rc_monthly), attach it to RevenueCat entitlement Premium, " +
     "and ensure the backend purchase-product assignment is reachable."
   );
 }
@@ -2857,28 +2857,42 @@ export function resolveMonthlyPackage(
     return null;
   }
 
-  // No assigned preference (Android / legacy): match any known monthly premium product.
-  for (const productId of CHURCH_PREMIUM_PRODUCT_IDS) {
-    if (!isMonthlyChurchPremiumProductId(productId)) continue;
-    const match = findPackageByProductId(offerings, productId);
-    if (match) return match;
+  // No assigned preference (Android / generic): only premium_monthly.
+  // Never match legacy iOS G2–G5 SKUs for a new purchase package.
+  const exactMonthly = findPackageByProductId(offerings, PREMIUM_MONTHLY_PRODUCT_ID);
+  if (
+    exactMonthly &&
+    String(exactMonthly.product.identifier || "").trim() === PREMIUM_MONTHLY_PRODUCT_ID
+  ) {
+    return exactMonthly;
   }
 
   const current = offerings.current;
   if (!current) return null;
 
-  if (current.monthly) return current.monthly;
+  if (
+    current.monthly &&
+    String(current.monthly.product.identifier || "").trim() === PREMIUM_MONTHLY_PRODUCT_ID
+  ) {
+    return current.monthly;
+  }
 
   const byType =
-    current.availablePackages?.find((pkg) => pkg.packageType === PACKAGE_TYPE.MONTHLY) || null;
+    current.availablePackages?.find(
+      (pkg) =>
+        pkg.packageType === PACKAGE_TYPE.MONTHLY &&
+        String(pkg.product.identifier || "").trim() === PREMIUM_MONTHLY_PRODUCT_ID
+    ) || null;
   if (byType) return byType;
 
   const byText =
-    current.availablePackages?.find((pkg) =>
-      /church_premium_monthly_g[2-5]|premium_monthly|month|monthly/i.test(
+    current.availablePackages?.find((pkg) => {
+      const productId = String(pkg.product.identifier || "").trim();
+      if (productId !== PREMIUM_MONTHLY_PRODUCT_ID) return false;
+      return /premium_monthly|month|monthly|\$rc_monthly/i.test(
         `${pkg.packageType} ${pkg.identifier} ${pkg.product.identifier} ${pkg.product.title} ${pkg.product.description}`
-      )
-    ) || null;
+      );
+    }) || null;
 
   return byText;
 }

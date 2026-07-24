@@ -160,20 +160,38 @@ export function resolveAllIosPremiumSlotStatuses(args: {
       args.currentChurchSubscribed === true && resolved === "available"
         ? "available_for_another_church"
         : resolved;
+    const purchasable = slot.productId === PREMIUM_MONTHLY_PRODUCT_ID;
     return {
       ...slot,
       status,
       statusLabel: iosPremiumSlotStatusLabel(status),
-      purchaseEnabled: status === "available",
+      // Only premium_monthly may ever be purchased. G2–G5 stay recognition-only.
+      purchaseEnabled: purchasable && status === "available",
     };
   });
 }
 
+/**
+ * True when no new-purchase product remains.
+ * Only premium_monthly counts; legacy G2–G5 "available" status is ignored.
+ */
 export function areAllIosPremiumSlotsOccupied(
-  slots: Array<{ status: IosPremiumSlotStatusCode; purchaseEnabled?: boolean }>
+  slots: Array<{
+    status: IosPremiumSlotStatusCode;
+    purchaseEnabled?: boolean;
+    productId?: string;
+  }>
 ): boolean {
   if (!slots.length) return false;
-  return slots.every((slot) => slot.status !== "available" && slot.purchaseEnabled !== true);
+  const purchasePool = slots.filter((slot) => {
+    const id = String(slot.productId || "").trim();
+    if (!id) return true; // caller already filtered to the purchase catalog
+    return id === PREMIUM_MONTHLY_PRODUCT_ID;
+  });
+  const relevant = purchasePool.length ? purchasePool : slots;
+  return relevant.every(
+    (slot) => slot.status !== "available" && slot.purchaseEnabled !== true
+  );
 }
 
 export type IosPremiumSlotOwnershipDisplay = {
