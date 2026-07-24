@@ -1104,6 +1104,47 @@ export type ChurchPurchaseProductAssignment = {
   appOwnerScope?: string | null;
   coordination?: string | null;
   legacyProductIds?: string[];
+  blockedProductIds?: string[];
+  deviceOwnedProductIds?: string[];
+};
+
+export type ChurchPurchaseProductSlotInspectionSlot = {
+  productId: string;
+  group: string;
+  slotLabel: string;
+  subscriptionGroupName: string;
+  status:
+    | "available"
+    | "available_for_another_church"
+    | "purchased_for_this_church"
+    | "used_by_another_church"
+    | "unavailable_from_apple"
+    | string;
+  statusLabel: string;
+  purchaseEnabled: boolean;
+  /** Permanent Church ID mapped to this product/originalTransactionId when known. */
+  mappedChurchId?: string | null;
+  /** Where the ownership signal originated (ownership_lock, church_media_sticky, device_owned, reservation, none). */
+  assignmentSource?:
+    | "ownership_lock"
+    | "church_media_sticky"
+    | "device_owned"
+    | "reservation"
+    | "none"
+    | string;
+};
+
+export type ChurchPurchaseProductSlotInspection = {
+  ok: true;
+  platform: "ios";
+  churchId: string;
+  slots: ChurchPurchaseProductSlotInspectionSlot[];
+  blockedProductIds: string[];
+  deviceOwnedProductIds: string[];
+  thisChurchProductIds: string[];
+  otherChurchProductIds: string[];
+  mappedByProductId: Record<string, string>;
+  allSlotsOccupied: boolean;
 };
 
 /**
@@ -1118,6 +1159,7 @@ export async function fetchChurchPurchaseProductAssignment(args: {
   devicePurchaseScope?: string | null;
   purchaseSessionId?: string | null;
   deviceOwnedProductIds?: string[] | null;
+  preferredProductId?: string | null;
 }): Promise<ChurchPurchaseProductAssignment | null> {
   const churchId = String(args.churchId || "").trim();
   if (!churchId) return null;
@@ -1151,6 +1193,8 @@ export async function fetchChurchPurchaseProductAssignment(args: {
       appOwnerScope?: string | null;
       coordination?: string | null;
       legacyProductIds?: string[];
+      blockedProductIds?: string[];
+      deviceOwnedProductIds?: string[];
     }>(
       PURCHASE_PRODUCT_ENDPOINT,
       {
@@ -1160,6 +1204,7 @@ export async function fetchChurchPurchaseProductAssignment(args: {
         devicePurchaseScope: args.devicePurchaseScope || null,
         purchaseSessionId: args.purchaseSessionId || null,
         deviceOwnedProductIds: args.deviceOwnedProductIds || [],
+        preferredProductId: args.preferredProductId || null,
       },
       headers
     );
@@ -1169,6 +1214,7 @@ export async function fetchChurchPurchaseProductAssignment(args: {
       console.log("KRISTO_PURCHASE_PRODUCT_ASSIGN_FAILED", {
         churchId,
         platform,
+        preferredProductId: args.preferredProductId || null,
         error: res?.error ?? null,
       });
       return null;
@@ -1178,6 +1224,7 @@ export async function fetchChurchPurchaseProductAssignment(args: {
       churchId,
       platform,
       productId,
+      preferredProductId: args.preferredProductId || null,
       group: res.group ?? null,
       sticky: res.sticky ?? null,
       reservationId: res.reservationId ?? null,
@@ -1201,11 +1248,130 @@ export async function fetchChurchPurchaseProductAssignment(args: {
       appOwnerScope: res.appOwnerScope ?? null,
       coordination: res.coordination ?? null,
       legacyProductIds: res.legacyProductIds,
+      blockedProductIds: res.blockedProductIds,
+      deviceOwnedProductIds: res.deviceOwnedProductIds,
     };
   } catch (error) {
     console.log("KRISTO_PURCHASE_PRODUCT_ASSIGN_ERROR", {
       churchId,
       platform,
+      preferredProductId: args.preferredProductId || null,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * Inspect all five iOS monthly slots without reserving.
+ * Client still merges StoreKit availability before enabling purchase.
+ */
+export async function fetchChurchPurchaseProductSlotInspection(args: {
+  churchId: string;
+  headers?: Record<string, string>;
+  devicePurchaseScope?: string | null;
+  purchaseSessionId?: string | null;
+  deviceOwnedProductIds?: string[] | null;
+}): Promise<ChurchPurchaseProductSlotInspection | null> {
+  const churchId = String(args.churchId || "").trim();
+  if (!churchId) return null;
+
+  const session = getSessionSync();
+  const headers =
+    args.headers ||
+    (getKristoHeaders({
+      userId: String(session?.userId || "").trim() || undefined,
+      role: (String(session?.role || "").trim() || undefined) as any,
+      churchId,
+      sessionToken: String(session?.sessionToken || "").trim() || undefined,
+    }) as Record<string, string>);
+
+  try {
+    const res = await apiPost<{
+      ok?: boolean;
+      error?: string;
+      platform?: string;
+      churchId?: string;
+      slots?: ChurchPurchaseProductSlotInspectionSlot[];
+      blockedProductIds?: string[];
+      deviceOwnedProductIds?: string[];
+      thisChurchProductIds?: string[];
+      otherChurchProductIds?: string[];
+      mappedByProductId?: Record<string, string>;
+      allSlotsOccupied?: boolean;
+    }>(
+      PURCHASE_PRODUCT_ENDPOINT,
+      {
+        churchId,
+        platform: "ios",
+        action: "inspect",
+        devicePurchaseScope: args.devicePurchaseScope || null,
+        purchaseSessionId: args.purchaseSessionId || null,
+        deviceOwnedProductIds: args.deviceOwnedProductIds || [],
+      },
+      headers
+    );
+
+    if (res?.ok === false || !Array.isArray(res?.slots)) {
+      console.log(
+        "KRISTO_PURCHASE_PRODUCT_INSPECT_FAILED",
+        JSON.stringify({
+          churchId,
+          error: res?.error ?? null,
+          ok: res?.ok ?? null,
+          action: (res as { action?: string } | null)?.action ?? null,
+          productId: (res as { productId?: string } | null)?.productId ?? null,
+          hasSlots: Array.isArray(res?.slots),
+          responseKeys: res && typeof res === "object" ? Object.keys(res) : [],
+        })
+      );
+      return null;
+    }
+
+    console.log(
+      "KRISTO_PURCHASE_PRODUCT_INSPECTED",
+      JSON.stringify({
+        churchId,
+        slotCount: res.slots.length,
+        allSlotsOccupied: res.allSlotsOccupied === true,
+        blockedCount: Array.isArray(res.blockedProductIds) ? res.blockedProductIds.length : 0,
+        thisChurchProductIds: Array.isArray(res.thisChurchProductIds)
+          ? res.thisChurchProductIds
+          : [],
+        otherChurchProductIds: Array.isArray(res.otherChurchProductIds)
+          ? res.otherChurchProductIds
+          : [],
+        mappedByProductId: res.mappedByProductId || {},
+        slots: res.slots.map((slot) => ({
+          productId: slot.productId,
+          status: slot.status,
+          mappedChurchId: slot.mappedChurchId ?? null,
+          purchaseEnabled: slot.purchaseEnabled === true,
+        })),
+      })
+    );
+
+    return {
+      ok: true,
+      platform: "ios",
+      churchId: String(res.churchId || churchId),
+      slots: res.slots,
+      blockedProductIds: Array.isArray(res.blockedProductIds) ? res.blockedProductIds : [],
+      deviceOwnedProductIds: Array.isArray(res.deviceOwnedProductIds)
+        ? res.deviceOwnedProductIds
+        : [],
+      thisChurchProductIds: Array.isArray(res.thisChurchProductIds)
+        ? res.thisChurchProductIds
+        : [],
+      otherChurchProductIds: Array.isArray(res.otherChurchProductIds)
+        ? res.otherChurchProductIds
+        : [],
+      mappedByProductId: res.mappedByProductId || {},
+      allSlotsOccupied: res.allSlotsOccupied === true,
+    };
+  } catch (error) {
+    console.log("KRISTO_PURCHASE_PRODUCT_INSPECT_ERROR", {
+      churchId,
       error: error instanceof Error ? error.message : String(error),
     });
     return null;

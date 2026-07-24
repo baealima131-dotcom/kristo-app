@@ -34,6 +34,7 @@ import {
   PREMIUM_MONTHLY_INTRO_TRIAL_DAYS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
+  IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
   IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
 } from "./churchPremiumRevenueCat";
 
@@ -3091,6 +3092,45 @@ export async function resolvePurchaseTargetForProductId(productId: string): Prom
   } catch {
     return { package: null, storeProduct: null, productId: target, path: "unavailable" };
   }
+}
+
+/**
+ * Load all five iOS monthly purchase-slot products from StoreKit / RevenueCat.
+ * Used by the Church Subscription five-card paywall (not offerings-only).
+ */
+export async function loadIosPremiumPurchaseSlotStoreProducts(): Promise<
+  PurchasesStoreProduct[]
+> {
+  await requireConfiguredPurchases("ios five-slot products");
+  return runRevenueCatGetProducts(
+    [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+    "ios-five-slot-paywall"
+  );
+}
+
+export function resolveStoreProductIntro(
+  product: PurchasesStoreProduct | null | undefined
+): PurchasesIntroPrice | null {
+  if (!product) return null;
+  const record = product as unknown as Record<string, unknown>;
+  return (
+    (record.introPrice as PurchasesIntroPrice | undefined) ??
+    (record.introductoryPrice as PurchasesIntroPrice | undefined) ??
+    null
+  );
+}
+
+export function storeProductHasIntroOffer(
+  product: PurchasesStoreProduct | null | undefined
+): boolean {
+  return Boolean(resolveStoreProductIntro(product));
+}
+
+export function formatStoreProductDisplayPrice(
+  product: PurchasesStoreProduct | null | undefined
+): string | null {
+  const price = String(product?.priceString || "").trim();
+  return price || null;
 }
 
 export async function purchaseSubscriptionProductId(

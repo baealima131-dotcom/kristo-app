@@ -19,6 +19,7 @@ import {
   INTRO_ELIGIBILITY_STATUS,
   type CustomerInfo,
   type PurchasesPackage,
+  type PurchasesStoreProduct,
 } from "react-native-purchases";
 import {
   setPaymentsCurrentModule,
@@ -27,6 +28,8 @@ import {
   type SubscriptionPlanKey,
 } from "../../../../src/store/paymentsStore";
 import { SubscriptionLegalDisclosure } from "../../../../src/components/payments/SubscriptionLegalDisclosure";
+import { IosChurchSubscriptionFiveSlotPaywall } from "../../../../src/components/payments/IosChurchSubscriptionFiveSlotPaywall";
+import type { IosChurchSubscriptionSlotCardModel } from "../../../../src/components/payments/IosChurchSubscriptionFiveSlotPaywall";
 import {
   configureChurchMobileSubscriptions,
   formatSubscriptionSetupError,
@@ -79,17 +82,26 @@ import {
   getRevenueCatPurchaseErrorDetail,
   getActivePremiumEntitlement,
   isExistingStoreSubscriptionError,
+  loadIosPremiumPurchaseSlotStoreProducts,
+  formatStoreProductDisplayPrice,
   EXISTING_STORE_SUBSCRIPTION_SYNC_TITLE,
   EXISTING_STORE_SUBSCRIPTION_SYNC_MESSAGE,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
   IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
   PREMIUM_MONTHLY_PRODUCT_ID,
+  isIosPremiumPurchaseSlotProductId,
   isIosPremiumRotationMonthlyProductId,
 } from "../../../../src/lib/payments/churchPremiumRevenueCat";
 import {
+  areAllIosPremiumSlotsOccupied,
+  iosPremiumSlotLabel,
+  resolveAllIosPremiumSlotStatuses,
+} from "../../../../src/lib/payments/iosPremiumSlotStatus";
+import {
   fetchChurchMediaPremiumServerStatus,
   fetchChurchPurchaseProductAssignment,
+  fetchChurchPurchaseProductSlotInspection,
   releaseChurchPurchaseProductReservation,
   isBackendManagedMediaPremiumStatus,
   isOfflineActivationMediaPremiumStatus,
@@ -854,6 +866,7 @@ function CurrentPlanCard({
   successMessage,
   trialBadge,
   customerInfo,
+  subscribedChurchId,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   planName: string;
@@ -865,6 +878,8 @@ function CurrentPlanCard({
   successMessage: string;
   trialBadge?: string | null;
   customerInfo?: CustomerInfo | null;
+  /** Backend-mapped Church ID for the active product only. */
+  subscribedChurchId?: string | null;
 }) {
   return (
     <GlassCard highlighted>
@@ -880,6 +895,14 @@ function CurrentPlanCard({
         period={period}
         subPrice={subPrice}
       />
+      {subscribedChurchId ? (
+        <View style={s.subscribedChurchMeta}>
+          <Text style={s.subscribedChurchLabel}>SUBSCRIBED CHURCH ID</Text>
+          <Text style={s.subscribedChurchValue} selectable>
+            {subscribedChurchId}
+          </Text>
+        </View>
+      ) : null}
       <CompactMetaRow text={formatBillingMetaRow(billing, customerInfo)} />
       <View style={s.successNote}>
         <Ionicons name="shield-checkmark" size={14} color="rgba(120,220,160,0.95)" />
@@ -1117,6 +1140,10 @@ export default function PaymentsSubscriptionsScreen() {
   /** Session-accumulated Apple already-owned G2–G5 IDs (CustomerInfo can lag). */
   const [sessionBlockedProductIds, setSessionBlockedProductIds] = useState<string[]>([]);
   const [alreadyOwnedRecoveryCount, setAlreadyOwnedRecoveryCount] = useState(0);
+  const [iosSlotCards, setIosSlotCards] = useState<IosChurchSubscriptionSlotCardModel[]>([]);
+  const [iosAllSlotsOccupied, setIosAllSlotsOccupied] = useState(false);
+  const [submittingProductId, setSubmittingProductId] = useState<string | null>(null);
+  const [restoringPurchases, setRestoringPurchases] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const [monthlyIntroEligibility, setMonthlyIntroEligibility] =
     useState<INTRO_ELIGIBILITY_STATUS | null>(null);
@@ -1211,9 +1238,106 @@ export default function PaymentsSubscriptionsScreen() {
     }, [sessionLoading, churchId, sessionUserId, sessionRole])
   );
 
+  /**
+   * Build the five monthly product cards from StoreKit/RevenueCat + backend slot inspection.
+   * Runs for subscribed and unsubscribed churches so all five IAPs stay visible.
+   */
+  async function buildIosFiveSlotCards(args: {
+    churchId: string;
+    headers: Record<string, string>;
+    devicePurchaseScope: string;
+    purchaseSessionId: string | null;
+    deviceOwnedProductIds: string[];
+    currentChurchSubscribed: boolean;
+  }): Promise<IosChurchSubscriptionSlotCardModel[]> {
+    const [inspection, storeProducts] = await Promise.all([
+      fetchChurchPurchaseProductSlotInspection({
+        churchId: args.churchId,
+        headers: args.headers,
+        devicePurchaseScope: args.devicePurchaseScope,
+        purchaseSessionId: args.purchaseSessionId,
+        deviceOwnedProductIds: args.deviceOwnedProductIds,
+      }),
+      loadIosPremiumPurchaseSlotStoreProducts().catch((error) => {
+        console.log("KRISTO_IOS_FIVE_SLOT_PRODUCTS_LOAD_FAILED", {
+          churchId: args.churchId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [] as PurchasesStoreProduct[];
+      }),
+    ]);
+
+    const storeById = new Map(
+      storeProducts.map((product) => [String(product.identifier || "").trim(), product] as const)
+    );
+    const appleAvailableProductIds = storeProducts
+      .map((product) => String(product.identifier || "").trim())
+      .filter((id) => id && isIosPremiumPurchaseSlotProductId(id));
+
+    const ownershipInspectionOk = Boolean(inspection);
+    const mappedByProductId = inspection?.mappedByProductId || {};
+    const inspectionMappedByProductId: Record<string, string | null> = {};
+    for (const slot of inspection?.slots || []) {
+      const productId = String(slot.productId || "").trim();
+      if (!productId) continue;
+      inspectionMappedByProductId[productId] =
+        String(slot.mappedChurchId || "").trim().toUpperCase() || null;
+    }
+
+    const merged = resolveAllIosPremiumSlotStatuses({
+      appleAvailableProductIds,
+      thisChurchProductIds: ownershipInspectionOk ? inspection?.thisChurchProductIds || [] : [],
+      otherChurchProductIds: ownershipInspectionOk ? inspection?.otherChurchProductIds || [] : [],
+      deviceOwnedProductIds: [
+        ...args.deviceOwnedProductIds,
+        ...(inspection?.deviceOwnedProductIds || []),
+      ],
+      blockedProductIds: [
+        ...sessionBlockedProductIds,
+        ...(ownershipInspectionOk ? inspection?.blockedProductIds || [] : []),
+      ],
+      currentChurchSubscribed: args.currentChurchSubscribed,
+    });
+
+    const cards: IosChurchSubscriptionSlotCardModel[] = merged.map((slot) => {
+      const mappedFromInspect =
+        inspectionMappedByProductId[slot.productId] ??
+        (String(mappedByProductId[slot.productId] || "").trim().toUpperCase() || null);
+      const mappedChurchId = ownershipInspectionOk ? mappedFromInspect : null;
+      return {
+        productId: slot.productId,
+        slotLabel: slot.slotLabel,
+        subscriptionGroupName: slot.subscriptionGroupName,
+        status: slot.status,
+        statusLabel: slot.statusLabel,
+        purchaseEnabled: slot.purchaseEnabled,
+        storeProduct: storeById.get(slot.productId) || null,
+        mappedChurchId,
+        ownershipInspectionOk,
+      };
+    });
+
+    console.log(
+      "KRISTO_IOS_FIVE_SLOT_CATALOG_LOADED",
+      JSON.stringify({
+        churchId: args.churchId,
+        currentChurchSubscribed: args.currentChurchSubscribed,
+        ownershipInspectionOk,
+        slotCount: cards.length,
+        productIds: cards.map((card) => card.productId),
+        statuses: cards.map((card) => card.status),
+        mappedChurchIds: cards.map((card) => card.mappedChurchId),
+        purchasableCount: cards.filter((card) => card.purchaseEnabled).length,
+        appleAvailableCount: appleAvailableProductIds.length,
+      })
+    );
+
+    return cards;
+  }
+
   async function loadSubscriptionPackages(
     resolvedChurchId: string,
-    opts?: { forceOfferings?: boolean }
+    opts?: { forceOfferings?: boolean; serverSubscriptionActive?: boolean | null }
   ) {
     const { configured, customerInfo: configuredCustomerInfo } =
       await configureChurchMobileSubscriptions(resolvedChurchId, { syncPurchases: false });
@@ -1231,18 +1355,51 @@ export default function PaymentsSubscriptionsScreen() {
       churchId: resolvedChurchId,
     }) as Record<string, string>;
 
+    const deviceOwnedProductIds = [
+      ...new Set([
+        ...collectDeviceOwnedPremiumProductIds(configuredCustomerInfo),
+        ...sessionBlockedProductIds,
+      ]),
+    ];
+
+    // iOS: the five-product catalog is always built, subscribed or not, so App Review
+    // can locate every In-App Purchase from this one screen.
+    let builtIosSlotCards: IosChurchSubscriptionSlotCardModel[] = [];
+    if (Platform.OS === "ios") {
+      builtIosSlotCards = await buildIosFiveSlotCards({
+        churchId: resolvedChurchId,
+        headers,
+        devicePurchaseScope,
+        purchaseSessionId: sessionId,
+        deviceOwnedProductIds,
+        currentChurchSubscribed: opts?.serverSubscriptionActive === true,
+      });
+      setIosSlotCards(builtIosSlotCards);
+      setIosAllSlotsOccupied(areAllIosPremiumSlotsOccupied(builtIosSlotCards));
+    }
+
+    // Unsubscribed iOS church: no reservation until a purchase tap on an available card.
+    if (Platform.OS === "ios" && opts?.serverSubscriptionActive !== true) {
+      setAssignedMonthlyProductId(null);
+      setActiveReservationId(null);
+
+      return {
+        monthly: null,
+        yearly: null,
+        customerInfo: configuredCustomerInfo,
+        assignedMonthlyProductId: null as string | null,
+        iosSlotCards: builtIosSlotCards,
+      };
+    }
+
+    // Android (and iOS subscribed Current Plan path): keep reserve/assignment behavior.
     const assignment = await fetchChurchPurchaseProductAssignment({
       churchId: resolvedChurchId,
       platform: Platform.OS === "android" ? "android" : "ios",
       headers,
       devicePurchaseScope,
       purchaseSessionId: sessionId,
-      deviceOwnedProductIds: [
-        ...new Set([
-          ...collectDeviceOwnedPremiumProductIds(configuredCustomerInfo),
-          ...sessionBlockedProductIds,
-        ]),
-      ],
+      deviceOwnedProductIds,
     });
     const preferredMonthlyProductId = String(
       assignment?.monthlyProductId || assignment?.productId || ""
@@ -1286,6 +1443,7 @@ export default function PaymentsSubscriptionsScreen() {
       yearly,
       customerInfo: configuredCustomerInfo,
       assignedMonthlyProductId: preferredMonthlyProductId || null,
+      iosSlotCards: builtIosSlotCards,
     };
   }
 
@@ -1455,16 +1613,16 @@ export default function PaymentsSubscriptionsScreen() {
         await clearLegacyPendingPlanSwitchStorage(resolvedChurchId);
 
         const forceOfferingsReload = reloadToken > 0;
-        const [server, packagesResult] = await Promise.all([
-          fetchChurchMediaPremiumServerStatus(resolvedChurchId, headers),
-          loadSubscriptionPackages(resolvedChurchId, {
-            forceOfferings: forceOfferingsReload,
-          }).catch((error) => ({ error } as const)),
-        ]);
+        const server = await fetchChurchMediaPremiumServerStatus(resolvedChurchId, headers);
+        if (!alive) return;
+        setMediaPremiumStatus(server);
+
+        const packagesResult = await loadSubscriptionPackages(resolvedChurchId, {
+          forceOfferings: forceOfferingsReload,
+          serverSubscriptionActive: server.serverSubscriptionActive === true,
+        }).catch((error) => ({ error } as const));
 
         if (!alive) return;
-
-        setMediaPremiumStatus(server);
 
         if (isOfflineActivationMediaPremiumStatus(server)) {
           setMonthlyPackage(null);
@@ -1929,6 +2087,282 @@ export default function PaymentsSubscriptionsScreen() {
     );
   }
 
+  async function refreshIosFiveSlotCards(resolvedChurchId: string) {
+    const cid = String(resolvedChurchId || churchId || "").trim();
+    if (!cid || Platform.OS !== "ios") return;
+    const devicePurchaseScope = await getOrCreateDevicePurchaseScope();
+    const sessionId =
+      purchaseSessionId || (await getOrCreateIosPurchaseSessionId(cid));
+    const headers = getKristoHeaders({
+      userId: sessionUserId,
+      role: sessionRole as any,
+      churchId: cid,
+    }) as Record<string, string>;
+    const owned = [
+      ...new Set([
+        ...collectDeviceOwnedPremiumProductIds(customerInfo),
+        ...sessionBlockedProductIds,
+      ]),
+    ];
+    const cards = await buildIosFiveSlotCards({
+      churchId: cid,
+      headers,
+      devicePurchaseScope,
+      purchaseSessionId: sessionId,
+      deviceOwnedProductIds: owned,
+      currentChurchSubscribed: mediaPremiumStatus?.serverSubscriptionActive === true,
+    });
+    setIosSlotCards(cards);
+    setIosAllSlotsOccupied(areAllIosPremiumSlotsOccupied(cards));
+  }
+
+  async function handleRestorePurchases() {
+    if (restoringPurchases || submittingPlan || submittingProductId) return;
+    if (!churchId) {
+      Alert.alert("Church required", "Sign in with a church before restoring purchases.");
+      return;
+    }
+    if (!isPastorSessionRole(sessionRole) || mediaPremiumStatus?.isActualChurchPastor === false) {
+      Alert.alert(
+        "Pastor only",
+        "Only the church Pastor who manages this church can restore Church Subscription."
+      );
+      return;
+    }
+
+    setRestoringPurchases(true);
+    try {
+      const headers = getKristoHeaders({
+        userId: sessionUserId,
+        role: sessionRole as any,
+        churchId,
+      }) as Record<string, string>;
+
+      // Restore only links a store subscription already mapped to THIS Church ID.
+      // attemptExistingStoreSubscriptionRecovery runs prepurchase ownership + server bind.
+      // Local UI state alone never transfers another church's subscription.
+      await attemptExistingStoreSubscriptionRecovery("monthly");
+      await refreshMediaPremiumServerStatus(churchId, { bustCache: true });
+      if (Platform.OS === "ios") {
+        await refreshIosFiveSlotCards(churchId);
+      }
+    } catch (error: any) {
+      Alert.alert(
+        "Restore failed",
+        String(error?.message || "Could not restore purchases for this church.")
+      );
+    } finally {
+      setRestoringPurchases(false);
+    }
+  }
+
+  async function handlePurchaseIosSlot(productId: string) {
+    if (submittingPlan || submittingProductId) return;
+    const selectedProductId = String(productId || "").trim();
+    if (!selectedProductId || !isIosPremiumPurchaseSlotProductId(selectedProductId)) return;
+
+    if (!churchId) {
+      openCheckoutFallback("monthly");
+      return;
+    }
+
+    if (!isPastorSessionRole(sessionRole) || mediaPremiumStatus?.isActualChurchPastor === false) {
+      Alert.alert(
+        "Pastor only",
+        "Only the church Pastor who manages this church can purchase Church Subscription."
+      );
+      return;
+    }
+
+    const selectedCard = iosSlotCards.find((card) => card.productId === selectedProductId);
+    if (!selectedCard?.purchaseEnabled) {
+      Alert.alert(
+        "Slot unavailable",
+        selectedCard?.statusLabel || "This monthly subscription slot is not available."
+      );
+      return;
+    }
+
+    const headers = getKristoHeaders({
+      userId: sessionUserId,
+      role: sessionRole as any,
+      churchId,
+    }) as Record<string, string>;
+
+    const freshStatus = await fetchChurchMediaPremiumServerStatus(churchId, headers, {
+      bustCache: true,
+    });
+    setMediaPremiumStatus(freshStatus);
+
+    if (freshStatus.serverSubscriptionActive) {
+      Alert.alert(
+        "Already subscribed",
+        "This Church ID already has an active subscription. Manage it from Current Plan."
+      );
+      setReloadToken((value) => value + 1);
+      return;
+    }
+
+    if (shouldFailClosedSubscriptionPurchase({ status: freshStatus })) {
+      setSubscriptionError("Subscription status is still loading. Try again in a moment.");
+      return;
+    }
+
+    const ownershipLock = freshStatus.subscriptionOwnershipLock;
+    if (isSubscriptionOwnershipLockBlockingPurchase(ownershipLock)) {
+      if (ownershipLock?.message) setSubscriptionError(ownershipLock.message);
+      return;
+    }
+
+    let localReservationId: string | null = null;
+
+    try {
+      const prepurchase = await runSubscriptionPrepurchaseOwnershipGate({
+        churchId,
+        headers,
+      });
+      if ((await applyPrepurchaseOwnershipGate(prepurchase)) === "handled") {
+        return;
+      }
+
+      const devicePurchaseScope = await getOrCreateDevicePurchaseScope();
+      const sessionId =
+        purchaseSessionId || (await getOrCreateIosPurchaseSessionId(churchId));
+
+      // Reserve the selected product for this Church ID before Apple's sheet.
+      const assignment = await fetchChurchPurchaseProductAssignment({
+        churchId,
+        platform: "ios",
+        headers,
+        devicePurchaseScope,
+        purchaseSessionId: sessionId,
+        preferredProductId: selectedProductId,
+        deviceOwnedProductIds: [
+          ...new Set([
+            ...collectDeviceOwnedPremiumProductIds(customerInfo),
+            ...sessionBlockedProductIds,
+          ]),
+        ],
+      });
+
+      const reservedProductId = String(
+        assignment?.productId || assignment?.monthlyProductId || ""
+      ).trim();
+      if (!assignment || reservedProductId !== selectedProductId) {
+        Alert.alert(
+          "Could not reserve slot",
+          "That monthly subscription could not be reserved for this Church ID. Choose another available card."
+        );
+        await refreshIosFiveSlotCards(churchId);
+        return;
+      }
+
+      localReservationId = String(assignment.reservationId || "").trim() || null;
+      setAssignedMonthlyProductId(reservedProductId);
+      setActiveReservationId(localReservationId);
+      if (assignment.purchaseSessionId) setPurchaseSessionId(assignment.purchaseSessionId);
+
+      const purchasePath = await resolveIosAssignedProductPurchasePath(reservedProductId);
+      if (purchasePath.path === "unavailable") {
+        if (localReservationId) {
+          await releaseChurchPurchaseProductReservation({
+            churchId,
+            reservationId: localReservationId,
+            headers,
+          });
+          setActiveReservationId(null);
+        }
+        setSubscriptionError(IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);
+        Alert.alert("Subscription unavailable", IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);
+        await refreshIosFiveSlotCards(churchId);
+        return;
+      }
+
+      setSubmittingPlan("monthly");
+      setSubmittingProductId(reservedProductId);
+
+      const purchaseResult = await purchaseSubscriptionProductId(reservedProductId, {
+        identityContext: {
+          churchId,
+          userId: sessionUserId,
+          serverSubscriptionActive: freshStatus.serverSubscriptionActive,
+        },
+      });
+
+      const info = purchaseResult.customerInfo;
+      const activeBackendPlan = resolveActiveSubscriptionPlan(info) || "monthly";
+      setSubscriptionSelectedPlan(activeBackendPlan);
+      setSubscriptionPlanStatus("active");
+
+      const activation = await maybeActivateChurchSubscription(activeBackendPlan, {
+        activationSource: "purchase",
+        purchaseConfirmed: true,
+        initialCustomerInfo: info,
+      });
+      if (activation.storeOwnershipConflict) return;
+      if (
+        !activation.skipped &&
+        !activation.activated &&
+        !activation.churchSubscriptionActive &&
+        !activation.canUseMediaTools
+      ) {
+        Alert.alert(
+          "Subscription not activated",
+          String(
+            activation.activationError ||
+              "Purchase succeeded, but the church could not be verified as Premium yet. No Premium features were unlocked."
+          )
+        );
+        return;
+      }
+
+      await refreshAfterCustomerInfoChange(info);
+      // Keep all five products visible; the purchased slot flips to "this church".
+      await refreshIosFiveSlotCards(churchId);
+      Alert.alert(
+        "Premium Active",
+        "Your church monthly subscription is now active. Premium Media features are unlocked."
+      );
+    } catch (error: any) {
+      const detail = getRevenueCatPurchaseErrorDetail(error);
+      const msg = String(detail.message || "");
+      if (/cancel/i.test(msg) || detail.userCancelled) {
+        if (localReservationId) {
+          await releaseChurchPurchaseProductReservation({
+            churchId,
+            reservationId: localReservationId,
+            headers,
+          });
+          setActiveReservationId(null);
+        }
+        Alert.alert("Purchase cancelled", "No charge was made.");
+      } else if (isExistingStoreSubscriptionError(error)) {
+        const failedProductId = selectedProductId;
+        setSessionBlockedProductIds((prev) =>
+          prev.includes(failedProductId) ? prev : [...prev, failedProductId]
+        );
+        if (localReservationId) {
+          await releaseChurchPurchaseProductReservation({
+            churchId,
+            reservationId: localReservationId,
+            headers,
+          });
+          setActiveReservationId(null);
+        }
+        await refreshIosFiveSlotCards(churchId);
+        Alert.alert(
+          "Slot already owned",
+          "Apple reports this monthly product is already owned. Choose another available Church Subscription card."
+        );
+      } else {
+        Alert.alert("Purchase failed", msg || "Could not complete subscription purchase.");
+      }
+    } finally {
+      setSubmittingPlan(null);
+      setSubmittingProductId(null);
+    }
+  }
+
   async function handlePurchasePlan(plan: SubscriptionPlanKey) {
     if (submittingPlan) return;
 
@@ -2332,6 +2766,16 @@ export default function PaymentsSubscriptionsScreen() {
   });
   const billing = resolveServerPremiumBillingDetails(mediaPremiumStatus);
   const expiryLabel = resolveMediaPremiumExpiryLabel(mediaPremiumStatus, customerInfo);
+  /**
+   * Subscribed iOS churches still list all five monthly IAPs (read-only) so Apple App
+   * Review can inspect every product from this screen. Pastor/manager visibility only.
+   */
+  const showIosSubscribedCatalog =
+    Platform.OS === "ios" &&
+    screenState !== "none" &&
+    iosSlotCards.length > 0 &&
+    isPastorSessionRole(sessionRole) &&
+    mediaPremiumStatus?.isActualChurchPastor !== false;
   const renewalLabel =
     isAppStoreSubscription && billing.renewalDate
       ? formatPremiumSubscriptionRenewalLabel(billing.renewalDate, { customerInfo })
@@ -2406,6 +2850,11 @@ export default function PaymentsSubscriptionsScreen() {
   const churchSubscriptionActive = serverSubscriptionActive;
   // Prefer server assignment — never treat a non-matching package SKU as the assigned product.
   const assignedProductId = String(assignedMonthlyProductId || "").trim();
+  const currentPlanProductId = String(
+    assignedProductId ||
+      getActivePremiumEntitlement(customerInfo)?.productIdentifier ||
+      ""
+  ).trim();
   const exactAssignedMonthlyPackage = packageMatchesAssignedProductId(
     monthlyPackage,
     assignedProductId
@@ -2447,7 +2896,12 @@ export default function PaymentsSubscriptionsScreen() {
   const hasMonthlyPackage = Boolean(exactAssignedMonthlyPackage || (!assignedProductId && monthlyPackage));
   const hasOfferings =
     Platform.OS === "ios"
-      ? Boolean(exactAssignedMonthlyPackage || assignedMonthlyProductId)
+      ? Boolean(
+          exactAssignedMonthlyPackage ||
+            assignedMonthlyProductId ||
+            iosSlotCards.length > 0 ||
+            screenState !== "none"
+        )
       : Boolean(monthlyPackage || yearlyPackage);
   const hasIntroOffer = selectedProductHasOwnIntro;
 
@@ -2549,7 +3003,7 @@ export default function PaymentsSubscriptionsScreen() {
           </Pressable>
 
           <View style={{ flex: 1 }}>
-            <Text style={s.title}>Media Premium</Text>
+            <Text style={s.title}>Church Subscription</Text>
             <Text style={s.sub}>
               {isOfflineActivation || isBackendManaged
                 ? "View your church subscription"
@@ -2603,11 +3057,36 @@ export default function PaymentsSubscriptionsScreen() {
                 <CurrentPlanCard
                   icon="calendar-outline"
                   planName="Monthly Plan"
-                  description="Media Premium for your church"
-                  price={monthlyDisplayPrice}
+                  description={
+                    Platform.OS === "ios" && currentPlanProductId
+                      ? `Church Subscription · Slot ${iosPremiumSlotLabel(currentPlanProductId)} · ${currentPlanProductId}`
+                      : "Media Premium for your church"
+                  }
+                  price={
+                    Platform.OS === "ios"
+                      ? formatStoreProductDisplayPrice(
+                          iosSlotCards.find((card) => card.productId === currentPlanProductId)
+                            ?.storeProduct
+                        ) || monthlyDisplayPrice
+                      : monthlyDisplayPrice
+                  }
                   period="/month"
                   billing={billing}
                   customerInfo={customerInfo}
+                  subscribedChurchId={
+                    Platform.OS === "ios"
+                      ? (() => {
+                          const activeSlot = iosSlotCards.find(
+                            (card) => card.productId === currentPlanProductId
+                          );
+                          if (!activeSlot) return churchId;
+                          if (activeSlot.status === "purchased_for_this_church") {
+                            return activeSlot.mappedChurchId || churchId;
+                          }
+                          return activeSlot.mappedChurchId;
+                        })()
+                      : churchId
+                  }
                   successMessage="You have full access to Media Premium features."
                 />
                 {Platform.OS !== "ios" ? (
@@ -2660,66 +3139,71 @@ export default function PaymentsSubscriptionsScreen() {
               </>
             ) : null}
 
+            {/*
+              App Review visibility: a subscribed Church ID still sees the full five-product
+              catalog below Current Plan. Read-only — no purchase button for this Church ID.
+            */}
+            {showIosSubscribedCatalog ? (
+              <IosChurchSubscriptionFiveSlotPaywall
+                churchId={churchId}
+                slots={iosSlotCards}
+                mode="catalog"
+                canPurchase={false}
+                onPurchase={() => {}}
+              />
+            ) : null}
+
             {screenState === "none" && !failClosedSubscriptionPurchase && !ownershipLockBlocksPurchase ? (
               <>
-                <Text style={s.sectionHeading}>
-                  {Platform.OS === "ios"
-                    ? showMonthlyFreeTrial
-                      ? "Start your free trial"
-                      : "Unlock Media Premium"
-                    : "Choose a plan"}
-                </Text>
-                <Text style={s.sectionSub}>
-                  {Platform.OS === "ios"
-                    ? showMonthlyFreeTrial
-                      ? "Unlock Media Premium for your church"
-                      : "Power your church with premium media tools"
-                    : "Premium ministries live access"}
-                </Text>
                 {Platform.OS === "ios" ? (
-                  <IosMonthlyPlanOfferCard
-                    planName="Monthly Plan"
-                    description="Flexible monthly billing"
-                    displayPrice={monthlyDisplayPrice}
-                    showTrial={showMonthlyFreeTrial}
-                    trialHeadline={
-                      showMonthlyFreeTrial ? `${monthlyTrialDays} Days Free` : null
+                  <IosChurchSubscriptionFiveSlotPaywall
+                    churchId={churchId}
+                    slots={iosSlotCards}
+                    submittingProductId={submittingProductId}
+                    allSlotsOccupied={iosAllSlotsOccupied}
+                    canPurchase={
+                      isPastorSessionRole(sessionRole) &&
+                      mediaPremiumStatus?.isActualChurchPastor !== false
                     }
-                    trialThenLabel={monthlySubPriceText}
-                    trialBadge={monthlyTrialBadge}
-                    ctaLabel={monthlyCtaLabel}
-                    onPress={() => handlePurchasePlan("monthly")}
-                    loading={monthlyPurchaseLoading}
+                    onPurchase={(productId) => {
+                      void handlePurchaseIosSlot(productId);
+                    }}
+                    onRestore={() => {
+                      void handleRestorePurchases();
+                    }}
+                    restoring={restoringPurchases}
                   />
                 ) : (
-                  <PlanOfferCard
-                    icon="calendar-outline"
-                    planName="Monthly Plan"
-                    description="Flexible monthly billing"
-                    price={monthlyPriceText}
-                    period=""
-                    subPrice={monthlySubPriceText}
-                    trialBadge={monthlyTrialBadge}
-                    ctaLabel={monthlyCtaLabel}
-                    onPress={() => handlePurchasePlan("monthly")}
-                    loading={monthlyPurchaseLoading}
-                  />
+                  <>
+                    <Text style={s.sectionHeading}>Choose a plan</Text>
+                    <Text style={s.sectionSub}>Premium ministries live access</Text>
+                    <PlanOfferCard
+                      icon="calendar-outline"
+                      planName="Monthly Plan"
+                      description="Flexible monthly billing"
+                      price={monthlyPriceText}
+                      period=""
+                      subPrice={monthlySubPriceText}
+                      trialBadge={monthlyTrialBadge}
+                      ctaLabel={monthlyCtaLabel}
+                      onPress={() => handlePurchasePlan("monthly")}
+                      loading={monthlyPurchaseLoading}
+                    />
+                    <PlanOfferCard
+                      icon="diamond-outline"
+                      planName="Yearly Plan"
+                      description="Best value for churches"
+                      price={yearlyDisplayPrice}
+                      period="/year"
+                      savingsLabel={yearlySavings.percentLabel}
+                      featurePills={YEARLY_FEATURES}
+                      ctaLabel="Subscribe Yearly"
+                      onPress={() => handlePurchasePlan("yearly")}
+                      loading={yearlyPurchaseLoading}
+                      goldGlow
+                    />
+                  </>
                 )}
-                {Platform.OS !== "ios" ? (
-                  <PlanOfferCard
-                    icon="diamond-outline"
-                    planName="Yearly Plan"
-                    description="Best value for churches"
-                    price={yearlyDisplayPrice}
-                    period="/year"
-                    savingsLabel={yearlySavings.percentLabel}
-                    featurePills={YEARLY_FEATURES}
-                    ctaLabel="Subscribe Yearly"
-                    onPress={() => handlePurchasePlan("yearly")}
-                    loading={yearlyPurchaseLoading}
-                    goldGlow
-                  />
-                ) : null}
               </>
             ) : null}
 
@@ -2933,6 +3417,24 @@ const s = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
     marginBottom: 12,
+  },
+
+  subscribedChurchMeta: {
+    marginTop: 4,
+    marginBottom: 10,
+    gap: 4,
+  },
+  subscribedChurchLabel: {
+    color: "rgba(255,255,255,0.45)",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+    textTransform: "uppercase",
+  },
+  subscribedChurchValue: {
+    color: "rgba(232,208,150,0.95)",
+    fontSize: 14,
+    fontWeight: "900",
   },
 
   bestValueText: {

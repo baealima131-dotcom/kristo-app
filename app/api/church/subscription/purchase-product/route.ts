@@ -6,7 +6,9 @@ import { countsAsRealActiveMembership } from "@/app/api/_lib/demoMemberships";
 import {
   releaseIosPremiumReservation,
   reserveIosPremiumPurchaseProduct,
+  inspectIosPremiumPurchaseSlots,
   IosSubscriptionSlotsExhaustedError,
+  IosPreferredProductUnavailableError,
 } from "@/app/api/_lib/iosPremiumProductAssignment";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { guardAuth } from "@/app/api/_lib/rbac";
@@ -16,6 +18,7 @@ import {
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "@/lib/churchPremiumRevenueCat";
+import { iosPremiumSlotStatusLabel } from "@/lib/iosPremiumSlotStatus";
 
 export const runtime = "nodejs";
 
@@ -110,7 +113,8 @@ async function requireActiveMembershipForChurch(args: {
  * Does NOT treat originalTransactionId as Apple ID / purchaser identity.
  *
  * POST body actions:
- * - default / action=reserve
+ * - default / action=reserve (optional preferredProductId for five-card selection)
+ * - action=inspect (return all five slot statuses without reserving)
  * - action=release (release reservation after Apple already-subscribed)
  */
 export async function GET(req: NextRequest) {
@@ -133,6 +137,7 @@ async function handlePurchaseProduct(req: NextRequest) {
   let devicePurchaseScope = "";
   let purchaseSessionId: string | null = null;
   let reservationId: string | null = null;
+  let preferredProductId: string | null = null;
 
   try {
     if (req.method === "POST") {
@@ -145,6 +150,7 @@ async function handlePurchaseProduct(req: NextRequest) {
       devicePurchaseScope = String(body?.devicePurchaseScope || body?.deviceInstallationId || "").trim();
       purchaseSessionId = String(body?.purchaseSessionId || "").trim() || null;
       reservationId = String(body?.reservationId || "").trim() || null;
+      preferredProductId = String(body?.preferredProductId || "").trim() || null;
       if (Array.isArray(body?.deviceOwnedProductIds)) {
         deviceOwnedProductIds = body.deviceOwnedProductIds
           .map((id: unknown) => String(id || "").trim())
@@ -158,7 +164,9 @@ async function handlePurchaseProduct(req: NextRequest) {
         .trim()
         .toLowerCase();
       if (requestedPlatform) platform = requestedPlatform;
+      action = String(url.searchParams.get("action") || "reserve").trim().toLowerCase() || "reserve";
       devicePurchaseScope = String(url.searchParams.get("devicePurchaseScope") || "").trim();
+      preferredProductId = String(url.searchParams.get("preferredProductId") || "").trim() || null;
     }
   } catch {
     // optional body
@@ -233,6 +241,37 @@ async function handlePurchaseProduct(req: NextRequest) {
     );
   }
 
+  if (action === "inspect") {
+    try {
+      const inspection = await inspectIosPremiumPurchaseSlots({
+        churchId,
+        ownerUserId,
+        devicePurchaseScope,
+        purchaseSessionId,
+        deviceOwnedProductIds,
+      });
+      return json({
+        ok: true,
+        action: "inspect",
+        platform: "ios",
+        churchId: inspection.churchId,
+        slots: inspection.slots,
+        blockedProductIds: inspection.blockedProductIds,
+        deviceOwnedProductIds: inspection.deviceOwnedProductIds,
+        thisChurchProductIds: inspection.thisChurchProductIds,
+        otherChurchProductIds: inspection.otherChurchProductIds,
+        mappedByProductId: inspection.mappedByProductId,
+        allSlotsOccupied: inspection.allSlotsOccupied,
+        legacyProductIds: [...LEGACY_CHURCH_PREMIUM_PRODUCT_IDS],
+        note:
+          "Apple StoreKit availability is applied on-device. Server status reflects ownership locks, device-owned IDs, and reservations only.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return json({ ok: false, error: message, action: "inspect" }, { status: 400 });
+    }
+  }
+
   try {
     const assignment = await reserveIosPremiumPurchaseProduct({
       churchId,
@@ -240,6 +279,7 @@ async function handlePurchaseProduct(req: NextRequest) {
       devicePurchaseScope,
       purchaseSessionId,
       deviceOwnedProductIds,
+      preferredProductId,
     });
 
     return json({
@@ -269,6 +309,9 @@ async function handlePurchaseProduct(req: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const preferredUnavailable =
+      error instanceof IosPreferredProductUnavailableError ||
+      (error as { code?: string } | null)?.code === "IOS_PREFERRED_PRODUCT_UNAVAILABLE";
     const exhausted =
       error instanceof IosSubscriptionSlotsExhaustedError ||
       (error as { code?: string } | null)?.code === IOS_SUBSCRIPTION_SLOTS_EXHAUSTED ||
@@ -277,16 +320,33 @@ async function handlePurchaseProduct(req: NextRequest) {
       churchId,
       ownerUserId,
       error: message,
+      preferredProductId,
       deviceOwnedCount: deviceOwnedProductIds.length,
       hasDevicePurchaseScope: Boolean(devicePurchaseScope),
-      reason: exhausted ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED : "no-available-rotation-slot",
+      reason: preferredUnavailable
+        ? "IOS_PREFERRED_PRODUCT_UNAVAILABLE"
+        : exhausted
+          ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED
+          : "no-available-rotation-slot",
     });
     return json(
       {
         ok: false,
         error: message,
-        reason: exhausted ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED : "no-available-rotation-slot",
-        code: exhausted ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED : undefined,
+        preferredProductId: preferredProductId || null,
+        statusLabel: preferredUnavailable
+          ? iosPremiumSlotStatusLabel("used_by_another_church")
+          : undefined,
+        reason: preferredUnavailable
+          ? "IOS_PREFERRED_PRODUCT_UNAVAILABLE"
+          : exhausted
+            ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED
+            : "no-available-rotation-slot",
+        code: preferredUnavailable
+          ? "IOS_PREFERRED_PRODUCT_UNAVAILABLE"
+          : exhausted
+            ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED
+            : undefined,
       },
       { status: 409 }
     );

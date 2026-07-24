@@ -64,6 +64,13 @@ import { listSubscriptionOwnershipLocksByOwnerUserId } from "@/app/api/_lib/stor
 import type { ChurchPremiumVerification } from "@/app/api/_lib/revenuecat";
 import { shortIdentityHash } from "@/app/api/_lib/storeIdentityHash";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
+import {
+  areAllIosPremiumSlotsOccupied,
+  iosPremiumSlotLabel,
+  iosPremiumSubscriptionGroupName,
+  resolveAllIosPremiumSlotStatuses,
+  type IosPremiumSlotStatusCode,
+} from "@/lib/iosPremiumSlotStatus";
 
 export class IosSubscriptionSlotsExhaustedError extends Error {
   readonly code = IOS_SUBSCRIPTION_SLOTS_EXHAUSTED;
@@ -106,7 +113,66 @@ export type ReserveIosPremiumPurchaseProductArgs = {
    * StoreKit/RevenueCat on this device (legacy + G2–G5).
    */
   deviceOwnedProductIds?: string[] | null;
+  /**
+   * Pastor-selected monthly slot from the five-card paywall.
+   * When set, reserve exactly this product (no silent rotation to another slot).
+   */
+  preferredProductId?: string | null;
 };
+
+/**
+ * Where a slot's ownership signal originated. Separates authoritative Church ID
+ * mappings from device/reservation-only signals and truly free slots.
+ */
+export type IosPremiumSlotAssignmentSource =
+  /** Active subscription ownership lock (originalTransactionId → productId → Church ID). */
+  | "ownership_lock"
+  /** church_media.iosPremiumProductId sticky assignment for this church. */
+  | "church_media_sticky"
+  /** Device/RevenueCat reported the product owned, but no Church ID mapping exists. */
+  | "device_owned"
+  /** Blocked by another church's active reservation (no Church ID mapping exposed). */
+  | "reservation"
+  /** No ownership signal — slot is free. */
+  | "none";
+
+export type IosPremiumPurchaseSlotInspectionSlot = {
+  productId: string;
+  group: IosPremiumPurchaseSlotGroup;
+  slotLabel: string;
+  subscriptionGroupName: string;
+  status: IosPremiumSlotStatusCode;
+  statusLabel: string;
+  purchaseEnabled: boolean;
+  mappedChurchId: string | null;
+  assignmentSource: IosPremiumSlotAssignmentSource;
+};
+
+export type IosPremiumPurchaseSlotInspection = {
+  platform: "ios";
+  churchId: string;
+  slots: IosPremiumPurchaseSlotInspectionSlot[];
+  blockedProductIds: string[];
+  deviceOwnedProductIds: string[];
+  thisChurchProductIds: string[];
+  otherChurchProductIds: string[];
+  mappedByProductId: Record<string, string>;
+  allSlotsOccupied: boolean;
+};
+
+export class IosPreferredProductUnavailableError extends Error {
+  readonly code = "IOS_PREFERRED_PRODUCT_UNAVAILABLE";
+  readonly preferredProductId: string;
+
+  constructor(preferredProductId: string, message?: string) {
+    super(
+      message ||
+        `Preferred iOS premium product ${preferredProductId} is not available for reservation.`
+    );
+    this.name = "IosPreferredProductUnavailableError";
+    this.preferredProductId = preferredProductId;
+  }
+}
 
 /** Kristo iOS product IDs the device should report when present. */
 export const IOS_KRISTO_TRACKED_PRODUCT_IDS = [
@@ -290,12 +356,147 @@ function resolveActiveChurchProductId(
   return null;
 }
 
+async function collectOwnerMappedChurchProductIds(args: {
+  ownerUserId: string;
+  churchId: string;
+}): Promise<{
+  thisChurchProductIds: string[];
+  otherChurchProductIds: string[];
+  mappedByProductId: Record<string, string>;
+  sourceByProductId: Record<string, IosPremiumSlotAssignmentSource>;
+}> {
+  const churchId = String(args.churchId || "").trim().toUpperCase();
+  const thisChurchProductIds: string[] = [];
+  const otherChurchProductIds: string[] = [];
+  const mappedByProductId: Record<string, string> = {};
+  const sourceByProductId: Record<string, IosPremiumSlotAssignmentSource> = {};
+
+  const ownerLocks = await listSubscriptionOwnershipLocksByOwnerUserId(args.ownerUserId);
+  for (const lock of ownerLocks) {
+    if (lock.status !== "active") continue;
+    const productId = String(lock.productId || "").trim();
+    if (!isIosPremiumPurchaseSlotProductId(productId) && productId !== PREMIUM_YEARLY_PRODUCT_ID) {
+      continue;
+    }
+    const lockedChurchId = String(lock.lockedChurchId || "").trim().toUpperCase();
+    if (!lockedChurchId) continue;
+    mappedByProductId[productId] = lockedChurchId;
+    sourceByProductId[productId] = "ownership_lock";
+    if (lockedChurchId === churchId) {
+      if (!thisChurchProductIds.includes(productId)) thisChurchProductIds.push(productId);
+    } else if (!otherChurchProductIds.includes(productId)) {
+      otherChurchProductIds.push(productId);
+    }
+  }
+
+  const media = await getChurchMediaByChurchId(args.churchId);
+  const stickyProductId = String(media?.iosPremiumProductId || "").trim();
+  if (isIosPremiumPurchaseSlotProductId(stickyProductId)) {
+    mappedByProductId[stickyProductId] = churchId;
+    // Only downgrade the source to sticky if no authoritative ownership lock exists.
+    if (sourceByProductId[stickyProductId] !== "ownership_lock") {
+      sourceByProductId[stickyProductId] = "church_media_sticky";
+    }
+    if (!thisChurchProductIds.includes(stickyProductId)) {
+      thisChurchProductIds.push(stickyProductId);
+    }
+  }
+
+  return { thisChurchProductIds, otherChurchProductIds, mappedByProductId, sourceByProductId };
+}
+
+/**
+ * Inspect all five monthly slots without reserving.
+ * Apple StoreKit availability is applied on-device after this response.
+ */
+export async function inspectIosPremiumPurchaseSlots(args: {
+  churchId: string;
+  ownerUserId: string;
+  devicePurchaseScope: string;
+  purchaseSessionId?: string | null;
+  deviceOwnedProductIds?: string[] | null;
+}): Promise<IosPremiumPurchaseSlotInspection> {
+  const churchId = String(args.churchId || "").trim();
+  const ownerUserId = String(args.ownerUserId || "").trim();
+  const devicePurchaseScope = String(args.devicePurchaseScope || "").trim();
+  if (!churchId) throw new Error("churchId is required");
+  if (!ownerUserId) throw new Error("ownerUserId is required");
+  if (!devicePurchaseScope) throw new Error("devicePurchaseScope is required");
+
+  await ensureIosPremiumReservationStoreReady();
+  await expireStaleIosPremiumReservations();
+
+  const deviceOwnedProductIds = normalizeProductIdList(args.deviceOwnedProductIds);
+  const purchaseSessionId = String(args.purchaseSessionId || "").trim() || null;
+
+  const blockedList = await collectBlockedIosPremiumProductIds({
+    ownerUserId,
+    devicePurchaseScope,
+    purchaseSessionId,
+    deviceOwnedProductIds,
+    exceptChurchId: churchId,
+  });
+
+  const mapped = await collectOwnerMappedChurchProductIds({ ownerUserId, churchId });
+  const resolved = resolveAllIosPremiumSlotStatuses({
+    appleAvailableProductIds: null,
+    thisChurchProductIds: mapped.thisChurchProductIds,
+    otherChurchProductIds: mapped.otherChurchProductIds,
+    deviceOwnedProductIds,
+    blockedProductIds: blockedList,
+  });
+
+  const deviceOwnedSet = new Set(deviceOwnedProductIds);
+  const blockedSet = new Set(blockedList);
+
+  const slots: IosPremiumPurchaseSlotInspectionSlot[] = resolved.map((slot) => {
+    const mappedChurchId = mapped.mappedByProductId[slot.productId] || null;
+    let assignmentSource: IosPremiumSlotAssignmentSource =
+      mapped.sourceByProductId[slot.productId] || "none";
+    // No authoritative Church ID mapping — attribute the non-owning signal, if any.
+    if (!mappedChurchId) {
+      if (deviceOwnedSet.has(slot.productId)) {
+        assignmentSource = "device_owned";
+      } else if (blockedSet.has(slot.productId)) {
+        assignmentSource = "reservation";
+      } else {
+        assignmentSource = "none";
+      }
+    }
+    return {
+      productId: slot.productId,
+      group: slot.group,
+      slotLabel: slot.slotLabel || iosPremiumSlotLabel(slot.productId),
+      subscriptionGroupName:
+        slot.subscriptionGroupName || iosPremiumSubscriptionGroupName(slot.group),
+      status: slot.status,
+      statusLabel: slot.statusLabel,
+      purchaseEnabled: slot.purchaseEnabled,
+      mappedChurchId,
+      assignmentSource,
+    };
+  });
+
+  return {
+    platform: "ios",
+    churchId,
+    slots,
+    blockedProductIds: blockedList,
+    deviceOwnedProductIds,
+    thisChurchProductIds: mapped.thisChurchProductIds,
+    otherChurchProductIds: mapped.otherChurchProductIds,
+    mappedByProductId: mapped.mappedByProductId,
+    allSlotsOccupied: areAllIosPremiumSlotsOccupied(slots),
+  };
+}
+
 export async function reserveIosPremiumPurchaseProduct(
   args: ReserveIosPremiumPurchaseProductArgs
 ): Promise<IosPremiumPurchaseProductAssignment> {
   const churchId = String(args.churchId || "").trim();
   const ownerUserId = String(args.ownerUserId || "").trim();
   const devicePurchaseScope = String(args.devicePurchaseScope || "").trim();
+  const preferredProductId = String(args.preferredProductId || "").trim();
   if (!churchId) throw new Error("churchId is required");
   if (!ownerUserId) throw new Error("ownerUserId is required");
   if (!devicePurchaseScope) throw new Error("devicePurchaseScope is required");
@@ -324,10 +525,17 @@ export async function reserveIosPremiumPurchaseProduct(
   let chosenGroup: IosPremiumPurchaseSlotGroup | null = null;
   let sticky = false;
   let reservationToRefresh: IosPremiumReservationRecord | null = null;
+  const preferExactProduct = Boolean(preferredProductId);
 
   // Never change the product of a church that already has an active subscription.
   const activeChurchProductId = resolveActiveChurchProductId(existingMedia);
   if (activeChurchProductId) {
+    if (preferredProductId && preferredProductId !== activeChurchProductId) {
+      throw new IosPreferredProductUnavailableError(
+        preferredProductId,
+        "This church already has an active subscription on a different product."
+      );
+    }
     chosenProductId = activeChurchProductId;
     chosenGroup = iosPremiumPurchaseSlotGroupFromProductId(activeChurchProductId);
     sticky = true;
@@ -339,6 +547,32 @@ export async function reserveIosPremiumPurchaseProduct(
           r.ownerUserId.toLowerCase() === ownerUserId.toLowerCase() &&
           r.devicePurchaseScope === devicePurchaseScope &&
           r.productId === activeChurchProductId
+      ) || null;
+  } else if (preferredProductId) {
+    if (!isIosPremiumPurchaseSlotProductId(preferredProductId)) {
+      throw new IosPreferredProductUnavailableError(
+        preferredProductId,
+        "Preferred product is not a valid Kristo monthly purchase slot."
+      );
+    }
+    if (blocked.has(preferredProductId)) {
+      throw new IosPreferredProductUnavailableError(preferredProductId);
+    }
+    const preferredGroup = iosPremiumPurchaseSlotGroupFromProductId(preferredProductId);
+    if (!preferredGroup) {
+      throw new IosPreferredProductUnavailableError(preferredProductId);
+    }
+    chosenProductId = preferredProductId;
+    chosenGroup = preferredGroup;
+    sticky = false;
+    reservationToRefresh =
+      churchReservations.find(
+        (r) =>
+          r.status === "reserved" &&
+          Number(r.expiresAt) > now &&
+          r.ownerUserId.toLowerCase() === ownerUserId.toLowerCase() &&
+          r.devicePurchaseScope === devicePurchaseScope &&
+          r.productId === preferredProductId
       ) || null;
   } else {
     const activeChurchReservation = churchReservations.find(
@@ -394,7 +628,7 @@ export async function reserveIosPremiumPurchaseProduct(
   let reservation: IosPremiumReservationRecord | null = null;
 
   // Concurrent reserve races: unique owner+device+product constraint may reject.
-  // Re-pick next free slot (bounded by the five monthly slots).
+  // Auto-pick path may rotate; preferred-product path must not silently switch slots.
   for (let attempt = 0; attempt < IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS.length; attempt++) {
     if (!chosenProductId || !chosenGroup) {
       throwSlotsExhausted();
@@ -428,8 +662,11 @@ export async function reserveIosPremiumPurchaseProduct(
       break;
     } catch (error) {
       if (!isIosPremiumReservationSlotConflict(error)) throw error;
-      // Do not rotate away from an already-active church product.
-      if (activeChurchProductId) {
+      // Do not rotate away from an already-active church product or pastor-selected slot.
+      if (activeChurchProductId || preferExactProduct) {
+        if (preferExactProduct && preferredProductId) {
+          throw new IosPreferredProductUnavailableError(preferredProductId);
+        }
         throw error;
       }
       blocked.add(candidate.productId);
