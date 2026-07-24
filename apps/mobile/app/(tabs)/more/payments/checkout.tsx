@@ -72,7 +72,6 @@ import {
   EXISTING_STORE_SUBSCRIPTION_SYNC_MESSAGE,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
-  IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   isIosPremiumRotationMonthlyProductId,
 } from "../../../../src/lib/payments/churchPremiumRevenueCat";
@@ -158,8 +157,6 @@ export default function PaymentsCheckoutScreen() {
   const [activeReservationId, setActiveReservationId] = useState<string | null>(null);
   const [purchaseSessionId, setPurchaseSessionId] = useState<string | null>(null);
   /** Session-accumulated Apple already-owned G2–G5 IDs (CustomerInfo can lag). */
-  const [sessionBlockedProductIds, setSessionBlockedProductIds] = useState<string[]>([]);
-  const [alreadyOwnedRecoveryCount, setAlreadyOwnedRecoveryCount] = useState(0);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const [monthlyIntroEligibility, setMonthlyIntroEligibility] =
     useState<INTRO_ELIGIBILITY_STATUS | null>(null);
@@ -386,11 +383,10 @@ export default function PaymentsCheckoutScreen() {
           headers,
           devicePurchaseScope,
           purchaseSessionId: sessionId,
+          preferredProductId:
+            Platform.OS === "ios" ? PREMIUM_MONTHLY_PRODUCT_ID : null,
           deviceOwnedProductIds: [
-            ...new Set([
-              ...collectDeviceOwnedPremiumProductIds(configuredCustomerInfo),
-              ...sessionBlockedProductIds,
-            ]),
+            ...new Set(collectDeviceOwnedPremiumProductIds(configuredCustomerInfo)),
           ],
         });
         const preferredMonthlyProductId = String(
@@ -985,15 +981,6 @@ export default function PaymentsCheckoutScreen() {
           const failedProductId = String(
             assignedMonthlyProductId || targetPackage?.product.identifier || ""
           ).trim();
-          const nextRecoveryCount = alreadyOwnedRecoveryCount + 1;
-          if (nextRecoveryCount > IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS.length) {
-            Alert.alert(
-              "No free subscription group left",
-              "We already tried every Kristo Premium monthly slot available for this purchase session."
-            );
-            return;
-          }
-          setAlreadyOwnedRecoveryCount(nextRecoveryCount);
 
           if (activeReservationId) {
             await releaseChurchPurchaseProductReservation({
@@ -1003,59 +990,16 @@ export default function PaymentsCheckoutScreen() {
             });
           }
 
-          let refreshedInfo: CustomerInfo | null = customerInfo;
           try {
-            refreshedInfo = await getCustomerSubscriptionInfo();
+            const refreshedInfo = await getCustomerSubscriptionInfo();
             setCustomerInfo(refreshedInfo);
           } catch {
             // keep prior
           }
 
-          const owned = new Set([
-            ...collectDeviceOwnedPremiumProductIds(refreshedInfo),
-            ...sessionBlockedProductIds,
-          ]);
-          if (failedProductId) owned.add(failedProductId);
-          const nextSessionBlocked = [...owned].filter((id) =>
-            (IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS as readonly string[]).includes(id)
-          );
-          setSessionBlockedProductIds(nextSessionBlocked);
-
-          const devicePurchaseScope = await getOrCreateDevicePurchaseScope();
-          const sessionId =
-            purchaseSessionId || (await getOrCreateIosPurchaseSessionId(churchId));
-          const nextAssignment = await fetchChurchPurchaseProductAssignment({
-            churchId,
-            platform: "ios",
-            headers,
-            devicePurchaseScope,
-            purchaseSessionId: sessionId,
-            deviceOwnedProductIds: [...owned],
-          });
-
-          if (nextAssignment?.productId) {
-            setAssignedMonthlyProductId(nextAssignment.productId);
-            setActiveReservationId(nextAssignment.reservationId || null);
-            setPurchaseSessionId(nextAssignment.purchaseSessionId || sessionId);
-            try {
-              const offerings = await getSubscriptionOfferings();
-              setMonthlyPackage(
-                resolveMonthlyPackage(offerings, nextAssignment.productId)
-              );
-            } catch {
-              // ignore
-            }
-            const nextGroup = String(nextAssignment.group || "").toUpperCase() || "next";
-            Alert.alert(
-              "This subscription group is already active on Apple",
-              `We released that plan and reserved Kristo Premium ${nextGroup} (${nextAssignment.productId}). Tap Pay again when ready — purchase will not retry automatically.`
-            );
-            return;
-          }
-
           Alert.alert(
-            "No free subscription group left",
-            "This store account already appears to own every Kristo Premium monthly slot we can assign."
+            "Existing Apple subscription found",
+            `${failedProductId || PREMIUM_MONTHLY_PRODUCT_ID} is already owned in this Apple purchase context. Restore it for its permanently mapped Church ID or manage it in Settings. Kristo will not substitute a legacy G2–G5 product.`
           );
           return;
         }

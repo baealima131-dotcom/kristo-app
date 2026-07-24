@@ -34,6 +34,8 @@ async function main() {
       statusLabel: slot.statusLabel,
       mappedChurchId: slot.mappedChurchId,
       assignmentSource: slot.assignmentSource,
+      purchasable: slot.purchasable,
+      legacy: slot.legacy,
       purchaseEnabled: slot.purchaseEnabled,
     })),
   };

@@ -178,7 +178,7 @@ function IosChurchSubscriptionSlotCard({
                   Monthly Plan
                 </Text>
                 <Text style={styles.subtitle} numberOfLines={2} maxFontSizeMultiplier={1.25}>
-                  Slot {slot.slotLabel} · {slot.productId}
+                  {slot.productId}
                 </Text>
               </View>
             </View>
@@ -268,7 +268,7 @@ function IosChurchSubscriptionSlotCard({
             <View style={styles.disabledNote}>
               <Ionicons name="lock-closed-outline" size={14} color="rgba(255,255,255,0.55)" />
               <Text style={styles.disabledNoteText}>
-                {disabledNote || "Purchase unavailable for this slot"}
+                {disabledNote || "premium_monthly is unavailable from Apple right now"}
               </Text>
             </View>
           )}
@@ -286,7 +286,7 @@ export function IosChurchSubscriptionFiveSlotPaywall({
   canPurchase = true,
   /**
    * "purchase" = unsubscribed church may buy an available slot.
-   * "catalog" = church already subscribed; all five products stay visible, none purchasable.
+   * "catalog" = church already subscribed; premium_monthly is reference-only.
    */
   mode = "purchase",
   onPurchase,
@@ -311,17 +311,15 @@ export function IosChurchSubscriptionFiveSlotPaywall({
         <>
           <Text style={styles.sectionTitle}>Monthly Subscription Options</Text>
           <Text style={styles.explain}>
-            Church ID {churchId || "—"} already has an active monthly subscription. All five
-            Kristo monthly In-App Purchases are listed below for reference. Each subscription
-            is permanently assigned to one church, so an available product can be purchased
-            only after switching to — or creating — a different Church ID that has no active
-            subscription.
+            Church ID {churchId || "—"} already has an active subscription. premium_monthly
+            is the only product offered for new iOS purchases. Legacy G2–G5 subscriptions
+            remain supported for existing owners and restore, but are not sold here.
           </Text>
         </>
       ) : (
         <Text style={styles.explain}>
-          Choose an available monthly subscription for Church ID {churchId || "—"}. Each
-          subscription is permanently assigned to one church.
+          Subscribe Church ID {churchId || "—"} with premium_monthly. Each subscription
+          lineage is permanently assigned to one church.
         </Text>
       )}
 
@@ -340,8 +338,8 @@ export function IosChurchSubscriptionFiveSlotPaywall({
         <View style={styles.exhaustedCard}>
           <Ionicons name="alert-circle-outline" size={18} color="rgba(255,190,160,0.95)" />
           <Text style={styles.exhaustedText}>
-            This Apple ID has no remaining Church Subscription slot. All five monthly
-            products are already owned or assigned.
+            premium_monthly is already owned or assigned in this Apple purchase context.
+            Restore it for its mapped Church ID or manage the existing subscription.
           </Text>
         </View>
       ) : null}

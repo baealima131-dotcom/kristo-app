@@ -1122,6 +1122,10 @@ export type ChurchPurchaseProductSlotInspectionSlot = {
     | string;
   statusLabel: string;
   purchaseEnabled: boolean;
+  /** True only for premium_monthly. */
+  purchasable?: boolean;
+  /** True for G2–G5 legacy diagnostics; never a new-purchase option. */
+  legacy?: boolean;
   /** Permanent Church ID mapped to this product/originalTransactionId when known. */
   mappedChurchId?: string | null;
   /** Where the ownership signal originated (ownership_lock, church_media_sticky, device_owned, reservation, none). */

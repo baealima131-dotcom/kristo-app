@@ -6,8 +6,10 @@ import assert from "node:assert/strict";
 import {
   IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP,
   IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
+  IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
+  isIosPremiumPurchaseSlotProductId,
 } from "../lib/churchPremiumRevenueCat";
 import {
   areAllIosPremiumSlotsOccupied,
@@ -19,6 +21,7 @@ import {
   resolveIosPremiumSlotOwnershipDisplay,
   resolveIosPremiumSlotStatus,
 } from "../lib/iosPremiumSlotStatus";
+import { selectIosPremiumNewPurchaseCatalogSlots } from "../apps/mobile/src/lib/payments/iosPremiumSlotStatus";
 
 const G2 = IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g2;
 const G3 = IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g3;
@@ -31,11 +34,30 @@ const OTHER_B = "CH2-BBBBBB";
 
 assert.deepEqual(
   [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+  [PREMIUM_MONTHLY_PRODUCT_ID],
+  "only premium_monthly is purchasable"
+);
+assert.deepEqual(
+  [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
   [PREMIUM_MONTHLY_PRODUCT_ID, G2, G3, G4, G5],
-  "exactly five monthly slots (legacy + G2–G5, not G2–G25)"
+  "exactly five monthly products remain inspectable"
 );
 
 assert.equal(listIosPremiumSlotDescriptors().length, 5);
+assert.deepEqual(
+  listIosPremiumSlotDescriptors()
+    .filter((slot) => isIosPremiumPurchaseSlotProductId(slot.productId))
+    .map((slot) => slot.productId),
+  [PREMIUM_MONTHLY_PRODUCT_ID],
+  "legacy G2–G5 inspect cards are never purchasable"
+);
+assert.deepEqual(
+  selectIosPremiumNewPurchaseCatalogSlots(listIosPremiumSlotDescriptors()).map(
+    (slot) => slot.productId
+  ),
+  [PREMIUM_MONTHLY_PRODUCT_ID],
+  "mobile renders one premium_monthly purchase card"
+);
 assert.equal(iosPremiumSlotLabel(PREMIUM_MONTHLY_PRODUCT_ID), "Monthly");
 assert.equal(iosPremiumSlotLabel(G2), "G2");
 assert.equal(iosPremiumSlotLabel(G5), "G5");
@@ -87,6 +109,18 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
   });
   assert.equal(status, "unavailable_from_apple");
   assert.equal(iosPremiumSlotStatusLabel(status), "Unavailable from Apple");
+}
+
+// StoreKit failure renders one unavailable purchase card, not five product errors.
+{
+  const resolved = resolveAllIosPremiumSlotStatuses({
+    appleAvailableProductIds: [],
+  });
+  const displayed = selectIosPremiumNewPurchaseCatalogSlots(resolved);
+  assert.equal(displayed.length, 1);
+  assert.equal(displayed[0]?.productId, PREMIUM_MONTHLY_PRODUCT_ID);
+  assert.equal(displayed[0]?.status, "unavailable_from_apple");
+  assert.equal(displayed[0]?.purchaseEnabled, false);
 }
 
 // Ownership beats StoreKit unavailability (do not hide purchased/assigned behind Apple miss)
@@ -158,8 +192,8 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
 // All slots occupied
 {
   const slots = resolveAllIosPremiumSlotStatuses({
-    appleAvailableProductIds: [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
-    deviceOwnedProductIds: [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+    appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
+    deviceOwnedProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
   });
   assert.equal(slots.every((slot) => slot.status !== "available"), true);
   assert.equal(areAllIosPremiumSlotsOccupied(slots), true);
@@ -168,7 +202,7 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
 // Purchase buttons only on available
 {
   const slots = resolveAllIosPremiumSlotStatuses({
-    appleAvailableProductIds: [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+    appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
     otherChurchProductIds: [G2, G3],
     deviceOwnedProductIds: [PREMIUM_MONTHLY_PRODUCT_ID],
   });
@@ -209,7 +243,7 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
 // currentChurchSubscribed=false keeps free slots purchasable
 {
   const slots = resolveAllIosPremiumSlotStatuses({
-    appleAvailableProductIds: [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+    appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
     thisChurchProductIds: [],
     otherChurchProductIds: [G2],
     currentChurchSubscribed: false,
@@ -225,7 +259,7 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
 // One mapped slot shows exactly that Church ID; unassigned slots do not repeat currentChurchId.
 {
   const statuses = resolveAllIosPremiumSlotStatuses({
-    appleAvailableProductIds: [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+    appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
     thisChurchProductIds: [PREMIUM_MONTHLY_PRODUCT_ID],
     otherChurchProductIds: [G2],
     currentChurchSubscribed: true,
@@ -279,7 +313,7 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
 // Inspect failure never fabricates Church ID ownership across slots
 {
   const statuses = resolveAllIosPremiumSlotStatuses({
-    appleAvailableProductIds: [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+    appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
     // Inspect failed → client must not pass fabricated this/other mappings
     thisChurchProductIds: [],
     otherChurchProductIds: [],
@@ -316,7 +350,7 @@ assert.equal(iosPremiumSlotLabel(G5), "G5");
 // Duplicate Church ID across slots only when backend truly mapped both
 {
   const statuses = resolveAllIosPremiumSlotStatuses({
-    appleAvailableProductIds: [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+    appleAvailableProductIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
     thisChurchProductIds: [PREMIUM_MONTHLY_PRODUCT_ID, G3],
     otherChurchProductIds: [G2],
     currentChurchSubscribed: true,
@@ -369,7 +403,7 @@ console.log(
     {
       ok: true,
       slotCount: 5,
-      productIds: [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+      productIds: [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
       statusesCovered: [
         "available",
         "available_for_another_church",

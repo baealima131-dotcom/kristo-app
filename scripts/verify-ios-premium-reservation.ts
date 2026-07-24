@@ -1,21 +1,22 @@
 /**
- * Honest architecture verification for iOS purchase-slot reservation.
- * Slot order: premium_monthly → g2 → g3 → g4 → g5
+ * Single-product iOS reservation + legacy compatibility verification.
  * Run: npx tsx scripts/verify-ios-premium-reservation.ts
  */
 import assert from "node:assert/strict";
 import {
   IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP,
   IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
+  IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS,
   IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
-  IOS_SUBSCRIPTION_SLOTS_EXHAUSTED,
   isIosPremiumPurchaseSlotProductId,
+  isIosPremiumRecognizedMonthlyProductId,
   isIosPremiumRotationMonthlyProductId,
   isMonthlyChurchPremiumProductId,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "../lib/churchPremiumRevenueCat";
 import {
+  IosPremiumMonthlyOwnershipConflictError,
   pickFirstAvailableIosPurchaseSlot,
   pickFirstAvailableIosRotationProduct,
 } from "../app/api/_lib/iosPremiumProductAssignment";
@@ -25,6 +26,11 @@ import { createHash } from "node:crypto";
 
 assert.deepEqual(
   [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
+  [PREMIUM_MONTHLY_PRODUCT_ID],
+  "new iOS purchase pool contains premium_monthly only"
+);
+assert.deepEqual(
+  [...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS],
   [
     PREMIUM_MONTHLY_PRODUCT_ID,
     IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g2,
@@ -32,7 +38,7 @@ assert.deepEqual(
     IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g4,
     IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g5,
   ],
-  "exact five-slot purchase order"
+  "all five monthly IDs remain recognized"
 );
 
 // --- Concepts must stay separate ---
@@ -51,34 +57,39 @@ const ownerDeviceKey = buildDevicePurchaseCoordinationKey({
 assert.ok(ownerDeviceKey.includes("owner:u_pastor_1"));
 assert.ok(ownerDeviceKey.includes("device:dev_install_abc"));
 
-// --- New eligible Apple account → premium_monthly first ---
+// --- Every eligible new iOS purchase resolves to premium_monthly ---
 const fresh = pickFirstAvailableIosPurchaseSlot([]);
 assert.equal(fresh?.productId, PREMIUM_MONTHLY_PRODUCT_ID);
 assert.equal(fresh?.group, "legacy");
 
-// --- Owning premium_monthly skips legacy group → G2 ---
+// --- A premium_monthly conflict fails closed; never falls back to G2–G5 ---
 assert.equal(
-  pickFirstAvailableIosPurchaseSlot([PREMIUM_MONTHLY_PRODUCT_ID])?.productId,
-  IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g2
+  pickFirstAvailableIosPurchaseSlot([PREMIUM_MONTHLY_PRODUCT_ID]),
+  null
 );
 
-// --- Owning premium_yearly also skips legacy group → G2 ---
+// Existing yearly ownership also blocks premium_monthly with no legacy fallback.
 assert.equal(
-  pickFirstAvailableIosPurchaseSlot([PREMIUM_YEARLY_PRODUCT_ID])?.productId,
-  IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g2
+  pickFirstAvailableIosPurchaseSlot([PREMIUM_YEARLY_PRODUCT_ID]),
+  null
 );
 
-// --- Then G3 after G2 owned ---
-const next = pickFirstAvailableIosPurchaseSlot([
-  PREMIUM_MONTHLY_PRODUCT_ID,
-  IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g2,
-]);
-assert.equal(next?.productId, IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g3);
-assert.equal(next?.group, "g3");
+// Legacy IDs are never selected even when all of them are unblocked.
+for (const legacyId of IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS) {
+  assert.notEqual(fresh?.productId, legacyId);
+}
 
 // yearly is never a purchase slot
 assert.equal(isIosPremiumPurchaseSlotProductId(PREMIUM_YEARLY_PRODUCT_ID), false);
 assert.equal(isIosPremiumPurchaseSlotProductId(PREMIUM_MONTHLY_PRODUCT_ID), true);
+assert.ok(
+  [...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS].every(
+    (id) =>
+      isIosPremiumRecognizedMonthlyProductId(id) &&
+      !isIosPremiumPurchaseSlotProductId(id)
+  ),
+  "G2–G5 are recognized but never purchasable"
+);
 
 // --- Already-subscribed release then next slot ---
 function simulateAlreadySubscribedRereserve(args: {
@@ -93,7 +104,10 @@ const afterFail = simulateAlreadySubscribedRereserve({
   failedProductId: PREMIUM_MONTHLY_PRODUCT_ID,
   deviceOwnedBefore: [],
 });
-assert.equal(afterFail?.productId, IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g2);
+assert.equal(afterFail, null, "already-owned premium_monthly has no fallback product");
+const conflict = new IosPremiumMonthlyOwnershipConflictError();
+assert.equal(conflict.code, "IOS_PREMIUM_MONTHLY_OWNERSHIP_CONFLICT");
+assert.match(conflict.message, /will not substitute a legacy G2–G5 product/i);
 
 // --- Stale / released reservation blocking rules ---
 function reservationBlocks(args: {
@@ -144,7 +158,7 @@ assert.deepEqual(
   "already_subscribed releases must keep blocking while TTL active"
 );
 
-// --- Retry oscillation guard ---
+// --- Retry guard: accumulating conflicts never introduces a legacy fallback ---
 function accumulateAlreadyOwned(prev: string[], failed: string): string[] {
   return [...new Set([...prev, failed])];
 }
@@ -154,20 +168,19 @@ const attempt2 = accumulateAlreadyOwned(
   IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g2
 );
 assert.equal(
-  pickFirstAvailableIosPurchaseSlot(attempt2)?.productId,
-  IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g3
+  pickFirstAvailableIosPurchaseSlot(attempt2),
+  null
 );
 assert.equal(
   pickFirstAvailableIosPurchaseSlot([...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS]),
   null,
-  "full accumulation exhausts all five slots"
+  "premium_monthly conflict exhausts the only new-purchase product"
 );
-assert.equal(IOS_SUBSCRIPTION_SLOTS_EXHAUSTED, "IOS_SUBSCRIPTION_SLOTS_EXHAUSTED");
 
-// Rotation-only helper still skips legacy when monthly is forced blocked
+// Deprecated rotation helper cannot select G2–G5.
 assert.equal(
-  pickFirstAvailableIosRotationProduct([])?.productId,
-  IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP.g2
+  pickFirstAvailableIosRotationProduct([]),
+  null
 );
 
 // --- Lineage uniqueness ---
@@ -180,6 +193,11 @@ function lineageMapsToChurch(map: Map<string, string>, lineage: string, churchId
 const lineageMap = new Map<string, string>();
 assert.equal(lineageMapsToChurch(lineageMap, lineageG2, "CH7-A"), true);
 assert.equal(lineageMapsToChurch(lineageMap, lineageG2, "CH7-B"), false);
+assert.equal(
+  lineageMap.get(lineageG2),
+  "CH7-A",
+  "conflicting restore must leave the original transaction-to-church mapping unchanged"
+);
 
 // --- Restore must not auto-bind unmapped transactions ---
 function restoreMayActivate(args: {
@@ -206,14 +224,15 @@ assert.equal(isMonthlyChurchPremiumProductId(PREMIUM_MONTHLY_PRODUCT_ID), true);
 assert.equal(planFromProductId(PREMIUM_YEARLY_PRODUCT_ID), "yearly");
 assert.ok([...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS].every(isIosPremiumRotationMonthlyProductId));
 
-console.log("OK ios premium reservation (five-slot order)", {
+console.log("OK ios premium reservation (single-product purchase)", {
   freshAccount: fresh,
   afterMonthlyOwned: pickFirstAvailableIosPurchaseSlot([PREMIUM_MONTHLY_PRODUCT_ID]),
   afterYearlyOwned: pickFirstAvailableIosPurchaseSlot([PREMIUM_YEARLY_PRODUCT_ID]),
   afterAlreadySubscribed: afterFail,
   ownerDeviceKeySuffix: ownerDeviceKey.slice(-16),
-  slots: IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
-  exhaustedCode: IOS_SUBSCRIPTION_SLOTS_EXHAUSTED,
+  newPurchaseProducts: IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
+  recognizedLegacyProducts: IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS,
+  conflictCode: "IOS_PREMIUM_MONTHLY_OWNERSHIP_CONFLICT",
   verified: "subscriptionLineageIdentity→church via ownership lock after purchase",
   bestEffort: "deviceOwnedProductIds + purchaseSessionId + devicePurchaseScope + ownerUserId",
   limitation: "Apple does not expose Apple ID identity to app/backend",

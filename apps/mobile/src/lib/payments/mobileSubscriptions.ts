@@ -3101,11 +3101,37 @@ export async function resolvePurchaseTargetForProductId(productId: string): Prom
 export async function loadIosPremiumPurchaseSlotStoreProducts(): Promise<
   PurchasesStoreProduct[]
 > {
-  await requireConfiguredPurchases("ios five-slot products");
+  await requireConfiguredPurchases("ios premium monthly product");
   return runRevenueCatGetProducts(
     [...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS],
-    "ios-five-slot-paywall"
+    "ios-premium-monthly-product"
   );
+}
+
+/**
+ * Resolve the single new-purchase iOS package from RevenueCat Current Offering.
+ * This intentionally does not call getProducts for legacy G2–G5 SKUs.
+ */
+export async function loadIosPremiumMonthlyCurrentOfferingPackage(): Promise<
+  PurchasesPackage | null
+> {
+  await requireConfiguredPurchases("ios premium monthly current offering");
+  const offerings = await getSubscriptionOfferings({ force: true });
+  const current = offerings.current;
+  if (!current) return null;
+
+  const exact =
+    current.availablePackages?.find(
+      (pkg) =>
+        String(pkg.identifier || "").trim() === "$rc_monthly" &&
+        String(pkg.product.identifier || "").trim() === PREMIUM_MONTHLY_PRODUCT_ID
+    ) || null;
+  if (exact) return exact;
+
+  const monthly = current.monthly || null;
+  return String(monthly?.product.identifier || "").trim() === PREMIUM_MONTHLY_PRODUCT_ID
+    ? monthly
+    : null;
 }
 
 export function resolveStoreProductIntro(

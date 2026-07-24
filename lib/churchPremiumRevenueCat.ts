@@ -38,7 +38,7 @@ export function hasPremiumEntitlementFromKeys(activeEntitlementKeys: string[]): 
   return detectPremiumEntitlementKey(activeEntitlementKeys) !== null;
 }
 
-/** First iOS purchase slot + Android monthly product. */
+/** The only product offered for new iOS monthly purchases + Android monthly product. */
 export const PREMIUM_MONTHLY_PRODUCT_ID = "premium_monthly";
 /** Recognition only on iOS — never offered or purchased for new iOS subs. */
 export const PREMIUM_YEARLY_PRODUCT_ID = "premium_yearly";
@@ -46,7 +46,7 @@ export const PREMIUM_YEARLY_PRODUCT_ID = "premium_yearly";
 /** Expected monthly intro trial length (matches StoreKit intro offers on premium_monthly). */
 export const PREMIUM_MONTHLY_INTRO_TRIAL_DAYS = 14;
 
-/** Rotating iOS App Store subscription groups after the legacy monthly slot. */
+/** Legacy iOS App Store subscription groups retained for recognition/restore only. */
 export const IOS_PREMIUM_ROTATION_GROUPS = ["g2", "g3", "g4", "g5"] as const;
 export type IosPremiumRotationGroup = (typeof IOS_PREMIUM_ROTATION_GROUPS)[number];
 
@@ -72,26 +72,32 @@ export const IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS = [
   IOS_PREMIUM_MONTHLY_PRODUCT_ID_G5,
 ] as const;
 
-/**
- * Exact iOS new-purchase slot order.
- * Owning premium_monthly or premium_yearly skips the legacy monthly slot → G2.
- */
+/** Exact iOS new-purchase product pool. Never add legacy G2–G5 here. */
 export const IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS = [
   PREMIUM_MONTHLY_PRODUCT_ID,
-  ...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
 ] as const;
 
 export const IOS_SUBSCRIPTION_SLOTS_EXHAUSTED = "IOS_SUBSCRIPTION_SLOTS_EXHAUSTED";
 
-/** Legacy products kept for entitlement / restore / ownership until expiry. */
+/**
+ * All five monthly IDs retained for entitlement validation, ownership inspection,
+ * restore, and existing subscribers. Only premium_monthly is purchasable.
+ */
+export const IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS = [
+  PREMIUM_MONTHLY_PRODUCT_ID,
+  ...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
+] as const;
+
+/** Products kept for entitlement / restore / ownership until expiry. */
 export const LEGACY_CHURCH_PREMIUM_PRODUCT_IDS = [
   PREMIUM_MONTHLY_PRODUCT_ID,
+  ...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
   PREMIUM_YEARLY_PRODUCT_ID,
 ] as const;
 
-/** All product IDs that grant church premium (purchase slots + yearly recognition). */
+/** All product IDs that grant church premium. */
 export const CHURCH_PREMIUM_PRODUCT_IDS = [
-  ...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
+  ...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS,
   PREMIUM_YEARLY_PRODUCT_ID,
 ] as const;
 
@@ -102,12 +108,20 @@ export function isIosPremiumRotationMonthlyProductId(
   return (IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS as readonly string[]).includes(id);
 }
 
-/** True for products that can be reserved/purchased as an iOS monthly slot. */
+/** True only for products that may be reserved/purchased by a new iOS buyer. */
 export function isIosPremiumPurchaseSlotProductId(
   productId: string | null | undefined
 ): boolean {
   const id = String(productId || "").trim();
   return (IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS as readonly string[]).includes(id);
+}
+
+/** True for monthly products recognized for legacy ownership/restore/inspection. */
+export function isIosPremiumRecognizedMonthlyProductId(
+  productId: string | null | undefined
+): boolean {
+  const id = String(productId || "").trim();
+  return (IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS as readonly string[]).includes(id);
 }
 
 export function isLegacyChurchPremiumProductId(
@@ -142,7 +156,7 @@ export function isMonthlyChurchPremiumProductId(
   const id = String(productId || "").trim();
   if (!id) return false;
   if (isYearlyChurchPremiumProductId(id)) return false;
-  if (isIosPremiumPurchaseSlotProductId(id)) return true;
+  if (isIosPremiumRecognizedMonthlyProductId(id)) return true;
   return /church_premium_monthly_g[2-5]|premium_monthly|monthly|\$rc_monthly/i.test(id);
 }
 

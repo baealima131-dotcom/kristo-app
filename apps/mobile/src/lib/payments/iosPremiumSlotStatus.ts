@@ -3,7 +3,7 @@
  * Values/logic must match lib/iosPremiumSlotStatus.ts (server).
  */
 import {
-  IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
+  IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
   iosPremiumPurchaseSlotGroupFromProductId,
@@ -19,7 +19,7 @@ export type IosPremiumSlotStatusCode =
   | "unavailable_from_apple";
 
 export type IosPremiumSlotDescriptor = {
-  productId: (typeof IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS)[number];
+  productId: (typeof IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS)[number];
   group: IosPremiumPurchaseSlotGroup;
   slotLabel: string;
   subscriptionGroupName: string;
@@ -68,7 +68,7 @@ export function iosPremiumSlotStatusLabel(status: IosPremiumSlotStatusCode): str
 }
 
 export function listIosPremiumSlotDescriptors(): IosPremiumSlotDescriptor[] {
-  return IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS.map((productId) => {
+  return IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS.map((productId) => {
     const group = iosPremiumPurchaseSlotGroupFromProductId(productId) || "legacy";
     return {
       productId,
@@ -168,6 +168,15 @@ export function areAllIosPremiumSlotsOccupied(
 ): boolean {
   if (!slots.length) return false;
   return slots.every((slot) => slot.status !== "available" && slot.purchaseEnabled !== true);
+}
+
+/** Mobile purchase UI policy: display premium_monthly only; legacy slots stay diagnostic. */
+export function selectIosPremiumNewPurchaseCatalogSlots<
+  T extends { productId: string },
+>(slots: readonly T[]): T[] {
+  return slots.filter(
+    (slot) => String(slot.productId || "").trim() === PREMIUM_MONTHLY_PRODUCT_ID
+  );
 }
 
 export type IosPremiumSlotOwnershipDisplay = {

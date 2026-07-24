@@ -1,15 +1,11 @@
 /**
  * iOS premium purchase-slot reservation — architecture notes
  *
- * Slot order for new iOS monthly purchases:
- *   1) premium_monthly
- *   2) church_premium_monthly_g2
- *   3) church_premium_monthly_g3
- *   4) church_premium_monthly_g4
- *   5) church_premium_monthly_g5
+ * New iOS monthly purchases use premium_monthly only.
  *
- * premium_yearly is recognition-only and is never reserved/offered.
- * Owning premium_monthly OR premium_yearly skips the legacy monthly slot → G2.
+ * premium_yearly and church_premium_monthly_g2…g5 are recognition-only.
+ * They remain valid for entitlement, ownership inspection, and restore, but are
+ * never reserved or assigned for a new purchase.
  *
  * Concepts (do not conflate):
  * 1) subscriptionLineageIdentity = App Store originalTransactionId
@@ -34,9 +30,11 @@
 import {
   IOS_PREMIUM_MONTHLY_PRODUCT_IDS_BY_GROUP,
   IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
+  IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS,
   IOS_SUBSCRIPTION_SLOTS_EXHAUSTED,
   iosPremiumPurchaseSlotGroupFromProductId,
   isIosPremiumPurchaseSlotProductId,
+  isIosPremiumRecognizedMonthlyProductId,
   isIosPremiumRotationMonthlyProductId,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
@@ -76,10 +74,23 @@ export class IosSubscriptionSlotsExhaustedError extends Error {
   readonly code = IOS_SUBSCRIPTION_SLOTS_EXHAUSTED;
 
   constructor(
-    message = "No available Kristo Premium monthly slot for this device/account context. Refresh owned products or wait for an existing subscription period to end."
+    message = "premium_monthly is not available for a new iOS purchase in this device/account context."
   ) {
     super(message);
     this.name = "IosSubscriptionSlotsExhaustedError";
+  }
+}
+
+export class IosPremiumMonthlyOwnershipConflictError extends Error {
+  readonly code = "IOS_PREMIUM_MONTHLY_OWNERSHIP_CONFLICT";
+  readonly productId = PREMIUM_MONTHLY_PRODUCT_ID;
+
+  constructor(
+    message =
+      "premium_monthly is already owned or assigned in this Apple purchase context. Restore it for its permanently mapped Church ID or manage the existing subscription. Kristo will not substitute a legacy G2–G5 product."
+  ) {
+    super(message);
+    this.name = "IosPremiumMonthlyOwnershipConflictError";
   }
 }
 
@@ -144,6 +155,10 @@ export type IosPremiumPurchaseSlotInspectionSlot = {
   status: IosPremiumSlotStatusCode;
   statusLabel: string;
   purchaseEnabled: boolean;
+  /** True only for premium_monthly; G2–G5 are legacy diagnostics. */
+  purchasable: boolean;
+  /** True for legacy G2–G5 products; never offered for new purchases. */
+  legacy: boolean;
   mappedChurchId: string | null;
   assignmentSource: IosPremiumSlotAssignmentSource;
 };
@@ -176,9 +191,8 @@ export class IosPreferredProductUnavailableError extends Error {
 
 /** Kristo iOS product IDs the device should report when present. */
 export const IOS_KRISTO_TRACKED_PRODUCT_IDS = [
-  PREMIUM_MONTHLY_PRODUCT_ID,
+  ...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS,
   PREMIUM_YEARLY_PRODUCT_ID,
-  ...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS.filter((id) => id !== PREMIUM_MONTHLY_PRODUCT_ID),
 ] as const;
 
 function normalizeProductIdList(values: unknown): string[] {
@@ -213,11 +227,7 @@ export function applyIosLegacyGroupSkipRules(blockedProductIds: Set<string>): vo
   }
 }
 
-/**
- * Pure slot picker: first free product in
- * premium_monthly → g2 → g3 → g4 → g5.
- * Never selects premium_yearly.
- */
+/** Pure new-purchase picker: premium_monthly or null. Never selects legacy IDs. */
 export function pickFirstAvailableIosPurchaseSlot(
   blockedProductIds: Iterable<string>
 ): {
@@ -239,10 +249,7 @@ export function pickFirstAvailableIosPurchaseSlot(
   return null;
 }
 
-/**
- * @deprecated Prefer pickFirstAvailableIosPurchaseSlot (includes premium_monthly).
- * Kept for callers that only walk G2–G5.
- */
+/** @deprecated Legacy G2–G5 products are no longer eligible for reservation. */
 export function pickFirstAvailableIosRotationProduct(
   blockedProductIds: Iterable<string>
 ): {
@@ -276,7 +283,7 @@ export async function collectBlockedIosPremiumProductIds(args: {
   const exceptChurchId = String(args.exceptChurchId || "").trim().toUpperCase();
 
   for (const id of args.deviceOwnedProductIds) {
-    if (isIosPremiumPurchaseSlotProductId(id) || id === PREMIUM_YEARLY_PRODUCT_ID) {
+    if (isIosPremiumRecognizedMonthlyProductId(id) || id === PREMIUM_YEARLY_PRODUCT_ID) {
       blocked.add(id);
     }
   }
@@ -297,7 +304,7 @@ export async function collectBlockedIosPremiumProductIds(args: {
         continue;
       }
     }
-    if (isIosPremiumPurchaseSlotProductId(reservation.productId)) {
+    if (isIosPremiumRecognizedMonthlyProductId(reservation.productId)) {
       blocked.add(reservation.productId);
     }
   }
@@ -313,7 +320,7 @@ export async function collectBlockedIosPremiumProductIds(args: {
       continue;
     }
     const productId = String(lock.productId || "").trim();
-    if (isIosPremiumPurchaseSlotProductId(productId) || productId === PREMIUM_YEARLY_PRODUCT_ID) {
+    if (isIosPremiumRecognizedMonthlyProductId(productId) || productId === PREMIUM_YEARLY_PRODUCT_ID) {
       blocked.add(productId);
     }
   }
@@ -352,7 +359,7 @@ function resolveActiveChurchProductId(
 ): string | null {
   if (!profile || !isChurchSubscriptionActiveFromRecord(profile)) return null;
   const productId = String(profile.iosPremiumProductId || "").trim();
-  if (isIosPremiumPurchaseSlotProductId(productId)) return productId;
+  if (isIosPremiumRecognizedMonthlyProductId(productId)) return productId;
   return null;
 }
 
@@ -375,7 +382,7 @@ async function collectOwnerMappedChurchProductIds(args: {
   for (const lock of ownerLocks) {
     if (lock.status !== "active") continue;
     const productId = String(lock.productId || "").trim();
-    if (!isIosPremiumPurchaseSlotProductId(productId) && productId !== PREMIUM_YEARLY_PRODUCT_ID) {
+    if (!isIosPremiumRecognizedMonthlyProductId(productId) && productId !== PREMIUM_YEARLY_PRODUCT_ID) {
       continue;
     }
     const lockedChurchId = String(lock.lockedChurchId || "").trim().toUpperCase();
@@ -391,7 +398,7 @@ async function collectOwnerMappedChurchProductIds(args: {
 
   const media = await getChurchMediaByChurchId(args.churchId);
   const stickyProductId = String(media?.iosPremiumProductId || "").trim();
-  if (isIosPremiumPurchaseSlotProductId(stickyProductId)) {
+  if (isIosPremiumRecognizedMonthlyProductId(stickyProductId)) {
     mappedByProductId[stickyProductId] = churchId;
     // Only downgrade the source to sticky if no authoritative ownership lock exists.
     if (sourceByProductId[stickyProductId] !== "ownership_lock") {
@@ -451,6 +458,7 @@ export async function inspectIosPremiumPurchaseSlots(args: {
 
   const slots: IosPremiumPurchaseSlotInspectionSlot[] = resolved.map((slot) => {
     const mappedChurchId = mapped.mappedByProductId[slot.productId] || null;
+    const purchasable = slot.productId === PREMIUM_MONTHLY_PRODUCT_ID;
     let assignmentSource: IosPremiumSlotAssignmentSource =
       mapped.sourceByProductId[slot.productId] || "none";
     // No authoritative Church ID mapping — attribute the non-owning signal, if any.
@@ -471,7 +479,9 @@ export async function inspectIosPremiumPurchaseSlots(args: {
         slot.subscriptionGroupName || iosPremiumSubscriptionGroupName(slot.group),
       status: slot.status,
       statusLabel: slot.statusLabel,
-      purchaseEnabled: slot.purchaseEnabled,
+      purchaseEnabled: purchasable && slot.purchaseEnabled,
+      purchasable,
+      legacy: !purchasable,
       mappedChurchId,
       assignmentSource,
     };
@@ -525,110 +535,59 @@ export async function reserveIosPremiumPurchaseProduct(
   let chosenGroup: IosPremiumPurchaseSlotGroup | null = null;
   let sticky = false;
   let reservationToRefresh: IosPremiumReservationRecord | null = null;
-  const preferExactProduct = Boolean(preferredProductId);
 
-  // Never change the product of a church that already has an active subscription.
+  // This endpoint creates purchase reservations. Existing subscribers (including
+  // legacy G2–G5) must use inspect/restore/current-plan flows, never a new reserve.
   const activeChurchProductId = resolveActiveChurchProductId(existingMedia);
   if (activeChurchProductId) {
-    if (preferredProductId && preferredProductId !== activeChurchProductId) {
-      throw new IosPreferredProductUnavailableError(
-        preferredProductId,
-        "This church already has an active subscription on a different product."
-      );
-    }
-    chosenProductId = activeChurchProductId;
-    chosenGroup = iosPremiumPurchaseSlotGroupFromProductId(activeChurchProductId);
-    sticky = true;
-    reservationToRefresh =
-      churchReservations.find(
-        (r) =>
-          r.status === "reserved" &&
-          Number(r.expiresAt) > now &&
-          r.ownerUserId.toLowerCase() === ownerUserId.toLowerCase() &&
-          r.devicePurchaseScope === devicePurchaseScope &&
-          r.productId === activeChurchProductId
-      ) || null;
-  } else if (preferredProductId) {
-    if (!isIosPremiumPurchaseSlotProductId(preferredProductId)) {
-      throw new IosPreferredProductUnavailableError(
-        preferredProductId,
-        "Preferred product is not a valid Kristo monthly purchase slot."
-      );
-    }
-    if (blocked.has(preferredProductId)) {
-      throw new IosPreferredProductUnavailableError(preferredProductId);
-    }
-    const preferredGroup = iosPremiumPurchaseSlotGroupFromProductId(preferredProductId);
-    if (!preferredGroup) {
-      throw new IosPreferredProductUnavailableError(preferredProductId);
-    }
-    chosenProductId = preferredProductId;
-    chosenGroup = preferredGroup;
-    sticky = false;
-    reservationToRefresh =
-      churchReservations.find(
-        (r) =>
-          r.status === "reserved" &&
-          Number(r.expiresAt) > now &&
-          r.ownerUserId.toLowerCase() === ownerUserId.toLowerCase() &&
-          r.devicePurchaseScope === devicePurchaseScope &&
-          r.productId === preferredProductId
-      ) || null;
-  } else {
-    const activeChurchReservation = churchReservations.find(
-      (r) =>
-        r.status === "reserved" &&
-        Number(r.expiresAt) > now &&
-        r.ownerUserId.toLowerCase() === ownerUserId.toLowerCase() &&
-        r.devicePurchaseScope === devicePurchaseScope &&
-        isIosPremiumPurchaseSlotProductId(r.productId) &&
-        !blocked.has(r.productId)
+    throw new IosPremiumMonthlyOwnershipConflictError(
+      `This Church ID already has an active ${activeChurchProductId} subscription. Existing subscriptions cannot be replaced or migrated through a new purchase reservation.`
     );
-
-    if (activeChurchReservation) {
-      chosenProductId = activeChurchReservation.productId;
-      chosenGroup =
-        iosPremiumPurchaseSlotGroupFromProductId(activeChurchReservation.productId) ||
-        activeChurchReservation.group;
-      sticky = true;
-      reservationToRefresh = activeChurchReservation;
-    } else {
-      const stickyProductId = String(existingMedia?.iosPremiumProductId || "").trim();
-      if (
-        isIosPremiumPurchaseSlotProductId(stickyProductId) &&
-        !blocked.has(stickyProductId)
-      ) {
-        chosenProductId = stickyProductId;
-        chosenGroup = iosPremiumPurchaseSlotGroupFromProductId(stickyProductId);
-        sticky = true;
-      }
-    }
+  }
+  if (existingMedia && isChurchSubscriptionActiveFromRecord(existingMedia)) {
+    throw new IosPremiumMonthlyOwnershipConflictError(
+      "This Church ID already has an active subscription. Start, replace, or migrate it through its existing Current Plan/restore flow, not a new purchase reservation."
+    );
   }
 
-  if (!chosenProductId || !chosenGroup) {
-    const picked = pickFirstAvailableIosPurchaseSlot(blocked);
-    if (!picked) {
-      console.log("KRISTO_IOS_PREMIUM_RESERVATION_NO_SLOT", {
-        churchId,
-        ownerUserId,
-        devicePurchaseScopeSuffix: devicePurchaseScope.slice(-8),
-        purchaseSessionId,
-        blockedProductIds: blockedList,
-        deviceOwnedProductIds,
-        code: IOS_SUBSCRIPTION_SLOTS_EXHAUSTED,
-        note: "best_effort_device_coordination_not_apple_id",
-      });
-      throwSlotsExhausted();
-    }
-    chosenProductId = picked.productId;
-    chosenGroup = picked.group;
-    sticky = false;
+  if (preferredProductId && preferredProductId !== PREMIUM_MONTHLY_PRODUCT_ID) {
+    throw new IosPreferredProductUnavailableError(
+      preferredProductId,
+      `${preferredProductId} is a legacy recognition-only product. New iOS purchases use premium_monthly only.`
+    );
   }
+
+  if (blocked.has(PREMIUM_MONTHLY_PRODUCT_ID)) {
+    console.log("KRISTO_IOS_PREMIUM_MONTHLY_CONFLICT", {
+      churchId,
+      ownerUserId,
+      devicePurchaseScopeSuffix: devicePurchaseScope.slice(-8),
+      purchaseSessionId,
+      blockedProductIds: blockedList,
+      deviceOwnedProductIds,
+      code: "IOS_PREMIUM_MONTHLY_OWNERSHIP_CONFLICT",
+      note: "no_legacy_product_fallback",
+    });
+    throw new IosPremiumMonthlyOwnershipConflictError();
+  }
+
+  const activeChurchReservation = churchReservations.find(
+    (r) =>
+      r.status === "reserved" &&
+      Number(r.expiresAt) > now &&
+      r.ownerUserId.toLowerCase() === ownerUserId.toLowerCase() &&
+      r.devicePurchaseScope === devicePurchaseScope &&
+      r.productId === PREMIUM_MONTHLY_PRODUCT_ID
+  );
+
+  chosenProductId = PREMIUM_MONTHLY_PRODUCT_ID;
+  chosenGroup = "legacy";
+  sticky = Boolean(activeChurchReservation);
+  reservationToRefresh = activeChurchReservation || null;
 
   let reservation: IosPremiumReservationRecord | null = null;
 
-  // Concurrent reserve races: unique owner+device+product constraint may reject.
-  // Auto-pick path may rotate; preferred-product path must not silently switch slots.
+  // Concurrent reserve races fail closed. There is no G2–G5 fallback.
   for (let attempt = 0; attempt < IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS.length; attempt++) {
     if (!chosenProductId || !chosenGroup) {
       throwSlotsExhausted();
@@ -662,34 +621,9 @@ export async function reserveIosPremiumPurchaseProduct(
       break;
     } catch (error) {
       if (!isIosPremiumReservationSlotConflict(error)) throw error;
-      // Do not rotate away from an already-active church product or pastor-selected slot.
-      if (activeChurchProductId || preferExactProduct) {
-        if (preferExactProduct && preferredProductId) {
-          throw new IosPreferredProductUnavailableError(preferredProductId);
-        }
-        throw error;
-      }
-      blocked.add(candidate.productId);
-      sticky = false;
-      if (reservationToRefresh) {
-        try {
-          await saveIosPremiumReservation({
-            ...reservationToRefresh,
-            status: "released",
-            releaseReason: "replaced",
-            releasedAt: Date.now(),
-          });
-        } catch {
-          // best-effort; TTL expiry still clears stale reserved rows
-        }
-        reservationToRefresh = null;
-      }
-      const picked = pickFirstAvailableIosPurchaseSlot(blocked);
-      if (!picked) {
-        throwSlotsExhausted();
-      }
-      chosenProductId = picked.productId;
-      chosenGroup = picked.group;
+      throw new IosPremiumMonthlyOwnershipConflictError(
+        "premium_monthly could not be reserved because another active reservation or ownership context already holds it. No legacy product was substituted."
+      );
     }
   }
 
@@ -814,7 +748,7 @@ export async function confirmIosPremiumReservationAfterPurchase(args: {
         r.status === "reserved" &&
         (!productId ||
           r.productId === productId ||
-          isIosPremiumPurchaseSlotProductId(r.productId))
+          isIosPremiumRecognizedMonthlyProductId(r.productId))
     ) ||
     reservations.find((r) => r.status === "reserved") ||
     null;
@@ -824,7 +758,7 @@ export async function confirmIosPremiumReservationAfterPurchase(args: {
     const group =
       iosPremiumPurchaseSlotGroupFromProductId(productId) ||
       (isIosPremiumRotationMonthlyProductId(productId) ? "g2" : "legacy");
-    const boundProductId = isIosPremiumPurchaseSlotProductId(productId)
+    const boundProductId = isIosPremiumRecognizedMonthlyProductId(productId)
       ? productId
       : group === "legacy"
         ? PREMIUM_MONTHLY_PRODUCT_ID

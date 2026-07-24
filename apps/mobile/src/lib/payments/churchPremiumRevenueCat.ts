@@ -36,7 +36,7 @@ export function hasPremiumEntitlementFromKeys(activeEntitlementKeys: string[]): 
   return detectPremiumEntitlementKey(activeEntitlementKeys) !== null;
 }
 
-/** First iOS purchase slot + Android monthly product. */
+/** The only product offered for new iOS monthly purchases + Android monthly product. */
 export const PREMIUM_MONTHLY_PRODUCT_ID = "premium_monthly";
 /** Recognition only on iOS — never offered or purchased for new iOS subs. */
 export const PREMIUM_YEARLY_PRODUCT_ID = "premium_yearly";
@@ -70,18 +70,24 @@ export const IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS = [
 
 export const IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS = [
   PREMIUM_MONTHLY_PRODUCT_ID,
-  ...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
 ] as const;
 
 export const IOS_SUBSCRIPTION_SLOTS_EXHAUSTED = "IOS_SUBSCRIPTION_SLOTS_EXHAUSTED";
 
+/** Monthly IDs retained for legacy entitlement, ownership inspection, and restore. */
+export const IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS = [
+  PREMIUM_MONTHLY_PRODUCT_ID,
+  ...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
+] as const;
+
 export const LEGACY_CHURCH_PREMIUM_PRODUCT_IDS = [
   PREMIUM_MONTHLY_PRODUCT_ID,
+  ...IOS_PREMIUM_ROTATION_MONTHLY_PRODUCT_IDS,
   PREMIUM_YEARLY_PRODUCT_ID,
 ] as const;
 
 export const CHURCH_PREMIUM_PRODUCT_IDS = [
-  ...IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS,
+  ...IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS,
   PREMIUM_YEARLY_PRODUCT_ID,
 ] as const;
 
@@ -97,6 +103,13 @@ export function isIosPremiumPurchaseSlotProductId(
 ): boolean {
   const id = String(productId || "").trim();
   return (IOS_PREMIUM_PURCHASE_SLOT_PRODUCT_IDS as readonly string[]).includes(id);
+}
+
+export function isIosPremiumRecognizedMonthlyProductId(
+  productId: string | null | undefined
+): boolean {
+  const id = String(productId || "").trim();
+  return (IOS_PREMIUM_RECOGNIZED_MONTHLY_PRODUCT_IDS as readonly string[]).includes(id);
 }
 
 export function isLegacyChurchPremiumProductId(
@@ -131,7 +144,7 @@ export function isMonthlyChurchPremiumProductId(
   const id = String(productId || "").trim();
   if (!id) return false;
   if (isYearlyChurchPremiumProductId(id)) return false;
-  if (isIosPremiumPurchaseSlotProductId(id)) return true;
+  if (isIosPremiumRecognizedMonthlyProductId(id)) return true;
   return /church_premium_monthly_g[2-5]|premium_monthly|monthly|\$rc_monthly/i.test(id);
 }
 

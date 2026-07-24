@@ -7,6 +7,7 @@ import {
   releaseIosPremiumReservation,
   reserveIosPremiumPurchaseProduct,
   inspectIosPremiumPurchaseSlots,
+  IosPremiumMonthlyOwnershipConflictError,
   IosSubscriptionSlotsExhaustedError,
   IosPreferredProductUnavailableError,
 } from "@/app/api/_lib/iosPremiumProductAssignment";
@@ -312,6 +313,10 @@ async function handlePurchaseProduct(req: NextRequest) {
     const preferredUnavailable =
       error instanceof IosPreferredProductUnavailableError ||
       (error as { code?: string } | null)?.code === "IOS_PREFERRED_PRODUCT_UNAVAILABLE";
+    const monthlyOwnershipConflict =
+      error instanceof IosPremiumMonthlyOwnershipConflictError ||
+      (error as { code?: string } | null)?.code ===
+        "IOS_PREMIUM_MONTHLY_OWNERSHIP_CONFLICT";
     const exhausted =
       error instanceof IosSubscriptionSlotsExhaustedError ||
       (error as { code?: string } | null)?.code === IOS_SUBSCRIPTION_SLOTS_EXHAUSTED ||
@@ -323,26 +328,32 @@ async function handlePurchaseProduct(req: NextRequest) {
       preferredProductId,
       deviceOwnedCount: deviceOwnedProductIds.length,
       hasDevicePurchaseScope: Boolean(devicePurchaseScope),
-      reason: preferredUnavailable
+      reason: monthlyOwnershipConflict
+        ? "IOS_PREMIUM_MONTHLY_OWNERSHIP_CONFLICT"
+        : preferredUnavailable
         ? "IOS_PREFERRED_PRODUCT_UNAVAILABLE"
         : exhausted
           ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED
-          : "no-available-rotation-slot",
+          : "ios-premium-reservation-failed",
     });
     return json(
       {
         ok: false,
         error: message,
         preferredProductId: preferredProductId || null,
-        statusLabel: preferredUnavailable
+        statusLabel: monthlyOwnershipConflict || preferredUnavailable
           ? iosPremiumSlotStatusLabel("used_by_another_church")
           : undefined,
-        reason: preferredUnavailable
+        reason: monthlyOwnershipConflict
+          ? "IOS_PREMIUM_MONTHLY_OWNERSHIP_CONFLICT"
+          : preferredUnavailable
           ? "IOS_PREFERRED_PRODUCT_UNAVAILABLE"
           : exhausted
             ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED
-            : "no-available-rotation-slot",
-        code: preferredUnavailable
+            : "ios-premium-reservation-failed",
+        code: monthlyOwnershipConflict
+          ? "IOS_PREMIUM_MONTHLY_OWNERSHIP_CONFLICT"
+          : preferredUnavailable
           ? "IOS_PREFERRED_PRODUCT_UNAVAILABLE"
           : exhausted
             ? IOS_SUBSCRIPTION_SLOTS_EXHAUSTED
