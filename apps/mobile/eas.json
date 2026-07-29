@@ -44,7 +44,8 @@
         "EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE": "1",
         "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com",
         "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi"
-      }
+      },
+      "autoIncrement": false
     }
   },
   "submit": {
