@@ -73,6 +73,16 @@ function getIosV1FreeProofSecret(): string {
   return "";
 }
 
+/** Presence-only — never log secret or proof values. */
+export function describeIosV1FreeProofSecretSource(): "extra" | "env" | "dev_fallback" | "missing" {
+  const extra =
+    (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
+  if (String(extra.iosV1FreeProofSecret || "").trim()) return "extra";
+  if (String(process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || "").trim()) return "env";
+  if (__DEV__) return "dev_fallback";
+  return "missing";
+}
+
 /**
  * Mint daily HMAC proof for authenticated iOS V1 free API calls.
  * Empty on Android / when secret is absent (fail closed server-side).

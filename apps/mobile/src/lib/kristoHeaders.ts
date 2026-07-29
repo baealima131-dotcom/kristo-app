@@ -4,6 +4,7 @@ import {
   KRISTO_CLIENT_PLATFORM_HEADER,
   KRISTO_IOS_V1_FREE_PROOF_HEADER,
   mintIosV1FreeProofHeaderValue,
+  describeIosV1FreeProofSecretSource,
 } from "./iosV1MonetizationPolicy";
 
 export type KristoRole =
@@ -107,6 +108,7 @@ export function logKristoAuthHeadersDiag(
     hasSessionToken: Boolean(headers["x-kristo-session-token"]),
     // Presence only — never log proof value or secret material.
     hasIosV1FreeProof: Boolean(headers[KRISTO_IOS_V1_FREE_PROOF_HEADER]),
+    iosV1FreeProofSecretSource: describeIosV1FreeProofSecretSource(),
     ...(tokenMeta ? { tokenMeta } : {}),
   });
 }
