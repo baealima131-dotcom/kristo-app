@@ -20,7 +20,6 @@ import {
   hideMoreTabShell,
   isMoreTabShellVisible,
   isMoreTabTransitionBlocking,
-  isMoreTopLevelTabActive,
   logMoreDeferredRefreshSkip,
   subscribeMoreTabTransition,
 } from "@/src/lib/refreshCoordinator";
@@ -1162,9 +1161,7 @@ export default function TabLayout() {
                   {...rest}
                   onPress={(event: any) => {
                     handleMoreTabBarPress({
-                      isMoreTabActive:
-                        isMoreTopLevelTabActive(segments) ||
-                        rest?.accessibilityState?.selected === true,
+                      segments,
                       preventDefault: () => {
                         event?.preventDefault?.();
                       },

@@ -1,7 +1,11 @@
 import { InteractionManager } from "react-native";
 import { decideMoreTabBarPress } from "./moreTabPressPolicy";
 
-export { isMoreTopLevelTabActive } from "./moreTabPressPolicy";
+export {
+  isMoreNestedRoute,
+  isMoreRootRoute,
+  isMoreTopLevelTabActive,
+} from "./moreTabPressPolicy";
 
 let moreTabFocused = false;
 let moreTabPressTransitionBlocking = false;
@@ -47,22 +51,35 @@ export function hideMoreTabShell() {
 }
 
 /**
- * More tab bar press. When More is already the focused top-level tab, ignore
- * reselect entirely — no transition shell, no replace, no refresh kickoff.
+ * More tab bar press:
+ * - other tab → More: transition + navigate
+ * - More root → More: no-op
+ * - nested More → More root: replace without transition/blackout
  */
 export function handleMoreTabBarPress(args: {
-  isMoreTabActive: boolean;
+  segments: readonly string[] | null | undefined;
   preventDefault?: () => void;
   navigateToMore: () => void;
-}): "ignored" | "transitioned" {
-  if (decideMoreTabBarPress(args.isMoreTabActive) === "ignored") {
+}): "enter-more" | "stay-more-root" | "return-more-root" {
+  const decision = decideMoreTabBarPress(args.segments);
+
+  if (decision === "stay-more-root") {
     args.preventDefault?.();
     console.log("KRISTO_MORE_TAB_RESELECT_IGNORED");
-    return "ignored";
+    return "stay-more-root";
   }
+
+  if (decision === "return-more-root") {
+    args.preventDefault?.();
+    console.log("KRISTO_MORE_TAB_RESELECT_RETURN_ROOT");
+    // Direct replace — no beginMoreTabPressTransition / shell overlay.
+    args.navigateToMore();
+    return "return-more-root";
+  }
+
   beginMoreTabPressTransition();
   args.navigateToMore();
-  return "transitioned";
+  return "enter-more";
 }
 
 /** @internal test helper — reset module flags between cases. */
