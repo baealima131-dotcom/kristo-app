@@ -1,4 +1,7 @@
 /** @type {import('expo/config').ExpoConfig} */
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const appJson = require("./app.json");
 
 const expo = appJson.expo;
@@ -9,14 +12,29 @@ const REVENUECAT_ANDROID_API_KEY =
   expo.extra?.revenuecatAndroidApiKey ||
   "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi";
 
-// iOS-only proof secret for V1 free monetization HMAC.
-// Set KRISTO_IOS_V1_FREE_PROOF_SECRET on the iOS EAS profile / secrets only.
-// Never bake into Android builds (EAS_BUILD_PLATFORM=android strips it).
-// Residual risk: extractable from IPA; App Attest is the V1.5 hardening path.
-const IOS_V1_FREE_PROOF_SECRET =
-  process.env.EAS_BUILD_PLATFORM === "android"
-    ? ""
-    : String(process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || "").trim();
+/**
+ * iOS-only proof secret for V1 free monetization HMAC.
+ * Prefer KRISTO_IOS_V1_FREE_PROOF_SECRET (EAS iOS / Metro env).
+ * Local Metro: fall back to ~/.cursor/kristo-ios-v1-free-proof.secret so
+ * Constants.extra gets the real key (not DEV_FALLBACK) without manual export.
+ * Never bake into Android builds (EAS_BUILD_PLATFORM=android strips it).
+ */
+function resolveIosV1FreeProofSecret() {
+  if (process.env.EAS_BUILD_PLATFORM === "android") return "";
+  const fromEnv = String(process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || "").trim();
+  if (fromEnv) return fromEnv;
+  // EAS cloud builders must use env/secrets — do not read a host home file there.
+  if (process.env.EAS_BUILD) return "";
+  try {
+    const localPath = path.join(os.homedir(), ".cursor", "kristo-ios-v1-free-proof.secret");
+    const fromFile = String(fs.readFileSync(localPath, "utf8") || "").trim();
+    return fromFile;
+  } catch {
+    return "";
+  }
+}
+
+const IOS_V1_FREE_PROOF_SECRET = resolveIosV1FreeProofSecret();
 
 module.exports = {
   expo: {

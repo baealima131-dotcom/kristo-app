@@ -63,9 +63,22 @@ function utcDayString(offsetDays = 0): string {
 
 function getIosV1FreeProofSecret(): string {
   // iOS EAS profile only — Android builds must leave this unset.
-  const extra =
+  // Prefer expoConfig.extra, then legacy manifest extras (dev client can expose either).
+  const expoExtra =
     (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
-  const fromExtra = String(extra.iosV1FreeProofSecret || "").trim();
+  const manifestExtra =
+    ((Constants.manifest as { extra?: Record<string, string | undefined> } | null)?.extra) || {};
+  const manifest2Extra =
+    (
+      (Constants as { manifest2?: { extra?: { expoClient?: { extra?: Record<string, string | undefined> } } } })
+        .manifest2?.extra?.expoClient?.extra
+    ) || {};
+  const fromExtra = String(
+    expoExtra.iosV1FreeProofSecret ||
+      manifestExtra.iosV1FreeProofSecret ||
+      manifest2Extra.iosV1FreeProofSecret ||
+      ""
+  ).trim();
   if (fromExtra) return fromExtra;
   const fromEnv = String(process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || "").trim();
   if (fromEnv) return fromEnv;
@@ -75,9 +88,25 @@ function getIosV1FreeProofSecret(): string {
 
 /** Presence-only — never log secret or proof values. */
 export function describeIosV1FreeProofSecretSource(): "extra" | "env" | "dev_fallback" | "missing" {
-  const extra =
+  const expoExtra =
     (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
-  if (String(extra.iosV1FreeProofSecret || "").trim()) return "extra";
+  const manifestExtra =
+    ((Constants.manifest as { extra?: Record<string, string | undefined> } | null)?.extra) || {};
+  const manifest2Extra =
+    (
+      (Constants as { manifest2?: { extra?: { expoClient?: { extra?: Record<string, string | undefined> } } } })
+        .manifest2?.extra?.expoClient?.extra
+    ) || {};
+  if (
+    String(
+      expoExtra.iosV1FreeProofSecret ||
+        manifestExtra.iosV1FreeProofSecret ||
+        manifest2Extra.iosV1FreeProofSecret ||
+        ""
+    ).trim()
+  ) {
+    return "extra";
+  }
   if (String(process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || "").trim()) return "env";
   if (__DEV__) return "dev_fallback";
   return "missing";
