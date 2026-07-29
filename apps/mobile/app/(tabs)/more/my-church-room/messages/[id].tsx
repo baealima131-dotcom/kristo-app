@@ -10752,7 +10752,119 @@ const displayHeaderTitle = assignmentDisplayTitle;
       return;
     }
 
-    if (action === "edit" || action === "pause") {
+    if (action === "edit") {
+      closeThreadMenu();
+
+      const ministryIdForEdit = String(
+        resolvedMinistryId ||
+          (String(threadId || "").startsWith("min_") ? threadId : "") ||
+          (String((params as any)?.assignmentId || "").startsWith("min_")
+            ? (params as any).assignmentId
+            : "")
+      ).trim();
+
+      const returnThreadId = String(threadId || backendRoomId || ministryIdForEdit || "").trim();
+      const returnRoomKind = String(
+        (params as any)?.roomKind ||
+          (isChurchLiveControlRoom || isChurchLiveControlAssignment
+            ? "assignment"
+            : isAssignmentThread
+              ? "assignment"
+              : isMinistryThread
+                ? "ministry"
+                : "")
+      ).trim();
+
+      const returnParams: Record<string, string> = {
+        id: returnThreadId,
+        title: String(headerTitle || title || ""),
+        sub: String(sub || ""),
+        tab: String((params as any)?.tab || "ministries"),
+        source: String((params as any)?.source || (isChurchLiveControlRoom ? "media" : "my_ministries")),
+        roomKind: returnRoomKind,
+        roomMode: String((params as any)?.roomMode || returnRoomKind || ""),
+        ministryId: String(ministryIdForEdit || (params as any)?.ministryId || ""),
+        assignmentId: String(
+          (params as any)?.assignmentId ||
+            (isChurchLiveControlRoom ? "church-media-room" : ministryIdForEdit || threadId || "")
+        ),
+        assignmentTitle: String(assignmentTitleParam || headerTitle || title || ""),
+        assignmentSubtitle: String(assignmentSubtitleParam || sub || ""),
+        role: String(assignmentRole || (params as any)?.role || ""),
+        status: String(assignmentStatus || (params as any)?.status || ""),
+        assignmentInitials: String(assignmentInitialsParam || ""),
+        avatar: String(routeAvatar || ministryAvatarFallback || ""),
+        churchId: String(churchId || ""),
+        mediaScope: String(
+          (params as any)?.mediaScope ||
+            (isChurchLiveControlRoom || isChurchLiveControlAssignment ? "church" : "")
+        ),
+      };
+
+      if (ministryIdForEdit) {
+        console.log("KRISTO_STRUCTURED_PROFILE_EDIT_OPEN", {
+          kind: "ministry",
+          ministryId: ministryIdForEdit,
+          roomId: returnThreadId,
+          churchId: String(churchId || ""),
+          userId: String(effectiveAuthUserId || ""),
+          authorityTier: ministryAuthority.tier,
+        });
+        router.push({
+          pathname: "/(tabs)/church/ministries/[ministryId]/edit" as any,
+          params: {
+            ministryId: ministryIdForEdit,
+            returnTo: "messages-thread",
+            threadId: returnThreadId,
+            churchId: String(churchId || ""),
+            roomId: String(backendRoomId || returnThreadId),
+            assignmentId: returnParams.assignmentId,
+            roomKind: returnRoomKind,
+            returnParams: JSON.stringify(returnParams),
+          },
+        });
+        return;
+      }
+
+      if (isChurchLiveControlRoom || isChurchLiveControlAssignment || isChurchMediaRoom) {
+        console.log("KRISTO_STRUCTURED_PROFILE_EDIT_OPEN", {
+          kind: "church-live-control",
+          roomId: "church-media-room",
+          churchId: String(churchId || ""),
+          userId: String(effectiveAuthUserId || ""),
+          authorityTier: ministryAuthority.tier,
+        });
+        router.push({
+          pathname: "/(tabs)/church/edit" as any,
+          params: {
+            returnTo: "messages-thread",
+            threadId: returnThreadId || "church-media-room",
+            roomId: "church-media-room",
+            assignmentId: "church-media-room",
+            churchId: String(churchId || ""),
+            roomKind: "assignment",
+            source: String((params as any)?.source || "media"),
+            returnParams: JSON.stringify({
+              ...returnParams,
+              id: returnThreadId || "church-media-room",
+              roomKind: "assignment",
+              assignmentId: "church-media-room",
+              mediaScope: "church",
+              source: String((params as any)?.source || "media"),
+            }),
+          },
+        });
+        return;
+      }
+
+      Alert.alert(
+        "Edit profile",
+        "This room does not have an editable profile yet."
+      );
+      return;
+    }
+
+    if (action === "pause") {
       closeThreadMenu();
       Alert.alert(
         "Coming next",

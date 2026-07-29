@@ -27,6 +27,7 @@ import { fetchMinistryById, uploadMinistryAvatar } from "@/src/lib/ministriesApi
 import * as ImagePicker from "expo-image-picker";
 import { ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
+import { emitMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
 
 type MinistryStatus = "Active" | "Paused";
 type Ministry = {
@@ -50,20 +51,57 @@ const DECK_CARD_W = SCREEN_W - 32;
 export default function ChurchMinistryEditScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ ministryId: string; returnTo?: string; threadId?: string }>();
+  const params = useLocalSearchParams<{
+    ministryId: string;
+    returnTo?: string;
+    threadId?: string;
+    returnParams?: string;
+    churchId?: string;
+    roomId?: string;
+    assignmentId?: string;
+    roomKind?: string;
+  }>();
   const nameRef = useRef<TextInput>(null);
   const scrollRef = useRef<any>(null);
 
   const ministryId = useMemo(() => String(params?.ministryId || ""), [params?.ministryId]);
   const returnTo = useMemo(() => String(params?.returnTo || ""), [params?.returnTo]);
   const returnThreadId = useMemo(() => String(params?.threadId || ""), [params?.threadId]);
+  const returnParamsRaw = useMemo(() => String(params?.returnParams || ""), [params?.returnParams]);
+
+  function parseReturnParams(): Record<string, string> {
+    if (!returnParamsRaw) return {};
+    try {
+      const parsed = JSON.parse(returnParamsRaw);
+      if (!parsed || typeof parsed !== "object") return {};
+      return Object.fromEntries(
+        Object.entries(parsed).map(([k, v]) => [String(k), String(v ?? "")])
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  function goBackToMessagesThread() {
+    const restored = parseReturnParams();
+    const id = String(restored.id || returnThreadId || "").trim();
+    if (!id) {
+      router.back();
+      return;
+    }
+    router.replace({
+      pathname: "/(tabs)/more/my-church-room/messages/[id]",
+      params: {
+        ...restored,
+        id,
+        refreshAt: String(Date.now()),
+      },
+    } as any);
+  }
 
   function goBackTarget() {
-    if (returnTo === "messages-thread" && returnThreadId) {
-      router.replace({
-        pathname: "/more/my-church-room/messages/[id]",
-        params: { id: returnThreadId },
-      } as any);
+    if (returnTo === "messages-thread") {
+      goBackToMessagesThread();
       return;
     }
     router.back();
@@ -318,15 +356,19 @@ const [name, setName] = useState("");
       setAvatarUri(savedAvatar);
       setItem((prev) => prev ? { ...prev, name: name.trim(), description: description.trim(), avatarUri: savedAvatar } : prev);
 
+      emitMinistriesUpdated({
+        churchId: String(churchId || item?.churchId || ""),
+        userId: String(effectiveAuthUserId || ""),
+        ministryId: String(ministryId || ""),
+        action: "updated",
+      });
+
       Alert.alert("Saved", "Ministry profile updated successfully.", [
         {
           text: "OK",
           onPress: () => {
-            if (returnTo === "messages-thread" && returnThreadId) {
-              router.replace({
-                pathname: "/more/my-church-room/messages/[id]",
-                params: { id: returnThreadId },
-              } as any);
+            if (returnTo === "messages-thread") {
+              goBackToMessagesThread();
               return;
             }
             router.replace({

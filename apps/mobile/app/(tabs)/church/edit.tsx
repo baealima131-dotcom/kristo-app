@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -38,6 +38,53 @@ export default function EditChurchProfile() {
   const insets = useSafeAreaInsets();
   const { session, setSession } = useKristoSession();
   const saveInFlight = useRef(false);
+  const params = useLocalSearchParams<{
+    returnTo?: string;
+    threadId?: string;
+    returnParams?: string;
+    roomId?: string;
+    assignmentId?: string;
+    churchId?: string;
+    roomKind?: string;
+    source?: string;
+  }>();
+  const returnTo = useMemo(() => String(params?.returnTo || ""), [params?.returnTo]);
+  const returnThreadId = useMemo(() => String(params?.threadId || ""), [params?.threadId]);
+  const returnParamsRaw = useMemo(() => String(params?.returnParams || ""), [params?.returnParams]);
+
+  function parseReturnParams(): Record<string, string> {
+    if (!returnParamsRaw) return {};
+    try {
+      const parsed = JSON.parse(returnParamsRaw);
+      if (!parsed || typeof parsed !== "object") return {};
+      return Object.fromEntries(
+        Object.entries(parsed).map(([k, v]) => [String(k), String(v ?? "")])
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  function goBackToMessagesThread() {
+    const restored = parseReturnParams();
+    const id = String(restored.id || returnThreadId || "church-media-room").trim();
+    router.replace({
+      pathname: "/(tabs)/more/my-church-room/messages/[id]",
+      params: {
+        ...restored,
+        id,
+        refreshAt: String(Date.now()),
+      },
+    } as any);
+  }
+
+  function goBackTarget() {
+    if (returnTo === "messages-thread") {
+      goBackToMessagesThread();
+      return;
+    }
+    router.back();
+  }
 
   const [name, setName] = useState("");
   const [pastorName, setPastorName] = useState("");
@@ -217,14 +264,18 @@ export default function EditChurchProfile() {
       avatarUpdatedAt: optimisticAvatarAt,
     });
 
-    router.replace({
-      pathname: "/(tabs)/church/overview",
-      params: {
-        saved: "1",
-        savedName: trimmedName,
-        refreshAt: String(Date.now()),
-      },
-    } as any);
+    if (returnTo === "messages-thread") {
+      goBackToMessagesThread();
+    } else {
+      router.replace({
+        pathname: "/(tabs)/church/overview",
+        params: {
+          saved: "1",
+          savedName: trimmedName,
+          refreshAt: String(Date.now()),
+        },
+      } as any);
+    }
 
     void (async () => {
       try {
@@ -359,7 +410,7 @@ export default function EditChurchProfile() {
   return (
     <View style={[s.screen, { paddingTop: insets.top }]}>
       <View style={s.header}>
-        <Pressable onPress={() => router.back()} style={s.backBtn}>
+        <Pressable onPress={goBackTarget} style={s.backBtn}>
           <Ionicons name="arrow-back" size={22} color="white" />
         </Pressable>
         <View>
