@@ -19,6 +19,14 @@ import { shouldHideIosSubscriptionUi } from "@/src/lib/iosV1MonetizationPolicy";
 const SUBSCRIPTIONS_HREF = "/more/payments/subscriptions";
 
 export default function PaymentsScreen() {
+  // iOS V1 free: never show payments/paywall (including deep links).
+  if (shouldHideIosSubscriptionUi()) {
+    return <Redirect href={"/more/media" as any} />;
+  }
+  return <PaymentsScreenImpl />;
+}
+
+function PaymentsScreenImpl() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [paymentsState, setPaymentsState] = useState(() => getPaymentsState());
@@ -28,11 +36,6 @@ export default function PaymentsScreen() {
       setPaymentsState(getPaymentsState());
     });
   }, []);
-
-  // iOS V1 free: never show payments/paywall (including deep links).
-  if (shouldHideIosSubscriptionUi()) {
-    return <Redirect href={"/more/media" as any} />;
-  }
 
   const subscriptionsActive = paymentsState.currentModule === "subscriptions";
 

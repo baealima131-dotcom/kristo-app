@@ -1126,6 +1126,14 @@ function BackendManagedPremiumNoteCard({
 }
 
 export default function PaymentsSubscriptionsScreen() {
+  // iOS V1 free: never mount paywall hooks/UI (deep links included).
+  if (shouldHideIosSubscriptionUi()) {
+    return <Redirect href={"/more/media" as any} />;
+  }
+  return <PaymentsSubscriptionsScreenImpl />;
+}
+
+function PaymentsSubscriptionsScreenImpl() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { session, loading: sessionLoading, setSession } = useKristoSession();
@@ -2936,10 +2944,6 @@ export default function PaymentsSubscriptionsScreen() {
     monthlyDisplayPrice,
     showMonthlyFreeTrial,
   ]);
-
-  if (shouldHideIosSubscriptionUi()) {
-    return <Redirect href={"/more/media" as any} />;
-  }
 
   return (
     <View style={s.screen}>

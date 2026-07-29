@@ -146,6 +146,14 @@ function extractRevenueCatErrorCode(message: string | null): number | null {
 }
 
 export default function PaymentsCheckoutScreen() {
+  // iOS V1 free: never mount checkout/paywall hooks/UI (deep links included).
+  if (shouldHideIosSubscriptionUi()) {
+    return <Redirect href={"/more/media" as any} />;
+  }
+  return <PaymentsCheckoutScreenImpl />;
+}
+
+function PaymentsCheckoutScreenImpl() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ plan?: string }>();
@@ -1213,10 +1221,6 @@ export default function PaymentsCheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }
-
-  if (shouldHideIosSubscriptionUi()) {
-    return <Redirect href={"/more/media" as any} />;
   }
 
   return (
