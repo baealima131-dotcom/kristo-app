@@ -4,6 +4,7 @@ import {
   getEffectiveSubscriptionState,
   isPlanActive,
 } from "./mobileSubscriptions";
+import { isIosV1PremiumFeatureUnlocked } from "../iosV1MonetizationPolicy";
 import { isSubscriptionBypassEnabled } from "../subscriptionBypass";
 
 export type PremiumGateState = {
@@ -15,7 +16,7 @@ export type PremiumGateState = {
 export function buildPremiumGateState(
   customerInfo: CustomerInfo | null | undefined
 ): PremiumGateState {
-  if (isSubscriptionBypassEnabled()) {
+  if (isIosV1PremiumFeatureUnlocked() || isSubscriptionBypassEnabled()) {
     return {
       selectedPlan: "monthly",
       planStatus: "active",
@@ -47,6 +48,6 @@ export function hasPremiumAccessFromCustomerInfo(
 export function shouldBlockPremiumFeature(
   customerInfo: CustomerInfo | null | undefined
 ) {
-  if (isSubscriptionBypassEnabled()) return false;
+  if (isIosV1PremiumFeatureUnlocked() || isSubscriptionBypassEnabled()) return false;
   return !hasPremiumAccessFromCustomerInfo(customerInfo);
 }

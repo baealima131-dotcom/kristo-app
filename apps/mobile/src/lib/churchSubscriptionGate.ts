@@ -1,3 +1,5 @@
+import { isIosV1PremiumFeatureUnlocked } from "./iosV1MonetizationPolicy";
+
 const loggedBlockedGates = new Set<string>();
 
 export function logSubscriptionGateBlocked(
@@ -17,7 +19,8 @@ export function logSubscriptionGateBlocked(
 
 export function isStrictChurchSubscriptionActive(
   churchSubscriptionActive: boolean | null | undefined
-): churchSubscriptionActive is true {
+): boolean {
+  if (isIosV1PremiumFeatureUnlocked()) return true;
   return churchSubscriptionActive === true;
 }
 
@@ -72,8 +75,9 @@ function resolveStrictGateRoleAllowed(ctx: StrictChurchMediaLiveGateContext, gat
 }
 
 /**
- * V1 media/live gates: always require real churchSubscriptionActive === true.
- * Dev/review subscription bypass env vars must not unlock these gates.
+ * Media/live gates.
+ * Android: requires real churchSubscriptionActive === true.
+ * iOS V1 free: monetization off — role-eligible users are allowed without subscriptionActive.
  */
 export function evaluateStrictChurchMediaLiveSubscriptionGate(
   ctx: StrictChurchMediaLiveGateContext
@@ -83,6 +87,7 @@ export function evaluateStrictChurchMediaLiveSubscriptionGate(
   const isPastor = ctx.isPastor === true;
   const isApprovedMediaHost = ctx.isApprovedMediaHost === true;
   const viewerIsHost = ctx.viewerIsHost === true;
+  const iosV1Free = isIosV1PremiumFeatureUnlocked();
 
   if (ctx.pastorOnly && !isPastor) {
     logSubscriptionGateBlocked(gate, churchSubscriptionActive, {
@@ -121,5 +126,8 @@ export function evaluateStrictChurchMediaLiveSubscriptionGate(
     return { allowed: false, reason: "not_media_role" };
   }
 
-  return { allowed: true, reason: "church_active" };
+  return {
+    allowed: true,
+    reason: iosV1Free && churchSubscriptionActive !== true ? "ios_v1_free" : "church_active",
+  };
 }

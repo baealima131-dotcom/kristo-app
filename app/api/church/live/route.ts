@@ -483,6 +483,7 @@ export async function POST(req: Request) {
     userId: a.userId,
     role: a.role,
     action: "start_live",
+    headers: req.headers,
   });
   if (subscriptionBlocked) return subscriptionBlocked;
 
@@ -608,6 +609,7 @@ export async function PATCH(req: Request) {
       userId: a.userId,
       role: a.role,
       action: action || "open_live_session",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
   }

@@ -347,6 +347,7 @@ export async function POST(req: NextRequest) {
     userId: viewerUserId,
     role: viewerRole,
     action: "create_ministry",
+    headers: req.headers,
   });
   if (subscriptionBlocked) return subscriptionBlocked;
 
@@ -389,6 +390,7 @@ export async function POST(req: NextRequest) {
       userId: viewerUserId,
       role: viewerRole,
       action: "grant_ministry_media_access",
+    headers: req.headers,
     });
     if (mediaSubscriptionBlocked) return mediaSubscriptionBlocked;
   }
@@ -580,6 +582,7 @@ export async function PATCH(req: NextRequest) {
       userId: viewerUserId,
       role: viewerRole,
       action: "grant_ministry_media_access",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
   }

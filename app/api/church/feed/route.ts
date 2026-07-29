@@ -3319,7 +3319,7 @@ export async function POST(req: NextRequest) {
       serverBuild: "main-clear-media-schedule-slots",
       stage: "early-handler-hit",
     });
-    return await handleClearMediaScheduleSlots(body, a);
+    return await handleClearMediaScheduleSlots(body, a, req.headers);
   }
 
   if (isIncomingMediaScheduleCreate(body)) {
@@ -3367,7 +3367,11 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function handleClearMediaScheduleSlots(body: any, ctx: any) {
+async function handleClearMediaScheduleSlots(
+  body: any,
+  ctx: any,
+  headers?: Headers | Record<string, string | string[] | undefined> | null
+) {
   const action = "clear_media_schedule_slots";
   const churchId = String(ctx?.churchId || "").trim();
   const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
@@ -3394,6 +3398,7 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
     userId: viewerUserId,
     role: viewerAppRole,
     action: "clear_media_schedule_slots",
+    headers: headers || null,
   });
   if (subscriptionBlocked) return subscriptionBlocked;
 
@@ -3542,7 +3547,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
   }
 
   if (action === "clear_media_schedule_slots") {
-    return await handleClearMediaScheduleSlots(body, ctx);
+    return await handleClearMediaScheduleSlots(body, ctx, req.headers);
   }
 
   if (action === "end_stale_media_schedule") {
@@ -3877,6 +3882,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       userId: viewerUserId,
       role: viewerAppRole,
       action: "update-schedule-slots",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
 
@@ -4070,6 +4076,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       userId: viewerUserId,
       role: String(ctx?.viewer?.role || ""),
       action: "claim_schedule_slot",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
 
@@ -4198,6 +4205,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       userId: viewerUserId,
       role: viewerAppRole,
       action: "assign_schedule_slot",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
 
@@ -4354,6 +4362,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       userId: viewerUserId,
       role: String(ctx?.viewer?.role || ""),
       action: "unclaim_schedule_slot",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
 
@@ -4862,6 +4871,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       userId: viewerUserId,
       role: viewerAppRole,
       action: "create_media_schedule",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
 

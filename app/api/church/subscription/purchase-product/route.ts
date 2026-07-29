@@ -184,6 +184,7 @@ async function handlePurchaseProduct(req: NextRequest) {
   const access = await evaluateChurchMediaAccess({
     churchId,
     userId,
+      headers: req.headers,
   });
   if (!access.isActualChurchPastor || !access.canManageChurchSubscription) {
     return json(

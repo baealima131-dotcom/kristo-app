@@ -9,6 +9,7 @@ import {
   Modal,
   Animated,
   Easing,
+  Platform,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -101,7 +102,11 @@ const MESSAGES_MORE_ITEM: Item = {
 };
 
 /** UI-hidden More cards (routes and feature code remain intact). */
-const HIDDEN_MORE_CARD_KEYS = new Set<string>([MESSAGES_MORE_ITEM.key]);
+const HIDDEN_MORE_CARD_KEYS = new Set<string>([
+  MESSAGES_MORE_ITEM.key,
+  // iOS V1 free: hide Church Subscription / Payments entry (Android keeps it).
+  ...(Platform.OS === "ios" ? ["payments"] : []),
+]);
 
 function shouldShowAgentMoreCard(platformRole: string, access: AgentAccessResponse | null): boolean {
   if (hasOfflineActivationRole(platformRole, "Agent")) return true;
@@ -136,11 +141,11 @@ const ITEMS: Item[] = [
   },
   {
     key: "payments",
-    title: "Payments",
-    sub: "Subscriptions • donations • premium live",
+    title: "Church Subscription",
+    sub: "Monthly plans • manage premium",
     iconLib: "ion",
     icon: "card",
-    href: "/more/payments",
+    href: "/more/payments/subscriptions",
   },
   {
     key: "media",

@@ -1,4 +1,8 @@
 import { logSubscriptionGateBlocked } from "./churchSubscriptionGate";
+import {
+  isIosV1PremiumFeatureUnlocked,
+  shouldSkipRevenueCatPurchasingOnIos,
+} from "./iosV1MonetizationPolicy";
 
 /** Full testing bypass: EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS=1 */
 export const BYPASS_SUBSCRIPTION_FOR_TESTING =
@@ -114,6 +118,8 @@ export function isSubscriptionBypassEnabled() {
  * production EAS profile (App Store / Play store releases).
  */
 export function isRevenueCatPurchasingDisabled() {
+  // iOS V1 free launch: never configure / purchase / restore via RevenueCat.
+  if (shouldSkipRevenueCatPurchasingOnIos()) return true;
   if (!BYPASS_SUBSCRIPTION_FOR_TESTING) return false;
   if (isProductionEasBuildProfile()) return false;
   return true;
@@ -136,7 +142,9 @@ export type ChurchMediaSubscriptionGateContext = {
 
 /**
  * Church-level subscription entitlement for media/live.
- * V1: always requires churchSubscriptionActive === true — dev/review bypass never applies here.
+ * Android V1: requires churchSubscriptionActive === true.
+ * iOS V1 free: unlock for pastor/approved host without requiring subscriptionActive
+ * (monetization disabled — not a fake entitlement write).
  */
 export function evaluateChurchMediaSubscriptionGate(
   ctx: ChurchMediaSubscriptionGateContext
@@ -145,6 +153,7 @@ export function evaluateChurchMediaSubscriptionGate(
   const isApprovedMediaHost = ctx.isApprovedMediaHost === true;
   const churchSubscriptionActive = ctx.churchSubscriptionActive ?? null;
   const gate = String(ctx.gate || "unknown");
+  const iosV1Free = isIosV1PremiumFeatureUnlocked();
 
   console.log("KRISTO_SUBSCRIPTION_GATE_CHECK", {
     screen: ctx.screen || null,
@@ -154,21 +163,22 @@ export function evaluateChurchMediaSubscriptionGate(
     isApprovedMediaHost,
     testingBypass: false,
     churchSubscriptionActive,
+    iosV1Free,
   });
 
   if (isPastor || isApprovedMediaHost) {
-    if (churchSubscriptionActive === true) {
+    if (churchSubscriptionActive === true || iosV1Free) {
       if (isApprovedMediaHost && !isPastor) {
         console.log("KRISTO_MEDIA_HOST_SUBSCRIPTION_ALLOWED", {
-          mode: "church_subscription_active",
+          mode: iosV1Free ? "ios_v1_free" : "church_subscription_active",
           gate,
           churchId: ctx.churchId || null,
         });
       }
       return {
         subscriptionAllowed: true,
-        bypassed: false,
-        reason: "church_active",
+        bypassed: iosV1Free && churchSubscriptionActive !== true,
+        reason: iosV1Free && churchSubscriptionActive !== true ? "ios_v1_free" : "church_active",
       };
     }
 
@@ -205,11 +215,12 @@ export function isScheduleSubscriptionBypassEnabled(
   return false;
 }
 
-/** Skip premium alerts for Pastor/approved host when testing bypass is on. */
+/** Skip premium alerts for Pastor/approved host when testing bypass is on, or on iOS V1 free. */
 export function shouldSuppressPremiumPrompts(
   isPastor = false,
   isApprovedMediaHost = false
 ) {
+  if (isIosV1PremiumFeatureUnlocked()) return true;
   if (!isAppleReviewBypassEnabled()) return false;
   return isPastor || isApprovedMediaHost;
 }

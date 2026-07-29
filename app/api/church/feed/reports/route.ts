@@ -28,6 +28,7 @@ async function requireMediaReportsAccess(req: NextRequest) {
   const access = await evaluateChurchMediaAccess({
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
+      headers: req.headers,
   });
 
   if (!access.canOpenMediaScreen) {

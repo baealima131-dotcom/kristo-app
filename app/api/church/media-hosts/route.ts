@@ -85,6 +85,7 @@ export async function GET(req: NextRequest) {
     const access = await evaluateChurchMediaAccess({
       churchId: ctxOrRes.churchId,
       userId: ctxOrRes.viewer.userId,
+      headers: req.headers,
     });
 
     console.log("[MediaHosts] GET", {
@@ -128,6 +129,7 @@ export async function POST(req: NextRequest) {
     const access = await evaluateChurchMediaAccess({
       churchId: ctxOrRes.churchId,
       userId: ctxOrRes.viewer.userId,
+      headers: req.headers,
     });
 
     if (!access.canManageMediaHosts) {
@@ -147,6 +149,7 @@ export async function POST(req: NextRequest) {
       userId: ctxOrRes.viewer.userId,
       role: String(ctxOrRes.viewer.role || ""),
       action: "manage_media_hosts",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
 
@@ -308,6 +311,7 @@ export async function DELETE(req: NextRequest) {
     const access = await evaluateChurchMediaAccess({
       churchId: ctxOrRes.churchId,
       userId: ctxOrRes.viewer.userId,
+      headers: req.headers,
     });
 
     if (!access.canManageMediaHosts) {
@@ -327,6 +331,7 @@ export async function DELETE(req: NextRequest) {
       userId: ctxOrRes.viewer.userId,
       role: String(ctxOrRes.viewer.role || ""),
       action: "remove_media_host",
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
 

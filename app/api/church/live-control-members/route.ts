@@ -356,6 +356,7 @@ export async function PATCH(req: NextRequest) {
       userId: viewerUserId,
       role: viewerRole,
       action: `live_control_${action}`,
+    headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
 

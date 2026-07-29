@@ -80,6 +80,7 @@ export async function GET(req: NextRequest) {
     let access = await evaluateChurchMediaAccess({
       churchId,
       userId,
+      headers: req.headers,
     });
     let mediaForResponse = media;
     let hasProfile = Boolean(String(media?.mediaName || "").trim());
@@ -120,7 +121,7 @@ export async function GET(req: NextRequest) {
         mediaForResponse = classified.media;
         subscriptionActive = isChurchSubscriptionActiveFromRecord(classified.media);
         if (classified.classified) {
-          access = await evaluateChurchMediaAccess({ churchId, userId });
+          access = await evaluateChurchMediaAccess({ churchId, userId, headers: req.headers });
         }
       }
       console.log("KRISTO_CHURCH_MEDIA_SUBSCRIPTION_SOURCE_RECONCILE", {
@@ -157,7 +158,7 @@ export async function GET(req: NextRequest) {
         hasProfile = Boolean(String(sync.media.mediaName || "").trim());
         subscriptionActive = isChurchSubscriptionActiveFromRecord(sync.media);
         if (sync.synced) {
-          access = await evaluateChurchMediaAccess({ churchId, userId });
+          access = await evaluateChurchMediaAccess({ churchId, userId, headers: req.headers });
         }
       }
       console.log("KRISTO_CHURCH_MEDIA_GET_AFTER_SYNC", {
@@ -194,7 +195,7 @@ export async function GET(req: NextRequest) {
           if (deactivated) {
             mediaForResponse = deactivated;
             subscriptionActive = false;
-            access = await evaluateChurchMediaAccess({ churchId, userId });
+            access = await evaluateChurchMediaAccess({ churchId, userId, headers: req.headers });
             console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_DEACTIVATE", {
               churchId,
               profileSubscriptionActive: deactivated.subscriptionActive ?? false,
@@ -225,7 +226,7 @@ export async function GET(req: NextRequest) {
           mediaForResponse = await getChurchMediaByChurchId(churchId);
           hasProfile = Boolean(String(mediaForResponse?.mediaName || "").trim());
           subscriptionActive = isChurchSubscriptionActiveFromRecord(mediaForResponse);
-          access = await evaluateChurchMediaAccess({ churchId, userId });
+          access = await evaluateChurchMediaAccess({ churchId, userId, headers: req.headers });
         }
       } catch (notifyError: any) {
         console.log("KRISTO_SUBSCRIPTION_RECONCILE_FAILED", {
@@ -370,6 +371,7 @@ export async function POST(req: Request) {
   const access = await evaluateChurchMediaAccess({
     churchId: a.churchId,
     userId: a.userId,
+      headers: req.headers,
   });
   if (!access.canManageMediaHosts) {
     return NextResponse.json(
@@ -444,6 +446,7 @@ export async function PATCH(req: Request) {
   const access = await evaluateChurchMediaAccess({
     churchId: a.churchId,
     userId: a.userId,
+      headers: req.headers,
   });
   if (!access.canManageChurchSubscription) {
     return NextResponse.json(

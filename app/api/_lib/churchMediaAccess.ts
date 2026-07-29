@@ -3,6 +3,7 @@ import { getChurchMediaByChurchId, upsertChurchMedia, type ChurchMediaProfile } 
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getChurchById } from "@/app/api/_lib/churches";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
+import { isIosV1SubscriptionGateBypassed } from "@/lib/iosV1MonetizationPolicy";
 
 export const MAX_CHURCH_MEDIA_HOSTS = 3;
 
@@ -104,6 +105,8 @@ export async function getStoredMediaHosts(churchId: string): Promise<MediaHostRe
 export async function evaluateChurchMediaAccess(args: {
   churchId: string;
   userId: string;
+  /** Optional request headers — enables iOS V1 free media tools without DB writes. */
+  headers?: Headers | Record<string, string | string[] | undefined> | null;
 }) {
   const churchId = String(args.churchId || "").trim();
   const userId = String(args.userId || "").trim();
@@ -126,7 +129,13 @@ export async function evaluateChurchMediaAccess(args: {
   const subscriptionActive = isChurchSubscriptionActiveFromRecord(media);
   // Non-subscription pastor-role users may still open media (tools if active); they cannot manage.
   const canOpenMediaScreen = isActualChurchPastor || hasPastorRole || isMediaHost;
-  const canUseMediaTools = subscriptionActive && canOpenMediaScreen;
+  const iosV1Free = isIosV1SubscriptionGateBypassed(args.headers || null, {
+    userId,
+  });
+  // iOS V1 free: unlock tools for role-eligible users without flipping subscriptionActive.
+  // Trust = kill switch + HMAC proof bound to userId (platform header alone is insufficient).
+  const canUseMediaTools =
+    (subscriptionActive || iosV1Free) && canOpenMediaScreen;
 
   return {
     actualPastorUserId,
@@ -141,6 +150,7 @@ export async function evaluateChurchMediaAccess(args: {
     canAccessChurchMedia: canOpenMediaScreen,
     canManageMediaHosts,
     canManageChurchSubscription,
+    monetizationPolicy: iosV1Free ? ("ios_v1_free" as const) : ("standard" as const),
   };
 }
 

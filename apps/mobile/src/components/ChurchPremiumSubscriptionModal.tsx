@@ -13,12 +13,14 @@ import {
   CHURCH_SUBSCRIPTION_MINISTRY_MESSAGE,
   CHURCH_SUBSCRIPTION_PREMIUM_TITLE,
 } from "@/src/lib/churchSubscription";
+import { isIosV1PremiumFeatureUnlocked, shouldHideIosSubscriptionUi } from "@/src/lib/iosV1MonetizationPolicy";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 
 export function isMinistryCreationAllowed(
   subscriptionActive: boolean | null,
   canUseMediaTools?: boolean | null
 ): boolean {
+  if (isIosV1PremiumFeatureUnlocked()) return true;
   if (isSubscriptionBypassEnabled()) return true;
   if (canUseMediaTools === true) return true;
   return subscriptionActive === true;
@@ -44,6 +46,8 @@ export function ChurchMinistryPremiumLockCard({
   onSubscribe,
   style,
 }: MinistryPremiumLockCardProps) {
+  if (shouldHideIosSubscriptionUi()) return null;
+
   return (
     <View style={[lockCardStyles.card, style]}>
       <View style={lockCardStyles.headerRow}>
@@ -121,6 +125,8 @@ export function ChurchSubscriptionExpiredBadge({
   onSubscribe,
   style,
 }: ChurchSubscriptionExpiredBadgeProps) {
+  if (shouldHideIosSubscriptionUi()) return null;
+
   return (
     <View style={[expiredBadgeStyles.row, style]}>
       <Ionicons name="lock-closed" size={13} color="#E8C872" />
@@ -207,6 +213,8 @@ export function ChurchPremiumSubscriptionModal({
       Animated.spring(lift, { toValue: 0, useNativeDriver: true, speed: 18, bounciness: 7 }),
     ]).start();
   }, [visible, scale, fade, lift]);
+
+  if (shouldHideIosSubscriptionUi()) return null;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>

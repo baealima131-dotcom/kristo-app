@@ -12,7 +12,7 @@ import {
   type ScrollView as RNScrollView,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, Redirect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -133,6 +133,7 @@ import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
 import { getSessionSync } from "../../../../src/lib/kristoSession";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
+import { shouldHideIosSubscriptionUi } from "@/src/lib/iosV1MonetizationPolicy";
 
 const YEARLY_NOT_CONFIRMED_ALERT =
   "Apple may defer this plan change until your next renewal. Your monthly plan is still active. Manage the subscription in Apple Subscriptions if you need to complete the yearly upgrade.";
@@ -1589,6 +1590,7 @@ export default function PaymentsSubscriptionsScreen() {
     let alive = true;
 
     async function boot() {
+      if (shouldHideIosSubscriptionUi()) return;
       if (sessionLoading) return;
 
       if (Platform.OS === "android") {
@@ -2934,6 +2936,10 @@ export default function PaymentsSubscriptionsScreen() {
     monthlyDisplayPrice,
     showMonthlyFreeTrial,
   ]);
+
+  if (shouldHideIosSubscriptionUi()) {
+    return <Redirect href={"/more/media" as any} />;
+  }
 
   return (
     <View style={s.screen}>

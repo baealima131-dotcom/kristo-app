@@ -130,6 +130,11 @@ import {
   requireActiveChurchSubscriptionForSchedule,
   resolveScheduleGateSubscriptionInputs,
 } from "../../../src/lib/churchSubscription";
+import {
+  isIosV1PremiumFeatureUnlocked,
+  shouldHideIosSubscriptionUi,
+} from "../../../src/lib/iosV1MonetizationPolicy";
+import { openChurchSubscriptionScreen } from "../../../src/lib/iosV1SubscriptionNavigation";
 import { MEDIA_STUDIO_BACKGROUND } from "../../../src/lib/mediaPreload";
 import {
   loadChurchMediaProfileCache,
@@ -1159,6 +1164,7 @@ export default function MediaStudioScreen() {
     scheduleGateSubscription.churchSubscriptionActive === true ||
     Boolean((churchMediaProfile as any)?.subscriptionActive);
 
+  const iosV1Free = isIosV1PremiumFeatureUnlocked();
   const churchMediaSubscriptionActive =
     churchSubActiveFromApi === true && (isActualChurchPastor || isApprovedMediaHostRole);
   const churchMediaSubscriptionExpiresAt = React.useMemo(
@@ -1171,13 +1177,17 @@ export default function MediaStudioScreen() {
       new Date(churchMediaSubscriptionExpiresAt)
     );
   }, [churchMediaSubscriptionActive, churchMediaSubscriptionExpiresAt]);
-  const isApprovedMediaHost = isApprovedMediaHostRole && churchMediaSubscriptionActive;
+  const isApprovedMediaHost =
+    isApprovedMediaHostRole && (churchMediaSubscriptionActive || iosV1Free);
 
   const subscriptionLocked =
+    !iosV1Free &&
     (isActualChurchPastor || isApprovedMediaHostRole) &&
     scheduleGateSubscription.subscriptionLocked;
 
-  const canUseMediaTools = churchMediaSubscriptionActive && canOpenMediaScreen;
+  // iOS V1 free: unlock tools for role-eligible users without faking subscriptionActive.
+  const canUseMediaTools =
+    canOpenMediaScreen && (churchMediaSubscriptionActive || iosV1Free);
   const canManageChurchStorage = canUseMediaTools;
   const canManageMediaStorage = canUseMediaTools;
   const showHostSetupPending =
@@ -1196,7 +1206,7 @@ export default function MediaStudioScreen() {
     !showAccessLocked;
 
   const canGuestClaimManage =
-    churchMediaSubscriptionActive &&
+    (churchMediaSubscriptionActive || iosV1Free) &&
     (isActualChurchPastor || canManageMediaHosts || isApprovedMediaHostRole || viewerCanManageEffective);
 
   const guestCenterChurchId = useMemo(
@@ -1280,6 +1290,7 @@ export default function MediaStudioScreen() {
   ]);
 
   function showSubscriptionRequired() {
+    if (shouldHideIosSubscriptionUi()) return;
     if (isActualChurchPastor) {
       setVipNotice({
         title: "Premium subscription required",
@@ -1299,14 +1310,14 @@ export default function MediaStudioScreen() {
   }
 
   function openSubscriptionSchedulePrompt() {
+    if (shouldHideIosSubscriptionUi()) return;
     setSubscriptionPromptOpen(true);
   }
 
   function handleSubscriptionPromptPrimary() {
     closeSubscriptionSchedulePrompt();
-    if (isActualChurchPastor) {
-      mediaRouterPush("/more/payments/subscriptions", "subscription-prompt-primary");
-    }
+    if (!isActualChurchPastor || shouldHideIosSubscriptionUi()) return;
+    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
   // Dashboard when profile exists and viewer may enter Media screen (subscription upsell shown separately).
@@ -1319,6 +1330,7 @@ export default function MediaStudioScreen() {
   }
 
   function alertMediaStudioSubscriptionRequired() {
+    if (shouldHideIosSubscriptionUi()) return;
     Alert.alert(MEDIA_STUDIO_SUBSCRIPTION_TITLE, MEDIA_STUDIO_SUBSCRIPTION_MESSAGE, [
       { text: "Not now", style: "cancel" },
       ...(isActualChurchPastor
@@ -1354,11 +1366,13 @@ export default function MediaStudioScreen() {
   const currentPlan = paymentsState.subscriptions.selectedPlan;
   const planStatus = paymentsState.subscriptions.planStatus;
   const hasSubscription =
-    (isActualChurchPastor || isApprovedMediaHost)
+    iosV1Free ||
+    ((isActualChurchPastor || isApprovedMediaHost)
       ? churchMediaSubscriptionActive
-      : isPlanActive(currentPlan, planStatus);
-  const subscriptionLabel =
-    currentPlan === "monthly"
+      : isPlanActive(currentPlan, planStatus));
+  const subscriptionLabel = iosV1Free
+    ? "Included on iOS"
+    : currentPlan === "monthly"
       ? planStatus === "active"
         ? "Premium Monthly"
         : "No active subscription"
@@ -2360,12 +2374,13 @@ export default function MediaStudioScreen() {
   }
 
   function handleSubscriptionOpen() {
+    if (shouldHideIosSubscriptionUi()) return;
     if (!isActualChurchPastor) {
       showSubscriptionRequired();
       return;
     }
 
-    mediaRouterPush("/more/payments/subscriptions", "subscription-open-handler");
+    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
   function releaseStoredVideoPostCovers() {
@@ -4916,26 +4931,36 @@ export default function MediaStudioScreen() {
                   </Text>
                 </View>
 
-                <View style={[s.readyDot, churchMediaSubscriptionActive ? s.readyDotActive : null]} />
+                <View style={[s.readyDot, churchMediaSubscriptionActive || iosV1Free ? s.readyDotActive : null]} />
               </View>
 
               <View style={s.statusStrip}>
                 <View style={s.statusMini}>
-                  <Ionicons name={churchMediaSubscriptionActive ? "checkmark-circle" : "lock-closed-outline"} size={14} color="#F4C95D" />
+                  <Ionicons
+                    name={
+                      churchMediaSubscriptionActive || iosV1Free
+                        ? "checkmark-circle"
+                        : "lock-closed-outline"
+                    }
+                    size={14}
+                    color="#F4C95D"
+                  />
                   <View style={{ flex: 1 }}>
                     <Text style={s.statusMiniText}>
-                      {churchMediaSubscriptionActive
-                        ? "Church subscription active"
-                        : "Subscription required"}
+                      {iosV1Free
+                        ? "Media tools available"
+                        : churchMediaSubscriptionActive
+                          ? "Church subscription active"
+                          : "Subscription required"}
                     </Text>
-                    {churchMediaSubscriptionExpiryLabel ? (
+                    {!iosV1Free && churchMediaSubscriptionExpiryLabel ? (
                       <Text style={s.statusMiniExpiryText}>{churchMediaSubscriptionExpiryLabel}</Text>
                     ) : null}
                   </View>
                 </View>
               </View>
 
-              {subscriptionLocked ? (
+              {subscriptionLocked && !shouldHideIosSubscriptionUi() ? (
                 <Pressable
                   onPress={handleSubscriptionOpen}
                   style={({ pressed }) => [s.subscriptionGateCard, pressed ? s.pressed : null]}
@@ -4957,7 +4982,7 @@ export default function MediaStudioScreen() {
                 contentContainerStyle={s.dashboardToolsContent}
               >
               <View style={s.grid}>
-                {canManageMediaHosts && churchMediaSubscriptionActive ? (
+                {canManageMediaHosts && (churchMediaSubscriptionActive || iosV1Free) ? (
                 <Pressable
                   onPress={() => {
                     mediaRouterPush("/more/media/select-hosts", "manage-hosts-card");
@@ -4976,7 +5001,7 @@ export default function MediaStudioScreen() {
                 </Pressable>
                 ) : null}
 
-                {isActualChurchPastor ? (
+                {isActualChurchPastor && !shouldHideIosSubscriptionUi() ? (
                 <Pressable
                   onPress={handleSubscriptionOpen}
                   style={({ pressed }) => [
@@ -5025,7 +5050,7 @@ export default function MediaStudioScreen() {
                   <Text style={s.smallTitle}>Schedule</Text>
                   <Text style={s.smallSub}>Live</Text>
                   <Text style={s.cardHint}>
-                    {churchMediaSubscriptionActive && canUseMediaTools ? "Ready" : "Locked"}
+                    {(churchMediaSubscriptionActive || iosV1Free) && canUseMediaTools ? "Ready" : "Locked"}
                   </Text>
                 </Pressable>
 

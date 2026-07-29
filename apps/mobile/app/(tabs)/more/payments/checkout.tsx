@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
   Platform,
 } from "react-native";
-import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
+import { useLocalSearchParams, useRouter, useFocusEffect, Redirect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -106,6 +106,7 @@ import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedR
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
+import { shouldHideIosSubscriptionUi } from "@/src/lib/iosV1MonetizationPolicy";
 
 const PLAN_META: Record<
   SubscriptionPlanKey,
@@ -351,6 +352,7 @@ export default function PaymentsCheckoutScreen() {
     let alive = true;
 
     async function loadPackages() {
+      if (shouldHideIosSubscriptionUi()) return;
       if (sessionLoading) return;
 
       setLoadingPackages(true);
@@ -1211,6 +1213,10 @@ export default function PaymentsCheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (shouldHideIosSubscriptionUi()) {
+    return <Redirect href={"/more/media" as any} />;
   }
 
   return (

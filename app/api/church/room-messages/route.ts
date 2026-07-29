@@ -770,6 +770,7 @@ export async function POST(req: Request) {
           : optionalFields.slot !== undefined
             ? "claim_slot"
             : "schedule_create",
+      headers: req.headers,
     });
     if (subscriptionBlocked) return subscriptionBlocked;
   }

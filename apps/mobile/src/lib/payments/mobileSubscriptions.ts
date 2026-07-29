@@ -391,6 +391,9 @@ function revenueCatRuntimeInfo() {
 /** Human-readable reason the live purchase path is blocked, or null if fine. */
 function revenueCatUnavailableReason(): string | null {
   if (isRevenueCatPurchasingDisabled()) {
+    if (Platform.OS === "ios") {
+      return "ios-v1-free: RevenueCat purchasing disabled";
+    }
     return "subscription-bypass: EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS=1";
   }
   if (isLiveRoomActive()) return "live-room-active";
@@ -1252,7 +1255,7 @@ export async function getSubscriptionOfferings(opts?: {
   force?: boolean;
 }): Promise<PurchasesOfferings> {
   if (isRevenueCatPurchasingDisabled()) {
-    throw new Error("RevenueCat offerings skipped during subscription bypass testing");
+    throw new Error("RevenueCat offerings skipped (iOS V1 free monetization or subscription bypass)");
   }
 
   if (
@@ -1346,6 +1349,10 @@ export async function purchaseSubscriptionPackage(
     };
   }
 ) {
+  if (isRevenueCatPurchasingDisabled()) {
+    throw new Error("RevenueCat purchasing disabled on iOS V1 free monetization");
+  }
+
   if (opts?.identityContext?.churchId) {
     await verifyRevenueCatIdentityBeforePurchase({
       churchId: opts.identityContext.churchId,
@@ -1480,6 +1487,10 @@ export async function refreshCustomerInfoUntilYearlyActive(
 }
 
 export async function restoreSubscriptionPurchases() {
+  if (isRevenueCatPurchasingDisabled()) {
+    throw new Error("RevenueCat restore disabled on iOS V1 free monetization");
+  }
+
   await requireConfiguredPurchases("restore");
   const result = await Purchases.restorePurchases();
   try {
@@ -1622,7 +1633,7 @@ export async function recoverStoreSubscriptionForChurch(args: {
 
 export async function getCustomerSubscriptionInfo(): Promise<CustomerInfo> {
   if (isRevenueCatPurchasingDisabled()) {
-    throw new Error("RevenueCat customer info skipped during subscription bypass testing");
+    throw new Error("RevenueCat customer info skipped (iOS V1 free monetization or subscription bypass)");
   }
 
   await requireConfiguredPurchases("customer info");
@@ -3183,6 +3194,10 @@ export async function purchaseSubscriptionProductId(
     };
   }
 ) {
+  if (isRevenueCatPurchasingDisabled()) {
+    throw new Error("RevenueCat purchasing disabled on iOS V1 free monetization");
+  }
+
   const target = await resolvePurchaseTargetForProductId(productId);
   if (target.path === "unavailable" || (!target.package && !target.storeProduct)) {
     throw new Error(IOS_ASSIGNED_PRODUCT_UNAVAILABLE_MESSAGE);

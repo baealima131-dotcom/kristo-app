@@ -1,3 +1,5 @@
+import { isIosV1PremiumFeatureUnlocked } from "./iosV1MonetizationPolicy";
+
 export type LiveMediaAuthorityInput = {
   currentUserId?: string;
   actualChurchPastorUserId?: string;
@@ -178,7 +180,8 @@ export function applyFastLiveStageAuthorityBoost(
 
   const subscriptionOk =
     input.churchSubscriptionActive !== false ||
-    input.routePublisherEligible;
+    input.routePublisherEligible ||
+    isIosV1PremiumFeatureUnlocked();
 
   if (!subscriptionOk || !input.fastSlotWindowOpen || !input.fastSession.trustedOwnsActiveSlot) {
     return stage;
@@ -403,7 +406,8 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
 
   // Church subscription gates Media Studio tools (pastor/host). Claimed schedule slot
   // speakers may publish their slot without target-church media-tool entitlement.
-  if (input.churchSubscriptionActive === false) {
+  // iOS V1 free: monetization off — do not strip pastor/host tools for inactive subscription.
+  if (input.churchSubscriptionActive === false && !isIosV1PremiumFeatureUnlocked()) {
     const claimedSlotMic = userHasClaimedScheduleSlot;
     const claimedSlotCamera = userOwnsCurrentActiveSlot && activeSlotCameraWindowOpen;
     return {

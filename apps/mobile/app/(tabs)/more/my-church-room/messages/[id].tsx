@@ -34,6 +34,7 @@ import {
 import { BlurView } from "expo-blur";
 import Slider from "@react-native-community/slider";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useIsFocused } from "@react-navigation/native";
 import {
   getCachedParticipant,
@@ -10010,7 +10011,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
           toolKey,
           screen: "my-church-room.openAssignmentToolScreen",
           gate: `assignment-tool.${tool}`,
-          onUpgrade: () => router.push("/more/payments/subscriptions" as any),
+          onUpgrade: () => openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" }),
         }))
       ) {
         return;

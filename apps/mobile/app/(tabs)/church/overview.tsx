@@ -18,6 +18,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { Ionicons } from "@expo/vector-icons";
 import { buildKristoRequestHeaders, getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet, apiPatch, getApiBase } from "@/src/lib/kristoApi";
@@ -1097,7 +1098,7 @@ export default function ChurchOverviewScreen() {
     }
 
     if (!ministryCreationAllowed) {
-      router.push("/more/payments/subscriptions" as any);
+      openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
       return;
     }
 
@@ -1105,7 +1106,7 @@ export default function ChurchOverviewScreen() {
   }
 
   function openSubscriptionsScreen() {
-    router.push("/more/payments/subscriptions" as any);
+    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
   function guardPremiumManagementAction(actionLabel: string): boolean {

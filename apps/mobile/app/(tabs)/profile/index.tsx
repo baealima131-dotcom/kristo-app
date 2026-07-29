@@ -1,6 +1,8 @@
 import { useRouter,
   useLocalSearchParams
 } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
+import { isIosV1PremiumFeatureUnlocked } from "@/src/lib/iosV1MonetizationPolicy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useMemo, useState, useEffect } from "react";
 import { AppState, ActivityIndicator,
@@ -807,6 +809,7 @@ export default function MeScreen() {
   const currentPlan = paymentsState.subscriptions.selectedPlan;
   const planStatus = paymentsState.subscriptions.planStatus;
   const hasSubscription = isPlanActive(currentPlan, planStatus);
+  const mediaToolsUnlocked = hasSubscription || isIosV1PremiumFeatureUnlocked();
   const [contentMode, setContentMode] = useState<"church" | "media">("church");
   const showMediaContent = canShowMediaTab && hasMediaProfile && contentMode === "media";
   const showMediaActivityTab = contentMode === "media";
@@ -2792,33 +2795,29 @@ const user = {
               <View style={s.mediaSwitchRow}>
                 <Pressable
                   style={[s.mediaActionBtn, s.mediaActionBtnPrimary]}
-                  onPress={() =>
-                    hasSubscription
-                      ? router.push("/more/media" as any)
-                      : router.push("/more/payments/subscriptions" as any)
-                  }
+                  onPress={() => router.push("/more/media" as any)}
                 >
                   <Ionicons name="radio-outline" size={12} color="#07111F" />
                   <Text style={s.mediaActionBtnPrimaryText}>
-                    {hasSubscription ? "Open Media" : "Subscribe First"}
+                    {mediaToolsUnlocked ? "Open Media" : "Subscribe First"}
                   </Text>
                 </Pressable>
 
                 <Pressable
                   style={s.mediaActionBtn}
                   onPress={() =>
-                    hasSubscription
+                    mediaToolsUnlocked
                       ? router.push("/more/media" as any)
-                      : router.push("/more/payments/subscriptions" as any)
+                      : openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" })
                   }
                 >
                   <Ionicons
-                    name={hasSubscription ? "add-circle-outline" : "card-outline"}
+                    name={mediaToolsUnlocked ? "add-circle-outline" : "card-outline"}
                     size={13}
                     color="#FFFFFF"
                   />
                   <Text style={s.mediaActionBtnText}>
-                    {hasSubscription ? "Upload Post" : "Open Subscription"}
+                    {mediaToolsUnlocked ? "Upload Post" : "Open Subscription"}
                   </Text>
                 </Pressable>
               </View>

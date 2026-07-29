@@ -5,6 +5,7 @@ import {
   logSubscriptionGateBlocked,
   type ChurchSubscriptionRecord,
 } from "@/lib/churchSubscription";
+import { isIosV1SubscriptionGateBypassed } from "@/lib/iosV1MonetizationPolicy";
 
 type ChurchMediaStoreRow = ChurchSubscriptionRecord & {
   churchId?: string;
@@ -18,6 +19,8 @@ export type SubscriptionGuardContext = {
   userId: string;
   role: string;
   action: string;
+  /** Incoming request headers — used for iOS V1 free policy. */
+  headers?: Headers | Record<string, string | string[] | undefined> | null;
 };
 
 export async function getChurchMediaSubscriptionRecord(
@@ -80,6 +83,25 @@ export async function requireChurchSubscriptionActive(
   const cid = String(churchId || "").trim();
   if (!cid) {
     return NextResponse.json({ ok: false, error: "churchId is required" }, { status: 400 });
+  }
+
+  // iOS V1 free: allow gated actions only with kill switch + HMAC proof (not platform header alone).
+  if (
+    isIosV1SubscriptionGateBypassed(ctx.headers || null, {
+      userId: ctx.userId,
+    })
+  ) {
+    console.log("KRISTO_IOS_V1_SUBSCRIPTION_GATE_ALLOWED", {
+      endpoint: ctx.endpoint,
+      churchId: cid,
+      userId: ctx.userId,
+      role: ctx.role,
+      action: ctx.action,
+      policy: "ios_v1_free",
+      trust: "kill_switch+hmac_proof",
+      // Never log proof header or secret material.
+    });
+    return null;
   }
 
   const role = String(ctx.role || "").trim();

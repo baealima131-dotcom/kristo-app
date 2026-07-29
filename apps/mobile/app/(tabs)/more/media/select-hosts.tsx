@@ -16,6 +16,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { loadSession, saveSession, setSessionSync } from "@/src/lib/kristoSession";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
@@ -159,7 +160,7 @@ export default function SelectHosts() {
   const canEditHosts = canManageHosts && managementAllowed;
 
   function openSubscriptionsScreen() {
-    router.push("/more/payments/subscriptions" as any);
+    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
   const selectedCount = useMemo(

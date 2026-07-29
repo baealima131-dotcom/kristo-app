@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoAuth } from "@/src/lib/kristoHeaders";
 import { apiPatch } from "@/src/lib/kristoApi";
@@ -86,7 +87,7 @@ export default function ChurchMinistryEditScreen() {
     useChurchPremiumManagementAccess(churchId);
 
   function openSubscriptionsScreen() {
-    router.push("/more/payments/subscriptions" as any);
+    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
   const [loading, setLoading] = useState(true);

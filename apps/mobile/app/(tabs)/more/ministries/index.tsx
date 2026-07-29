@@ -14,6 +14,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -1226,7 +1227,7 @@ export default function MoreMinistriesList() {
         onClose={() => setPremiumModalOpen(false)}
         onViewSubscription={() => {
           setPremiumModalOpen(false);
-          router.push("/more/payments/subscriptions" as any);
+          openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
         }}
         message={CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE}
       />

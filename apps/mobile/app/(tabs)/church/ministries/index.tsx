@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -300,7 +301,7 @@ export default function MoreMinistriesList() {
   }
 
   function openSubscriptionsScreen() {
-    router.push("/more/payments/subscriptions" as any);
+    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
   const hasItems = useMemo(() => items.length > 0, [items]);

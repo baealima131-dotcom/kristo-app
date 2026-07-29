@@ -13,6 +13,7 @@ import {
   Image,
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { Ionicons } from "@expo/vector-icons";
 import {
   CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
@@ -2938,7 +2939,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
             ...toolMediaSubscriptionGateOpts(),
             screen: "church-project-tool.media-schedule",
             gate: "publishScheduleSlotOnce.api",
-            onUpgrade: () => router.push("/more/payments/subscriptions" as any),
+            onUpgrade: () => openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" }),
           });
         }
         return false;

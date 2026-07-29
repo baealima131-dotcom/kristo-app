@@ -17,6 +17,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
@@ -635,7 +636,7 @@ export default function ChurchMinistryCreateScreen() {
   }
 
   function openSubscriptionsScreen() {
-    router.push("/more/payments/subscriptions" as any);
+    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
   if (!subscriptionGateReady) {

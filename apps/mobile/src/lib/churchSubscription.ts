@@ -35,7 +35,7 @@ export {
   shouldFailClosedSubscriptionPurchase,
 } from "./churchSubscriptionMediaSignals";
 import type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSignals";
-import { logSubscriptionBypassIfEnabled } from "./subscriptionBypass";
+import { logSubscriptionBypassIfEnabled, shouldSuppressPremiumPrompts } from "./subscriptionBypass";
 import {
   describeCustomerInfoSubscriptionDebug,
   formatPremiumSubscriptionExpiryLabel,
@@ -491,7 +491,9 @@ export function resolveScheduleGateSubscriptionInputs(input: {
     sessionProfileActive,
   });
 
-  const subscriptionLocked = merged.hasSubscription === false;
+  // iOS V1 free: never lock schedule/media tools for missing subscription.
+  const subscriptionLocked =
+    Platform.OS === "ios" ? false : merged.hasSubscription === false;
 
   console.log("KRISTO_SCHEDULE_SUBSCRIPTION_SOURCE", {
     churchId,
@@ -537,6 +539,11 @@ export function alertChurchSubscriptionRequired(opts?: {
   const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
   const gate = String(opts?.gate || "alertChurchSubscriptionRequired");
   const screen = String(opts?.screen || "alertChurchSubscriptionRequired");
+
+  // iOS V1 free: monetization off — never show subscribe/upgrade prompts.
+  if (shouldSuppressPremiumPrompts(isPastor, isApprovedMediaHost)) {
+    return;
+  }
 
   logScheduleGate({
     kind: "blocked",

@@ -38,6 +38,7 @@ export async function POST(req: NextRequest) {
   const access = await evaluateChurchMediaAccess({
     churchId,
     userId: viewer.userId,
+      headers: req.headers,
   });
   if (!access.isActualChurchPastor || !access.canManageChurchSubscription) {
     return json(

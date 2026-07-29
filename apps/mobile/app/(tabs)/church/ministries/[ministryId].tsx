@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fetchMinistryById, fetchMinistryMembers, type MinistryItem } from "@/src/lib/ministriesApi";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -181,7 +182,7 @@ export default function ChurchMinistryDetailsScreen() {
   const canManageMinistryPremium = canEditMinistry && managementAllowed;
 
   function openSubscriptionsScreen() {
-    router.push("/more/payments/subscriptions" as any);
+    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
   function guardPremiumManagement(actionLabel: string): boolean {

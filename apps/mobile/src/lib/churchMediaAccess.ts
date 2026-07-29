@@ -1,3 +1,5 @@
+import { isIosV1PremiumFeatureUnlocked } from "./iosV1MonetizationPolicy";
+
 export const MAX_CHURCH_MEDIA_HOSTS = 3;
 
 export type ChurchMediaAccessState = {
@@ -177,7 +179,8 @@ export function evaluateChurchMediaAccessClient(args: {
 
   const canOpenMediaScreen = isActualChurchPastor || isMediaHost;
   const canUseMediaTools =
-    subscriptionActive === true && (isActualChurchPastor || isMediaHost);
+    (subscriptionActive === true || isIosV1PremiumFeatureUnlocked()) &&
+    (isActualChurchPastor || isMediaHost);
   const canAccessChurchMedia = canOpenMediaScreen;
   const canManageMediaHosts = isActualChurchPastor || serverCanManageMediaHosts;
 
@@ -348,10 +351,11 @@ export function stabilizeChurchMediaAccess(
     Boolean(prev?.isMediaHost);
 
   const canUseMediaTools =
-    effectiveSubscriptionActive === true
+    effectiveSubscriptionActive === true || isIosV1PremiumFeatureUnlocked()
       ? next.canUseMediaTools ||
         Boolean(prev?.canUseMediaTools) ||
-        (canOpenMediaScreen && effectiveSubscriptionActive === true)
+        (canOpenMediaScreen &&
+          (effectiveSubscriptionActive === true || isIosV1PremiumFeatureUnlocked()))
       : false;
 
   const stabilized: ChurchMediaAccessState = {
