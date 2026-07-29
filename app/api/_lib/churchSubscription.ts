@@ -5,7 +5,9 @@ import {
   logSubscriptionGateBlocked,
   type ChurchSubscriptionRecord,
 } from "@/lib/churchSubscription";
-import { isIosV1SubscriptionGateBypassed } from "@/lib/iosV1MonetizationPolicy";
+import {
+  diagnoseIosV1SubscriptionGateBypass,
+} from "@/lib/iosV1MonetizationPolicy";
 
 type ChurchMediaStoreRow = ChurchSubscriptionRecord & {
   churchId?: string;
@@ -86,11 +88,10 @@ export async function requireChurchSubscriptionActive(
   }
 
   // iOS V1 free: allow gated actions only with kill switch + HMAC proof (not platform header alone).
-  if (
-    isIosV1SubscriptionGateBypassed(ctx.headers || null, {
-      userId: ctx.userId,
-    })
-  ) {
+  const iosV1 = diagnoseIosV1SubscriptionGateBypass(ctx.headers || null, {
+    userId: ctx.userId,
+  });
+  if (iosV1.allowed) {
     console.log("KRISTO_IOS_V1_SUBSCRIPTION_GATE_ALLOWED", {
       endpoint: ctx.endpoint,
       churchId: cid,
@@ -99,7 +100,7 @@ export async function requireChurchSubscriptionActive(
       action: ctx.action,
       policy: "ios_v1_free",
       trust: "kill_switch+hmac_proof",
-      // Never log proof header or secret material.
+      reason: iosV1.reason, // gate_allowed — never log proof/secret/MAC
     });
     return null;
   }
@@ -112,11 +113,22 @@ export async function requireChurchSubscriptionActive(
 
   if (subscriptionActive) return null;
 
+  console.log("KRISTO_IOS_V1_SUBSCRIPTION_GATE_DENIED", {
+    endpoint: ctx.endpoint,
+    churchId: cid,
+    userId: ctx.userId,
+    role: ctx.role,
+    action: ctx.action,
+    reason: iosV1.reason,
+    // Never log proof header or secret material.
+  });
+
   logSubscriptionGateBlocked(ctx.action, false, {
     endpoint: ctx.endpoint,
     churchId: cid,
     userId: ctx.userId,
     role: ctx.role,
+    iosV1Reason: iosV1.reason,
   });
   logSubscriptionGuardBlocked(ctx, false);
   return churchSubscriptionRequiredResponse();

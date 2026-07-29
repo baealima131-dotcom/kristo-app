@@ -20,6 +20,16 @@ export const KRISTO_IOS_V1_FREE_PROOF_HEADER = "x-kristo-ios-v1-free-proof";
 
 export type KristoClientPlatform = "ios" | "android" | "web" | "unknown";
 
+/** Sanitized gate outcomes — never include secret, proof, or raw HMAC. */
+export type IosV1SubscriptionGateReason =
+  | "kill_switch_disabled"
+  | "proof_missing"
+  | "proof_malformed"
+  | "proof_expired"
+  | "user_mismatch"
+  | "invalid_mac"
+  | "gate_allowed";
+
 const PROOF_PURPOSE = "ios_v1_free";
 const PROOF_VERSION = "v1";
 const DEV_FALLBACK_PROOF_SECRET = "kristo-dev-ios-v1-free-proof-not-for-production";
@@ -107,33 +117,6 @@ function timingSafeEqualHex(a: string, b: string): boolean {
   }
 }
 
-export function verifyIosV1FreeProof(proof: string, userId: string): boolean {
-  const raw = String(proof || "").trim();
-  const uid = String(userId || "").trim();
-  const secret = getIosV1FreeProofSecret();
-  if (!raw || !uid || !secret) return false;
-
-  const parts = raw.split(".");
-  if (parts.length !== 3) return false;
-  const [version, day, mac] = parts;
-  if (version !== PROOF_VERSION) return false;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
-  if (!/^[a-f0-9]{64}$/i.test(mac)) return false;
-
-  // Reject future days and anything older than yesterday UTC.
-  const today = utcDayString(0);
-  const yesterday = utcDayString(-1);
-  if (day !== today && day !== yesterday) return false;
-
-  const expected = mintIosV1FreeProof(uid, day, secret);
-  if (!expected) return false;
-  const expectedParts = expected.split(".");
-  if (expectedParts.length !== 3) return false;
-
-  // Constant-time compare of MAC only (lengths already validated equal).
-  return timingSafeEqualHex(mac.toLowerCase(), expectedParts[2].toLowerCase());
-}
-
 /** Advisory only — never sufficient for subscription bypass. */
 export function isIosV1ClientRequest(
   headers: Headers | Record<string, string | string[] | undefined> | null | undefined
@@ -147,6 +130,67 @@ export type IosV1BypassContext = {
 };
 
 /**
+ * Full sanitized diagnosis for subscription-gate bypass decisions.
+ * Safe to log — never includes secret, proof header, or MAC bytes.
+ */
+export function diagnoseIosV1SubscriptionGateBypass(
+  headers: Headers | Record<string, string | string[] | undefined> | null | undefined,
+  ctx?: IosV1BypassContext
+): { allowed: boolean; reason: IosV1SubscriptionGateReason } {
+  if (!isIosV1FreeMonetizationEnabled()) {
+    return { allowed: false, reason: "kill_switch_disabled" };
+  }
+
+  const userId = String(ctx?.userId || "").trim();
+  if (!userId) {
+    return { allowed: false, reason: "user_mismatch" };
+  }
+
+  const proof = readHeaderValue(headers, KRISTO_IOS_V1_FREE_PROOF_HEADER);
+  if (!proof) {
+    return { allowed: false, reason: "proof_missing" };
+  }
+
+  const parts = proof.split(".");
+  if (parts.length !== 3) {
+    return { allowed: false, reason: "proof_malformed" };
+  }
+  const [version, day, mac] = parts;
+  if (version !== PROOF_VERSION || !/^\d{4}-\d{2}-\d{2}$/.test(day) || !/^[a-f0-9]{64}$/i.test(mac)) {
+    return { allowed: false, reason: "proof_malformed" };
+  }
+
+  const today = utcDayString(0);
+  const yesterday = utcDayString(-1);
+  if (day !== today && day !== yesterday) {
+    return { allowed: false, reason: "proof_expired" };
+  }
+
+  const secret = getIosV1FreeProofSecret();
+  if (!secret) {
+    return { allowed: false, reason: "invalid_mac" };
+  }
+
+  const expected = mintIosV1FreeProof(userId, day, secret);
+  if (!expected) {
+    return { allowed: false, reason: "invalid_mac" };
+  }
+  const expectedMac = expected.split(".")[2] || "";
+  if (!timingSafeEqualHex(mac.toLowerCase(), expectedMac.toLowerCase())) {
+    return { allowed: false, reason: "invalid_mac" };
+  }
+
+  return { allowed: true, reason: "gate_allowed" };
+}
+
+export function verifyIosV1FreeProof(proof: string, userId: string): boolean {
+  return diagnoseIosV1SubscriptionGateBypass(
+    { [KRISTO_IOS_V1_FREE_PROOF_HEADER]: proof },
+    { userId }
+  ).allowed;
+}
+
+/**
  * Subscription feature gates may allow iOS V1 free clients through when:
  * - kill switch is on, AND
  * - HMAC proof verifies for the authenticated userId.
@@ -157,13 +201,5 @@ export function isIosV1SubscriptionGateBypassed(
   headers: Headers | Record<string, string | string[] | undefined> | null | undefined,
   ctx?: IosV1BypassContext
 ): boolean {
-  if (!isIosV1FreeMonetizationEnabled()) return false;
-
-  const userId = String(ctx?.userId || "").trim();
-  if (!userId) return false;
-
-  const proof = readHeaderValue(headers, KRISTO_IOS_V1_FREE_PROOF_HEADER);
-  if (!verifyIosV1FreeProof(proof, userId)) return false;
-
-  return true;
+  return diagnoseIosV1SubscriptionGateBypass(headers, ctx).allowed;
 }

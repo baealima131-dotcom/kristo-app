@@ -5,6 +5,7 @@
  * Run: node --experimental-strip-types scripts/verify-ios-v1-free-trust-model.ts
  */
 import {
+  diagnoseIosV1SubscriptionGateBypass,
   isIosV1FreeMonetizationEnabled,
   isIosV1SubscriptionGateBypassed,
   mintIosV1FreeProof,
@@ -100,6 +101,55 @@ try {
   assert(verifyIosV1FreeProof("v0.2099-01-01." + "a".repeat(64), "u1") === false, "wrong version rejected");
   assert(verifyIosV1FreeProof("v1.2099-01-01." + "a".repeat(64), "u1") === false, "future day rejected");
   assert(verifyIosV1FreeProof("v1.2000-01-01." + "a".repeat(64), "u1") === false, "expired day rejected");
+
+  console.log("\n• sanitized diagnose reasons (no secret/proof logged)");
+  process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET = "test-secret-abc";
+  process.env.KRISTO_IOS_V1_FREE_MONETIZATION = "0";
+  assert(
+    diagnoseIosV1SubscriptionGateBypass({}, { userId: "u1" }).reason === "kill_switch_disabled",
+    "diagnose kill_switch_disabled"
+  );
+  process.env.KRISTO_IOS_V1_FREE_MONETIZATION = "1";
+  assert(
+    diagnoseIosV1SubscriptionGateBypass({}, { userId: "u1" }).reason === "proof_missing",
+    "diagnose proof_missing"
+  );
+  assert(
+    diagnoseIosV1SubscriptionGateBypass(
+      { [KRISTO_IOS_V1_FREE_PROOF_HEADER]: "bad" },
+      { userId: "u1" }
+    ).reason === "proof_malformed",
+    "diagnose proof_malformed"
+  );
+  assert(
+    diagnoseIosV1SubscriptionGateBypass(
+      { [KRISTO_IOS_V1_FREE_PROOF_HEADER]: "v1.2000-01-01." + "a".repeat(64) },
+      { userId: "u1" }
+    ).reason === "proof_expired",
+    "diagnose proof_expired"
+  );
+  assert(
+    diagnoseIosV1SubscriptionGateBypass(
+      { [KRISTO_IOS_V1_FREE_PROOF_HEADER]: mintIosV1FreeProof("u1") },
+      { userId: "" }
+    ).reason === "user_mismatch",
+    "diagnose user_mismatch"
+  );
+  const good = mintIosV1FreeProof("u1");
+  assert(
+    diagnoseIosV1SubscriptionGateBypass(
+      { [KRISTO_IOS_V1_FREE_PROOF_HEADER]: good },
+      { userId: "u1" }
+    ).reason === "gate_allowed",
+    "diagnose gate_allowed"
+  );
+  assert(
+    diagnoseIosV1SubscriptionGateBypass(
+      { [KRISTO_IOS_V1_FREE_PROOF_HEADER]: good },
+      { userId: "u2" }
+    ).reason === "invalid_mac",
+    "diagnose invalid_mac"
+  );
 
   console.log("\niOS V1 free trust model: all checks passed");
 } finally {
