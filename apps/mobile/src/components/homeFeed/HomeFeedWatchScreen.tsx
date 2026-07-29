@@ -5,6 +5,7 @@ import {
   Modal,
   Pressable,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   View,
@@ -40,6 +41,7 @@ import {
   peekHomeFeedVideoRestoreSeek,
   saveHomeFeedVideoProgress,
 } from "@/src/lib/homeFeedVideoProgressStore";
+import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import {
   YOUTUBE_CARD_H_PADDING,
   resolveWatchPlayerHeight,
@@ -747,15 +749,39 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.screen, { paddingTop: insets.top }]}>
-        <View style={styles.topBar}>
-          <Pressable onPress={onClose} hitSlop={12} accessibilityLabel="Close video">
-            <Ionicons name="chevron-back" size={32} color="#FFFFFF" />
-          </Pressable>
-          <Text style={styles.topBarTitle} numberOfLines={1}>
-            Watch
-          </Text>
-          <View style={styles.topBarSpacer} />
+      <View style={styles.screen}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.headerChrome}>
+          <LinearGradient
+            colors={["#2B003D", "#5A007A"]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={StyleSheet.absoluteFillObject}
+            pointerEvents="none"
+          />
+          <View style={{ paddingTop: insets.top }}>
+            <View style={styles.topBar}>
+              <View style={styles.topBarTitleRow} pointerEvents="none">
+                <Text style={styles.topBarTitleWord} numberOfLines={1}>
+                  JESUS
+                </Text>
+                <Text style={styles.topBarTitleWord} numberOfLines={1}>
+                  IS
+                </Text>
+                <Text style={styles.topBarTitleWord} numberOfLines={1}>
+                  KING
+                </Text>
+              </View>
+              <Pressable
+                onPress={onClose}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityLabel="Close video"
+                style={styles.backButton}
+              >
+                <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
+              </Pressable>
+            </View>
+          </View>
         </View>
 
         <View
@@ -875,23 +901,56 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: HOME_FEED_BG,
   },
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingBottom: 8,
+  headerChrome: {
+    width: "100%",
+    overflow: "hidden",
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(244,208,111,0.18)",
+    borderBottomColor: "rgba(244,208,111,0.22)",
   },
-  topBarTitle: {
-    flex: 1,
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "800",
-    textAlign: "center",
+  topBar: {
+    height: 52,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 12,
   },
-  topBarSpacer: {
-    width: 36,
+  // Equal side insets keep the word row mathematically centered vs the back button.
+  topBarTitleRow: {
+    position: "absolute",
+    left: 62,
+    right: 62,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 14,
+  },
+  topBarTitleWord: {
+    // Exact registered name from @expo-google-fonts/cinzel — no fontWeight (avoids iOS fallback).
+    fontFamily: CINZEL_SEMIBOLD_FAMILY,
+    color: "#F4D06F",
+    fontSize: 24,
+    lineHeight: 31,
+    letterSpacing: 4,
+    textTransform: "uppercase",
+    textShadowColor: "rgba(0, 0, 0, 0.45)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  backButton: {
+    position: "absolute",
+    left: 12,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(20, 0, 32, 0.55)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#F4D06F",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
   },
   playerWrap: {
     width: "100%",

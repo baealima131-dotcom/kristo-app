@@ -9,6 +9,8 @@ import React, { useCallback, useLayoutEffect, useState } from "react";
 import { Slot } from "expo-router";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import * as SplashScreen from "expo-splash-screen";
+import { useFonts } from "expo-font";
+import { Cinzel_600SemiBold } from "@expo-google-fonts/cinzel/600SemiBold";
 import { KristoSessionProvider, useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
   ensurePurchasesConfigured,
@@ -22,6 +24,7 @@ import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimated
 import { HomeFeedVideoPrimer } from "@/src/components/homeFeed/HomeFeedVideoPrimer";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 import { SafetyAccountEnforcementGate } from "@/src/components/SafetyAccountEnforcementGate";
+import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -48,10 +51,33 @@ function RevenueCatBootstrap() {
 export default function RootLayout() {
   const [splashFinished, setSplashFinished] = useState(false);
   const onSplashFinished = useCallback(() => setSplashFinished(true), []);
+  const [fontsLoaded, fontError] = useFonts({
+    [CINZEL_SEMIBOLD_FAMILY]: Cinzel_600SemiBold,
+  });
 
   useLayoutEffect(() => {
     SplashScreen.hideAsync().catch(() => {});
   }, []);
+
+  useLayoutEffect(() => {
+    if (fontsLoaded) {
+      console.log("KRISTO_CINZEL_FONT_LOADED", { family: CINZEL_SEMIBOLD_FAMILY });
+    } else if (fontError) {
+      console.warn("KRISTO_CINZEL_FONT_LOAD_ERROR", {
+        family: CINZEL_SEMIBOLD_FAMILY,
+        message: String((fontError as any)?.message || fontError || "unknown"),
+      });
+    }
+  }, [fontsLoaded, fontError]);
+
+  // Hold splash until Cinzel registers — never render Watch with a system fallback.
+  if (!fontsLoaded) {
+    return (
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: SPLASH_BG }}>
+        <JujujuAnimatedSplash onFinished={onSplashFinished} />
+      </GestureHandlerRootView>
+    );
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: SPLASH_BG }}>
