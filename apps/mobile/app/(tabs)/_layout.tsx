@@ -3,6 +3,7 @@ import {
   getExternalProfileTabActive,
   subscribeExternalProfileTab,
 } from "@/src/lib/externalProfileTabState";
+import { isCreateMinistryRoute } from "@/src/lib/createMinistryNavigation";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -14,11 +15,12 @@ import { markHomeFeedStartupTiming } from "@/src/lib/homeFeedStartupTiming";
 import { notifyUserLeftHomeTab, runAfterHomeDeferredStartup } from "@/src/lib/homeFeedDeferredStartup";
 import { startMoreTabPremount } from "@/src/lib/moreTabPremount";
 import {
-  beginMoreTabPressTransition,
   endMoreTabPressTransition,
+  handleMoreTabBarPress,
   hideMoreTabShell,
   isMoreTabShellVisible,
   isMoreTabTransitionBlocking,
+  isMoreTopLevelTabActive,
   logMoreDeferredRefreshSkip,
   subscribeMoreTabTransition,
 } from "@/src/lib/refreshCoordinator";
@@ -994,6 +996,10 @@ export default function TabLayout() {
       if (tab === "more") {
         return;
       }
+      // Create Ministry must not wait on / trigger church live focus refresh.
+      if (isCreateMinistryRoute(segments as string[])) {
+        return;
+      }
 
       let cancelled = false;
       const frame = requestAnimationFrame(() => {
@@ -1154,9 +1160,18 @@ export default function TabLayout() {
             : ({ children, onPress: _defaultOnPress, ...rest }: any) => (
                 <Pressable
                   {...rest}
-                  onPress={() => {
-                    beginMoreTabPressTransition();
-                    router.replace("/(tabs)/more" as any);
+                  onPress={(event: any) => {
+                    handleMoreTabBarPress({
+                      isMoreTabActive:
+                        isMoreTopLevelTabActive(segments) ||
+                        rest?.accessibilityState?.selected === true,
+                      preventDefault: () => {
+                        event?.preventDefault?.();
+                      },
+                      navigateToMore: () => {
+                        router.replace("/(tabs)/more" as any);
+                      },
+                    });
                   }}
                   style={{
                     flex: 1,

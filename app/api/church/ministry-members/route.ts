@@ -46,7 +46,7 @@ type Ministry = {
 };
 
 type ApiErr = { ok: false; error: string; details?: unknown };
-type ApiOk<T> = { ok: true; data: T };
+type ApiOk<T> = { ok: true; data: T; alreadyExists?: boolean };
 
 const STORE_FILE = "ministry-members.json";
 const MINISTRIES_FILE = "ministries.json";
@@ -309,6 +309,20 @@ export async function POST(req: NextRequest) {
 
   const before = await readAllMembers();
 
+  // Idempotent: exact duplicate membership is success (e.g. create UI re-POSTing
+  // the Pastor the ministries route already seeded). Do this before Leader swap
+  // so a duplicate never demotes existing leaders.
+  const existingExact = before.find(
+    (mm) =>
+      mm.churchId === churchId && mm.ministryId === ministryId && mm.userId === userId
+  );
+  if (existingExact) {
+    return json<MinistryMember>(
+      { ok: true, data: existingExact, alreadyExists: true },
+      { status: 200 }
+    );
+  }
+
   if (role === "Leader") {
     try {
       await updateMinistryJsonFile<MinistryMember[]>(
@@ -343,16 +357,16 @@ export async function POST(req: NextRequest) {
     createdAt: nowIso(),
   };
 
-  let conflict = false;
+  let raceExisting: MinistryMember | null = null;
 
   try {
     await updateMinistryJsonFile<MinistryMember[]>(
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
-        const exists = list.some((mm) => mm.churchId === churchId && mm.ministryId === ministryId && mm.userId === userId);
+        const exists = list.find((mm) => mm.churchId === churchId && mm.ministryId === ministryId && mm.userId === userId);
         if (exists) {
-          conflict = true;
+          raceExisting = exists;
           return list;
         }
         list.unshift(created);
@@ -365,7 +379,12 @@ export async function POST(req: NextRequest) {
     return json({ ok: false, error: msg } satisfies ApiErr, { status: 500 });
   }
 
-  if (conflict) return json({ ok: false, error: "Member already exists in this ministry" } satisfies ApiErr, { status: 409 });
+  if (raceExisting) {
+    return json<MinistryMember>(
+      { ok: true, data: raceExisting, alreadyExists: true },
+      { status: 200 }
+    );
+  }
   await logAudit({
     req,
     viewer,

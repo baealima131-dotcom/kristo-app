@@ -1,4 +1,7 @@
 import { InteractionManager } from "react-native";
+import { decideMoreTabBarPress } from "./moreTabPressPolicy";
+
+export { isMoreTopLevelTabActive } from "./moreTabPressPolicy";
 
 let moreTabFocused = false;
 let moreTabPressTransitionBlocking = false;
@@ -41,6 +44,38 @@ export function hideMoreTabShell() {
   if (!moreTabShellVisible) return;
   moreTabShellVisible = false;
   notifyMoreTabTransition();
+}
+
+/**
+ * More tab bar press. When More is already the focused top-level tab, ignore
+ * reselect entirely — no transition shell, no replace, no refresh kickoff.
+ */
+export function handleMoreTabBarPress(args: {
+  isMoreTabActive: boolean;
+  preventDefault?: () => void;
+  navigateToMore: () => void;
+}): "ignored" | "transitioned" {
+  if (decideMoreTabBarPress(args.isMoreTabActive) === "ignored") {
+    args.preventDefault?.();
+    console.log("KRISTO_MORE_TAB_RESELECT_IGNORED");
+    return "ignored";
+  }
+  beginMoreTabPressTransition();
+  args.navigateToMore();
+  return "transitioned";
+}
+
+/** @internal test helper — reset module flags between cases. */
+export function __resetMoreTabTransitionForTests() {
+  moreTabFocused = false;
+  moreTabPressTransitionBlocking = false;
+  moreTabPressTransitionStartedAt = 0;
+  moreTabShellVisible = false;
+  moreTabFirstPaintLogged = false;
+  if (moreTabPressTransitionEndTimer) {
+    clearTimeout(moreTabPressTransitionEndTimer);
+    moreTabPressTransitionEndTimer = null;
+  }
 }
 
 export function beginMoreTabPressTransition() {

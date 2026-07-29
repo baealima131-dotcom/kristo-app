@@ -174,8 +174,8 @@ const ITEMS: Item[] = [
 
   {
     key: "my_church_room",
-    title: "My Church Room",
-    sub: "Room • posts • members",
+    title: "Church Room",
+    sub: "Posts • members",
     iconLib: "mci",
     icon: "home",
     href: "/more/my-church-room",

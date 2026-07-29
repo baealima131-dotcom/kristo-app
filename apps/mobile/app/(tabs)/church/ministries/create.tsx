@@ -18,6 +18,10 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
+import { isIosV1PremiumFeatureUnlocked } from "@/src/lib/iosV1MonetizationPolicy";
+import {
+  msFromCreateMinistryPress,
+} from "@/src/lib/createMinistryNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
@@ -32,8 +36,10 @@ import {
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { emitMinistriesUpdated, onChurchPremiumAccessChanged } from "@/src/lib/kristoProfileEvents";
 import {
+  peekMinistriesCache,
   saveMinistriesCache,
 } from "@/src/lib/screenDataCache";
+import { peekChurchMembersCache } from "@/src/lib/churchTabCache";
 import {
   refreshMinistriesBundleIfNeeded,
   seedMinistriesRefreshFromCache,
@@ -49,6 +55,10 @@ import {
   logMinistryMediaAccessLoad,
   logMinistryMediaAccessSave,
 } from "@/src/lib/ministryMediaAccessTrace";
+import {
+  isMinistryMemberPostSuccess,
+  planAdditionalMinistryMemberPosts,
+} from "@/src/lib/createMinistryMembersPlan";
 import { vipAvatarBg, vipInitials } from "@/src/ui/vipUtil";
 
 type MinistryStatus = "Active" | "Paused";
@@ -160,16 +170,20 @@ function isPastorRole(role?: string) {
 
 function resolvePastorUserId(
   list: PickerMember[],
-  hints?: { pastorUserId?: string; currentPastorId?: string }
+  hints?: { pastorUserId?: string; currentPastorId?: string; sessionUserId?: string; sessionIsPastor?: boolean }
 ) {
+  const sessionUid = String(hints?.sessionUserId || "").trim();
+  if (hints?.sessionIsPastor && sessionUid) {
+    if (!list.length || list.some((m) => m.userId === sessionUid)) return sessionUid;
+  }
   const hinted = [hints?.pastorUserId, hints?.currentPastorId]
     .map((v) => String(v || "").trim())
     .filter(Boolean);
   for (const id of hinted) {
-    if (list.some((m) => m.userId === id)) return id;
+    if (!list.length || list.some((m) => m.userId === id)) return id;
   }
   const byRole = list.find((m) => isPastorRole(m.role));
-  return byRole?.userId || "";
+  return byRole?.userId || sessionUid || "";
 }
 
 function withPastor(ids: string[], pastorUserId: string) {
@@ -262,6 +276,10 @@ export default function ChurchMinistryCreateScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const nameRef = useRef<TextInput>(null);
+  const firstPaintLoggedRef = useRef(false);
+  const hydratedLoggedRef = useRef(false);
+  const iosV1Free = isIosV1PremiumFeatureUnlocked();
+  const bypassEnabled = isSubscriptionBypassEnabled();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -269,17 +287,20 @@ export default function ChurchMinistryCreateScreen() {
   const [mediaAccess, setMediaAccess] = useState(false);
   const [mediaAccessCount, setMediaAccessCount] = useState(0);
   const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
-    isSubscriptionBypassEnabled() ? true : null
+    bypassEnabled || iosV1Free ? true : null
   );
   const [canUseMediaTools, setCanUseMediaTools] = useState<boolean | null>(
-    isSubscriptionBypassEnabled() ? true : null
+    bypassEnabled || iosV1Free ? true : null
   );
+  // Never block first paint on network for iOS V1 free / bypass — form renders from session.
   const [subscriptionGateReady, setSubscriptionGateReady] = useState(
-    isSubscriptionBypassEnabled()
+    bypassEnabled || iosV1Free
   );
 
   const session = getSessionSync() as any;
   const sessionRole = String(session?.role || session?.churchRole || "").trim();
+  const sessionUserId = String(session?.userId || "").trim();
+  const sessionIsPastor = /\bPastor\b/i.test(sessionRole);
   const canCreateMinistryRole =
     /\bPastor\b/i.test(sessionRole) ||
     sessionRole === "Church_Admin";
@@ -288,34 +309,87 @@ export default function ChurchMinistryCreateScreen() {
     canUseMediaTools
   );
   const canEnableMinistryMediaAccess =
-    churchSubscriptionActive === true || isSubscriptionBypassEnabled();
+    churchSubscriptionActive === true || bypassEnabled || iosV1Free;
   const mediaAccessLimitReached = mediaAccessCount >= MINISTRY_MEDIA_ACCESS_LIMIT;
   const mediaAccessToggleDisabled = !canEnableMinistryMediaAccess || mediaAccessLimitReached;
 
-  const churchId = String(getSessionSync()?.churchId || (getSessionSync() as any)?.activeChurchId || "").trim();
+  const churchId = String(session?.churchId || session?.activeChurchId || "").trim();
 
-  const [members, setMembers] = useState<PickerMember[]>([]);
-  const [pastorHints, setPastorHints] = useState<{ pastorUserId?: string; currentPastorId?: string }>({});
+  const cachedMembers = useMemo(() => {
+    if (!churchId || !sessionUserId) return [] as PickerMember[];
+    const peek = peekChurchMembersCache(churchId, sessionUserId);
+    const rows = Array.isArray(peek?.members) ? peek.members : [];
+    return rows
+      .map((m: any) => ({
+        userId: String(m?.userId || m?.id || m?.memberId || "").trim(),
+        name: m?.name || m?.fullName || m?.displayName || m?.email,
+        kristoId: m?.kristoId || m?.userCode,
+        coreId: m?.coreId,
+        publicId: m?.publicId || m?.publicKristoId,
+        publicKristoId: m?.publicKristoId,
+        userCode: m?.userCode,
+        username: m?.username,
+        handle: m?.handle,
+        memberCode: m?.memberCode,
+        profileCode: m?.profileCode,
+        role: m?.roleLabel || m?.role || m?.churchRole,
+        avatarUri: m?.avatarUri,
+        avatarUrl: m?.avatarUrl,
+        profileImage: m?.profileImage,
+        profilePhoto: m?.profilePhoto,
+        photoURL: m?.photoURL,
+        photo: m?.photo,
+        image: m?.image,
+      }))
+      .filter((x: PickerMember) => Boolean(x.userId));
+  }, [churchId, sessionUserId]);
+
+  const cachedMediaAccessCount = useMemo(() => {
+    if (!churchId || !sessionUserId) return 0;
+    const peek = peekMinistriesCache(churchId, sessionUserId);
+    const items = Array.isArray(peek?.items) ? peek.items : [];
+    return countMinistriesWithMediaAccess(items);
+  }, [churchId, sessionUserId]);
+
+  const [members, setMembers] = useState<PickerMember[]>(cachedMembers);
+  const [membersLoading, setMembersLoading] = useState(cachedMembers.length === 0);
+  const [membersCacheHit] = useState(cachedMembers.length > 0);
+  const [pastorHints, setPastorHints] = useState<{ pastorUserId?: string; currentPastorId?: string }>({
+    pastorUserId: sessionIsPastor ? sessionUserId : undefined,
+    currentPastorId: sessionIsPastor ? sessionUserId : undefined,
+  });
   const [picker, setPicker] = useState<null | PickerKind>(null);
-  const [pickedMemberIds, setPickedMemberIds] = useState<string[]>([]);
-  const [pickedLeaderIds, setPickedLeaderIds] = useState<string[]>([]);
+  const [pickedMemberIds, setPickedMemberIds] = useState<string[]>(() =>
+    sessionIsPastor && sessionUserId ? [sessionUserId] : []
+  );
+  const [pickedLeaderIds, setPickedLeaderIds] = useState<string[]>(() =>
+    sessionIsPastor && sessionUserId ? [sessionUserId] : []
+  );
 
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [created, setCreated] = useState<Ministry | null>(null);
   const [nameFocused, setNameFocused] = useState(false);
   const [descFocused, setDescFocused] = useState(false);
-  const contentOpacity = useRef(new Animated.Value(0)).current;
+  // Visible immediately — target first paint <150ms from Create press.
+  const contentOpacity = useRef(new Animated.Value(1)).current;
   const nameGlow = useRef(new Animated.Value(0)).current;
   const descGlow = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    Animated.timing(contentOpacity, {
-      toValue: 1,
-      duration: 420,
-      useNativeDriver: true,
-    }).start();
-  }, [contentOpacity]);
+    if (firstPaintLoggedRef.current) return;
+    firstPaintLoggedRef.current = true;
+    const ms = msFromCreateMinistryPress();
+    console.log("KRISTO_CREATE_MINISTRY_FIRST_PAINT", {
+      msFromPress: ms,
+      cacheHit: membersCacheHit,
+      subscriptionGateReady,
+    });
+  }, [membersCacheHit, subscriptionGateReady]);
+
+  useEffect(() => {
+    if (cachedMediaAccessCount > 0) setMediaAccessCount(cachedMediaAccessCount);
+  }, [cachedMediaAccessCount]);
 
   useEffect(() => {
     Animated.timing(nameGlow, {
@@ -334,8 +408,13 @@ export default function ChurchMinistryCreateScreen() {
   }, [descFocused, descGlow]);
 
   const autoPastorUserId = useMemo(
-    () => resolvePastorUserId(members, pastorHints),
-    [members, pastorHints]
+    () =>
+      resolvePastorUserId(members, {
+        ...pastorHints,
+        sessionUserId,
+        sessionIsPastor,
+      }),
+    [members, pastorHints, sessionUserId, sessionIsPastor]
   );
 
   const pickerMembers = useMemo(() => {
@@ -354,21 +433,32 @@ export default function ChurchMinistryCreateScreen() {
     }
   }, [autoPastorUserId]);
 
+  // Background subscription hydrate — must not delay first paint on iOS V1 free.
   useEffect(() => {
-    if (!churchId) return;
+    if (!churchId) {
+      setSubscriptionGateReady(true);
+      return;
+    }
+    if (iosV1Free || bypassEnabled) {
+      setSubscriptionGateReady(true);
+    }
     let alive = true;
     fetchChurchSubscriptionStatus(getKristoHeaders(), churchId).then((status) => {
       if (!alive) return;
-      setChurchSubscriptionActive(
-        status.backendSubscriptionActive ?? status.subscriptionActive
-      );
-      setCanUseMediaTools(status.canUseMediaTools ?? null);
+      if (!iosV1Free && !bypassEnabled) {
+        setChurchSubscriptionActive(
+          status.backendSubscriptionActive ?? status.subscriptionActive
+        );
+        setCanUseMediaTools(status.canUseMediaTools ?? null);
+      } else if (status.backendSubscriptionActive ?? status.subscriptionActive) {
+        setChurchSubscriptionActive(true);
+      }
       setSubscriptionGateReady(true);
     });
     return () => {
       alive = false;
     };
-  }, [churchId]);
+  }, [churchId, iosV1Free, bypassEnabled]);
 
   useEffect(() => {
     if (!churchId) return;
@@ -380,9 +470,10 @@ export default function ChurchMinistryCreateScreen() {
     });
   }, [churchId]);
 
-  // Load church members for pickers and media access count
+  // Load church members for pickers in the background (cache already seeded UI).
   useEffect(() => {
     let alive = true;
+    setMembersLoading(cachedMembers.length === 0);
     (async () => {
       try {
         const [membersRes, ministriesRes] = await Promise.all([
@@ -433,13 +524,33 @@ export default function ChurchMinistryCreateScreen() {
             currentPastorId: String(membersRes?.currentPastorId || membersRes?.data?.currentPastorId || "").trim() || undefined,
           });
           setMembers(list);
+          if (!hydratedLoggedRef.current) {
+            hydratedLoggedRef.current = true;
+            console.log("KRISTO_CREATE_MINISTRY_HYDRATED", {
+              msFromPress: msFromCreateMinistryPress(),
+              cacheHit: membersCacheHit,
+              memberCount: list.length,
+            });
+          }
         }
-      } catch {}
+      } catch {
+      } finally {
+        if (!alive) return;
+        setMembersLoading(false);
+        if (!hydratedLoggedRef.current) {
+          hydratedLoggedRef.current = true;
+          console.log("KRISTO_CREATE_MINISTRY_HYDRATED", {
+            msFromPress: msFromCreateMinistryPress(),
+            cacheHit: membersCacheHit,
+            memberCount: cachedMembers.length,
+          });
+        }
+      }
     })();
     return () => {
       alive = false;
     };
-  }, []);
+  }, [churchId]);
 
   const canSave = useMemo(() => name.trim().length > 0 && !saving && !created, [name, saving, created]);
 
@@ -483,55 +594,63 @@ export default function ChurchMinistryCreateScreen() {
         churchSubscriptionActive,
         source: "church/ministries/create",
       });
-      const uniqueLeaders = Array.from(new Set(withPastor(pickedLeaderIds, autoPastorUserId)));
-      const uniqueMembers = Array.from(new Set(pickedMemberIds.filter((x) => !uniqueLeaders.includes(x))));
+      const session = getSessionSync();
+      const creatorUserId = String(session?.userId || "").trim();
+      // Backend already seeds creating viewer as Leader — never re-POST auto pastor / creator.
+      const memberPlan = planAdditionalMinistryMemberPosts({
+        pickedLeaderIds,
+        pickedMemberIds,
+        autoPastorUserId,
+        seededCreatorUserId: creatorUserId,
+      });
 
       if (__DEV__) {
         console.log("KRISTO_CREATE_MINISTRY_SAVE_LEADERS", {
-          leaders: uniqueLeaders,
+          leaders: memberPlan.displayLeaderIds,
           members: withPastor(pickedMemberIds, autoPastorUserId),
+          leadersToPost: memberPlan.leadersToPost,
+          membersToPost: memberPlan.membersToPost,
+          skippedUserIds: memberPlan.skippedUserIds,
           autoPastorUserId,
         });
       }
 
       const failed: string[] = [];
 
-      for (const uid of uniqueLeaders) {
+      for (const uid of memberPlan.leadersToPost) {
         try {
           const r = await apiPost(
             "/api/church/ministry-members",
             { ministryId: data.id, userId: uid, role: "Leader" },
             { headers: getKristoHeaders() }
           );
-          if (!r?.ok) failed.push(uid);
+          if (!isMinistryMemberPostSuccess(r as { ok?: boolean; alreadyExists?: boolean })) failed.push(uid);
         } catch {
           failed.push(uid);
         }
       }
 
-      for (const uid of uniqueMembers) {
+      for (const uid of memberPlan.membersToPost) {
         try {
           const r = await apiPost(
             "/api/church/ministry-members",
             { ministryId: data.id, userId: uid, role: "Member" },
             { headers: getKristoHeaders() }
           );
-          if (!r?.ok) failed.push(uid);
+          if (!isMinistryMemberPostSuccess(r as { ok?: boolean; alreadyExists?: boolean })) failed.push(uid);
         } catch {
           failed.push(uid);
         }
       }
 
-      const session = getSessionSync();
-      const creatorUserId = String(session?.userId || "").trim();
       const ministryRow = {
         ...data,
         mediaAccess: data.mediaAccess === true,
         memberRole: "Pastor",
         memberStatus: "Active",
-        leaderCount: uniqueLeaders.length,
-        membersCount: uniqueLeaders.length + uniqueMembers.length,
-        memberCount: uniqueLeaders.length + uniqueMembers.length,
+        leaderCount: memberPlan.displayLeaderIds.length,
+        membersCount: memberPlan.displayLeaderIds.length + memberPlan.displayMemberIds.length,
+        memberCount: memberPlan.displayLeaderIds.length + memberPlan.displayMemberIds.length,
       };
 
       if (churchId && creatorUserId) {
@@ -639,7 +758,7 @@ export default function ChurchMinistryCreateScreen() {
     openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
   }
 
-  if (!subscriptionGateReady) {
+  if (!subscriptionGateReady && !iosV1Free && !bypassEnabled) {
     return (
       <View style={[s.screen, s.gateScreen, { paddingTop: insets.top + 24 }]}>
         <ActivityIndicator color={GOLD} />
@@ -1017,7 +1136,12 @@ export default function ChurchMinistryCreateScreen() {
                     </LuxuryPressable>
                   </View>
 
-                  {members.length === 0 ? (
+                  {membersLoading && members.length === 0 ? (
+                    <View style={s.infoPill}>
+                      <ActivityIndicator color={GOLD} size="small" />
+                      <Text style={s.infoPillText}>Loading members…</Text>
+                    </View>
+                  ) : members.length === 0 ? (
                     <Text style={s.hintMuted}>No church members loaded yet (optional).</Text>
                   ) : (
                     <View style={s.infoPill}>
@@ -1038,6 +1162,12 @@ export default function ChurchMinistryCreateScreen() {
                       </View>
 
                       <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingBottom: 10 }}>
+                        {membersLoading && pickerMembers.length === 0 ? (
+                          <View style={{ paddingVertical: 28, alignItems: "center", gap: 10 }}>
+                            <ActivityIndicator color={GOLD} />
+                            <Text style={s.hintMuted}>Loading members…</Text>
+                          </View>
+                        ) : null}
                         {pickerMembers.map((m) => {
                           const checked = picker === "leaders" ? pickedLeaderIds.includes(m.userId) : pickedMemberIds.includes(m.userId);
                           const isLockedPastor = m.userId === autoPastorUserId;
