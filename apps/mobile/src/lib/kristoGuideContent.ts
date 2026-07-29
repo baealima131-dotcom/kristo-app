@@ -100,11 +100,10 @@ const EN: GuideContent = {
     },
     {
       id: "subscription",
-      title: "Church subscription",
+      title: "V1 Access & Future Plans",
       bullets: [
-        "Only the Pastor/church owner pays for the church subscription. Members do not pay separately for normal church access.",
-        "Members are not billed individually for announcements, testimonies, community features, or everyday church content.",
-        "Subscription unlocks church media tools, live production features, and Media Studio for the church leadership team.",
+        "V1 Access Is Free",
+        "KRISTO App V1 is free to use. Paid subscription plans may be introduced in a future version. Churches and users will be notified well in advance before any payment is required, giving everyone enough time to prepare.",
       ],
     },
     {
@@ -144,9 +143,9 @@ const EN: GuideContent = {
         "Yes for basic editing outside spiritual deception — but do not upload AI-generated preaching, prophecy, worship vocals, or fake pastor likeness inside Kristo App.",
     },
     {
-      question: "Who pays for Kristo?",
+      question: "Do I need to pay for Kristo App V1?",
       answer:
-        "Only the Pastor/church owner pays for the church subscription. Members do not pay separately for normal church access.",
+        "No. KRISTO App V1 is free to use. Paid subscription plans may be introduced in a future version. Churches and users will be notified well in advance before any payment is required, giving everyone enough time to prepare.",
     },
     {
       question: "What happens when I report a video?",
@@ -217,11 +216,10 @@ const SW: GuideContent = {
     },
     {
       id: "subscription",
-      title: "Usajili wa kanisa",
+      title: "Ufikiaji wa V1 na Mipango ya Baadaye",
       bullets: [
-        "Mchungaji/mmiliki wa kanisa ndiye pekee anayelipa usajili wa kanisa. Waamini hawalipiwi kando kwa ufikiaji wa kawaida wa kanisa.",
-        "Waamini hawalipiwi kila mmoja kwa matangazo, ushuhuda, vipengele vya jamii, au maudhui ya kawaida ya kanisa.",
-        "Usajili hufungua zana za media za kanisa, live, na Media Studio kwa uongozi wa kanisa.",
+        "Ufikiaji wa V1 ni Bure",
+        "KRISTO App V1 inapatikana bila malipo. Mipango ya usajili yenye malipo inaweza kuletwa katika toleo la baadaye. Makanisa na watumiaji watajulishwa mapema kabla ya malipo yoyote kuhitajika, ili kila mtu awe na muda wa kutosha wa kujiandaa.",
       ],
     },
     {
@@ -261,9 +259,9 @@ const SW: GuideContent = {
         "Ndiyo kwa uhariri wa kawaida — lakini usipakie mahubiri, unabii, sauti ya ibada, au sura bandia ya mchungaji iliyotengenezwa na AI ndani ya Kristo App.",
     },
     {
-      question: "Nani analipa Kristo?",
+      question: "Je, ninahitaji kulipa kwa Kristo App V1?",
       answer:
-        "Mchungaji/mmiliki wa kanisa ndiye pekee anayelipa usajili wa kanisa. Waamini hawalipiwi kando kwa ufikiaji wa kawaida wa kanisa.",
+        "Hapana. KRISTO App V1 inapatikana bila malipo. Mipango ya usajili yenye malipo inaweza kuletwa katika toleo la baadaye. Makanisa na watumiaji watajulishwa mapema kabla ya malipo yoyote kuhitajika, ili kila mtu awe na muda wa kutosha wa kujiandaa.",
     },
     {
       question: "Nini hutokea ninaporipoti video?",
@@ -346,11 +344,10 @@ const RN: GuideContent = {
     },
     {
       id: "subscription",
-      title: "Ifatabuguzi ry'itorero",
+      title: "Ukwinjira kuri V1 n'imbeguko z'ahazaza",
       bullets: [
-        "Umuyobozi w'itorero/nyir'itorero ni we gusa yishyura ifatabuguzi ry'itorero. Abanyamuryango ntibishyura ku giti cyabo kugira ngo babone ibirimo bisanzwe by'itorero.",
-        "Abanyamuryango ntibishyurwa ku giti cyabo ku matangazo, ubuhamya, ibirimo by'umuryango, cyangwa ibirimo bisanzwe by'itorero.",
-        "Ifatabuguzi ifungura ibikoresho bya media, live, na Media Studio ku buyobozi.",
+        "Ukwinjira kuri V1 ni Ubuntu",
+        "KRISTO App V1 ikoreshwa ubuntu. Itegurwa ry'ifatabuguzi ryishyurwa rishobora kuzana mu verisiyo izaza. Amatorero n'abakoresha bazamenyeshwa kera mbere yuko kwishyura gusabwa, kugira ngo umuntu wese abone umwanya uhagije wo kwitegura.",
       ],
     },
     {
@@ -388,9 +385,9 @@ const RN: GuideContent = {
         "Yego ku guhindura bisanzwe — ariko ntutere amajwi cyangwa amashusho ya AI y'ubuhubirizi, ubuhanuzi, cyangwa ibada muri Kristo App.",
     },
     {
-      question: "Ni nde yishyura Kristo?",
+      question: "Mbese ngomba kwishyura Kristo App V1?",
       answer:
-        "Umuyobozi w'itorero cyangwa nyir'itorero yishyura ifatabuguzi rimwe. Abanyamuryango ntibishyura ku giti cyabo.",
+        "Oya. KRISTO App V1 ikoreshwa ubuntu. Itegurwa ry'ifatabuguzi ryishyurwa rishobora kuzana mu verisiyo izaza. Amatorero n'abakoresha bazamenyeshwa kera mbere yuko kwishyura gusabwa, kugira ngo umuntu wese abone umwanya uhagije wo kwitegura.",
     },
     {
       question: "Ni iki kiba kiriho nmenyesheje video?",
@@ -460,11 +457,10 @@ const FR = mirrorFromEnglish({
     },
     {
       id: "subscription",
-      title: "Abonnement de l'église",
+      title: "Accès V1 et projets futurs",
       bullets: [
-        "Seul le pasteur ou propriétaire de l'église paie l'abonnement de l'église. Les membres ne paient pas séparément pour l'accès normal à l'église.",
-        "Les membres ne sont pas facturés individuellement pour les annonces, témoignages, fonctionnalités communautaires ou contenu courant.",
-        "L'abonnement débloque les outils média, le direct et Media Studio pour la direction.",
+        "L'accès V1 est gratuit",
+        "KRISTO App V1 est gratuit. Des formules d'abonnement payantes pourront être introduites dans une version future. Les églises et les utilisateurs seront informés bien à l'avance avant tout paiement requis, afin que chacun ait le temps de se préparer.",
       ],
     },
     {
@@ -502,9 +498,9 @@ const FR = mirrorFromEnglish({
         "Oui pour un montage basique — mais ne publiez pas de prédication, prophétie ou voix d'adoration générées par IA dans Kristo App.",
     },
     {
-      question: "Qui paie Kristo ?",
+      question: "Dois-je payer pour Kristo App V1 ?",
       answer:
-        "Seul le pasteur ou propriétaire de l'église paie l'abonnement de l'église. Les membres ne paient pas séparément pour l'accès normal à l'église.",
+        "Non. KRISTO App V1 est gratuit. Des formules d'abonnement payantes pourront être introduites dans une version future. Les églises et les utilisateurs seront informés bien à l'avance avant tout paiement requis, afin que chacun ait le temps de se préparer.",
     },
     {
       question: "Que se passe-t-il quand je signale ?",
@@ -541,7 +537,7 @@ const ES = mirrorFromEnglish({
       "Contenido espiritual generado por IA no permitido",
       "Propiedad del contenido de la iglesia",
       "Reportes y seguridad",
-      "Suscripción de la iglesia",
+      "Acceso V1 y planes futuros",
       "Medios y anfitriones de confianza",
       "Reglas de transmisión en vivo",
       "Conducta respetuosa",
@@ -570,9 +566,8 @@ const ES = mirrorFromEnglish({
         "No uses reportes solo para silenciar desacuerdo honesto.",
       ],
       [
-        "Solo una persona paga la suscripción — el Pastor o dueño de la iglesia.",
-        "Los miembros no pagan individualmente por contenido normal de la iglesia.",
-        "La suscripción desbloquea herramientas de medios, live y Media Studio para el liderazgo.",
+        "El acceso a V1 es gratis",
+        "KRISTO App V1 es gratis. Los planes de suscripción de pago pueden introducirse en una versión futura. Las iglesias y los usuarios serán avisados con suficiente antelación antes de que se requiera algún pago, para que todos tengan tiempo de prepararse.",
       ],
       [
         "El Pastor administra los medios de la iglesia y puede nombrar anfitriones de confianza.",
@@ -594,7 +589,7 @@ const ES = mirrorFromEnglish({
   faq: FR.faq.map((item, i) => ({
     question: [
       "¿Puedo usar IA para editar mi video?",
-      "¿Quién paga Kristo?",
+      "¿Debo pagar por Kristo App V1?",
       "¿Qué pasa cuando reporto?",
       "¿Mis publicaciones antiguas desaparecen si me voy?",
       "¿Los miembros administran medios?",
@@ -602,7 +597,7 @@ const ES = mirrorFromEnglish({
     ][i],
     answer: [
       "Sí para edición básica — pero no subas predicación, profecía o voz de adoración generada por IA dentro de Kristo App.",
-      "El Pastor o dueño paga una suscripción de iglesia. Los miembros no pagan individualmente.",
+      "No. KRISTO App V1 es gratis. Los planes de suscripción de pago pueden introducirse en una versión futura. Las iglesias y los usuarios serán avisados con suficiente antelación antes de que se requiera algún pago, para que todos tengan tiempo de prepararse.",
       "Tu reporte va a Media Studio → Reports. El Pastor puede conservar o eliminar el contenido.",
       "Pueden permanecer como historia de la iglesia salvo que liderazgo las elimine.",
       "Solo el Pastor y anfitriones de confianza administran Media Studio.",
@@ -624,12 +619,17 @@ const PT: GuideContent = {
       .replace("Contenu spirituel généré par IA interdit", "Conteúdo espiritual gerado por IA não permitido")
       .replace("Propriété du contenu de l'église", "Propriedade do conteúdo da igreja")
       .replace("Signalement et sécurité", "Denúncias e segurança")
-      .replace("Abonnement de l'église", "Assinatura da igreja")
+      .replace("Accès V1 et projets futurs", "Acesso V1 e planos futuros")
       .replace("Médias et hôtes de confiance", "Mídia e anfitriões de confiança")
       .replace("Règles du direct", "Regras de transmissão ao vivo")
       .replace("Conduite respectueuse", "Conduta respeitosa"),
     bullets: section.bullets.map((line) =>
       line
+        .replace("L'accès V1 est gratuit", "O acesso V1 é gratuito")
+        .replace(
+          "KRISTO App V1 est gratuit. Des formules d'abonnement payantes pourront être introduites dans une version future. Les églises et les utilisateurs seront informés bien à l'avance avant tout paiement requis, afin que chacun ait le temps de se préparer.",
+          "KRISTO App V1 é gratuito. Planos de assinatura pagos poderão ser introduzidos em uma versão futura. Igrejas e usuários serão avisados com antecedência antes de qualquer pagamento ser exigido, para que todos tenham tempo suficiente de se preparar."
+        )
         .replace(/église/g, "igreja")
         .replace(/pasteur/g, "pastor")
         .replace(/membres/g, "membros")
@@ -639,12 +639,16 @@ const PT: GuideContent = {
   faq: FR.faq.map((item) => ({
     question: item.question
       .replace("Puis-je", "Posso")
-      .replace("Qui paie", "Quem paga")
+      .replace("Dois-je payer pour Kristo App V1 ?", "Preciso pagar pelo Kristo App V1?")
       .replace("Que se passe-t-il", "O que acontece")
       .replace("Mes anciennes", "Minhas publicações antigas")
       .replace("Les membres", "Os membros")
       .replace("Kristo est-il", "Kristo é"),
     answer: item.answer
+      .replace(
+        "Non. KRISTO App V1 est gratuit. Des formules d'abonnement payantes pourront être introduites dans une version future. Les églises et les utilisateurs seront informés bien à l'avance avant tout paiement requis, afin que chacun ait le temps de se préparer.",
+        "Não. KRISTO App V1 é gratuito. Planos de assinatura pagos poderão ser introduzidos em uma versão futura. Igrejas e usuários serão avisados com antecedência antes de qualquer pagamento ser exigido, para que todos tenham tempo suficiente de se preparar."
+      )
       .replace(/pasteur/g, "pastor")
       .replace(/membres/g, "membros")
       .replace(/église/g, "igreja"),
@@ -698,11 +702,10 @@ const AR: GuideContent = {
     },
     {
       id: "subscription",
-      title: "اشتراك الكنيسة",
+      title: "الوصول إلى V1 والخطط المستقبلية",
       bullets: [
-        "الراعي أو مالك الكنيسة فقط يدفع اشتراك الكنيسة. الأعضاء لا يدفعون بشكل منفصل للوصول العادي إلى الكنيسة.",
-        "لا يُفوتر الأعضاء كل على حدة مقابل الإعلانات أو الشهادات أو ميزات المجتمع أو المحتوى اليومي.",
-        "الاشتراك يفتح أدوات الوسائط والبث المباشر وMedia Studio للقيادة.",
+        "الوصول إلى V1 مجاني",
+        "تطبيق KRISTO V1 مجاني للاستخدام. قد تُطرح خطط اشتراك مدفوعة في إصدار مستقبلي. سيتم إشعار الكنائس والمستخدمين قبل وقت كافٍ من بدء أي دفع مطلوب، حتى يتسنى للجميع الاستعداد.",
       ],
     },
     {
@@ -741,8 +744,9 @@ const AR: GuideContent = {
         "نعم للتحرير الأساسي — لكن لا ترفع وعظًا أو نبوة أو صوت عبادة مولّدًا بالذكاء الاصطناعي داخل Kristo App.",
     },
     {
-      question: "من يدفع Kristo؟",
-      answer: "الراعي أو مالك الكنيسة يدفع اشتراكًا واحدًا. الأعضاء لا يُفوترون individually.",
+      question: "هل أحتاج إلى الدفع مقابل Kristo App V1؟",
+      answer:
+        "لا. تطبيق KRISTO V1 مجاني للاستخدام. قد تُطرح خطط اشتراك مدفوعة في إصدار مستقبلي. سيتم إشعار الكنائس والمستخدمين قبل وقت كافٍ من بدء أي دفع مطلوب، حتى يتسنى للجميع الاستعداد.",
     },
     {
       question: "ماذا يحدث عند الإبلاغ؟",
@@ -811,11 +815,10 @@ const LN: GuideContent = {
     },
     {
       id: "subscription",
-      title: "Abonnement ya eglise",
+      title: "Accès V1 mpe bilɔkɔ ya bilobi",
       bullets: [
-        "Pasteur to mwana ya eglise nde moko alobaka mpo na abonnement ya eglise. Bamembre balobaka te mpo na kokota na eglise na ndenge ya momesano.",
-        "Bamembre balobisami te mpo na bondoki, bosakoli, makambo ya lisanga, to makambo ya mokolo na mokolo ya eglise.",
-        "Abonnement efungolaka bisaleli ya media ya eglise, live, mpe Media Studio mpo na ekipi ya direction.",
+        "Accès V1 ezali ya Ofélé",
+        "KRISTO App V1 ezali ya kosalela ofélé. Bilɔkɔ ya abonnement ya kofuta ekoki kotia na version ya lobi. Baleglise mpe basaleli bakomonisama liboso mpo na ntango molayi liboso ya kofuta esengeli, mpo bato nyonso bakoka kozwa ntango ya kokoba.",
       ],
     },
     {
@@ -854,9 +857,9 @@ const LN: GuideContent = {
         "Ee mpo na kobongisa ya momesano — kasi kotinda prédication, prophétie, adoration, to elilingi ya pasteur ya lokuta ya AI na kati ya Kristo App te.",
     },
     {
-      question: "Nani alobaka mpo na Kristo?",
+      question: "Nasengeli kofuta mpo na Kristo App V1?",
       answer:
-        "Pasteur to mwana ya eglise nde moko alobaka mpo na abonnement ya eglise. Bamembre balobaka te mpo na kokota na eglise na ndenge ya momesano.",
+        "Te. KRISTO App V1 ezali ya kosalela ofélé. Bilɔkɔ ya abonnement ya kofuta ekoki kotia na version ya lobi. Baleglise mpe basaleli bakomonisama liboso mpo na ntango molayi liboso ya kofuta esengeli, mpo bato nyonso bakoka kozwa ntango ya kokoba.",
     },
     {
       question: "Nini esalemaka soki nayebisi video?",
@@ -929,11 +932,10 @@ const RW: GuideContent = {
     },
     {
       id: "subscription",
-      title: "Ifatabuguzi ry'itorero",
+      title: "Kubona V1 n'imbeguko z'ahazaza",
       bullets: [
-        "Umuyobozi w'itorero/nyir'itorero ni we gusa yishyura ifatabuguzi ry'itorero. Abanyamuryango ntibishyura ku giti cyabo kugira ngo babone ibirimo bisanzwe by'itorero.",
-        "Abanyamuryango ntibishyurwa ku giti cyabo ku matangazo, ubuhamya, ibirimo by'umuryango, cyangwa ibirimo bisanzwe by'itorero.",
-        "Ifatabuguzi ifungura ibikoresho bya media, live, na Media Studio ku buyobozi bw'itorero.",
+        "Kubona V1 ni Ubuntu",
+        "KRISTO App V1 ikoreshwa ubuntu. Itegurwa ry'ifatabuguzi ryishyurwa rishobora kuzana mu verisiyo izaza. Amatorero n'abakoresha bazamenyeshwa kera mbere yuko kwishyura gusabwa, kugira ngo umuntu wese abone umwanya uhagije wo kwitegura.",
       ],
     },
     {
@@ -972,9 +974,9 @@ const RW: GuideContent = {
         "Yego ku guhindura bisanzwe — ariko ntutere amajwi cyangwa amashusho ya AI y'ubuhubirizi, ubuhanuzi, indirimbo z'ishyimbo, cyangwa ishusho y'umuyobozi w'ibinyoma muri Kristo App.",
     },
     {
-      question: "Ni nde yishyura Kristo?",
+      question: "Mbese ngomba kwishyura Kristo App V1?",
       answer:
-        "Umuyobozi w'itorero/nyir'itorero ni we gusa yishyura ifatabuguzi ry'itorero. Abanyamuryango ntibishyura ku giti cyabo kugira ngo babone ibirimo bisanzwe by'itorero.",
+        "Oya. KRISTO App V1 ikoreshwa ubuntu. Itegurwa ry'ifatabuguzi ryishyurwa rishobora kuzana mu verisiyo izaza. Amatorero n'abakoresha bazamenyeshwa kera mbere yuko kwishyura gusabwa, kugira ngo umuntu wese abone umwanya uhagije wo kwitegura.",
     },
     {
       question: "Ni iki kiba kiriho nmenyesheje video?",
@@ -1047,11 +1049,10 @@ const AM: GuideContent = {
     },
     {
       id: "subscription",
-      title: "የአደራጅት መዋርድ",
+      title: "የV1 መዳረሻ እና የወደፊት ዕቅዶች",
       bullets: [
-        "አሳፋሪው/የአደራጅቱ ባለቤት ብቻው ለአደራጅት መዋርድ ይከፍላል። አባላት ለመደበኛ የአደራጅት መዳረሻ በከፍያ አይከፍሉም።",
-        "አባላት ለማስታወሻዎች፣ ምስክርነቶች፣ የማህበረሰብ ባህሪያት ወይም የቀኑ የአደራጅት ይዘት በተለያዩ አይከፈሉም።",
-        "መዋርድ የአደራጅት ሚዲያ መሳሪያዎች፣ ቀጥታ ፕሮግራም እና Media Studioን ለአመራር ቡድን ይከፍታል።",
+        "የV1 መዳረሻ ነፃ ነው",
+        "KRISTO App V1 በነፃ ይጠቀማል። የሚከፈሉ የደንበኝነት ዕቅዶች በወደፊት ስሪት ሊገቡ ይችላሉ። ማንኛውም ክፍያ ከመጠበቁ በፊት አደራጅቶችና ተጠቃሚዎች በቂ ጊዜ አስቀድመው ይነገራሉ — ሁሉም እንዲዘጋጁ።",
       ],
     },
     {
@@ -1090,9 +1091,9 @@ const AM: GuideContent = {
         "ለመሠረታዊ ማስተካከያ አዎ — ነገር ግን በKristo App ውስጥ AI የተፈጠረ መልእክት፣ ትንቢት፣ የአምልኮ ድምፅ ወይም የሐሳይ አሳፋሪ መልክ አትስቀሉ።",
     },
     {
-      question: "Kristoን ማን ይከፍላል?",
+      question: "ለKristo App V1 መክፈል አለብኝ?",
       answer:
-        "አሳፋሪው/የአደራጅቱ ባለቤት ብቻው ለአደራጅት መዋርድ ይከፍላል። አባላት ለመደበኛ የአደራጅት መዳረሻ በከፍያ አይከፍሉም።",
+        "አይ። KRISTO App V1 በነፃ ይጠቀማል። የሚከፈሉ የደንበኝነት ዕቅዶች በወደፊት ስሪት ሊገቡ ይችላሉ። ማንኛውም ክፍያ ከመጠበቁ በፊት አደራጅቶችና ተጠቃሚዎች በቂ ጊዜ አስቀድመው ይነገራሉ — ሁሉም እንዲዘጋጁ።",
     },
     {
       question: "ቪዲዮ ሪፖርት ሲያደርጉ ምን ይከሰታል?",
