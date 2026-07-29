@@ -982,7 +982,7 @@ export default function MoreMinistriesList() {
                   </View>
 
                   <Text style={s.cardTitleSuspendedLayout} numberOfLines={2}>
-                    Church Live Control
+                    Church Members
                   </Text>
 
                   <View style={s.suspendedLockSection}>
@@ -1037,7 +1037,7 @@ export default function MoreMinistriesList() {
                   </View>
 
                   <Text style={s.cardTitle} numberOfLines={2}>
-                    Church Live Control
+                    Church Members
                   </Text>
                   <Text style={s.cardSub} numberOfLines={2}>
                     {churchLiveControlSubscriptionLocked
