@@ -199,7 +199,9 @@ function ProfileAvatarIcon({
   ringVisible?: boolean;
   userId?: string;
 }) {
-  const hasAlert = !!alertColor;
+  // Only expand / ring-paint when the live ring is actually visible.
+  // Hidden ringMode must keep a fixed compact Me-tab icon (no size/transform jitter).
+  const showRing = ringVisible === true && !!alertColor;
 
   useLayoutEffect(() => {
     console.log("KRISTO_ME_TAB_ICON_RENDER", {
@@ -208,22 +210,22 @@ function ProfileAvatarIcon({
       alertKind: alertKind || null,
       hasPersonal: hasPersonal === true,
       ringVisible: ringVisible === true,
-      ringColor: alertColor || null,
+      ringColor: showRing ? alertColor || null : null,
       userId: userId || null,
     });
-  }, [focused, alertColor, alertKind, hasPersonal, ringVisible, userId]);
+  }, [focused, alertColor, alertKind, hasPersonal, ringVisible, showRing, userId]);
 
   return (
     <View
       style={{
-        width: hasAlert ? 86 : 34,
-        height: hasAlert ? 74 : 34,
+        width: showRing ? 86 : 34,
+        height: showRing ? 74 : 34,
         alignItems: "center",
         justifyContent: "center",
-        marginBottom: hasAlert ? -24 : 0,
+        marginBottom: showRing ? -24 : 0,
       }}
     >
-      {hasAlert ? (
+      {showRing ? (
         <View
           pointerEvents="none"
           style={{
@@ -245,20 +247,20 @@ function ProfileAvatarIcon({
 
       <View
         style={{
-          width: hasAlert ? 60 : 28,
-          height: hasAlert ? 60 : 28,
+          width: showRing ? 60 : 28,
+          height: showRing ? 60 : 28,
           borderRadius: 999,
           alignItems: "center",
           justifyContent: "center",
-          borderWidth: focused || hasAlert ? 3 : 1,
-          borderColor: hasAlert ? alertColor : focused ? GOLD : "rgba(255,255,255,0.16)",
-          backgroundColor: hasAlert ? "rgba(2,8,18,0.96)" : "rgba(255,255,255,0.03)",
+          borderWidth: focused || showRing ? 3 : 1,
+          borderColor: showRing ? alertColor : focused ? GOLD : "rgba(255,255,255,0.16)",
+          backgroundColor: showRing ? "rgba(2,8,18,0.96)" : "rgba(255,255,255,0.03)",
         }}
       >
         <Ionicons
-          name={hasAlert ? (alertIcon || "notifications") : "person"}
-          size={hasAlert ? 36 : 16}
-          color={hasAlert ? alertColor : focused ? GOLD : "rgba(255,255,255,0.65)"}
+          name={showRing ? (alertIcon || "notifications") : "person"}
+          size={showRing ? 36 : 16}
+          color={showRing ? alertColor : focused ? GOLD : "rgba(255,255,255,0.65)"}
         />
       </View>
     </View>

@@ -100,3 +100,46 @@ export function avatarCacheBust(uri: string, updatedAt?: number): string {
   const sep = u.includes("?") ? "&" : "?";
   return `${u}${sep}t=${updatedAt}`;
 }
+
+/**
+ * Stable avatar identity for compare — strips cache-bust `t=` (and common
+ * ephemeral query noise) so the same asset is not treated as a new URI.
+ * Never log the returned value in production diagnostics that include URLs.
+ */
+export function normalizeAvatarIdentity(uri: unknown): string {
+  const raw = String(uri || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("file:") || /^data:image\//i.test(raw)) return raw;
+  try {
+    const noHash = raw.split("#")[0] || raw;
+    const [base, query = ""] = noHash.split("?");
+    if (!query) return noHash;
+    const kept = query
+      .split("&")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .filter((part) => !/^t=\d+$/i.test(part));
+    return kept.length ? `${base}?${kept.join("&")}` : String(base || "");
+  } catch {
+    return raw.replace(/([?&])t=\d+/gi, "").replace(/\?&/, "?").replace(/\?$/, "");
+  }
+}
+
+export function areAvatarIdentitiesEqual(a: unknown, b: unknown): boolean {
+  return normalizeAvatarIdentity(a) === normalizeAvatarIdentity(b);
+}
+
+export type ProfileAvatarRefreshDecision = "unchanged" | "changed" | "preserved-on-error";
+
+export function decideProfileAvatarRefresh(opts: {
+  previousUri?: string | null;
+  nextUri?: string | null;
+  responseOk: boolean;
+}): ProfileAvatarRefreshDecision {
+  if (!opts.responseOk) return "preserved-on-error";
+  const prev = normalizeAvatarIdentity(opts.previousUri);
+  const next = normalizeAvatarIdentity(opts.nextUri);
+  if (prev && next && prev === next) return "unchanged";
+  if (!prev && !next) return "unchanged";
+  return "changed";
+}

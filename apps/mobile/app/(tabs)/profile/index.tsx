@@ -4,7 +4,7 @@ import { useRouter,
 import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { isIosV1PremiumFeatureUnlocked } from "@/src/lib/iosV1MonetizationPolicy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { useCallback, useMemo, useState, useEffect } from "react";
+import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { AppState, ActivityIndicator,
   Alert,
   Modal,
@@ -34,7 +34,7 @@ import {
   onChurchMembershipChanged,
 } from "@/src/lib/kristoChurchInviteEvents";
 import { buildProfileClaimedSchedules, onLiveRingRefresh } from "@/src/lib/liveScheduleRing";
-import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
+import { avatarCacheBust, decideProfileAvatarRefresh, pickFresherAvatar } from "@/src/lib/avatarFreshness";
 import {
   isSaveCooldown,
   logTrafficCache,
@@ -1426,6 +1426,8 @@ export default function MeScreen() {
   }, [session?.userId, refreshInvitations, refreshCommunicationInbox]);
 
   const hasProfileCacheRef = React.useRef(Boolean(profileCachePeek));
+  const profileRefreshGenRef = useRef(0);
+  const displayedAvatarUriRef = useRef("");
 
   const applyProfileCachePayload = useCallback((payload: ProfileScreenCachePayload) => {
     hasProfileCacheRef.current = true;
@@ -1457,9 +1459,26 @@ export default function MeScreen() {
   }, [userId, applyProfileCachePayload, profileCachePeek]);
 
   const applyProfileResponse = useCallback(
-    async (profileRes: AuthProfileRes | null | undefined, opts?: { silent?: boolean }) => {
+    async (
+      profileRes: AuthProfileRes | null | undefined,
+      opts?: { silent?: boolean; requestGen?: number }
+    ) => {
       const silent = !!opts?.silent;
+      if (
+        typeof opts?.requestGen === "number" &&
+        opts.requestGen !== profileRefreshGenRef.current
+      ) {
+        return;
+      }
+
       if (!profileRes?.ok || !profileRes.profile) {
+        if (silent) {
+          console.log("KRISTO_PROFILE_AVATAR_REFRESH_DECISION", {
+            decision: "preserved-on-error",
+            hasAvatar: Boolean(displayedAvatarUriRef.current),
+          });
+          return;
+        }
         setProfile(null);
         return;
       }
@@ -1495,8 +1514,21 @@ export default function MeScreen() {
       const backendName = String(profileRes.profile.fullName || "").trim();
       const backendAvatarRaw = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
       const draftBefore = session?.userId ? await loadProfileDraft(session.userId) : null;
+      if (
+        typeof opts?.requestGen === "number" &&
+        opts.requestGen !== profileRefreshGenRef.current
+      ) {
+        return;
+      }
+      const previousAvatarUri = String(
+        draftBefore?.avatarUri ||
+          (session as any)?.avatarUri ||
+          (session as any)?.avatarUrl ||
+          displayedAvatarUriRef.current ||
+          ""
+      ).trim();
       const mergedAvatar = pickFresherAvatar({
-        localUri: String(draftBefore?.avatarUri || (session as any)?.avatarUri || (session as any)?.avatarUrl || "").trim(),
+        localUri: previousAvatarUri,
         localUpdatedAt: draftBefore?.avatarUpdatedAt,
         serverUri: backendAvatarRaw,
         serverUpdatedAt: Number((profileRes.profile as any)?.updatedAt || (profileRes.profile as any)?.avatarUpdatedAt || 0),
@@ -1510,6 +1542,16 @@ export default function MeScreen() {
       }
 
       const backendAvatar = mergedAvatar.uri ? toBackendImageUrl(mergedAvatar.uri) : "";
+      const avatarDecision = decideProfileAvatarRefresh({
+        previousUri: previousAvatarUri,
+        nextUri: backendAvatar || previousAvatarUri,
+        responseOk: true,
+      });
+      console.log("KRISTO_PROFILE_AVATAR_REFRESH_DECISION", {
+        decision: avatarDecision,
+        hasAvatar: Boolean(backendAvatar || previousAvatarUri),
+      });
+
       const resolved = resolveActiveChurchFromProfileResponse(profileRes as any);
       const membershipStatus = String((profileRes as any)?.activeMembership?.status || "").trim();
       const syncedChurchId =
@@ -1527,49 +1569,86 @@ export default function MeScreen() {
           nextChurchName = "";
         }
 
-        const sessionPatch: any = {
-          ...session,
-          ...(backendName ? { name: backendName, displayName: backendName } : {}),
-          avatarUrl: backendAvatar || (session as any)?.avatarUrl || "",
-          avatarUri: backendAvatar || (session as any)?.avatarUri || "",
-        };
+        const prevSessionAvatar = String(
+          (session as any)?.avatarUrl || (session as any)?.avatarUri || ""
+        ).trim();
+        const nextSessionAvatar =
+          avatarDecision === "unchanged"
+            ? prevSessionAvatar || backendAvatar || previousAvatarUri
+            : backendAvatar || previousAvatarUri || prevSessionAvatar;
 
-        if (syncedChurchId !== prevChurchId || syncedRole !== String(session?.role || "Member")) {
-          sessionPatch.churchId = syncedChurchId;
-          sessionPatch.activeChurchId = syncedChurchId;
-          sessionPatch.churchName = nextChurchName;
-          sessionPatch.role = syncedRole;
-          sessionPatch.churchRole = syncedRole;
+        const nameChanged =
+          Boolean(backendName) &&
+          backendName !== String((session as any)?.name || (session as any)?.displayName || "").trim();
+        const churchChanged =
+          syncedChurchId !== prevChurchId || syncedRole !== String(session?.role || "Member");
+        const avatarChanged = avatarDecision === "changed";
+
+        if (nameChanged || churchChanged || avatarChanged) {
+          const sessionPatch: any = {
+            ...session,
+            ...(backendName ? { name: backendName, displayName: backendName } : {}),
+            avatarUrl: nextSessionAvatar,
+            avatarUri: nextSessionAvatar,
+          };
+
+          if (churchChanged) {
+            sessionPatch.churchId = syncedChurchId;
+            sessionPatch.activeChurchId = syncedChurchId;
+            sessionPatch.churchName = nextChurchName;
+            sessionPatch.role = syncedRole;
+            sessionPatch.churchRole = syncedRole;
+          }
+
+          await setSession(sessionPatch);
         }
-
-        await setSession(sessionPatch);
 
         if (syncedChurchId !== prevChurchId) {
           setChurchDisplayName(nextChurchName);
         }
 
-        if (backendAvatar || backendName) {
+        if (backendName || avatarDecision === "changed") {
           const draft = draftBefore || { displayName: backendName || "" };
+          const nextAvatarUri =
+            avatarDecision === "changed"
+              ? backendAvatar || draft.avatarUri
+              : draft.avatarUri || previousAvatarUri;
           const nextAvatarUpdatedAt =
-            mergedAvatar.source === "local"
-              ? draftBefore?.avatarUpdatedAt
-              : backendAvatar
-                ? Date.now()
-                : draft.avatarUpdatedAt;
+            avatarDecision === "unchanged"
+              ? draftBefore?.avatarUpdatedAt || draft.avatarUpdatedAt
+              : mergedAvatar.source === "local"
+                ? draftBefore?.avatarUpdatedAt
+                : Number(
+                    (profileRes.profile as any)?.avatarUpdatedAt ||
+                      (profileRes.profile as any)?.updatedAt ||
+                      0
+                  ) ||
+                  Date.now();
           await saveProfileDraft(
             {
               ...draft,
               displayName: backendName || draft.displayName,
-              avatarUri: backendAvatar || draft.avatarUri,
+              avatarUri: nextAvatarUri,
               avatarUpdatedAt: nextAvatarUpdatedAt,
             },
             session.userId
           );
-          setProfileDraft({
-            ...draft,
-            displayName: backendName || draft.displayName,
-            avatarUri: backendAvatar || draft.avatarUri,
-            avatarUpdatedAt: nextAvatarUpdatedAt,
+          setProfileDraft((prev) => {
+            const base = prev || draft;
+            if (
+              avatarDecision === "unchanged" &&
+              String(base.displayName || "") === String(backendName || base.displayName || "") &&
+              String(base.avatarUri || "") === String(nextAvatarUri || "") &&
+              Number(base.avatarUpdatedAt || 0) === Number(nextAvatarUpdatedAt || 0)
+            ) {
+              return prev;
+            }
+            return {
+              ...base,
+              displayName: backendName || base.displayName,
+              avatarUri: nextAvatarUri,
+              avatarUpdatedAt: nextAvatarUpdatedAt,
+            };
           });
         }
       }
@@ -1577,7 +1656,7 @@ export default function MeScreen() {
       if (silent) {
         console.log("[Profile] silent refresh applied", {
           userId,
-          hasAvatar: Boolean(backendAvatar),
+          hasAvatar: Boolean(backendAvatar || previousAvatarUri),
         });
       }
     },
@@ -1602,6 +1681,8 @@ export default function MeScreen() {
         clearResponseCacheForRequest("GET", "/api/auth/profile", session.userId);
       }
 
+      const requestGen = ++profileRefreshGenRef.current;
+
       const profileEndpoint =
         isExternalUserProfile
           ? `/api/users/${encodeURIComponent(
@@ -1622,7 +1703,8 @@ export default function MeScreen() {
         },
         { screen: "Profile", throttleMs: opts?.bypassThrottle ? 2500 : 45000 }
       );
-      await applyProfileResponse(profileRes, opts);
+      if (requestGen !== profileRefreshGenRef.current) return;
+      await applyProfileResponse(profileRes, { ...opts, requestGen });
     },
     [applyProfileResponse, session?.userId, session?.role, session?.churchId]
   );
@@ -2162,10 +2244,11 @@ const resolvedName = useMemo(() => {
         );
 
       if (!externalAvatar) {
+        displayedAvatarUriRef.current = "";
         return "";
       }
 
-      return avatarCacheBust(
+      const busted = avatarCacheBust(
         externalAvatar,
         Number(
           (targetExternalProfile as any)
@@ -2175,6 +2258,16 @@ const resolvedName = useMemo(() => {
             0
         )
       );
+      const decision = decideProfileAvatarRefresh({
+        previousUri: displayedAvatarUriRef.current,
+        nextUri: externalAvatar,
+        responseOk: true,
+      });
+      if (decision === "unchanged" && displayedAvatarUriRef.current) {
+        return displayedAvatarUriRef.current;
+      }
+      displayedAvatarUriRef.current = busted;
+      return busted;
     }
 
     const fromApi =
@@ -2212,10 +2305,25 @@ const resolvedName = useMemo(() => {
       fromDraft ||
       "";
 
-    return avatarCacheBust(
+    if (!raw) {
+      displayedAvatarUriRef.current = "";
+      return "";
+    }
+
+    const busted = avatarCacheBust(
       raw,
       profileDraft?.avatarUpdatedAt
     );
+    const decision = decideProfileAvatarRefresh({
+      previousUri: displayedAvatarUriRef.current,
+      nextUri: raw,
+      responseOk: true,
+    });
+    if (decision === "unchanged" && displayedAvatarUriRef.current) {
+      return displayedAvatarUriRef.current;
+    }
+    displayedAvatarUriRef.current = busted;
+    return busted;
   }, [
     isExternalUserProfile,
     targetExternalProfile?.avatarUrl,
@@ -2224,7 +2332,8 @@ const resolvedName = useMemo(() => {
     (targetExternalProfile as any)
       ?.updatedAt,
     profile?.avatarUrl,
-    session,
+    (session as any)?.avatarUrl,
+    (session as any)?.avatarUri,
     profileDraft?.avatarUri,
     profileDraft?.avatarUpdatedAt,
   ]);
@@ -2331,16 +2440,9 @@ const user = {
 
             <View style={s.heroIdentityRow}>
               <View
-                key={
-                  isExternalUserProfile
-                    ? `external-avatar-${externalTargetUserId}`
-                    : `own-avatar-${String(
-                        session?.userId || userId
-                      )}`
-                }
                 style={s.avatarShell}
               >
-                <View style={s.avatarRingGlow} />
+                <View style={s.avatarRingGlow} pointerEvents="none" />
 
                 {resolvedAvatar ? (
                   <Image
@@ -2351,7 +2453,7 @@ const user = {
                             session?.userId ||
                               userId
                           )
-                    }-${resolvedAvatar}`}
+                    }`}
                     source={{
                       uri: resolvedAvatar,
                     }}
@@ -2368,9 +2470,7 @@ const user = {
                                     userId
                                 ),
                           isExternalUserProfile,
-                          uri:
-                            resolvedAvatar ||
-                            null,
+                          hasUri: Boolean(resolvedAvatar),
                           message:
                             event.nativeEvent
                               ?.error ||
@@ -2381,14 +2481,6 @@ const user = {
                   />
                 ) : (
                   <View
-                    key={`profile-avatar-fallback-${
-                      isExternalUserProfile
-                        ? externalTargetUserId
-                        : String(
-                            session?.userId ||
-                              userId
-                          )
-                    }`}
                     style={[
                       s.avatar,
                       s.avatarFallback,
