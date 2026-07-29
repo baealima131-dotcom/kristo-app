@@ -36,6 +36,7 @@ import {
   saveMinistriesCache,
 } from "@/src/lib/screenDataCache";
 import { onMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
+import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 
 // Show cached ministries instantly, then silently refresh if older than this.
 const MINISTRIES_CACHE_TTL_MS = 90000;
@@ -792,19 +793,14 @@ export default function MoreMinistriesList() {
   return (
     <View style={[s.screen, { paddingTop: insets.top }]}>
       <View style={s.heroWrap}>
-        <View style={s.heroGlowA} />
-        <View style={s.heroGlowB} />
-
         <View style={s.nav}>
-          <View style={s.iconPill}>
-            <Ionicons name="grid-outline" size={18} color={GOLD} />
+          <View style={[s.headerIconBtn, s.navIconLeft]} pointerEvents="none">
+            <Ionicons name="grid-outline" size={20} color="#F4D06F" />
           </View>
 
-          <View style={{ flex: 1 }}>
-            <Text style={s.navEyebrow}>MINISTRY ROOMS</Text>
-            <Text style={s.navTitle}>My Ministries</Text>
-            <Text style={s.navSub}>Ministries you are part of inside your church.</Text>
-          </View>
+          <Text style={s.navTitle} numberOfLines={1}>
+            MY MINISTRIES
+          </Text>
 
           <Pressable
             onPress={() => {
@@ -815,11 +811,13 @@ export default function MoreMinistriesList() {
               });
             }}
             style={({ pressed }) => [
-              s.refreshBtn,
+              s.headerIconBtn,
+              s.navIconRight,
               pressed && { opacity: 0.92, transform: [{ scale: 0.97 }] },
             ]}
+            accessibilityLabel="Refresh ministries"
           >
-            <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.85)" />
+            <Ionicons name="refresh" size={20} color="#F4D06F" />
           </Pressable>
         </View>
       </View>
@@ -1242,86 +1240,54 @@ const s = StyleSheet.create<any>({
 
   heroWrap: {
     paddingHorizontal: PAD,
-    paddingBottom: 10,
-    overflow: "hidden",
-  },
-  heroGlowA: {
-    position: "absolute",
-    top: -10,
-    left: -20,
-    width: 74,
-    height: 74,
-    borderRadius: 999,
-    backgroundColor: "rgba(217,179,95,0.05)",
-  },
-  heroGlowB: {
-    position: "absolute",
-    top: 24,
-    right: -36,
-    width: 72,
-    height: 72,
-    borderRadius: 999,
-    backgroundColor: "rgba(90,120,255,0.04)",
+    paddingBottom: 4,
   },
 
   nav: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingTop: 4,
-    paddingBottom: 12,
-  },
-  iconPill: {
-    width: 52,
     height: 52,
-    borderRadius: 18,
+    position: "relative",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.24)",
-    shadowColor: "#D9B35F",
-    shadowOpacity: 0.24,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
   },
-  navEyebrow: {
-    color: "rgba(217,179,95,0.92)",
-    fontWeight: "900",
-    fontSize: 11,
-    letterSpacing: 1.6,
-    marginBottom: 2,
+  // Shared chrome for both header icon buttons (40×40).
+  headerIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(43, 0, 61, 0.45)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#F4D06F",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.16,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
+  // Equal vertical offset: (52 − 40) / 2 — same line as the title.
+  navIconLeft: {
+    position: "absolute",
+    left: 0,
+    top: 6,
+  },
+  navIconRight: {
+    position: "absolute",
+    right: 0,
+    top: 6,
   },
   navTitle: {
-    color: "white",
-    fontWeight: "900",
-    fontSize: 26,
-    lineHeight: 30,
-    letterSpacing: -0.4,
-  },
-  navSub: {
-    marginTop: 4,
-    color: "rgba(255,255,255,0.68)",
-    fontWeight: "700",
-    fontSize: 13,
-    lineHeight: 18,
-    maxWidth: "92%",
-  },
-  refreshBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.045)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    shadowColor: "#000",
-    shadowOpacity: 0.20,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 5,
+    textAlign: "center",
+    // Exact registered Cinzel SemiBold — no fontWeight (avoids iOS fallback).
+    fontFamily: CINZEL_SEMIBOLD_FAMILY,
+    color: "#F4D06F",
+    fontSize: 27,
+    lineHeight: 34,
+    letterSpacing: 3.2,
+    textTransform: "uppercase",
+    textShadowColor: "rgba(0, 0, 0, 0.45)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
 
   createBtn: {
