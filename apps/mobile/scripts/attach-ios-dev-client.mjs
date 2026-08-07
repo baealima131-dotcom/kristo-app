@@ -29,7 +29,7 @@ console.log("");
 
 try {
   sh(
-    `xcrun devicectl device process launch -d ${JSON.stringify(deviceName)} com.princefariji.kristoapp --payload-url ${JSON.stringify(payloadUrl)}`
+    `xcrun devicectl device process launch -d ${JSON.stringify(deviceName)} com.princefariji.kristoapp.free --payload-url ${JSON.stringify(payloadUrl)}`
   );
   console.log(`Launched ${deviceName} with Metro deep link.`);
 } catch (error) {

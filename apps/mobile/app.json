@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.princefariji.kristoapp",
+      "bundleIdentifier": "com.princefariji.kristoapp.free",
       "associatedDomains": [
         "applinks:kristo-app.vercel.app"
       ],
@@ -24,7 +24,7 @@
         "NSMicrophoneUsageDescription": "Kristo App needs microphone access for live streaming and audio in live rooms.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "75"
+      "buildNumber": "1"
     },
     "android": {
       "adaptiveIcon": {
@@ -62,22 +62,18 @@
       [
         "@stripe/stripe-react-native",
         {
-          "merchantIdentifier": "merchant.com.princefariji.kristoapp",
           "enableGooglePay": false
         }
       ],
       "expo-video",
       "@livekit/react-native-expo-plugin",
-      "react-native-compressor",
-      "./plugins/withStoreKitConfiguration"
+      "react-native-compressor"
     ],
     "experiments": {
       "typedRoutes": true
     },
     "extra": {
       "stripePublishableKey": "pk_test_xxxxxxxxxxxxxxxxx",
-      "stripeMerchantIdentifier": "merchant.com.princefariji.kristoapp",
-      "revenuecatIosApiKey": "appl_RsWwZtALpIYilmRQNPlnDCkBcqG",
       "revenuecatAndroidApiKey": "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi",
       "router": {},
       "eas": {
