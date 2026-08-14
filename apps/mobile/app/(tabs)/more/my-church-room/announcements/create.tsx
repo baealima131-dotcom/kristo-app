@@ -33,6 +33,12 @@ import {
   CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE,
   compressChurchRoomFeedImage,
 } from "@/src/lib/churchRoomFeedImageCompress";
+import {
+  fileNameFromUri,
+  guessPosterContentType,
+  resolveUploadFileSize,
+  uploadPosterToStorageWithRetry,
+} from "@/src/lib/churchVideoUpload";
 
 const BG = "#0B0F17";
 const CARD = "rgba(255,255,255,0.03)";
@@ -885,53 +891,48 @@ export default function CreateAnnouncement() {
     localUri: string
   ): Promise<{ mediaUri: string; imageUrl: string } | null> {
     try {
-      const fd = new FormData();
-      fd.append("file", {
-        uri: localUri,
-        name: `church-room-${Date.now()}.jpg`,
-        type: "image/jpeg",
-      } as any);
+      const fileName = fileNameFromUri(
+        localUri,
+        `church-room-${Date.now()}.jpg`
+      );
+      const contentType = guessPosterContentType(fileName);
+      const fileSize = await resolveUploadFileSize(localUri);
 
-      const session = getSessionSync();
-      const uploadRes: any = await apiPost("/api/church/media/upload", fd, {
-        headers: buildKristoRequestHeaders(
-          "/api/church/media/upload",
-          {
-            userId: String(session?.userId || "").trim(),
-            role: (session?.role || "Member") as any,
-            churchId: String(session?.churchId || "").trim(),
-            sessionToken: session?.sessionToken,
-          },
-          { accept: "application/json" },
-          "ChurchRoomImageUpload"
-        ),
-      });
-
-      const status = Number(uploadRes?.status || 0) || null;
-      const mediaUri = String(
-        uploadRes?.data?.mediaUri || uploadRes?.data?.url || uploadRes?.data?.imageUrl || ""
-      ).trim();
-      const imageUrl = String(
-        uploadRes?.data?.imageUrl || uploadRes?.data?.url || mediaUri
-      ).trim();
-
-      const failed =
-        uploadRes?.ok === false ||
-        (typeof status === "number" && status >= 400) ||
-        !mediaUri ||
-        !imageUrl;
-
-      if (failed) {
-        console.warn("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
-          status,
-          error: String(uploadRes?.error || "missing mediaUri/imageUrl").trim(),
-          detail: String(uploadRes?.detail || uploadRes?.debug || "").trim() || null,
-          reason: String(uploadRes?.reason || "").trim() || null,
-        });
-        return null;
+      if (fileSize <= 0) {
+        throw new Error("Could not determine the selected image size.");
       }
 
-      return { mediaUri, imageUrl };
+      const uploadPath = "/api/church/media/upload-url";
+      const session = getSessionSync();
+      const headers = buildKristoRequestHeaders(
+        uploadPath,
+        {
+          userId: String(session?.userId || "").trim(),
+          role: (session?.role || "Member") as any,
+          churchId: String(session?.churchId || "").trim(),
+          sessionToken: session?.sessionToken,
+        },
+        { accept: "application/json" },
+        "ChurchRoomImageUpload"
+      );
+
+      const uploaded = await uploadPosterToStorageWithRetry({
+        fileUri: localUri,
+        fileName,
+        contentType,
+        fileSize,
+        headers,
+      });
+
+      const imageUrl = String(
+        uploaded?.publicUrl || uploaded?.videoUrl || ""
+      ).trim();
+
+      if (!imageUrl) {
+        throw new Error("Signed image upload returned no public URL.");
+      }
+
+      return { mediaUri: imageUrl, imageUrl };
     } catch (error) {
       console.warn("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
         status: null,
@@ -1334,7 +1335,7 @@ export default function CreateAnnouncement() {
       <View style={{ paddingHorizontal: PAD, paddingBottom: 6 }}>
         <Text style={[t.subTitle, { color: ACCENT }]}>{"Admin Composer • Posts to " + (postTarget === "home" ? "Global Feed" : "Church Feed")}</Text>
 
-        <View style={s.toggleRow}>
+        <View style={[s.toggleRow, { display: "none" }]}>
           <Pressable
             onPress={() => setPostTarget("church")}
             style={[s.toggleBtn, postTarget === "church" ? { backgroundColor: "rgba(217,179,95,0.18)", borderColor: accentBorder } : null]}
