@@ -1,6 +1,7 @@
 import React, { memo, useCallback, useMemo } from "react";
 import {
   Pressable,
+  Platform,
   StyleSheet,
   Text,
   View,
@@ -242,8 +243,13 @@ const watchStyles = StyleSheet.create({
   churchName: {
     flexShrink: 1,
     color: "rgba(244,201,93,0.98)",
+    fontFamily: Platform.select({
+      ios: "AvenirNext-DemiBold",
+      android: "sans-serif-medium",
+      default: undefined,
+    }),
     fontSize: 14,
-    fontWeight: "800",
+    fontWeight: "600",
     letterSpacing: 0.2,
   },
 });

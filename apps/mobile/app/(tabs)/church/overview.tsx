@@ -19,6 +19,7 @@ import { BlurView } from "expo-blur";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
+import { markCreateMinistryPress } from "@/src/lib/createMinistryNavigation";
 import { Ionicons } from "@expo/vector-icons";
 import { buildKristoRequestHeaders, getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet, apiPatch, getApiBase } from "@/src/lib/kristoApi";
@@ -1088,7 +1089,8 @@ export default function ChurchOverviewScreen() {
     return String(name || "M").trim().charAt(0).toUpperCase() || "M";
   }
 
-  async function handleCreateMinistryPress() {
+  function handleCreateMinistryPress() {
+    markCreateMinistryPress("church/overview");
     if (!canCreateMinistryRole) {
       Alert.alert(
         "Admin access",
@@ -1102,6 +1104,7 @@ export default function ChurchOverviewScreen() {
       return;
     }
 
+    // Navigate immediately — do not await members/media/live/subscription.
     router.push("/church/ministries/create" as any);
   }
 

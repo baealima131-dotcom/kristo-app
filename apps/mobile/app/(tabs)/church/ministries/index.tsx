@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
+import { markCreateMinistryPress } from "@/src/lib/createMinistryNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -295,8 +296,10 @@ export default function MoreMinistriesList() {
     });
   }, [churchId, load]);
 
-  async function handleCreateMinistryPress() {
+  function handleCreateMinistryPress() {
+    markCreateMinistryPress("church/ministries");
     if (!canCreateMinistry || createMinistryLocked) return;
+    // Navigate immediately — create screen hydrates from session/cache.
     router.push("/church/ministries/create" as any);
   }
 
