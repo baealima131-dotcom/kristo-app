@@ -57,6 +57,7 @@ type FeedRow = {
 };
 
 const LOCAL_FEED_FILE = "church-feed.json";
+const LOCAL_FEED_VIEWS_FILE = "church-feed-views.json";
 
 let sqlClient: ReturnType<typeof neon> | null = null;
 let schemaReady: Promise<void> | null = null;
@@ -123,6 +124,22 @@ export async function ensureFeedSchema() {
       await sql`
         CREATE INDEX IF NOT EXISTS kristo_church_feed_created_idx
         ON kristo_church_feed (created_at DESC)
+      `;
+      // HOME_FEED_QUALIFIED_VIEWS_V1
+      await sql`
+        CREATE TABLE IF NOT EXISTS kristo_church_feed_post_views (
+          church_id TEXT NOT NULL,
+          post_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          last_viewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          dwell_ms INTEGER NOT NULL DEFAULT 0,
+          media_kind TEXT NOT NULL DEFAULT 'post',
+          PRIMARY KEY (post_id, user_id)
+        )
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS kristo_church_feed_post_views_post_idx
+        ON kristo_church_feed_post_views (church_id, post_id)
       `;
     })();
   }
@@ -604,4 +621,189 @@ export function isFeedDatabaseError(error: unknown) {
     message.includes("feed database not configured") ||
     message.includes("database_url not configured")
   );
+}
+
+
+export type FeedPostViewResult = {
+  accepted: boolean;
+  viewCount: number;
+  viewedAt: string;
+};
+
+type LocalFeedPostView = {
+  churchId: string;
+  postId: string;
+  userId: string;
+  lastViewedAt: string;
+  dwellMs: number;
+  mediaKind: string;
+};
+
+function safeStoredViewCount(value: unknown): number {
+  const count = Number(value || 0);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
+/**
+ * A viewer contributes at most one qualified view per rolling 24 hours.
+ * The public count lives in the feed payload so feed GET has no N+1 query.
+ */
+export async function recordFeedPostView(args: {
+  churchId: string;
+  postId: string;
+  viewerUserId: string;
+  dwellMs: number;
+  mediaKind: "video" | "image" | "text" | "post";
+}): Promise<FeedPostViewResult> {
+  await ensureFeedStoreReady();
+
+  const churchId = String(args.churchId || "").trim();
+  const postId = String(args.postId || "").trim();
+  const userId = String(args.viewerUserId || "").trim();
+  const dwellMs = Math.max(0, Math.floor(Number(args.dwellMs || 0)));
+  const mediaKind = String(args.mediaKind || "post").trim() || "post";
+  const viewedAt = new Date().toISOString();
+
+  if (!postId || !userId) {
+    return { accepted: false, viewCount: 0, viewedAt };
+  }
+
+  if (usePostgres()) {
+    const sql = getSql();
+
+    const acceptedRows = await sql`
+      INSERT INTO kristo_church_feed_post_views (
+        church_id,
+        post_id,
+        user_id,
+        last_viewed_at,
+        dwell_ms,
+        media_kind
+      )
+      VALUES (
+        ${churchId},
+        ${postId},
+        ${userId},
+        ${viewedAt},
+        ${dwellMs},
+        ${mediaKind}
+      )
+      ON CONFLICT (post_id, user_id)
+      DO UPDATE SET
+        church_id = EXCLUDED.church_id,
+        last_viewed_at = EXCLUDED.last_viewed_at,
+        dwell_ms = EXCLUDED.dwell_ms,
+        media_kind = EXCLUDED.media_kind
+      WHERE kristo_church_feed_post_views.last_viewed_at
+        <= NOW() - INTERVAL '24 hours'
+      RETURNING post_id
+    `;
+
+    const accepted = (acceptedRows as any[]).length > 0;
+
+    if (accepted) {
+      await sql`
+        UPDATE kristo_church_feed
+        SET
+          payload = jsonb_set(
+            COALESCE(payload, '{}'::jsonb),
+            '{viewCount}',
+            to_jsonb(
+              (
+                CASE
+                  WHEN COALESCE(payload->>'viewCount', '') ~ '^[0-9]+$'
+                    THEN (payload->>'viewCount')::bigint
+                  ELSE 0
+                END
+              ) + 1
+            ),
+            true
+          ),
+          updated_at = NOW()
+        WHERE id = ${postId}
+      `;
+    }
+
+    const countRows = await sql`
+      SELECT
+        CASE
+          WHEN COALESCE(payload->>'viewCount', '') ~ '^[0-9]+$'
+            THEN (payload->>'viewCount')::bigint
+          ELSE 0
+        END AS view_count
+      FROM kristo_church_feed
+      WHERE id = ${postId}
+      LIMIT 1
+    `;
+
+    const viewCount = safeStoredViewCount(
+      (countRows as any[])?.[0]?.view_count
+    );
+
+    console.log("KRISTO_HOME_FEED_VIEW_RECORDED", {
+      postId,
+      viewerUserId: userId,
+      accepted,
+      viewCount,
+      dwellMs,
+      mediaKind,
+      store: "postgres",
+    });
+
+    return { accepted, viewCount, viewedAt };
+  }
+
+  const rows = await readJsonFile<LocalFeedPostView[]>(
+    LOCAL_FEED_VIEWS_FILE,
+    []
+  );
+  const views = Array.isArray(rows) ? rows : [];
+  const existingIndex = views.findIndex(
+    (row) => row.postId === postId && row.userId === userId
+  );
+  const previous = existingIndex >= 0 ? views[existingIndex] : null;
+  const previousMs = previous
+    ? new Date(previous.lastViewedAt).getTime()
+    : 0;
+  const accepted =
+    !previousMs || Date.now() - previousMs >= 24 * 60 * 60 * 1000;
+
+  const item = await getFeedItemById(postId);
+  let viewCount = safeStoredViewCount((item as any)?.viewCount);
+
+  if (accepted) {
+    const nextView: LocalFeedPostView = {
+      churchId,
+      postId,
+      userId,
+      lastViewedAt: viewedAt,
+      dwellMs,
+      mediaKind,
+    };
+
+    if (existingIndex >= 0) views[existingIndex] = nextView;
+    else views.push(nextView);
+
+    await writeJsonFile(LOCAL_FEED_VIEWS_FILE, views);
+
+    if (item) {
+      viewCount += 1;
+      await upsertFeedItem({
+        ...item,
+        viewCount,
+      });
+    }
+  }
+
+  console.log("KRISTO_HOME_FEED_VIEW_RECORDED", {
+    postId,
+    viewerUserId: userId,
+    accepted,
+    viewCount,
+    dwellMs,
+    mediaKind,
+    store: "local-json",
+  });
+
+  return { accepted, viewCount, viewedAt };
 }

@@ -35,6 +35,7 @@ import { HOME_FEED_GOLD, HOME_FEED_THUMB_RADIUS } from "./theme";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
 import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
+import { useHomeFeedPostViewCount } from "@/src/lib/homeFeedPostViews";
 
 type Props = {
   item: any;
@@ -62,6 +63,10 @@ export const FeedYouTubeCard = memo(
   shouldLoadImages = true,
 }: Props) {
   const engagement = useHomeFeedRowEngagement(item);
+  const viewCount = useHomeFeedPostViewCount(
+    String(item?.id || ""),
+    Number(item?.viewCount || 0)
+  );
   const { width: windowWidth } = useWindowDimensions();
   const displayType = resolveHomeFeedVideoDisplayType(item);
   const thumbHeight = homeFeedVideoThumbnailHeight(windowWidth, displayType);
@@ -217,6 +222,7 @@ export const FeedYouTubeCard = memo(
         likeCount={engagement.likeCount}
         commentCount={engagement.commentCount}
         shareCount={Number(item?.shareCount || 0)}
+        viewCount={viewCount}
         saved={engagement.saved}
         reported={engagement.reported}
         onLike={onLike}

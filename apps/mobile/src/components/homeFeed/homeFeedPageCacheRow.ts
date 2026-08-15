@@ -69,6 +69,7 @@ const SLIM_NUMBER_FIELDS = [
   "likeCount",
   "commentCount",
   "replyCount",
+  "viewCount",
   "shareCount",
   "saveCount",
   "durationMs",

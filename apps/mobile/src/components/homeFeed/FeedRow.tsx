@@ -30,7 +30,10 @@ import {
   type HomeFeedPostAccent,
 } from "./homeFeedUtils";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
-import { markHomeFeedPostViewed } from "@/src/lib/homeFeedPostViews";
+import {
+  markHomeFeedPostViewed,
+  useHomeFeedPostViewCount,
+} from "@/src/lib/homeFeedPostViews";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import { Ionicons } from "@expo/vector-icons";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
@@ -140,6 +143,10 @@ export const FeedRow = memo(
   onVideoPress,
 }: Props) {
   const engagement = useHomeFeedRowEngagement(item);
+  const viewCount = useHomeFeedPostViewCount(
+    String(item?.id || ""),
+    Number(item?.viewCount || 0)
+  );
   const insets = useSafeAreaInsets();
   const chrome = useMemo(() => homeFeedChromeOffsets(insets.bottom), [insets.bottom]);
 
@@ -348,6 +355,7 @@ export const FeedRow = memo(
         likeCount={engagement.likeCount}
         commentCount={engagement.commentCount}
         shareCount={shareCount}
+        viewCount={viewCount}
         saveCount={saveCount}
         saved={engagement.saved}
         reported={engagement.reported}

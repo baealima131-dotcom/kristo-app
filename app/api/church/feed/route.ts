@@ -84,6 +84,7 @@ import {
   listFeedItems,
   listFeedItemsForChurch,
   upsertFeedItem,
+  recordFeedPostView,
 } from "@/app/api/_lib/store/feedDb";
 import {
   countDiscussionForPostIdSet,
@@ -3521,12 +3522,14 @@ async function handleClearMediaScheduleSlots(
 async function handleFeedPost(req: NextRequest, body: any) {
   const action = String(body?.action || "create_post").trim();
   const ctxOrRes =
-    action === "toggle_like" ? await guardAuth(req) : await guard(req);
+    action === "toggle_like" || action === "record_view"
+      ? await guardAuth(req)
+      : await guard(req);
   if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const ctx = ctxOrRes as any;
   const churchId =
-    action === "toggle_like"
+    action === "toggle_like" || action === "record_view"
       ? String(ctx?.viewer?.churchId || ctx?.churchId || "").trim()
       : String(ctx.churchId || "");
   const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
@@ -3637,6 +3640,66 @@ async function handleFeedPost(req: NextRequest, body: any) {
     console.log("KRISTO_MEDIA_CLEAR_SCHEDULES_RESULT", result);
 
     return ok(result);
+  }
+
+  if (action === "record_view") {
+    const requestPostId = cleanText(body?.postId, 240);
+    if (!requestPostId) return err("postId is required", 400);
+
+    const item = await getFeedItemById(requestPostId);
+    if (!item) return err("Feed item not found", 404);
+
+    const canonicalPostId = String(item.id || requestPostId).trim();
+    const itemChurchId = String(item.churchId || churchId || "").trim();
+    const authorUserId = resolveFeedPostAuthorUserId(item);
+    const mediaKindRaw = String(body?.mediaKind || "post")
+      .trim()
+      .toLowerCase();
+    const mediaKind =
+      mediaKindRaw === "video"
+        ? "video"
+        : mediaKindRaw === "image"
+          ? "image"
+          : mediaKindRaw === "text"
+            ? "text"
+            : "post";
+    const dwellMs = Math.max(
+      0,
+      Math.floor(Number(body?.dwellMs || 0))
+    );
+    const requiredDwellMs = mediaKind === "video" ? 3000 : 2000;
+
+    if (dwellMs < requiredDwellMs) {
+      return err("Qualified view time not reached", 400);
+    }
+
+    if (authorUserId && authorUserId === viewerUserId) {
+      return ok({
+        postId: canonicalPostId,
+        accepted: false,
+        ownPost: true,
+        viewCount: Math.max(
+          0,
+          Math.floor(Number((item as any)?.viewCount || 0))
+        ),
+      });
+    }
+
+    const result = await recordFeedPostView({
+      churchId: itemChurchId,
+      postId: canonicalPostId,
+      viewerUserId,
+      dwellMs,
+      mediaKind,
+    });
+
+    return ok({
+      postId: canonicalPostId,
+      accepted: result.accepted,
+      ownPost: false,
+      viewCount: result.viewCount,
+      viewedAt: result.viewedAt,
+    });
   }
 
   if (action === "toggle_like") {

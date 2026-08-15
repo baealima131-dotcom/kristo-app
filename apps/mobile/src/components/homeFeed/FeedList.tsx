@@ -40,7 +40,10 @@ import {
 } from "@/src/lib/homeFeedVideoWindow";
 import { resolveYouTubeFeedItemLayout, type YouTubeFeedItemLayoutCache } from "@/src/lib/homeFeedYouTubeLayout";
 import { enforceHomeFeedVideoAudioOwnership } from "@/src/lib/homeFeedVideoOwner";
-import { markHomeFeedPostViewed } from "@/src/lib/homeFeedPostViews";
+import {
+  markHomeFeedPostViewed,
+  recordQualifiedHomeFeedPostView,
+} from "@/src/lib/homeFeedPostViews";
 import {
   isHomeFeedYouTubeStyleVideo,
   isHomeFeedInlineVideoAutoplayEnabled,
@@ -158,6 +161,15 @@ export const FeedList = memo(
   const renderPaused = isHomeFeedRenderPaused();
   const effectiveScreenFocused = screenFocused && !renderPaused;
   const listRef = useRef<FlatList>(null);
+  // HOME_FEED_QUALIFIED_VIEW_TIMERS_V1
+  const qualifiedViewTimersRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+  const effectiveScreenFocusedRef = useRef(
+    effectiveScreenFocused
+  );
+  effectiveScreenFocusedRef.current = effectiveScreenFocused;
+
   const youtubeLayoutCacheRef = useRef<YouTubeFeedItemLayoutCache>({
     heights: [],
     offsets: [],
@@ -288,12 +300,82 @@ export const FeedList = memo(
   const viewabilityConfig = useRef(VIEWABILITY_CONFIG).current;
   const youtubeViewabilityConfig = useRef(YOUTUBE_VIEWABILITY_CONFIG).current;
 
-  const markViewablePosts = useCallback((viewableItems: ViewToken[]) => {
-    for (const token of viewableItems) {
-      if (!token.isViewable) continue;
-      const id = String((token.item as any)?.id || "").trim();
-      if (id) markHomeFeedPostViewed(id);
-    }
+  const markViewablePosts = useCallback(
+    (viewableItems: ViewToken[]) => {
+      const timers = qualifiedViewTimersRef.current;
+      const currentIds = new Set<string>();
+
+      if (!effectiveScreenFocusedRef.current) {
+        for (const timer of timers.values()) clearTimeout(timer);
+        timers.clear();
+        return;
+      }
+
+      for (const token of viewableItems) {
+        if (!token.isViewable) continue;
+
+        const item = token.item as any;
+        const id = String(item?.id || "").trim();
+        if (!id) continue;
+
+        currentIds.add(id);
+        markHomeFeedPostViewed(id);
+
+        if (timers.has(id)) continue;
+
+        const video = isVideoPost(item);
+        const dwellMs = video ? 3000 : 2000;
+        const mediaKind = video
+          ? "video"
+          : Array.isArray(item?.images) ||
+              String(
+                item?.imageUrl ||
+                  item?.imageUri ||
+                  item?.mediaUri ||
+                  ""
+              ).trim()
+            ? "image"
+            : "text";
+
+        const timer = setTimeout(() => {
+          timers.delete(id);
+
+          if (!effectiveScreenFocusedRef.current) return;
+
+          void recordQualifiedHomeFeedPostView({
+            postId: id,
+            serverCount: Number(item?.viewCount || 0),
+            dwellMs,
+            mediaKind,
+          });
+        }, dwellMs);
+
+        timers.set(id, timer);
+      }
+
+      for (const [id, timer] of timers) {
+        if (currentIds.has(id)) continue;
+        clearTimeout(timer);
+        timers.delete(id);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (effectiveScreenFocused) return;
+
+    const timers = qualifiedViewTimersRef.current;
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
+  }, [effectiveScreenFocused]);
+
+  useEffect(() => {
+    return () => {
+      const timers = qualifiedViewTimersRef.current;
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+    };
   }, []);
 
   const publishActiveIndex = useCallback(

@@ -12,6 +12,7 @@ type Props = {
   likeCount: number;
   commentCount: number;
   shareCount: number;
+  viewCount: number;
   saveCount?: number;
   saved: boolean;
   reported: boolean;
@@ -28,6 +29,7 @@ export const PostActions = memo(function PostActions({
   likeCount,
   commentCount,
   shareCount,
+  viewCount,
   saveCount = 0,
   saved,
   reported,
@@ -109,6 +111,19 @@ export const PostActions = memo(function PostActions({
             />
           </View>
         </ActionButton>
+
+        <View style={premium.verticalActionBtn}>
+          <View style={premium.verticalIconWrap}>
+            <Ionicons
+              name="eye-outline"
+              size={ICON_SIZE - 1}
+              color={HOME_FEED_GOLD_SOFT}
+            />
+          </View>
+          <Text style={premium.verticalCountLabel}>
+            {formatActionCount(viewCount)}
+          </Text>
+        </View>
 
         <ActionButton
           label={reported ? "Reported" : "Report"}
