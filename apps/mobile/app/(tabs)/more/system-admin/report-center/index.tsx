@@ -649,46 +649,7 @@ export default function ReportCenterScreen() {
               gap: 8,
             }}
           >
-            <Pressable
-              onPress={() =>
-                router.replace(
-                  "/more/system-admin" as any
-                )
-              }
-              style={({ pressed }) => ({
-                flex: 1,
-                minHeight: 48,
-                overflow: "hidden",
-                borderRadius: 16,
-                borderWidth: 1,
-                borderColor:
-                  "rgba(255,255,255,0.13)",
-                backgroundColor: pressed
-                  ? "rgba(244,208,111,0.12)"
-                  : "rgba(255,255,255,0.05)",
-              })}
-            >
-              <BlurView
-                intensity={38}
-                tint="dark"
-                style={StyleSheet.absoluteFillObject}
-              />
 
-              <View style={styles.moduleInner}>
-                <Ionicons
-                  name="business-outline"
-                  size={17}
-                  color="rgba(255,255,255,0.72)"
-                />
-
-                <Text
-                  numberOfLines={1}
-                  style={styles.moduleText}
-                >
-                  Church Activation
-                </Text>
-              </View>
-            </Pressable>
 
             <View
               style={{

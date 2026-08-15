@@ -204,6 +204,13 @@ function LoadingShimmer() {
 
 export default function SystemAdminScreen() {
   const router = useRouter();
+
+  // V1_REPORT_CENTER_ONLY
+  useFocusEffect(() => {
+    router.replace(
+      "/(tabs)/more/system-admin/report-center" as any
+    );
+  });
   const insets = useSafeAreaInsets();
   const session = getSessionSync() as any;
   const platformRole = resolveSessionPlatformRole(session);
@@ -375,25 +382,7 @@ export default function SystemAdminScreen() {
             gap: 10,
           }}
         >
-          <Pressable
-            onPress={() => router.back()}
-            hitSlop={12}
-            style={styles.backBtn}
-          >
-            <BlurView
-              intensity={42}
-              tint="dark"
-              style={StyleSheet.absoluteFillObject}
-            />
 
-            <View style={styles.backBtnInner}>
-              <Ionicons
-                name="chevron-back"
-                size={24}
-                color="#FFFFFF"
-              />
-            </View>
-          </Pressable>
 
           <View
             style={{
