@@ -299,6 +299,8 @@ export default function TLMCScreen() {
   const [officeTab, setOfficeTab] = useState<OfficeTab>("overview");
   const [runningCommand, setRunningCommand] = useState(false);
   const myWayInputLogRef = useRef("");
+  // TLMC_LONG_SESSION_STABILITY_V1
+  const skippedInitialFocusRefreshRef = useRef(false);
 
   const currentUserId = useMemo(() => {
     return String(session?.userId || "guest-user").trim() || "guest-user";
@@ -376,10 +378,6 @@ export default function TLMCScreen() {
   const crossGlow = useRef(new Animated.Value(0.82)).current;
   const crossScale = useRef(new Animated.Value(1)).current;
 
-  useEffect(() => {
-    void preloadTlmcAssets();
-  }, []);
-
   useFocusEffect(
     React.useCallback(() => {
       void preloadTlmcAssets();
@@ -422,6 +420,11 @@ export default function TLMCScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (!skippedInitialFocusRefreshRef.current) {
+        skippedInitialFocusRefreshRef.current = true;
+        return;
+      }
+
       let alive = true;
 
       (async () => {
@@ -453,42 +456,56 @@ export default function TLMCScreen() {
     }, [])
   );
 
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.parallel([
-        Animated.sequence([
-          Animated.timing(crossGlow, {
-            toValue: 1,
-            duration: 1400,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: false,
-          }),
-          Animated.timing(crossGlow, {
-            toValue: 0.82,
-            duration: 1400,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: false,
-          }),
-        ]),
-        Animated.sequence([
-          Animated.timing(crossScale, {
-            toValue: 1.035,
-            duration: 1400,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: false,
-          }),
-          Animated.timing(crossScale, {
-            toValue: 1,
-            duration: 1400,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: false,
-          }),
-        ]),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [crossGlow, crossScale]);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!showPad) {
+        crossGlow.setValue(0.82);
+        crossScale.setValue(1);
+        return;
+      }
+
+      const loop = Animated.loop(
+        Animated.parallel([
+          Animated.sequence([
+            Animated.timing(crossGlow, {
+              toValue: 1,
+              duration: 1400,
+              easing: Easing.inOut(Easing.ease),
+              useNativeDriver: true,
+            }),
+            Animated.timing(crossGlow, {
+              toValue: 0.82,
+              duration: 1400,
+              easing: Easing.inOut(Easing.ease),
+              useNativeDriver: true,
+            }),
+          ]),
+          Animated.sequence([
+            Animated.timing(crossScale, {
+              toValue: 1.035,
+              duration: 1400,
+              easing: Easing.inOut(Easing.ease),
+              useNativeDriver: true,
+            }),
+            Animated.timing(crossScale, {
+              toValue: 1,
+              duration: 1400,
+              easing: Easing.inOut(Easing.ease),
+              useNativeDriver: true,
+            }),
+          ]),
+        ])
+      );
+
+      loop.start();
+
+      return () => {
+        loop.stop();
+        crossGlow.stopAnimation();
+        crossScale.stopAnimation();
+      };
+    }, [showPad, crossGlow, crossScale])
+  );
 
   function resetPadState(nextMode: PadMode = "unlock") {
     setPadMode(nextMode);

@@ -110,7 +110,6 @@ export function makeDefaultVisibility(): KeyVisibility {
 
 export function buildKingdomHeaders() {
   const auth = getSessionSync();
-  console.log("KINGDOM auth >>>", auth);
   const headers: Record<string, string> = {
     accept: "application/json",
     "content-type": "application/json",
