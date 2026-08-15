@@ -8183,6 +8183,11 @@ export default function MessageThreadScreen() {
   // COMPOSER_KEYBOARD_SPACING_V4
   const [composerKeyboardVisible, setComposerKeyboardVisible] = useState(false);
 
+  // SMART_EXPANDING_COMPOSER_V5
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const sendWaveOne = useRef(new Animated.Value(0)).current;
+  const sendWaveTwo = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
     const showEvent =
       Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
@@ -8201,12 +8206,59 @@ export default function MessageThreadScreen() {
       hideSubscription.remove();
     };
   }, []);
+  useEffect(() => {
+    sendWaveOne.stopAnimation();
+    sendWaveTwo.stopAnimation();
+    sendWaveOne.setValue(0);
+    sendWaveTwo.setValue(0);
+
+    if (!composerExpanded) return;
+
+    const waveAnimation = Animated.loop(
+      Animated.parallel([
+        Animated.sequence([
+          Animated.timing(sendWaveOne, {
+            toValue: 1,
+            duration: 950,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.delay(350),
+        ]),
+        Animated.sequence([
+          Animated.delay(300),
+          Animated.timing(sendWaveTwo, {
+            toValue: 1,
+            duration: 950,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]),
+      ])
+    );
+
+    waveAnimation.start();
+
+    return () => {
+      waveAnimation.stop();
+      sendWaveOne.stopAnimation();
+      sendWaveTwo.stopAnimation();
+    };
+  }, [composerExpanded, sendWaveOne, sendWaveTwo]);
+
   const claimInFlightRef = useRef<Set<string>>(new Set());
   const [claimingAssignmentMessageIds, setClaimingAssignmentMessageIds] = useState<
     Record<string, true>
   >({});
 
   const [draft, setDraft] = useState("");
+
+  useEffect(() => {
+    if (!String(draft || "").length) {
+      setComposerExpanded(false);
+    }
+  }, [draft]);
+
   const typingPingAtRef = useRef(0);
 
   useEffect(() => {
@@ -14496,31 +14548,55 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               { marginBottom: composerKeyboardVisible ? 6 : tabBarH },
             ]}
           >
-            <Pressable
-              onPress={pickImage}
-              disabled={dmComposerLocked}
-              style={({ pressed }) => [
-                s.cBtn,
-                pressed ? s.cBtnPressed : null,
-                dmComposerLocked ? { opacity: 0.4 } : null,
+            <View
+              style={[
+                s.composerActions,
+                composerExpanded ? s.composerActionsExpanded : null,
               ]}
             >
-              <Ionicons name="image" size={18} color={GOLD_SOLID} />
-            </Pressable>
+              <Pressable
+                onPress={pickImage}
+                disabled={dmComposerLocked}
+                accessibilityLabel="Add image"
+                style={({ pressed }) => [
+                  s.cBtn,
+                  composerExpanded ? s.cBtnCompact : null,
+                  pressed ? s.cBtnPressed : null,
+                  dmComposerLocked ? { opacity: 0.4 } : null,
+                ]}
+              >
+                <Ionicons
+                  name="image"
+                  size={composerExpanded ? 15 : 18}
+                  color={GOLD_SOLID}
+                />
+              </Pressable>
 
-            <Pressable
-              onPress={pickFile}
-              disabled={dmComposerLocked}
-              style={({ pressed }) => [
-                s.cBtn,
-                pressed ? s.cBtnPressed : null,
-                dmComposerLocked ? { opacity: 0.4 } : null,
+              <Pressable
+                onPress={pickFile}
+                disabled={dmComposerLocked}
+                accessibilityLabel="Add file"
+                style={({ pressed }) => [
+                  s.cBtn,
+                  composerExpanded ? s.cBtnCompact : null,
+                  pressed ? s.cBtnPressed : null,
+                  dmComposerLocked ? { opacity: 0.4 } : null,
+                ]}
+              >
+                <Ionicons
+                  name="attach"
+                  size={composerExpanded ? 15 : 18}
+                  color={GOLD_SOLID}
+                />
+              </Pressable>
+            </View>
+
+            <View
+              style={[
+                s.inputWrap,
+                composerExpanded ? s.inputWrapExpanded : null,
               ]}
             >
-              <Ionicons name="attach" size={18} color={GOLD_SOLID} />
-            </Pressable>
-
-            <View style={s.inputWrap}>
               <TextInput
                 ref={inputRef}
 
@@ -14533,6 +14609,17 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 blurOnSubmit={false}
                 value={draft}
                 onChangeText={setDraft}
+                onContentSizeChange={(event) => {
+                  const contentHeight = Number(
+                    event?.nativeEvent?.contentSize?.height || 0
+                  );
+
+                  setComposerExpanded((current) =>
+                    current
+                      ? contentHeight > 50
+                      : contentHeight > 72
+                  );
+                }}
                 editable={!dmComposerLocked}
                 placeholder={
                   dmComposerLocked
@@ -14545,24 +14632,96 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 }
                 autoFocus={false}
                 placeholderTextColor="rgba(255,255,255,0.45)"
-                style={t.input}
+                style={[
+                  t.input,
+                  composerExpanded ? s.composerInputExpanded : null,
+                ]}
                 multiline
+                scrollEnabled={composerExpanded}
                 autoCorrect
               />
             </View>
 
-            <Pressable
-              onPress={onSend}
-              disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading || dmComposerLocked}
-              style={({ pressed }) => [
-                s.sendBtn,
-                !canSend || (isMinistryThread && isSuspended) || attachUploading || dmComposerLocked ? s.sendBtnDisabled : null,
-                canSend && !(isMinistryThread && isSuspended) && !attachUploading && !dmComposerLocked ? s.sendBtnActive : null,
-                pressed && canSend && !(isMinistryThread && isSuspended) && !attachUploading && !dmComposerLocked ? ({ transform: [{ scale: 0.97 }], opacity: 0.94 } as ViewStyle) : null,
+            <View
+              style={[
+                s.sendShell,
+                composerExpanded ? s.sendShellExpanded : null,
               ]}
             >
-              <Ionicons name="send" size={16} color={canSend && !(isMinistryThread && isSuspended) && !attachUploading && !dmComposerLocked ? "#FFFFFF" : "rgba(255,255,255,0.30)"} />
-            </Pressable>
+              {composerExpanded &&
+              canSend &&
+              !(isMinistryThread && isSuspended) &&
+              !attachUploading &&
+              !dmComposerLocked ? (
+                <>
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      s.sendWave,
+                      {
+                        opacity: sendWaveOne.interpolate({
+                          inputRange: [0, 0.25, 1],
+                          outputRange: [0, 0.48, 0],
+                        }),
+                        transform: [
+                          {
+                            scale: sendWaveOne.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0.88, 1.7],
+                            }),
+                          },
+                        ],
+                      },
+                    ]}
+                  />
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      s.sendWave,
+                      {
+                        opacity: sendWaveTwo.interpolate({
+                          inputRange: [0, 0.25, 1],
+                          outputRange: [0, 0.34, 0],
+                        }),
+                        transform: [
+                          {
+                            scale: sendWaveTwo.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0.88, 1.7],
+                            }),
+                          },
+                        ],
+                      },
+                    ]}
+                  />
+                </>
+              ) : null}
+
+              <Pressable
+                onPress={onSend}
+                disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading || dmComposerLocked}
+                style={({ pressed }) => [
+                  s.sendBtn,
+                  composerExpanded ? s.sendBtnExpanded : null,
+                  !canSend || (isMinistryThread && isSuspended) || attachUploading || dmComposerLocked ? s.sendBtnDisabled : null,
+                  canSend && !(isMinistryThread && isSuspended) && !attachUploading && !dmComposerLocked ? s.sendBtnActive : null,
+                  pressed && canSend && !(isMinistryThread && isSuspended) && !attachUploading && !dmComposerLocked ? ({ transform: [{ scale: 0.95 }], opacity: 0.94 } as ViewStyle) : null,
+                ]}
+              >
+                <Ionicons
+                  name="send"
+                  size={composerExpanded ? 18 : 16}
+                  color={
+                    canSend &&
+                    !(isMinistryThread && isSuspended) &&
+                    !attachUploading &&
+                    !dmComposerLocked
+                      ? "#FFFFFF"
+                      : "rgba(255,255,255,0.30)"
+                  }
+                />
+              </Pressable>
+            </View>
           </View>
         )}
       </KeyboardAvoidingView>
@@ -19872,6 +20031,17 @@ videoEditorSplitTimelineBadgeText: {
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 6 },
   } as ViewStyle,
+  composerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  } as ViewStyle,
+  composerActionsExpanded: {
+    width: 34,
+    flexDirection: "column",
+    gap: 5,
+  } as ViewStyle,
+
   cBtn: {
     width: 46,
     height: 46,
@@ -19882,6 +20052,12 @@ videoEditorSplitTimelineBadgeText: {
     backgroundColor: "rgba(71,72,126,0.34)",
     borderWidth: 1,
     borderColor: "rgba(223,184,94,0.30)",
+  } as ViewStyle,
+  cBtnCompact: {
+    width: 34,
+    height: 30,
+    borderRadius: 11,
+    borderCurve: "continuous",
   } as ViewStyle,
   cBtnPressed: {
     opacity: 0.82,
@@ -19900,6 +20076,17 @@ videoEditorSplitTimelineBadgeText: {
     borderWidth: 1,
     borderColor: "rgba(130,157,196,0.24)",
   } as ViewStyle,
+  inputWrapExpanded: {
+    minHeight: 76,
+    maxHeight: 76,
+    borderRadius: 21,
+    borderColor: "rgba(92,225,188,0.42)",
+    backgroundColor: "rgba(7,25,41,0.96)",
+  } as ViewStyle,
+  composerInputExpanded: {
+    maxHeight: 68,
+    paddingVertical: 6,
+  } as TextStyle,
   inputWrapFocused: {
     backgroundColor: "rgba(8,27,43,0.96)",
     borderColor: "rgba(80,225,185,0.58)",
@@ -19907,6 +20094,26 @@ videoEditorSplitTimelineBadgeText: {
     shadowOpacity: 0.18,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 0 },
+  } as ViewStyle,
+
+  sendShell: {
+    width: 48,
+    height: 48,
+    alignItems: "center",
+    justifyContent: "center",
+  } as ViewStyle,
+  sendShellExpanded: {
+    width: 54,
+    height: 76,
+  } as ViewStyle,
+  sendWave: {
+    position: "absolute",
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 1.5,
+    borderColor: "rgba(126,105,255,0.78)",
+    backgroundColor: "rgba(108,87,226,0.08)",
   } as ViewStyle,
 
   sendBtn: {
@@ -19919,6 +20126,11 @@ videoEditorSplitTimelineBadgeText: {
     backgroundColor: "rgba(54,66,91,0.74)",
     borderWidth: 1,
     borderColor: "rgba(137,159,198,0.24)",
+  } as ViewStyle,
+  sendBtnExpanded: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
   } as ViewStyle,
   sendBtnActive: {
     backgroundColor: "#6757D9",
