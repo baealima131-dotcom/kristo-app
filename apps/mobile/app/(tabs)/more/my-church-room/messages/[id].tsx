@@ -8180,6 +8180,27 @@ export default function MessageThreadScreen() {
 
   const listRef = useRef<any>(null);
   const inputRef = useRef<any>(null);
+  // COMPOSER_KEYBOARD_SPACING_V4
+  const [composerKeyboardVisible, setComposerKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const showSubscription = Keyboard.addListener(showEvent, () => {
+      setComposerKeyboardVisible(true);
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      setComposerKeyboardVisible(false);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
   const claimInFlightRef = useRef<Set<string>>(new Set());
   const [claimingAssignmentMessageIds, setClaimingAssignmentMessageIds] = useState<
     Record<string, true>
@@ -14472,7 +14493,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           <View
             style={[
               s.composer,
-              { marginBottom: tabBarH },
+              { marginBottom: composerKeyboardVisible ? 6 : tabBarH },
             ]}
           >
             <Pressable
