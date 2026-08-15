@@ -24,7 +24,7 @@
         "NSMicrophoneUsageDescription": "Kristo App needs microphone access for live streaming and audio in live rooms.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "1"
+      "buildNumber": "2"
     },
     "android": {
       "adaptiveIcon": {
