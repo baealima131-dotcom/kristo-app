@@ -6423,7 +6423,7 @@ function Bubble({
         style={[s.assignmentTimelineWrap, highlightStyle]}
       >
         <View style={s.assignmentTimelineRail}>
-          
+
           <View
             style={[
               s.assignmentTimelineNode,
@@ -7688,7 +7688,11 @@ export default function MessageThreadScreen() {
   const allowEmptyRoomOverwriteRef = useRef(false);
   const memberAvatarByUserIdRef = useRef<Map<string, string>>(new Map());
   const reloadRoomMessagesRef = useRef<((opts?: { force?: boolean }) => Promise<boolean>) | null>(null);
-  const [composerFocused, setComposerFocused] = useState(false);
+
+  // STABLE_COMPOSER_FOCUS_V1
+  // STABLE_NATIVE_KEYBOARD_V2
+
+  const composerFocusedRef = useRef(false);
 
   const filterVisibleRoomMessageRows = useCallback((rows: any[]) => {
     return (Array.isArray(rows) ? rows : []).filter((x: any) => {
@@ -8034,7 +8038,7 @@ export default function MessageThreadScreen() {
             headers,
             force: false,
             cacheFresh: false,
-            source: composerFocused ? "poll-active" : "poll",
+            source: composerFocusedRef.current ? "poll-active" : "poll",
           });
 
           if (!alive) return false;
@@ -8091,7 +8095,7 @@ export default function MessageThreadScreen() {
       alive = false;
       stop();
     };
-  }, [threadId, backendRoomId, effectiveAuthUserId, churchId, title, sub, isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, isChurchLiveControlRoom, realMinistry, (params as any)?.ministryId, (params as any)?.assignmentId, isFocused, composerFocused, applyVisibleRoomMessageRows, filterVisibleRoomMessageRows]);
+  }, [threadId, backendRoomId, effectiveAuthUserId, churchId, title, sub, isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, isChurchLiveControlRoom, realMinistry, (params as any)?.ministryId, (params as any)?.assignmentId, isFocused, applyVisibleRoomMessageRows, filterVisibleRoomMessageRows]);
 
   // Force a fresh room-messages GET that bypasses the media-room cache. Used
   // right after a successful send/reconcile/card mutation so the next poll
@@ -8415,7 +8419,7 @@ export default function MessageThreadScreen() {
     [isAssignmentThread, assignmentTitleParam, title, isMinistryThread, realMinistry]
   );
 
-  
+
 const assignmentDisplayTitle = isAssignmentThread
   ? `${headerTitle} • Live`
   : headerTitle;
@@ -10875,7 +10879,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
     closeThreadMenu();
   }
 
-  
+
 type LiveAssignmentCtaMeta = {
   tone: "idle" | "scheduled" | "preview" | "live";
   label: string;
@@ -11332,7 +11336,7 @@ const canViewerClaimAssignmentCard = useMemo(() => {
     }
   }
 
-  
+
 
   function cropRatioValue(preset: "9:16" | "1:1" | "16:9" | "3:4" | "4:3" | "free") {
     if (preset === "9:16") return 9 / 16;
@@ -11843,7 +11847,7 @@ async function toggleAssignmentPreviewPlayback() {
     );
   }
 
-  
+
   function applyCurrentPreviewToTrimPick(kind: "start" | "end") {
     const sec = Math.max(
       0,
@@ -11864,7 +11868,7 @@ async function toggleAssignmentPreviewPlayback() {
     }
   }
 
-  
+
   function updateTrimBoundaryFromTrackX(kind: "start" | "end", x: number) {
     const duration = Math.max(0, Math.round(activeAssignmentClip?.sourceDurationSec || 0));
     if (!duration || trimTrackWidth <= 0) return;
@@ -12087,7 +12091,7 @@ function deleteActiveAssignmentClipFromEditor() {
     });
   }
 
-  
+
   function seekAssignmentVideoTo(sec: number) {
     const clip = activeAssignmentClip;
     if (!clip) return;
@@ -12882,7 +12886,7 @@ function saveAssignmentVideoTrim() {
     );
   }
 
-  
+
 const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   if (!isAssignmentThread) return [];
 
@@ -13851,7 +13855,16 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   }
 
   return (
-    <View style={[s.screen, { paddingTop: insets.top + 10, paddingBottom: insets.bottom }]}>
+    <View
+      style={[
+        s.screen,
+        {
+          paddingTop: insets.top + 10,
+          paddingBottom: 0,
+          backgroundColor: "#081521",
+        },
+      ]}
+    >
       {/* Header */}
       <View style={s.header}>
         <Pressable
@@ -14134,9 +14147,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               });
             }, 280);
           }}
-          
-          keyboardDismissMode="on-drag"
-          keyboardShouldPersistTaps="handled"
+
+          keyboardDismissMode="none"
+          keyboardShouldPersistTaps="always"
           contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 }}
           renderItem={({ item, index }) => {
             const prev = visibleMessages[index + 1];
@@ -14455,7 +14468,12 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             </Text>
           </View>
         ) : (
-          <View style={[s.composer, { marginBottom: tabBarH + 8 }]}>
+          <View
+            style={[
+              s.composer,
+              { marginBottom: tabBarH },
+            ]}
+          >
             <Pressable
               onPress={pickImage}
               disabled={dmComposerLocked}
@@ -14480,17 +14498,16 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               <Ionicons name="attach" size={18} color={GOLD_SOLID} />
             </Pressable>
 
-            <View style={[s.inputWrap, composerFocused ? s.inputWrapFocused : null]}>
+            <View style={s.inputWrap}>
               <TextInput
                 ref={inputRef}
-               
+
                 onFocus={() => {
-                  setComposerFocused(true);
-                  try {
-                    listRef.current?.scrollToEnd?.({ animated: true });
-                  } catch {}
+                  composerFocusedRef.current = true;
                 }}
-                onBlur={() => setComposerFocused(false)}
+                onBlur={() => {
+                  composerFocusedRef.current = false;
+                }}
                 blurOnSubmit={false}
                 value={draft}
                 onChangeText={setDraft}
@@ -14566,7 +14583,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         <View style={s.menuOverlay}>
           <Pressable style={s.menuBackdrop} onPress={() => setMembersOpen(false)} />
           <View style={s.memberSheet}>
-            
+
             <View style={s.memberSheetHeader}>
               <Text style={t.menuTitle}>Members</Text>
               <Text style={t.menuSub}>{headerTitle}</Text>
@@ -14946,7 +14963,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         <View style={s.menuOverlay}>
           <Pressable style={s.menuBackdrop} onPress={() => setAdminsOpen(false)} />
           <View style={s.memberSheet}>
-            
+
             <View style={s.memberSheetHeader}>
               <Text style={t.menuTitle}>Admins</Text>
               <Text style={t.menuSub}>{headerTitle}</Text>
@@ -14985,7 +15002,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         <View style={s.menuOverlay}>
           <Pressable style={s.menuBackdrop} onPress={() => setSuspendedOpen(false)} />
           <View style={s.memberSheet}>
-            
+
             <View style={s.memberSheetHeader}>
               <Text style={t.menuTitle}>Suspended</Text>
               <Text style={t.menuSub}>{headerTitle}</Text>
@@ -16040,8 +16057,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             <View style={s.videoEditorTimelineWrap}>
               <View style={s.videoEditorSimpleTrimCard}>
                 <View style={s.videoEditorSimpleTrimHeader}>
-                  
-                  
+
+
                 </View>
 
                 <View style={s.videoEditorSingleTrimRow}>
@@ -16087,7 +16104,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     onResponderRelease={onTrimTrackRelease}
                     onResponderTerminate={onTrimTrackRelease}
                   >
-                    
+
 
                     <View
                       style={[
@@ -16148,7 +16165,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     <Text style={s.videoEditorTrimTrackTimeText}>
                       {formatSplitRealSec(activeAssignmentClip?.trimStartSec || 0)}
                     </Text>
-                    
+
                     <Text style={s.videoEditorTrimTrackTimeTextEnd}>
                       {formatSplitRealSec(activeAssignmentClip?.trimEndSec || 0)}
                     </Text>
@@ -16186,6 +16203,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   );
 }
 
+// MODERN_MESSAGE_DOCK_V1
+// MODERN_MESSAGE_DOCK_V2
 const s = StyleSheet.create({
 
   topicTitle: {
@@ -16261,8 +16280,8 @@ const s = StyleSheet.create({
   fontWeight: "700",
 } as TextStyle,
 
-  
-  
+
+
   videoEditorScreen: {
     flex: 1,
     backgroundColor: "#000",
@@ -16483,7 +16502,7 @@ const s = StyleSheet.create({
     bottom: 16,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    
+
     backgroundColor: "rgba(0,0,0,0.32)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
@@ -16626,7 +16645,7 @@ const s = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.06)",
     position: "relative",
     overflow: "hidden",
-  
+
     pointerEvents: "box-none",} as ViewStyle,
 
   videoEditorTimelineSegment: {
@@ -16666,7 +16685,7 @@ const s = StyleSheet.create({
     position: "absolute",
     right: 10,
     bottom: 10,
-    
+
     paddingHorizontal: 14,
     paddingVertical: 7,
     backgroundColor: "rgba(0,0,0,0.46)",
@@ -16705,7 +16724,7 @@ const s = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 10,
     paddingVertical: 7,
-    
+
     backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
@@ -17089,7 +17108,7 @@ const s = StyleSheet.create({
   videoEditorCropTopApplyBtn: {
     minWidth: 108,
     height: 22,
-    
+
     paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
@@ -17150,7 +17169,7 @@ const s = StyleSheet.create({
     overflow: "hidden",
     paddingHorizontal: 0,
     paddingVertical: 0,
-  
+
   } as ViewStyle,
 
   videoEditorTimelineThumbImage: {
@@ -17330,7 +17349,7 @@ const s = StyleSheet.create({
 
   videoEditorTrimTrackRail: {
     height: 7,
-    
+
     backgroundColor: "rgba(255,255,255,0.10)",
   } as ViewStyle,
 
@@ -17338,7 +17357,7 @@ const s = StyleSheet.create({
     position: "absolute",
     top: 17.5,
     height: 7,
-    
+
     backgroundColor: "rgba(255,77,77,0.82)",
     shadowColor: "#FF6B74",
     shadowOpacity: 0.10,
@@ -17528,14 +17547,14 @@ videoEditorSimpleTrimBtnsRow: {
     top: 0,
     bottom: 0,
     width: 2,
-    
+
     backgroundColor: "rgba(255,224,140,0.96)",
   } as ViewStyle,
 
   videoEditorSplitPreviewHandle: {
     width: 28,
     height: 22,
-    
+
     backgroundColor: "rgba(255,224,140,0.98)",
     borderWidth: 2,
     borderColor: "rgba(16,16,16,0.88)",
@@ -17577,7 +17596,7 @@ videoEditorSimpleTrimBtnsRow: {
   videoEditorSplitStatusDot: {
     width: 8,
     height: 8,
-    
+
     backgroundColor: "rgba(255,255,255,0.34)",
   } as ViewStyle,
 
@@ -17670,7 +17689,7 @@ videoEditorSimpleTrimBtnsRow: {
   videoEditorSplitLanePill: {
     paddingHorizontal: 10,
     paddingVertical: 5,
-    
+
     borderWidth: 1,
   } as ViewStyle,
 
@@ -17747,7 +17766,7 @@ videoEditorSimpleTrimBtnsRow: {
 
   videoEditorSplitTick: {
     width: 2,
-    
+
     backgroundColor: "rgba(255,255,255,0.88)",
   } as ViewStyle,
 
@@ -17781,7 +17800,7 @@ videoEditorSimpleTrimBtnsRow: {
 
   videoEditorSplitTimelineLine: {
     height: 4,
-    
+
     backgroundColor: "rgba(255,255,255,0.10)",
   } as ViewStyle,
 
@@ -17791,7 +17810,7 @@ videoEditorSimpleTrimBtnsRow: {
     right: 14,
     top: 18,
     height: 7,
-    
+
     backgroundColor: "rgba(255,255,255,0.14)",
     overflow: "hidden",
   } as ViewStyle,
@@ -17822,7 +17841,7 @@ videoEditorSimpleTrimBtnsRow: {
 
   videoEditorSplitTimelineRailFill: {
     height: "100%",
-    
+
     backgroundColor: "rgba(255,224,140,0.96)",
   } as ViewStyle,
 
@@ -17846,7 +17865,7 @@ videoEditorSimpleTrimBtnsRow: {
   videoEditorSplitTimelineNeedle: {
     width: 3,
     height: 34,
-    
+
     backgroundColor: "rgba(255,224,140,0.98)",
   } as ViewStyle,
 
@@ -17855,13 +17874,13 @@ videoEditorSimpleTrimBtnsRow: {
     minWidth: 60,
     paddingHorizontal: 10,
     height: 22,
-    
+
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,224,140,0.96)",
   } as ViewStyle,
 
-  
+
   videoEditorSplitStripContent: {
     paddingHorizontal: 88,
     alignItems: "center",
@@ -18175,7 +18194,7 @@ videoEditorSplitTimelineBadgeText: {
     alignSelf: "center",
     width: 38,
     height: 4,
-    
+
     backgroundColor: "rgba(255,255,255,0.14)",
     marginBottom: 8,
   } as ViewStyle,
@@ -18281,7 +18300,7 @@ videoEditorSplitTimelineBadgeText: {
     right: -10,
     width: 220,
     height: 220,
-    
+
     backgroundColor: "rgba(120,110,255,0.11)",
     opacity: 0.34,
   } as ViewStyle,
@@ -18336,7 +18355,7 @@ videoEditorSplitTimelineBadgeText: {
     bottom: 3,
     width: 13,
     height: 13,
-    
+
     backgroundColor: "#35C759",
     borderWidth: 2,
     borderColor: "rgba(10,15,26,0.98)",
@@ -18349,7 +18368,7 @@ videoEditorSplitTimelineBadgeText: {
     marginLeft: 12,
     paddingHorizontal: 16,
     paddingVertical: 8,
-    
+
     backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.14)",
@@ -18388,7 +18407,7 @@ videoEditorSplitTimelineBadgeText: {
     marginBottom: 8,
     paddingHorizontal: 12,
     paddingVertical: 5,
-    
+
     backgroundColor: "rgba(217,179,95,0.08)",
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.14)",
@@ -18507,7 +18526,7 @@ videoEditorSplitTimelineBadgeText: {
   statusSummaryLiveDot: {
     width: 8,
     height: 8,
-    
+
     backgroundColor: "rgba(120,190,255,0.95)",
   } as ViewStyle,
   statusSummaryValue: {
@@ -18526,7 +18545,7 @@ videoEditorSplitTimelineBadgeText: {
   statusSummaryPill: {
     paddingHorizontal: 10,
     paddingVertical: 6,
-    
+
     borderWidth: 1,
   } as ViewStyle,
   statusSummaryPillNeutral: {
@@ -19116,7 +19135,7 @@ videoEditorSplitTimelineBadgeText: {
   } as ViewStyle,
   memberStatusPill: {
     marginLeft: "auto",
-    
+
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderWidth: 1,
@@ -19399,7 +19418,7 @@ videoEditorSplitTimelineBadgeText: {
     top: 0,
     bottom: -22,
     width: 3,
-    
+
     backgroundColor: "rgba(56,230,200,0.42)",
   } as ViewStyle,
 
@@ -19812,48 +19831,59 @@ videoEditorSplitTimelineBadgeText: {
     transform: [{ scale: 0.96 }],
   } as ViewStyle,
 
-  composer: { marginTop: 12, marginBottom: 8, flexDirection: "row", alignItems: "flex-end", gap: 8 } as ViewStyle,
+  composer: {
+    position: "relative",
+    marginTop: 9,
+    marginHorizontal: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(13,35,51,0.98)",
+    borderRadius: 23,
+    borderCurve: "continuous",
+    borderWidth: 1,
+    borderColor: "rgba(84,213,184,0.26)",
+    shadowColor: "#36D7B0",
+    shadowOpacity: 0.14,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+  } as ViewStyle,
   cBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 16,
+    width: 46,
+    height: 46,
+    borderRadius: 17,
+    borderCurve: "continuous",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.045)",
+    backgroundColor: "rgba(71,72,126,0.34)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 4,
+    borderColor: "rgba(223,184,94,0.30)",
   } as ViewStyle,
   cBtnPressed: {
-    opacity: 0.86,
-    transform: [{ scale: 0.97 }],
+    opacity: 0.82,
+    transform: [{ scale: 0.96 }],
   } as ViewStyle,
 
   inputWrap: {
     flex: 1,
-    minHeight: 44,
-    maxHeight: 120,
-    borderRadius: 20,
-    paddingHorizontal: 15,
-    paddingVertical: 12,
-    backgroundColor: "rgba(255,255,255,0.035)",
+    minHeight: 48,
+    maxHeight: 112,
+    borderRadius: 19,
+    borderCurve: "continuous",
+    justifyContent: "center",
+    paddingHorizontal: 5,
+    backgroundColor: "rgba(7,21,36,0.86)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    shadowColor: "#000",
-    shadowOpacity: 0.14,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
+    borderColor: "rgba(130,157,196,0.24)",
   } as ViewStyle,
   inputWrapFocused: {
-    borderColor: "rgba(139,92,246,0.48)",
-    backgroundColor: "rgba(139,92,246,0.08)",
-    shadowColor: PURPLE,
-    shadowOpacity: 0.28,
-    shadowRadius: 14,
+    backgroundColor: "rgba(8,27,43,0.96)",
+    borderColor: "rgba(80,225,185,0.58)",
+    shadowColor: "#4DE4B5",
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
     shadowOffset: { width: 0, height: 0 },
   } as ViewStyle,
 
@@ -19861,22 +19891,26 @@ videoEditorSplitTimelineBadgeText: {
     width: 48,
     height: 48,
     borderRadius: 18,
+    borderCurve: "continuous",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(54,66,91,0.74)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: "rgba(137,159,198,0.24)",
   } as ViewStyle,
   sendBtnActive: {
-    backgroundColor: "rgba(139,92,246,0.96)",
-    borderColor: "rgba(196,181,253,0.55)",
-    shadowColor: PURPLE,
-    shadowOpacity: 0.48,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
+    backgroundColor: "#6757D9",
+    borderColor: "rgba(172,150,255,0.78)",
+    shadowColor: "#806BFF",
+    shadowOpacity: 0.34,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 5 },
   } as ViewStyle,
-  sendBtnDisabled: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" } as ViewStyle,
+  sendBtnDisabled: {
+    backgroundColor: "rgba(42,52,70,0.62)",
+    borderColor: "rgba(122,139,169,0.18)",
+    opacity: 0.74,
+  } as ViewStyle,
 
   pendingStrip: {
     maxHeight: 48,
@@ -20471,7 +20505,7 @@ const t = StyleSheet.create({
     minWidth: 56,
     height: 34,
     paddingHorizontal: 8,
-    
+
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -20484,7 +20518,7 @@ const t = StyleSheet.create({
   liveDot: {
     width: 8,
     height: 8,
-    
+
     backgroundColor: "#34D399",
   },
 
