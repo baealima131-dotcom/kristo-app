@@ -8181,6 +8181,7 @@ export default function MessageThreadScreen() {
   const listRef = useRef<any>(null);
   const inputRef = useRef<any>(null);
   // COMPOSER_KEYBOARD_SPACING_V4
+  // COMPOSER_SAFE_AREA_V6
   const [composerKeyboardVisible, setComposerKeyboardVisible] = useState(false);
 
   // SMART_EXPANDING_COMPOSER_V5
@@ -14545,7 +14546,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           <View
             style={[
               s.composer,
-              { marginBottom: composerKeyboardVisible ? 6 : tabBarH },
+              {
+                marginBottom: composerKeyboardVisible
+                  ? 6
+                  : Math.max(tabBarH, insets.bottom + 10),
+              },
             ]}
           >
             <View
