@@ -7691,6 +7691,7 @@ export default function MessageThreadScreen() {
 
   // STABLE_COMPOSER_FOCUS_V1
   // STABLE_NATIVE_KEYBOARD_V2
+  // NATURAL_KEYBOARD_DISMISS_V3
 
   const composerFocusedRef = useRef(false);
 
@@ -14148,8 +14149,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             }, 280);
           }}
 
-          keyboardDismissMode="none"
-          keyboardShouldPersistTaps="always"
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 }}
           renderItem={({ item, index }) => {
             const prev = visibleMessages[index + 1];
