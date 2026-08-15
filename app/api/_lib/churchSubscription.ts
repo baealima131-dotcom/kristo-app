@@ -87,8 +87,7 @@ export async function requireChurchSubscriptionActive(
     return NextResponse.json({ ok: false, error: "churchId is required" }, { status: 400 });
   }
 
-  // iOS V1 free: allow gated actions only with kill switch + HMAC proof.
-  // A production redeploy is required after rotating the shared proof secret.
+  // iOS V1 free: allow gated actions only with kill switch + HMAC proof (not platform header alone).
   const iosV1 = diagnoseIosV1SubscriptionGateBypass(ctx.headers || null, {
     userId: ctx.userId,
   });
