@@ -1,10 +1,18 @@
-import React, { useEffect, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   type TextStyle,
   type ViewStyle,
 } from "react-native";
@@ -15,9 +23,11 @@ import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import ChurchActivityGrid from "@/src/components/ChurchActivityGrid";
+import { ChurchActivityDetailModal } from "@/src/components/ChurchActivityDetailModal";
 import {
   isChurchActivityPost,
   sortActivityPostsNewestFirst,
+  type ActivityGridItem,
 } from "@/src/lib/churchActivityPosts";
 
 const BG = "#0B0F17";
@@ -30,6 +40,27 @@ const CARD2 = "rgba(255,255,255,0.035)";
 const BORDER = "rgba(255,255,255,0.10)";
 const BORDER_SOFT = "rgba(255,255,255,0.08)";
 const PAD = 16;
+const ACTIVITY_PAGE_SIZE = 24;
+const ACTIVITY_SCROLL_THRESHOLD = 520;
+const ACTIVITY_MIN_ROWS_PER_LOAD = 10;
+const ACTIVITY_MAX_BACKEND_PAGES_PER_LOAD = 5;
+
+function mergeActivityPages(
+  current: ActivityGridItem[],
+  incoming: ActivityGridItem[]
+) {
+  const byId = new Map<string, ActivityGridItem>();
+
+  for (const item of [...current, ...incoming]) {
+    const id = String(item?.id || "").trim();
+    if (!id) continue;
+    byId.set(id, item);
+  }
+
+  return sortActivityPostsNewestFirst(
+    [...byId.values()]
+  );
+}
 
 function ShareControlAction({
   label,
@@ -173,59 +204,284 @@ export default function MyChurchRoom() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
-  const [roomFeedItems, setRoomFeedItems] = useState<any[]>([]);
+  const [roomFeedItems, setRoomFeedItems] =
+    useState<ActivityGridItem[]>([]);
+  const [selectedActivity, setSelectedActivity] =
+    useState<ActivityGridItem | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [nextActivityCursor, setNextActivityCursor] =
+    useState<string | null>("0");
+  const [activityHasMore, setActivityHasMore] =
+    useState(true);
+  const [activityInitialLoading, setActivityInitialLoading] =
+    useState(true);
+  const [activityLoadingMore, setActivityLoadingMore] =
+    useState(false);
 
-  useEffect(() => {
-    let alive = true;
+  const activityLoadingRef = useRef(false);
+  const activityGenerationRef = useRef(0);
 
-    (async () => {
+  const loadActivityPage = useCallback(
+    async (
+      startCursor: string,
+      replaceItems: boolean,
+      generation: number
+    ) => {
+      if (activityLoadingRef.current) return;
+
+      activityLoadingRef.current = true;
+
+      if (replaceItems) {
+        setActivityInitialLoading(true);
+      } else {
+        setActivityLoadingMore(true);
+      }
+
       try {
         const session = getSessionSync() as any;
-        const feedRes = session?.userId
-          ? await apiGet("/api/church/feed?scope=church", {
-              headers: getKristoHeaders({
-                userId: session.userId,
-                role: (session.role || "Member") as any,
-                churchId: session.churchId || "",
-              }),
-            })
-          : null;
+        if (!session?.userId) {
+          if (
+            generation ===
+            activityGenerationRef.current
+          ) {
+            if (replaceItems) {
+              setRoomFeedItems([]);
+            }
+            setNextActivityCursor(null);
+            setActivityHasMore(false);
+          }
+          return;
+        }
 
-        if (!alive) return;
+        const headers = getKristoHeaders({
+          userId: session.userId,
+          role: (session.role || "Member") as any,
+          churchId: session.churchId || "",
+        });
 
-        const feedRows = Array.isArray((feedRes as any)?.data)
-          ? (feedRes as any).data
-          : [];
-        const churchId = String(session?.churchId || "").trim();
+        let cursor: string | null =
+          String(startCursor || "0");
+        let hasMore = true;
+        const collected: ActivityGridItem[] = [];
 
-        setRoomFeedItems(
-          sortActivityPostsNewestFirst(
-            feedRows.filter((item: any) => {
-              if (!isChurchActivityPost(item)) return false;
-              if (
-                churchId &&
-                String(item?.churchId || "") !== churchId
-              ) {
-                return false;
-              }
-              return true;
-            })
+        for (
+          let backendPage = 0;
+          backendPage <
+          ACTIVITY_MAX_BACKEND_PAGES_PER_LOAD;
+          backendPage += 1
+        ) {
+          if (!cursor || !hasMore) break;
+
+          const query = [
+            "/api/church/feed?scope=church",
+            `limit=${ACTIVITY_PAGE_SIZE}`,
+            `cursor=${encodeURIComponent(cursor)}`,
+            `_=${Date.now()}`,
+          ].join("&");
+
+          const feedRes: any = await apiGet(
+            query,
+            {
+              headers,
+              cache: "no-store" as RequestCache,
+            }
+          );
+
+          if (feedRes?.ok === false) {
+            throw new Error(
+              String(
+                feedRes?.error ||
+                  "Failed to load church activity"
+              )
+            );
+          }
+
+          const pageRows = Array.isArray(feedRes?.data)
+            ? feedRes.data
+            : [];
+
+          for (const row of pageRows) {
+            if (!isChurchActivityPost(row)) continue;
+            collected.push(row as ActivityGridItem);
+          }
+
+          hasMore = Boolean(feedRes?.hasMore);
+          cursor = hasMore
+            ? String(feedRes?.nextCursor || "").trim() ||
+              null
+            : null;
+
+          if (
+            collected.length >=
+            ACTIVITY_MIN_ROWS_PER_LOAD
+          ) {
+            break;
+          }
+        }
+
+        if (
+          generation !==
+          activityGenerationRef.current
+        ) {
+          return;
+        }
+
+        setRoomFeedItems((current) =>
+          mergeActivityPages(
+            replaceItems ? [] : current,
+            collected
           )
         );
-      } catch {
-        if (alive) {
+        setNextActivityCursor(cursor);
+        setActivityHasMore(
+          Boolean(hasMore && cursor)
+        );
+      } catch (error) {
+        if (
+          generation !==
+          activityGenerationRef.current
+        ) {
+          return;
+        }
+
+        console.log(
+          "KRISTO_CHURCH_ACTIVITY_PAGE_FAILED",
+          {
+            cursor: startCursor,
+            replaceItems,
+            error: String(
+              (error as Error)?.message ||
+                error ||
+                "unknown"
+            ),
+          }
+        );
+
+        if (replaceItems) {
           setRoomFeedItems([]);
         }
+      } finally {
+        if (
+          generation ===
+          activityGenerationRef.current
+        ) {
+          activityLoadingRef.current = false;
+          setActivityInitialLoading(false);
+          setActivityLoadingMore(false);
+        }
       }
-    })();
+    },
+    []
+  );
+
+  useEffect(() => {
+    const generation =
+      activityGenerationRef.current + 1;
+
+    activityGenerationRef.current = generation;
+    activityLoadingRef.current = false;
+
+    setRoomFeedItems([]);
+    setNextActivityCursor("0");
+    setActivityHasMore(true);
+
+    void loadActivityPage(
+      "0",
+      true,
+      generation
+    );
 
     return () => {
-      alive = false;
+      if (
+        activityGenerationRef.current ===
+        generation
+      ) {
+        activityGenerationRef.current =
+          generation + 1;
+        activityLoadingRef.current = false;
+      }
     };
-  }, [refreshKey]);
+  }, [refreshKey, loadActivityPage]);
+
+  const handleActivityScroll = useCallback(
+    (
+      event: NativeSyntheticEvent<NativeScrollEvent>
+    ) => {
+      const {
+        contentOffset,
+        contentSize,
+        layoutMeasurement,
+      } = event.nativeEvent;
+
+      const distanceFromBottom =
+        contentSize.height -
+        (contentOffset.y + layoutMeasurement.height);
+
+      if (
+        distanceFromBottom >
+        ACTIVITY_SCROLL_THRESHOLD
+      ) {
+        return;
+      }
+
+      if (
+        !activityHasMore ||
+        !nextActivityCursor ||
+        activityLoadingRef.current
+      ) {
+        return;
+      }
+
+      void loadActivityPage(
+        nextActivityCursor,
+        false,
+        activityGenerationRef.current
+      );
+    },
+    [
+      activityHasMore,
+      nextActivityCursor,
+      loadActivityPage,
+    ]
+  );
 
 
+
+  const selectedActivityIndex =
+    selectedActivity
+      ? roomFeedItems.findIndex(
+          (item) =>
+            String(item?.id || "") ===
+            String(selectedActivity?.id || "")
+        )
+      : -1;
+
+
+
+  useEffect(() => {
+    if (
+      selectedActivityIndex < 0 ||
+      selectedActivityIndex <
+        roomFeedItems.length - 3 ||
+      !activityHasMore ||
+      !nextActivityCursor ||
+      activityLoadingRef.current
+    ) {
+      return;
+    }
+
+    void loadActivityPage(
+      nextActivityCursor,
+      false,
+      activityGenerationRef.current
+    );
+  }, [
+    selectedActivityIndex,
+    roomFeedItems.length,
+    activityHasMore,
+    nextActivityCursor,
+    loadActivityPage,
+  ]);
 
   return (
     <View style={[s.screen, { paddingTop: insets.top + 12 }]}>
@@ -274,7 +530,12 @@ export default function MyChurchRoom() {
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: PAD, paddingBottom: insets.bottom + 28 }}
+        contentContainerStyle={{
+          paddingHorizontal: PAD,
+          paddingBottom: insets.bottom + 28,
+        }}
+        onScroll={handleActivityScroll}
+        scrollEventThrottle={16}
       >
         <View style={s.sectionBlock}>
           <ChurchShareControl
@@ -298,13 +559,78 @@ export default function MyChurchRoom() {
 
         <View style={s.sectionBlock}>
           <Text style={t.section}>Church Activity</Text>
-        <ChurchActivityGrid
-          items={roomFeedItems}
-          emptyTitle="No church activity yet"
-          emptyBody="Media posts stay in Media Storage and Home Feed. Member church activity will appear here."
-        />
+          {activityInitialLoading &&
+          roomFeedItems.length === 0 ? (
+            <View style={s.activityLoadingState}>
+              <ActivityIndicator
+                size="small"
+                color={GOLD}
+              />
+              <Text style={t.activityLoadingText}>
+                Loading church posts...
+              </Text>
+            </View>
+          ) : (
+            <ChurchActivityGrid
+              items={roomFeedItems}
+              emptyTitle="No church activity yet"
+              emptyBody="Posts from your church members will appear here."
+              onItemPress={setSelectedActivity}
+            />
+          )}
+
+          {activityLoadingMore ? (
+            <View style={s.activityLoadingMore}>
+              <ActivityIndicator
+                size="small"
+                color={GOLD}
+              />
+              <Text style={t.activityLoadingText}>
+                Loading more posts...
+              </Text>
+            </View>
+          ) : null}
+
+          {!activityInitialLoading &&
+          !activityLoadingMore &&
+          !activityHasMore &&
+          roomFeedItems.length > 0 ? (
+            <Text style={t.activityEndText}>
+              You have reached all church posts
+            </Text>
+          ) : null}
         </View>
       </ScrollView>
+
+      <ChurchActivityDetailModal
+        items={roomFeedItems}
+        initialItemId={
+          selectedActivity
+            ? String(selectedActivity.id)
+            : null
+        }
+        onActiveItemChange={(nextItem) =>
+          setSelectedActivity(nextItem)
+        }
+        onEndReached={() => {
+          if (
+            !activityHasMore ||
+            !nextActivityCursor ||
+            activityLoadingRef.current
+          ) {
+            return;
+          }
+
+          void loadActivityPage(
+            nextActivityCursor,
+            false,
+            activityGenerationRef.current
+          );
+        }}
+        onClose={() =>
+          setSelectedActivity(null)
+        }
+      />
     </View>
   );
 }
@@ -527,6 +853,24 @@ const s = StyleSheet.create({
     borderWidth: 1,
   } as ViewStyle,
 
+  activityLoadingState: {
+    minHeight: 180,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+    backgroundColor: "rgba(255,255,255,0.025)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.16)",
+  } as ViewStyle,
+  activityLoadingMore: {
+    minHeight: 62,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+  } as ViewStyle,
+
 });
 
 const t = StyleSheet.create({
@@ -598,6 +942,21 @@ const t = StyleSheet.create({
     lineHeight: 14,
     fontWeight: "900",
     letterSpacing: 0.05,
+    textAlign: "center",
+  } as TextStyle,
+
+  activityLoadingText: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "800",
+  } as TextStyle,
+  activityEndText: {
+    marginTop: 12,
+    color: "rgba(217,179,95,0.54)",
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: "800",
     textAlign: "center",
   } as TextStyle,
 
