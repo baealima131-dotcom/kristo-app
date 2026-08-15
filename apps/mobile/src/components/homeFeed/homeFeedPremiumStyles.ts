@@ -212,35 +212,6 @@ export const homeFeedPremiumStyles = StyleSheet.create({
     textShadowColor: "rgba(245,215,120,0.35)",
     textShadowRadius: 6,
   },
-  inlineViewReportStack: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 2,
-    paddingVertical: 1,
-  },
-  inlineViewStat: {
-    minHeight: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 3,
-  },
-  inlineViewCount: {
-    color: "#F5D76E",
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.08,
-    textAlign: "center",
-  },
-  inlineReportAction: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 1,
-    minWidth: 48,
-  },
-
   /** TikTok vertical rail — same light inner glass. */
   verticalActionRail: {
     position: "absolute",

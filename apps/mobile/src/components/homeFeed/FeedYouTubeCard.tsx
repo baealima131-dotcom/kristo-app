@@ -1,3 +1,4 @@
+import { HomeFeedViewCount } from "./HomeFeedViewCount";
 import React, { memo, useEffect, useMemo, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -215,6 +216,8 @@ export const FeedYouTubeCard = memo(
             ) : null}
           </View>
         </View>
+
+        <HomeFeedViewCount count={viewCount} />
       </View>
 
       <PostActionsInline
@@ -222,7 +225,6 @@ export const FeedYouTubeCard = memo(
         likeCount={engagement.likeCount}
         commentCount={engagement.commentCount}
         shareCount={Number(item?.shareCount || 0)}
-        viewCount={viewCount}
         saved={engagement.saved}
         reported={engagement.reported}
         onLike={onLike}

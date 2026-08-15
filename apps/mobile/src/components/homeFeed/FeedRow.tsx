@@ -1,3 +1,4 @@
+import { HomeFeedViewCount } from "./HomeFeedViewCount";
 import React, { memo, useEffect, useMemo, useRef } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -348,6 +349,8 @@ export const FeedRow = memo(
             />
           </>
         )}
+
+        <HomeFeedViewCount count={viewCount} />
       </View>
 
       <PostActions
@@ -355,7 +358,6 @@ export const FeedRow = memo(
         likeCount={engagement.likeCount}
         commentCount={engagement.commentCount}
         shareCount={shareCount}
-        viewCount={viewCount}
         saveCount={saveCount}
         saved={engagement.saved}
         reported={engagement.reported}

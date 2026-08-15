@@ -10,7 +10,6 @@ type Props = {
   likeCount: number;
   commentCount: number;
   shareCount: number;
-  viewCount: number;
   saved: boolean;
   reported: boolean;
   onLike: () => void;
@@ -25,7 +24,6 @@ export const PostActionsInline = memo(function PostActionsInline({
   likeCount,
   commentCount,
   shareCount,
-  viewCount,
   saved,
   reported,
   onLike,
@@ -60,46 +58,12 @@ export const PostActionsInline = memo(function PostActionsInline({
           active={saved}
           onPress={onSave}
         />
-        <View style={premium.inlineViewReportStack}>
-          <View
-            pointerEvents="none"
-            style={premium.inlineViewStat}
-          >
-            <Ionicons
-              name="eye-outline"
-              size={16}
-              color={HOME_FEED_GOLD_SOFT}
-            />
-            <Text style={premium.inlineViewCount}>
-              {formatActionCount(viewCount)}
-            </Text>
-          </View>
-
-          <Pressable
-            style={premium.inlineReportAction}
-            onPress={onReport}
-            hitSlop={8}
-          >
-            <Ionicons
-              name={reported ? "flag" : "flag-outline"}
-              size={19}
-              color={
-                reported
-                  ? HOME_FEED_GOLD_SOFT
-                  : "rgba(255,255,255,0.72)"
-              }
-            />
-            <Text
-              style={[
-                premium.inlineLabel,
-                reported ? premium.inlineLabelActive : null,
-              ]}
-              numberOfLines={1}
-            >
-              {reported ? "Reported" : "Report"}
-            </Text>
-          </Pressable>
-        </View>
+        <InlineAction
+          icon={reported ? "flag" : "flag-outline"}
+          label={reported ? "Reported" : "Report"}
+          active={reported}
+          onPress={onReport}
+        />
       </View>
     </View>
   );
