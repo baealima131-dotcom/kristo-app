@@ -2745,91 +2745,111 @@ export type SafetySystemAdminDashboardCounts = {
 export async function dbGetSafetySystemAdminDashboard():
   Promise<{
     counts: SafetySystemAdminDashboardCounts;
+    countsBySource: {
+      kristo: SafetySystemAdminDashboardCounts;
+      soko: SafetySystemAdminDashboardCounts;
+    };
   }> {
   await ensureSafetyReportSchema();
 
   const sql = getSql();
 
-  const rows = (await sql`
-    SELECT
-      COUNT(*)::int AS total,
+  const readCounts = async (
+    source: "all" | "kristo" | "soko"
+  ): Promise<SafetySystemAdminDashboardCounts> => {
+    const rows = (await sql`
+      SELECT
+        COUNT(*)::int AS total,
 
-      COUNT(*) FILTER (
-        WHERE
-          status = 'open'
-          AND assigned_supervisor_user_id IS NULL
-      )::int AS open,
+        COUNT(*) FILTER (
+          WHERE
+            status = 'open'
+            AND assigned_supervisor_user_id IS NULL
+        )::int AS open,
 
-      COUNT(*) FILTER (
-        WHERE
-          assigned_supervisor_user_id IS NOT NULL
-          AND status NOT IN (
-            'resolved',
-            'dismissed'
-          )
-      )::int AS assigned,
+        COUNT(*) FILTER (
+          WHERE
+            assigned_supervisor_user_id IS NOT NULL
+            AND status NOT IN (
+              'resolved',
+              'dismissed'
+            )
+        )::int AS assigned,
 
-      COUNT(*) FILTER (
-        WHERE status = 'in_review'
-      )::int AS in_review,
+        COUNT(*) FILTER (
+          WHERE status = 'in_review'
+        )::int AS in_review,
 
-      COUNT(*) FILTER (
-        WHERE
-          priority IN ('high', 'critical')
-          AND status NOT IN (
-            'resolved',
-            'dismissed'
-          )
-      )::int AS high_priority,
+        COUNT(*) FILTER (
+          WHERE
+            priority IN ('high', 'critical')
+            AND status NOT IN (
+              'resolved',
+              'dismissed'
+            )
+        )::int AS high_priority,
 
-      COUNT(*) FILTER (
-        WHERE status = 'resolved'
-      )::int AS resolved,
+        COUNT(*) FILTER (
+          WHERE status = 'resolved'
+        )::int AS resolved,
 
-      COUNT(*) FILTER (
-        WHERE status = 'escalated'
-      )::int AS escalated,
+        COUNT(*) FILTER (
+          WHERE status = 'escalated'
+        )::int AS escalated,
 
-      COUNT(*) FILTER (
-        WHERE status = 'dismissed'
-      )::int AS dismissed
+        COUNT(*) FILTER (
+          WHERE status = 'dismissed'
+        )::int AS dismissed
 
-    FROM kristo_safety_reports
-  `) as Array<{
-    total?: number | string;
-    open?: number | string;
-    assigned?: number | string;
-    in_review?: number | string;
-    high_priority?: number | string;
-    resolved?: number | string;
-    escalated?: number | string;
-    dismissed?: number | string;
-  }>;
+      FROM kristo_safety_reports
+      WHERE (
+        ${source} = 'all'
+        OR (
+          ${source} = 'soko'
+          AND source_type = 'soko_marketplace'
+        )
+        OR (
+          ${source} = 'kristo'
+          AND source_type <> 'soko_marketplace'
+        )
+      )
+    `) as Array<{
+      total?: number | string;
+      open?: number | string;
+      assigned?: number | string;
+      in_review?: number | string;
+      high_priority?: number | string;
+      resolved?: number | string;
+      escalated?: number | string;
+      dismissed?: number | string;
+    }>;
 
-  const row = rows[0] || {};
+    const row = rows[0] || {};
 
-  return {
-    counts: {
+    return {
       total: Number(row.total || 0),
       open: Number(row.open || 0),
-      assigned: Number(
-        row.assigned || 0
-      ),
-      inReview: Number(
-        row.in_review || 0
-      ),
-      highPriority: Number(
-        row.high_priority || 0
-      ),
-      resolved: Number(
-        row.resolved || 0
-      ),
-      escalated: Number(
-        row.escalated || 0
-      ),
-      dismissed: Number(
-        row.dismissed || 0
-      ),
+      assigned: Number(row.assigned || 0),
+      inReview: Number(row.in_review || 0),
+      highPriority: Number(row.high_priority || 0),
+      resolved: Number(row.resolved || 0),
+      escalated: Number(row.escalated || 0),
+      dismissed: Number(row.dismissed || 0),
+    };
+  };
+
+  const [counts, kristoCounts, sokoCounts] =
+    await Promise.all([
+      readCounts("all"),
+      readCounts("kristo"),
+      readCounts("soko"),
+    ]);
+
+  return {
+    counts,
+    countsBySource: {
+      kristo: kristoCounts,
+      soko: sokoCounts,
     },
   };
 }

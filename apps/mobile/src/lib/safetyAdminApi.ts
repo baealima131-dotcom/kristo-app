@@ -1397,16 +1397,23 @@ export type SafetySystemPerformanceRow = {
     number | null;
 };
 
+export type SafetySystemAdminDashboardCounts = {
+  total: number;
+  open: number;
+  assigned: number;
+  inReview: number;
+  highPriority: number;
+  resolved: number;
+  escalated: number;
+  dismissed: number;
+};
+
 export type SafetySystemAdminDashboardResponse = {
-  counts: {
-    total: number;
-    open: number;
-    assigned: number;
-    inReview: number;
-    highPriority: number;
-    resolved: number;
-    escalated: number;
-    dismissed: number;
+  counts: SafetySystemAdminDashboardCounts;
+
+  countsBySource: {
+    kristo: SafetySystemAdminDashboardCounts;
+    soko: SafetySystemAdminDashboardCounts;
   };
 
   operations: {
@@ -1459,38 +1466,28 @@ fetchSafetySystemAdminDashboard():
   const operations =
     dashboard?.operations || {};
 
+  const parseCounts = (
+    value: any
+  ): SafetySystemAdminDashboardCounts => ({
+    total: Number(value?.total || 0),
+    open: Number(value?.open || 0),
+    assigned: Number(value?.assigned || 0),
+    inReview: Number(value?.inReview || 0),
+    highPriority: Number(value?.highPriority || 0),
+    resolved: Number(value?.resolved || 0),
+    escalated: Number(value?.escalated || 0),
+    dismissed: Number(value?.dismissed || 0),
+  });
+
   return {
-    counts: {
-      total: Number(
-        counts.total || 0
-      ),
+    counts: parseCounts(counts),
 
-      open: Number(
-        counts.open || 0
+    countsBySource: {
+      kristo: parseCounts(
+        dashboard?.countsBySource?.kristo
       ),
-
-      assigned: Number(
-        counts.assigned || 0
-      ),
-
-      inReview: Number(
-        counts.inReview || 0
-      ),
-
-      highPriority: Number(
-        counts.highPriority || 0
-      ),
-
-      resolved: Number(
-        counts.resolved || 0
-      ),
-
-      escalated: Number(
-        counts.escalated || 0
-      ),
-
-      dismissed: Number(
-        counts.dismissed || 0
+      soko: parseCounts(
+        dashboard?.countsBySource?.soko
       ),
     },
 

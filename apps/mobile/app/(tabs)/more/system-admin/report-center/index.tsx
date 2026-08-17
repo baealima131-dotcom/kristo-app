@@ -76,6 +76,11 @@ type OperationsTab =
   | "fastest"
   | "autoWork";
 
+type ReportSourceFilter =
+  | "all"
+  | "kristo"
+  | "soko";
+
 function BackgroundScene() {
   return (
     <>
@@ -201,6 +206,31 @@ export default function ReportCenterScreen() {
     systemDashboardError,
     setSystemDashboardError,
   ] = React.useState("");
+
+  const [
+    reportSourceFilter,
+    setReportSourceFilter,
+  ] = React.useState<ReportSourceFilter>(
+    "all"
+  );
+
+  const selectedCounts =
+    React.useMemo(() => {
+      if (!systemDashboard) {
+        return null;
+      }
+
+      if (reportSourceFilter === "all") {
+        return systemDashboard.counts;
+      }
+
+      return systemDashboard.countsBySource[
+        reportSourceFilter
+      ];
+    }, [
+      reportSourceFilter,
+      systemDashboard,
+    ]);
 
   const [
     supervisors,
@@ -522,8 +552,7 @@ export default function ReportCenterScreen() {
             metric?.label || ""
           ).trim();
 
-        const counts =
-          systemDashboard?.counts;
+        const counts = selectedCounts;
 
         if (!counts) {
           return 0;
@@ -551,7 +580,7 @@ export default function ReportCenterScreen() {
           metric?.value || 0
         );
       },
-      [systemDashboard]
+      [selectedCounts]
     );
 
   /*
@@ -801,6 +830,119 @@ export default function ReportCenterScreen() {
                 </Text>
               </Pressable>
             ) : null}
+
+            <View
+              accessibilityRole="tablist"
+              style={{
+                flexDirection: "row",
+                gap: 8,
+                marginBottom: 14,
+                padding: 5,
+                borderRadius: 17,
+                borderWidth: 1,
+                borderColor:
+                  "rgba(167,139,250,0.22)",
+                backgroundColor:
+                  "rgba(255,255,255,0.045)",
+              }}
+            >
+              {([
+                {
+                  key: "all",
+                  label: "All",
+                  count:
+                    systemDashboard?.counts.total || 0,
+                },
+                {
+                  key: "kristo",
+                  label: "Kristo App",
+                  count:
+                    systemDashboard?.countsBySource
+                      .kristo.total || 0,
+                },
+                {
+                  key: "soko",
+                  label: "SOKO",
+                  count:
+                    systemDashboard?.countsBySource
+                      .soko.total || 0,
+                },
+              ] as const).map((source) => {
+                const active =
+                  reportSourceFilter === source.key;
+
+                return (
+                  <Pressable
+                    key={source.key}
+                    accessibilityRole="tab"
+                    accessibilityState={{
+                      selected: active,
+                    }}
+                    onPress={() =>
+                      setReportSourceFilter(
+                        source.key
+                      )
+                    }
+                    style={({ pressed }) => ({
+                      flex: 1,
+                      minHeight: 44,
+                      paddingHorizontal: 7,
+                      borderRadius: 13,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 5,
+                      opacity: pressed ? 0.76 : 1,
+                      borderWidth: active ? 1 : 0,
+                      borderColor: active
+                        ? "rgba(244,208,111,0.48)"
+                        : "transparent",
+                      backgroundColor: active
+                        ? "rgba(244,208,111,0.15)"
+                        : "transparent",
+                    })}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      style={{
+                        color: active ? GOLD : MUTED,
+                        fontSize: 12,
+                        fontWeight: "900",
+                      }}
+                    >
+                      {source.label}
+                    </Text>
+
+                    <View
+                      style={{
+                        minWidth: 22,
+                        height: 22,
+                        paddingHorizontal: 5,
+                        borderRadius: 11,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: active
+                          ? "rgba(244,208,111,0.22)"
+                          : "rgba(255,255,255,0.08)",
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: active
+                            ? "#FFF3C4"
+                            : MUTED,
+                          fontSize: 10,
+                          fontWeight: "900",
+                        }}
+                      >
+                        {source.count}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
 
             <View style={styles.metricsGrid}>
               {metrics.map((metric) => (
