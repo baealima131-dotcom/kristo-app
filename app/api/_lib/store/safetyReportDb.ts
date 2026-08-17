@@ -74,12 +74,14 @@ export type SafetyReportSourceType =
   | "direct_message"
   | "room_message"
   | "church_feed"
+  | "soko_marketplace"
   | "profile"
   | "live"
   | "other";
 
 export type SafetyReportTargetType =
   | "account"
+  | "product"
   | "post"
   | "comment"
   | "message"
@@ -423,6 +425,14 @@ function normalizeTargetType(
     targetType === "live"
   ) {
     return targetType;
+  }
+
+  if (
+    String(value || "")
+      .trim()
+      .toLowerCase() === "product"
+  ) {
+    return "product";
   }
 
   return "other";

@@ -42,6 +42,22 @@ type ReportQueueFilter =
   | "resolved"
   | "escalated";
 
+type ReportSourceFilter =
+  | "all"
+  | "kristo"
+  | "soko";
+
+function isSokoSafetyReport(
+  sourceType: unknown
+) {
+  return (
+    String(sourceType || "")
+      .trim()
+      .toLowerCase() ===
+    "soko_marketplace"
+  );
+}
+
 export default function SafetySupervisorScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -70,6 +86,13 @@ export default function SafetySupervisorScreen() {
     reportFilter,
     setReportFilter,
   ] = React.useState<ReportQueueFilter>(
+    "all"
+  );
+
+  const [
+    reportSourceFilter,
+    setReportSourceFilter,
+  ] = React.useState<ReportSourceFilter>(
     "all"
   );
 
@@ -194,12 +217,31 @@ export default function SafetySupervisorScreen() {
       const reports =
         dashboard?.reports || [];
 
+      const sourceReports =
+        reports.filter((report) => {
+          if (
+            reportSourceFilter === "all"
+          ) {
+            return true;
+          }
+
+          const soko =
+            isSokoSafetyReport(
+              report.sourceType
+            );
+
+          return reportSourceFilter ===
+            "soko"
+            ? soko
+            : !soko;
+        });
+
       const query =
         reportSearch
           .trim()
           .toLowerCase();
 
-      return reports.filter(
+      return sourceReports.filter(
         (report) => {
           const matchesFilter =
             reportFilter === "all"
@@ -237,6 +279,7 @@ export default function SafetySupervisorScreen() {
       );
     }, [
       dashboard?.reports,
+      reportSourceFilter,
       reportFilter,
       reportSearch,
     ]);
@@ -635,6 +678,91 @@ export default function SafetySupervisorScreen() {
             </View>
           </View>
 
+          {/* SOKO_SOURCE_FILTER_SUPERVISOR */}
+          <View style={styles.sourceFilterTabs}>
+            {[
+              {
+                key: "all",
+                label: "All",
+                count:
+                  dashboard?.reports.length || 0,
+              },
+              {
+                key: "kristo",
+                label: "Kristo",
+                count:
+                  (dashboard?.reports || [])
+                    .filter(
+                      (report) =>
+                        !isSokoSafetyReport(
+                          report.sourceType
+                        )
+                    ).length,
+              },
+              {
+                key: "soko",
+                label: "SOKO",
+                count:
+                  (dashboard?.reports || [])
+                    .filter(
+                      (report) =>
+                        isSokoSafetyReport(
+                          report.sourceType
+                        )
+                    ).length,
+              },
+            ].map((source) => {
+              const active =
+                reportSourceFilter ===
+                source.key;
+
+              return (
+                <Pressable
+                  key={source.key}
+                  onPress={() =>
+                    setReportSourceFilter(
+                      source.key as
+                        ReportSourceFilter
+                    )
+                  }
+                  style={[
+                    styles.sourceFilterTab,
+                    active &&
+                      styles.sourceFilterTabActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.sourceFilterText,
+                      active &&
+                        styles.sourceFilterTextActive,
+                    ]}
+                  >
+                    {source.label}
+                  </Text>
+
+                  <View
+                    style={[
+                      styles.sourceFilterBadge,
+                      active &&
+                        styles.sourceFilterBadgeActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.sourceFilterCount,
+                        active &&
+                          styles.sourceFilterCountActive,
+                      ]}
+                    >
+                      {source.count}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+
           <View style={styles.searchShell}>
             <Ionicons
               name="search-outline"
@@ -766,6 +894,11 @@ export default function SafetySupervisorScreen() {
                   report.priority ===
                     "high";
 
+                const soko =
+                  isSokoSafetyReport(
+                    report.sourceType
+                  );
+
                 return (
                   <Pressable
                     key={report.id}
@@ -815,6 +948,28 @@ export default function SafetySupervisorScreen() {
                         >
                           {report.reportCode}
                         </Text>
+
+                        <View
+                          style={[
+                            styles.caseSourceBadge,
+                            soko
+                              ? styles.caseSourceBadgeSoko
+                              : styles.caseSourceBadgeKristo,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.caseSourceText,
+                              soko
+                                ? styles.caseSourceTextSoko
+                                : styles.caseSourceTextKristo,
+                            ]}
+                          >
+                            {soko
+                              ? "SOKO PRODUCT"
+                              : "KRISTO"}
+                          </Text>
+                        </View>
                       </View>
 
                       <View
@@ -1365,6 +1520,66 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  sourceFilterTabs: {
+    backgroundColor:
+      "rgba(255,255,255,0.045)",
+    borderColor:
+      "rgba(255,255,255,0.08)",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 12,
+    padding: 5,
+  },
+  sourceFilterTab: {
+    alignItems: "center",
+    borderRadius: 12,
+    flex: 1,
+    flexDirection: "row",
+    gap: 6,
+    justifyContent: "center",
+    minHeight: 39,
+    paddingHorizontal: 8,
+  },
+  sourceFilterTabActive: {
+    backgroundColor:
+      "rgba(244,208,111,0.15)",
+    borderColor:
+      "rgba(244,208,111,0.30)",
+    borderWidth: 1,
+  },
+  sourceFilterText: {
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  sourceFilterTextActive: {
+    color: GOLD,
+  },
+  sourceFilterBadge: {
+    alignItems: "center",
+    backgroundColor:
+      "rgba(255,255,255,0.07)",
+    borderRadius: 9,
+    justifyContent: "center",
+    minWidth: 20,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  sourceFilterBadgeActive: {
+    backgroundColor:
+      "rgba(244,208,111,0.16)",
+  },
+  sourceFilterCount: {
+    color: MUTED,
+    fontSize: 8,
+    fontWeight: "900",
+  },
+  sourceFilterCountActive: {
+    color: GOLD,
+  },
+
   filterTabs: {
     gap: 8,
     paddingRight: 10,
@@ -1455,6 +1670,37 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
+  },
+
+  caseSourceBadge: {
+    borderRadius: 9,
+    borderWidth: 1,
+    marginLeft: 7,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  caseSourceBadgeSoko: {
+    backgroundColor:
+      "rgba(255,140,200,0.10)",
+    borderColor:
+      "rgba(255,140,200,0.38)",
+  },
+  caseSourceBadgeKristo: {
+    backgroundColor:
+      "rgba(244,208,111,0.08)",
+    borderColor:
+      "rgba(244,208,111,0.30)",
+  },
+  caseSourceText: {
+    fontSize: 7,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+  },
+  caseSourceTextSoko: {
+    color: "#FF8CC8",
+  },
+  caseSourceTextKristo: {
+    color: GOLD,
   },
 
   caseCode: {

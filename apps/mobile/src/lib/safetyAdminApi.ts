@@ -577,6 +577,7 @@ export type SafetyReportSummary = {
 
   targetType:
     | "account"
+    | "product"
     | "post"
     | "comment"
     | "message"

@@ -51,6 +51,22 @@ type ReportFilter =
   | "in_review"
   | "resolved";
 
+type ReportSourceFilter =
+  | "all"
+  | "kristo"
+  | "soko";
+
+function isSokoSafetyReport(
+  sourceType: unknown
+) {
+  return (
+    String(sourceType || "")
+      .trim()
+      .toLowerCase() ===
+    "soko_marketplace"
+  );
+}
+
 function reportStatusLabel(
   report: SafetyReportSummary
 ) {
@@ -140,6 +156,13 @@ SafetyAgentWorkspaceScreen() {
     ReportFilter
   >("all");
 
+  const [
+    sourceFilter,
+    setSourceFilter,
+  ] = React.useState<
+    ReportSourceFilter
+  >("all");
+
   const load =
     React.useCallback(
       async (
@@ -201,12 +224,28 @@ SafetyAgentWorkspaceScreen() {
       const rows =
         dashboard?.reports || [];
 
+      const sourceRows =
+        rows.filter((report) => {
+          if (sourceFilter === "all") {
+            return true;
+          }
+
+          const soko =
+            isSokoSafetyReport(
+              report.sourceType
+            );
+
+          return sourceFilter === "soko"
+            ? soko
+            : !soko;
+        });
+
       if (filter === "all") {
-        return rows;
+        return sourceRows;
       }
 
       if (filter === "open") {
-        return rows.filter(
+        return sourceRows.filter(
           (report) =>
             report.status === "open" ||
             report.status ===
@@ -214,12 +253,13 @@ SafetyAgentWorkspaceScreen() {
         );
       }
 
-      return rows.filter(
+      return sourceRows.filter(
         (report) =>
           report.status === filter
       );
     }, [
       dashboard?.reports,
+      sourceFilter,
       filter,
     ]);
 
@@ -538,6 +578,74 @@ SafetyAgentWorkspaceScreen() {
             Assigned Reports
           </Text>
 
+          {/* SOKO_SOURCE_FILTER_AGENT */}
+          <View style={styles.sourceFilters}>
+            {[
+              {
+                key: "all",
+                label: "All",
+              },
+              {
+                key: "kristo",
+                label: "Kristo",
+              },
+              {
+                key: "soko",
+                label: "SOKO",
+              },
+            ].map((source) => {
+              const count =
+                (dashboard?.reports || [])
+                  .filter((report) => {
+                    if (
+                      source.key === "all"
+                    ) {
+                      return true;
+                    }
+
+                    const soko =
+                      isSokoSafetyReport(
+                        report.sourceType
+                      );
+
+                    return source.key ===
+                      "soko"
+                      ? soko
+                      : !soko;
+                  }).length;
+
+              const active =
+                sourceFilter === source.key;
+
+              return (
+                <Pressable
+                  key={source.key}
+                  onPress={() =>
+                    setSourceFilter(
+                      source.key as
+                        ReportSourceFilter
+                    )
+                  }
+                  style={[
+                    styles.sourceFilterChip,
+                    active &&
+                      styles.sourceFilterChipActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.sourceFilterChipText,
+                      active &&
+                        styles.sourceFilterChipTextActive,
+                    ]}
+                  >
+                    {source.label} · {count}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
           <View
             style={
               styles.filters
@@ -600,6 +708,11 @@ SafetyAgentWorkspaceScreen() {
                     report.priority ===
                       "high";
 
+                  const soko =
+                    isSokoSafetyReport(
+                      report.sourceType
+                    );
+
                   return (
                     <Pressable
                       key={report.id}
@@ -623,16 +736,45 @@ SafetyAgentWorkspaceScreen() {
                             flex: 1,
                           }}
                         >
-                          <Text
+                          <View
                             style={
                               styles
-                                .reportCode
+                                .reportSourceRow
                             }
                           >
-                            {
-                              report.reportCode
-                            }
-                          </Text>
+                            <Text
+                              style={
+                                styles
+                                  .reportCode
+                              }
+                            >
+                              {
+                                report.reportCode
+                              }
+                            </Text>
+
+                            <View
+                              style={[
+                                styles.reportSourceBadge,
+                                soko
+                                  ? styles.reportSourceBadgeSoko
+                                  : styles.reportSourceBadgeKristo,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.reportSourceText,
+                                  soko
+                                    ? styles.reportSourceTextSoko
+                                    : styles.reportSourceTextKristo,
+                                ]}
+                              >
+                                {soko
+                                  ? "SOKO PRODUCT"
+                                  : "KRISTO"}
+                              </Text>
+                            </View>
+                          </View>
 
                           <Text
                             numberOfLines={
@@ -955,6 +1097,42 @@ const styles =
       fontWeight: "900",
     },
 
+    sourceFilters: {
+      backgroundColor:
+        "rgba(255,255,255,0.045)",
+      borderColor:
+        "rgba(255,255,255,0.08)",
+      borderRadius: 16,
+      borderWidth: 1,
+      flexDirection: "row",
+      gap: 6,
+      marginBottom: 12,
+      padding: 5,
+    },
+    sourceFilterChip: {
+      alignItems: "center",
+      borderRadius: 12,
+      flex: 1,
+      justifyContent: "center",
+      minHeight: 38,
+      paddingHorizontal: 8,
+    },
+    sourceFilterChipActive: {
+      backgroundColor:
+        "rgba(244,208,111,0.15)",
+      borderColor:
+        "rgba(244,208,111,0.30)",
+      borderWidth: 1,
+    },
+    sourceFilterChipText: {
+      color: MUTED,
+      fontSize: 10,
+      fontWeight: "800",
+    },
+    sourceFilterChipTextActive: {
+      color: GOLD,
+    },
+
     filters: {
       flexDirection: "row",
       gap: 8,
@@ -1007,6 +1185,42 @@ const styles =
       flexDirection: "row",
       gap: 10,
       alignItems: "flex-start",
+    },
+
+    reportSourceRow: {
+      alignItems: "center",
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 7,
+    },
+    reportSourceBadge: {
+      borderRadius: 9,
+      borderWidth: 1,
+      paddingHorizontal: 7,
+      paddingVertical: 3,
+    },
+    reportSourceBadgeSoko: {
+      backgroundColor:
+        "rgba(255,140,200,0.10)",
+      borderColor:
+        "rgba(255,140,200,0.38)",
+    },
+    reportSourceBadgeKristo: {
+      backgroundColor:
+        "rgba(244,208,111,0.08)",
+      borderColor:
+        "rgba(244,208,111,0.30)",
+    },
+    reportSourceText: {
+      fontSize: 7,
+      fontWeight: "900",
+      letterSpacing: 0.7,
+    },
+    reportSourceTextSoko: {
+      color: "#FF8CC8",
+    },
+    reportSourceTextKristo: {
+      color: GOLD,
     },
 
     reportCode: {
