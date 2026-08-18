@@ -54,6 +54,8 @@ module.exports = {
         NSLocalNetworkUsageDescription:
           "Kristo needs local network access to connect to the Metro bundler during development.",
         NSBonjourServices: ["_expo._tcp"],
+        NSLocationWhenInUseUsageDescription:
+          "Kristo uses your location to identify the city, region and country for your SOKO seller application.",
       },
     },
     plugins: [
