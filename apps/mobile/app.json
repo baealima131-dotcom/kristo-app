@@ -2,7 +2,7 @@
   "expo": {
     "name": "Kristo App",
     "slug": "mobile",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "mobile",
@@ -40,7 +40,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "versionCode": 1,
+      "versionCode": 37,
       "blockedPermissions": [
         "com.android.vending.BILLING",
         "android.permission.SYSTEM_ALERT_WINDOW",
