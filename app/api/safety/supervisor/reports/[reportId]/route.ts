@@ -1943,6 +1943,31 @@ export async function PATCH(
         .trim()
         .toLowerCase();
 
+    const reportSourceType =
+      String(currentReport.sourceType || "")
+        .trim()
+        .toLowerCase();
+
+    const isSokoCase =
+      reportSourceType === "soko_marketplace";
+
+    const sokoDecisionAllowed =
+      decisionType === "no_violation" ||
+      decisionType === "escalate";
+
+    if (isSokoCase && !sokoDecisionAllowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "SOKO_ENFORCEMENT_ADAPTER_REQUIRED: Product and seller enforcement must be completed by the SOKO marketplace service. Kristo account and feed enforcement cannot be used for this case.",
+          code: "SOKO_ENFORCEMENT_ADAPTER_REQUIRED",
+          sourceType: reportSourceType,
+        },
+        { status: 409 }
+      );
+    }
+
     const explicitTargetUserId =
       String(
         currentReport

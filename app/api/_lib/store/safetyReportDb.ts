@@ -3729,6 +3729,7 @@ export async function dbIssueSafetyReportDecision(
     SELECT
       id,
       status,
+      source_type,
       assigned_supervisor_user_id,
       assigned_agent_user_id
     FROM kristo_safety_reports
@@ -3737,6 +3738,7 @@ export async function dbIssueSafetyReportDecision(
   `) as Array<{
     id: string;
     status: string;
+    source_type: string;
     assigned_supervisor_user_id: string | null;
     assigned_agent_user_id: string | null;
   }>;
@@ -3746,6 +3748,21 @@ export async function dbIssueSafetyReportDecision(
   if (!existing) {
     throw new Error(
       "Safety report was not found."
+    );
+  }
+
+  const existingSourceType =
+    String(existing.source_type || "")
+      .trim()
+      .toLowerCase();
+
+  if (
+    existingSourceType === "soko_marketplace" &&
+    decisionType !== "no_violation" &&
+    decisionType !== "escalate"
+  ) {
+    throw new Error(
+      "SOKO_ENFORCEMENT_ADAPTER_REQUIRED: SOKO product and seller enforcement cannot be written to Kristo enforcement stores."
     );
   }
 

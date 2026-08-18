@@ -926,6 +926,19 @@ SafetySupervisorReportDetailsScreen() {
     (report?.caseIntelligence ||
       null) as SafetyCaseIntelligence | null;
 
+  const isSokoCase =
+    String(report?.sourceType || "")
+      .trim()
+      .toLowerCase() === "soko_marketplace";
+
+  const decisionOptions = isSokoCase
+    ? DECISION_OPTIONS.filter(
+        (option) =>
+          option.type === "no_violation" ||
+          option.type === "escalate"
+      )
+    : DECISION_OPTIONS;
+
   const isAgentView =
     viewerMode === "agent";
 
@@ -1109,13 +1122,17 @@ SafetySupervisorReportDetailsScreen() {
 
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>
-            Investigation Center
+            {isSokoCase
+              ? "SOKO Investigation"
+              : "Kristo Investigation"}
           </Text>
 
           <Text style={styles.headerSub}>
-            {isAgentView
-              ? "Agent decision workspace"
-              : "Supervisor command workspace"}
+            {isSokoCase
+              ? "Marketplace safety workspace"
+              : isAgentView
+                ? "Agent decision workspace"
+                : "Supervisor command workspace"}
           </Text>
         </View>
 
@@ -2556,13 +2573,15 @@ SafetySupervisorReportDetailsScreen() {
                       </Text>
 
                       <Text style={styles.decisionIntroText}>
-                        Review the evidence, select the appropriate enforcement action and record a clear reason.
+                        {isSokoCase
+                          ? "This marketplace case is isolated from Kristo enforcement. Until the SOKO enforcement service is connected, close only clear no-violation cases or escalate for marketplace action."
+                          : "Review the evidence, select the appropriate enforcement action and record a clear reason."}
                       </Text>
                     </View>
                   </View>
 
                   <View style={styles.decisionGrid}>
-                    {DECISION_OPTIONS.map(
+                    {decisionOptions.map(
                       (option) => {
                         const locked =
                           option.supervisorOnly &&
