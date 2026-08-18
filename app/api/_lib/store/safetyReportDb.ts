@@ -64,6 +64,18 @@ export type SafetyReportDecisionType =
   | "permanent_ban"
   | "escalate";
 
+export type SafetySokoDecisionType =
+  | "contact_seller"
+  | "warn_seller"
+  | "remove_product"
+  | "pause_seller"
+  | "suspend_seller"
+  | "ban_seller";
+
+export type SafetyCaseDecisionType =
+  | SafetyReportDecisionType
+  | SafetySokoDecisionType;
+
 export type SafetyDecisionActorRole =
   | "agent"
   | "supervisor"
@@ -132,7 +144,7 @@ export type SafetyReportRecord = {
   assignedSupervisorUserId?: string;
   assignedAgentUserId?: string;
 
-  decisionType?: SafetyReportDecisionType;
+  decisionType?: SafetyCaseDecisionType;
   decisionReason?: string;
   decisionNotes?: string;
   decisionConfidence?: number;
@@ -364,6 +376,35 @@ function normalizeDecisionType(
     normalized === "suspend_account" ||
     normalized === "permanent_ban" ||
     normalized === "escalate"
+  ) {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function normalizeStoredDecisionType(
+  value: unknown
+): SafetyCaseDecisionType | undefined {
+  const kristoDecision =
+    normalizeDecisionType(value);
+
+  if (kristoDecision) {
+    return kristoDecision;
+  }
+
+  const normalized =
+    String(value || "")
+      .trim()
+      .toLowerCase();
+
+  if (
+    normalized === "contact_seller" ||
+    normalized === "warn_seller" ||
+    normalized === "remove_product" ||
+    normalized === "pause_seller" ||
+    normalized === "suspend_seller" ||
+    normalized === "ban_seller"
   ) {
     return normalized;
   }
@@ -641,7 +682,7 @@ function rowToReport(
       ).trim() || undefined,
 
     decisionType:
-      normalizeDecisionType(
+      normalizeStoredDecisionType(
         row.decision_type
       ),
 
@@ -6995,4 +7036,3 @@ export async function dbProcessPendingRemoveContentReconciliations(
     failed,
   };
 }
-

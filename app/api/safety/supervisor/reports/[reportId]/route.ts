@@ -43,6 +43,11 @@ import {
   dbRecordRemoveContentReconciliation,
 } from "@/app/api/_lib/store/safetyReportDb";
 
+import {
+  dbIssueSokoSafetyDecision,
+  type SokoSafetyDecisionType,
+} from "@/app/api/_lib/store/sokoSafetyDb";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -1951,20 +1956,105 @@ export async function PATCH(
     const isSokoCase =
       reportSourceType === "soko_marketplace";
 
-    const sokoDecisionAllowed =
-      decisionType === "no_violation" ||
-      decisionType === "escalate";
+    const sokoActionDecisions =
+      new Set<SokoSafetyDecisionType>([
+        "contact_seller",
+        "warn_seller",
+        "remove_product",
+        "pause_seller",
+        "suspend_seller",
+        "ban_seller",
+      ]);
 
-    if (isSokoCase && !sokoDecisionAllowed) {
+    const isSokoAction =
+      sokoActionDecisions.has(
+        decisionType as
+          SokoSafetyDecisionType
+      );
+
+    if (isSokoCase && isSokoAction) {
+      const sokoResult =
+        await dbIssueSokoSafetyDecision({
+          reportId,
+          actorUserId:
+            viewerUserId,
+          actorRole,
+          decisionType,
+          reason:
+            body?.reason,
+          notes:
+            body?.notes,
+          confidence:
+            body?.confidence,
+          durationDays:
+            body?.durationDays,
+        });
+
+      const refreshedDashboard =
+        isSupervisor
+          ? await dbGetSafetySupervisorDashboard(
+              viewerUserId
+            )
+          : await dbGetSafetyAgentDashboard(
+              viewerUserId
+            );
+
+      const refreshedReport =
+        refreshedDashboard.reports.find(
+          (row) =>
+            String(row.id || "")
+              .trim() === reportId
+        );
+
+      if (!refreshedReport) {
+        throw new Error(
+          "The SOKO case was updated but could not be refreshed."
+        );
+      }
+
+      return NextResponse.json(
+        {
+          ok: true,
+          report:
+            refreshedReport,
+          enforcement: {
+            type:
+              sokoResult.decisionType,
+            applied: true,
+            message:
+              sokoResult.message,
+            enforcementId:
+              sokoResult.actionId,
+            expiresAt:
+              sokoResult.expiresAt,
+            boundary: "soko",
+          },
+        },
+        {
+          headers: {
+            "Cache-Control":
+              "private, no-store, no-cache, must-revalidate",
+          },
+        }
+      );
+    }
+
+    if (
+      isSokoCase &&
+      decisionType !== "no_violation" &&
+      decisionType !== "escalate"
+    ) {
       return NextResponse.json(
         {
           ok: false,
           error:
-            "SOKO_ENFORCEMENT_ADAPTER_REQUIRED: Product and seller enforcement must be completed by the SOKO marketplace service. Kristo account and feed enforcement cannot be used for this case.",
-          code: "SOKO_ENFORCEMENT_ADAPTER_REQUIRED",
-          sourceType: reportSourceType,
+            "Choose a valid SOKO marketplace decision.",
+          code:
+            "INVALID_SOKO_DECISION",
+          sourceType:
+            reportSourceType,
         },
-        { status: 409 }
+        { status: 400 }
       );
     }
 

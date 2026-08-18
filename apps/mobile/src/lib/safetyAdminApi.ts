@@ -654,6 +654,12 @@ export type SafetyReportSummary = {
     | "restrict_account"
     | "suspend_account"
     | "permanent_ban"
+    | "contact_seller"
+    | "warn_seller"
+    | "remove_product"
+    | "pause_seller"
+    | "suspend_seller"
+    | "ban_seller"
     | "escalate";
   decisionReason?: string;
   decisionNotes?: string;
@@ -1695,6 +1701,12 @@ export type SafetyDecisionType =
   | "restrict_account"
   | "suspend_account"
   | "permanent_ban"
+  | "contact_seller"
+  | "warn_seller"
+  | "remove_product"
+  | "pause_seller"
+  | "suspend_seller"
+  | "ban_seller"
   | "escalate";
 
 export async function issueSafetyReportDecision(
@@ -1826,4 +1838,3 @@ export async function issueSafetyReportDecision(
         : undefined,
   };
 }
-

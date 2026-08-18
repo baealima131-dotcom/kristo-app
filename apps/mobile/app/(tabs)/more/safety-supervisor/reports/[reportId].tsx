@@ -145,6 +145,77 @@ const DECISION_OPTIONS:
     },
   ];
 
+const SOKO_DECISION_OPTIONS:
+  DecisionOption[] = [
+    {
+      type: "no_violation",
+      title: "No Violation",
+      description:
+        "Dismiss the report when the marketplace evidence does not establish a violation.",
+      icon: "checkmark-circle-outline",
+      accent: GREEN,
+    },
+    {
+      type: "contact_seller",
+      title: "Contact Seller",
+      description:
+        "Request the seller's explanation. The case remains in review until a final decision is issued.",
+      icon: "chatbubble-ellipses-outline",
+      accent: BLUE,
+    },
+    {
+      type: "warn_seller",
+      title: "Warn Seller",
+      description:
+        "Record a formal SOKO warning while allowing the seller and product to remain active.",
+      icon: "warning-outline",
+      accent: GOLD,
+    },
+    {
+      type: "remove_product",
+      title: "Remove Product",
+      description:
+        "Hide the reported product from SOKO without changing the seller's Kristo account.",
+      icon: "trash-outline",
+      accent: ORANGE,
+    },
+    {
+      type: "pause_seller",
+      title: "Pause Seller",
+      description:
+        "Temporarily stop this seller from marketplace activity for the selected period.",
+      icon: "pause-circle-outline",
+      accent: ORANGE,
+      requiresDuration: true,
+    },
+    {
+      type: "suspend_seller",
+      title: "Suspend Seller",
+      description:
+        "Suspend the seller's SOKO access for a serious or repeated marketplace violation.",
+      icon: "lock-closed-outline",
+      accent: RED,
+      requiresDuration: true,
+    },
+    {
+      type: "ban_seller",
+      title: "Ban Seller",
+      description:
+        "Permanently remove seller access from SOKO. The Kristo account remains separate.",
+      icon: "ban-outline",
+      accent: RED,
+      supervisorOnly: true,
+    },
+    {
+      type: "escalate",
+      title: "Escalate Case",
+      description:
+        "Send a severe, uncertain or high-impact marketplace case to higher Safety authority.",
+      icon: "arrow-up-circle-outline",
+      accent: PURPLE,
+    },
+  ];
+
 function formatLabel(
   value: unknown
 ) {
@@ -552,7 +623,9 @@ SafetySupervisorReportDetailsScreen() {
         setDecisionConfidence(null);
         setDecisionDurationDays(
           option.type ===
-            "suspend_account"
+              "suspend_account" ||
+            option.type ===
+              "suspend_seller"
             ? 30
             : 7
         );
@@ -633,7 +706,10 @@ SafetySupervisorReportDetailsScreen() {
       }
 
       const option =
-        DECISION_OPTIONS.find(
+        [
+          ...DECISION_OPTIONS,
+          ...SOKO_DECISION_OPTIONS,
+        ].find(
           (row) =>
             row.type ===
             selectedDecision
@@ -932,11 +1008,7 @@ SafetySupervisorReportDetailsScreen() {
       .toLowerCase() === "soko_marketplace";
 
   const decisionOptions = isSokoCase
-    ? DECISION_OPTIONS.filter(
-        (option) =>
-          option.type === "no_violation" ||
-          option.type === "escalate"
-      )
+    ? SOKO_DECISION_OPTIONS
     : DECISION_OPTIONS;
 
   const isAgentView =
@@ -2574,7 +2646,7 @@ SafetySupervisorReportDetailsScreen() {
 
                       <Text style={styles.decisionIntroText}>
                         {isSokoCase
-                          ? "This marketplace case is isolated from Kristo enforcement. Until the SOKO enforcement service is connected, close only clear no-violation cases or escalate for marketplace action."
+                          ? "Choose a SOKO marketplace action. Product and seller enforcement stays isolated from the seller's Kristo account."
                           : "Review the evidence, select the appropriate enforcement action and record a clear reason."}
                       </Text>
                     </View>
@@ -2699,9 +2771,13 @@ SafetySupervisorReportDetailsScreen() {
                   </Text>
 
                   <Text style={styles.phaseText}>
-                    {isAgentView
-                      ? "You may issue ordinary case decisions for reports assigned to you. Permanent account bans require Supervisor approval and must be escalated."
-                      : "You may issue every Safety decision for cases assigned to you, including permanent bans. Every decision writes an enforcement receipt and audit trail."}
+                    {isSokoCase
+                      ? isAgentView
+                        ? "You may contact or warn the seller, remove a product, pause or suspend SOKO seller access, or escalate. Permanent SOKO seller bans require Supervisor approval."
+                        : "You may issue every SOKO marketplace action, including a permanent seller ban. These actions never suspend or ban the seller's Kristo account."
+                      : isAgentView
+                        ? "You may issue ordinary case decisions for reports assigned to you. Permanent account bans require Supervisor approval and must be escalated."
+                        : "You may issue every Safety decision for cases assigned to you, including permanent bans. Every decision writes an enforcement receipt and audit trail."}
                   </Text>
                 </View>
               </View>
@@ -2917,7 +2993,11 @@ SafetySupervisorReportDetailsScreen() {
               {selectedDecision ===
                 "restrict_account" ||
               selectedDecision ===
-                "suspend_account" ? (
+                "suspend_account" ||
+              selectedDecision ===
+                "pause_seller" ||
+              selectedDecision ===
+                "suspend_seller" ? (
                 <>
                   <Text style={styles.fieldLabel}>
                     DURATION
