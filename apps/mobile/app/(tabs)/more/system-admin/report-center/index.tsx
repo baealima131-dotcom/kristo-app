@@ -1038,6 +1038,62 @@ export default function ReportCenterScreen() {
 
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel="Open SOKO Seller Applications"
+              onPress={() =>
+                router.push(
+                  "/more/system-admin/report-center/soko-sellers" as any
+                )
+              }
+              style={({ pressed }) => ({
+                marginTop: 18,
+                opacity: pressed ? 0.78 : 1,
+              })}
+            >
+              <GlassCard
+                style={styles.addSupervisorCard}
+                borderColor=
+                  "rgba(93,235,165,0.34)"
+              >
+                <View
+                  style={[
+                    styles.addSupervisorIcon,
+                    {
+                      backgroundColor:
+                        "rgba(93,235,165,0.12)",
+                      borderColor:
+                        "rgba(93,235,165,0.25)",
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name="storefront-outline"
+                    size={25}
+                    color="#5DEBA5"
+                  />
+                </View>
+
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.addSupervisorTitle}>
+                    SOKO Seller Applications
+                  </Text>
+
+                  <Text style={styles.addSupervisorSubtitle}>
+                    Review applicants and issue Kristo-bound command codes.
+                  </Text>
+                </View>
+
+                <View style={styles.addSupervisorAction}>
+                  <Ionicons
+                    name="arrow-forward"
+                    size={23}
+                    color="#5DEBA5"
+                  />
+                </View>
+              </GlassCard>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
               accessibilityLabel="Add Safety Supervisor"
               onPress={() =>
                 router.push(

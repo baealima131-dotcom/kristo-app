@@ -91,6 +91,15 @@ const SAFETY_AGENT_MORE_ITEM: Item = {
   href: "/more/safety-agent",
 };
 
+const SOKO_SELLER_MORE_ITEM: Item = {
+  key: "soko_seller",
+  title: "Sell on SOKO",
+  sub: "Apply • track approval • get seller code",
+  iconLib: "ion",
+  icon: "storefront-outline",
+  href: "/more/soko-seller",
+};
+
 /** Preserved for More tab restore; currently hidden via HIDDEN_MORE_CARD_KEYS. */
 const MESSAGES_MORE_ITEM: Item = {
   key: "messages",
@@ -114,6 +123,7 @@ function shouldShowAgentMoreCard(platformRole: string, access: AgentAccessRespon
 }
 
 const ITEMS: Item[] = [
+  SOKO_SELLER_MORE_ITEM,
   {
     key: "tlmc",
     title: "TLMC",
@@ -184,6 +194,7 @@ const ITEMS: Item[] = [
 
 const NO_CHURCH_ONBOARDING_ORDER = [
   "tlmc",
+  "soko_seller",
   "church",
   "kristo_guide",
   "notifications",
