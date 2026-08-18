@@ -83,7 +83,8 @@ export async function GET(
 
   const dashboard =
     await dbGetSafetyAgentDashboard(
-      access.agentUserId
+      access.agentUserId,
+      "kristo"
     );
 
   return NextResponse.json(

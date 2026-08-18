@@ -2158,7 +2158,11 @@ dbHasActiveSafetyAgentRelationship(
 
 export async function
 dbGetSafetyAgentDashboard(
-  agentUserIdInput: string
+  agentUserIdInput: string,
+  sourceScopeInput:
+    | "kristo"
+    | "soko"
+    | "all" = "kristo"
 ): Promise<SafetyAgentDashboard> {
   await ensureSafetyReportStoreReady();
 
@@ -2174,6 +2178,15 @@ dbGetSafetyAgentDashboard(
       "Safety Agent user ID is required."
     );
   }
+
+  const sourceScope:
+    | "kristo"
+    | "soko"
+    | "all" =
+    sourceScopeInput === "soko" ||
+    sourceScopeInput === "all"
+      ? sourceScopeInput
+      : "kristo";
 
   const rows = (await sql`
     SELECT
@@ -2223,6 +2236,19 @@ dbGetSafetyAgentDashboard(
     FROM kristo_safety_reports
     WHERE assigned_agent_user_id =
       ${agentUserId}
+      AND (
+        ${sourceScope} = 'all'
+        OR (
+          ${sourceScope} = 'soko'
+          AND source_type =
+            'soko_marketplace'
+        )
+        OR (
+          ${sourceScope} = 'kristo'
+          AND source_type <>
+            'soko_marketplace'
+        )
+      )
     ORDER BY
       CASE status
         WHEN 'in_review' THEN 1

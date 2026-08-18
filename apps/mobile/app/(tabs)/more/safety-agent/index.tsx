@@ -51,11 +51,6 @@ type ReportFilter =
   | "in_review"
   | "resolved";
 
-type ReportSourceFilter =
-  | "all"
-  | "kristo"
-  | "soko";
-
 function isSokoSafetyReport(
   sourceType: unknown
 ) {
@@ -156,13 +151,6 @@ SafetyAgentWorkspaceScreen() {
     ReportFilter
   >("all");
 
-  const [
-    sourceFilter,
-    setSourceFilter,
-  ] = React.useState<
-    ReportSourceFilter
-  >("all");
-
   const load =
     React.useCallback(
       async (
@@ -221,31 +209,21 @@ SafetyAgentWorkspaceScreen() {
 
   const reports =
     React.useMemo(() => {
-      const rows =
-        dashboard?.reports || [];
-
-      const sourceRows =
-        rows.filter((report) => {
-          if (sourceFilter === "all") {
-            return true;
-          }
-
-          const soko =
-            isSokoSafetyReport(
-              report.sourceType
-            );
-
-          return sourceFilter === "soko"
-            ? soko
-            : !soko;
-        });
+      const rows = (
+        dashboard?.reports || []
+      ).filter(
+        (report) =>
+          !isSokoSafetyReport(
+            report.sourceType
+          )
+      );
 
       if (filter === "all") {
-        return sourceRows;
+        return rows;
       }
 
       if (filter === "open") {
-        return sourceRows.filter(
+        return rows.filter(
           (report) =>
             report.status === "open" ||
             report.status ===
@@ -253,22 +231,32 @@ SafetyAgentWorkspaceScreen() {
         );
       }
 
-      return sourceRows.filter(
+      return rows.filter(
         (report) =>
           report.status === filter
       );
     }, [
       dashboard?.reports,
-      sourceFilter,
       filter,
     ]);
 
   const openReport =
     React.useCallback(
-      (reportId: string) => {
+      (
+        report:
+          SafetyReportSummary
+      ) => {
+        if (
+          isSokoSafetyReport(
+            report.sourceType
+          )
+        ) {
+          return;
+        }
+
         router.push(
           `/more/safety-supervisor/reports/${encodeURIComponent(
-            reportId
+            report.id
           )}` as any
         );
       },
@@ -578,74 +566,6 @@ SafetyAgentWorkspaceScreen() {
             Assigned Reports
           </Text>
 
-          {/* SOKO_SOURCE_FILTER_AGENT */}
-          <View style={styles.sourceFilters}>
-            {[
-              {
-                key: "all",
-                label: "All",
-              },
-              {
-                key: "kristo",
-                label: "Kristo",
-              },
-              {
-                key: "soko",
-                label: "SOKO",
-              },
-            ].map((source) => {
-              const count =
-                (dashboard?.reports || [])
-                  .filter((report) => {
-                    if (
-                      source.key === "all"
-                    ) {
-                      return true;
-                    }
-
-                    const soko =
-                      isSokoSafetyReport(
-                        report.sourceType
-                      );
-
-                    return source.key ===
-                      "soko"
-                      ? soko
-                      : !soko;
-                  }).length;
-
-              const active =
-                sourceFilter === source.key;
-
-              return (
-                <Pressable
-                  key={source.key}
-                  onPress={() =>
-                    setSourceFilter(
-                      source.key as
-                        ReportSourceFilter
-                    )
-                  }
-                  style={[
-                    styles.sourceFilterChip,
-                    active &&
-                      styles.sourceFilterChipActive,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.sourceFilterChipText,
-                      active &&
-                        styles.sourceFilterChipTextActive,
-                    ]}
-                  >
-                    {source.label} · {count}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
           <View
             style={
               styles.filters
@@ -717,9 +637,7 @@ SafetyAgentWorkspaceScreen() {
                     <Pressable
                       key={report.id}
                       onPress={() =>
-                        openReport(
-                          report.id
-                        )
+                        openReport(report)
                       }
                       style={
                         styles.reportCard
