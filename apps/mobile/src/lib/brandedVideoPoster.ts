@@ -8,6 +8,24 @@ export function isBrandedVideoPosterUri(uri: unknown): boolean {
   return isBrandedPosterUri(String(uri || "").trim() || null);
 }
 
+export function toRenderableImageUri(
+  uri: unknown
+): string | null {
+  const normalized =
+    typeof uri === "string"
+      ? uri.trim()
+      : "";
+
+  if (
+    !normalized ||
+    isBrandedPosterUri(normalized)
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
 export function brandedVideoPosterPayload() {
   return {
     posterUri: BRANDED_VIDEO_POSTER_URI,
