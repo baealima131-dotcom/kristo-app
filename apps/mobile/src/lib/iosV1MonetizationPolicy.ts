@@ -1,22 +1,30 @@
 /**
- * Client iOS V1 monetization policy — FREE launch.
+ * Client mobile V1 monetization policy — FREE launch.
  *
- * Media Premium IAP / paywall / trial / purchase / restore are disabled on iOS
+ * Media Premium IAP / paywall / trial / purchase / restore are disabled on iOS and Android
  * for V1. Features that were subscription-gated unlock because monetization is
  * off — not because we fake RevenueCat entitlements or flip DB subscriptionActive.
  *
  * Server trust for gated APIs requires HMAC proof (see mintIosV1FreeProofHeaderValue)
  * plus KRISTO_IOS_V1_FREE_MONETIZATION=1. Platform header alone is never enough.
  *
- * Android keeps the full purchase + entitlement path.
+ * Both iOS and Android V1 use the free launch path.
  */
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { hmacSha256Hex } from "./iosV1FreeProofHmac";
 
 /** True when this build is running on iOS and V1 free monetization applies. */
+export function isMobileV1FreeMonetizationEnabled(): boolean {
+  return Platform.OS === "ios" || Platform.OS === "android";
+}
+
+/**
+ * Compatibility name retained because existing screens already import it.
+ * Kristo V1 is free on both iOS and Android.
+ */
 export function isIosV1MonetizationDisabled(): boolean {
-  return Platform.OS === "ios";
+  return isMobileV1FreeMonetizationEnabled();
 }
 
 /** Hide Payments / Subscriptions / paywall / trial / price CTAs on iOS V1. */
@@ -80,14 +88,26 @@ function getIosV1FreeProofSecret(): string {
       ""
   ).trim();
   if (fromExtra) return fromExtra;
-  const fromEnv = String(process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || "").trim();
+  const fromPublicEnv = String(
+    process.env.EXPO_PUBLIC_KRISTO_V1_FREE_PROOF_SECRET || ""
+  ).trim();
+  if (fromPublicEnv) return fromPublicEnv;
+
+  const fromEnv = String(
+    process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || ""
+  ).trim();
   if (fromEnv) return fromEnv;
   if (__DEV__) return DEV_FALLBACK_PROOF_SECRET;
   return "";
 }
 
 /** Presence-only — never log secret or proof values. */
-export function describeIosV1FreeProofSecretSource(): "extra" | "env" | "dev_fallback" | "missing" {
+export function describeIosV1FreeProofSecretSource():
+  | "extra"
+  | "public_env"
+  | "env"
+  | "dev_fallback"
+  | "missing" {
   const expoExtra =
     (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
   const manifestExtra =
@@ -107,7 +127,20 @@ export function describeIosV1FreeProofSecretSource(): "extra" | "env" | "dev_fal
   ) {
     return "extra";
   }
-  if (String(process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || "").trim()) return "env";
+  if (
+    String(
+      process.env.EXPO_PUBLIC_KRISTO_V1_FREE_PROOF_SECRET || ""
+    ).trim()
+  ) {
+    return "public_env";
+  }
+  if (
+    String(
+      process.env.KRISTO_IOS_V1_FREE_PROOF_SECRET || ""
+    ).trim()
+  ) {
+    return "env";
+  }
   if (__DEV__) return "dev_fallback";
   return "missing";
 }

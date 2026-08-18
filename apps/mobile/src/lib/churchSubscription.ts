@@ -36,6 +36,7 @@ export {
 } from "./churchSubscriptionMediaSignals";
 import type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSignals";
 import { logSubscriptionBypassIfEnabled, shouldSuppressPremiumPrompts } from "./subscriptionBypass";
+import { isMobileV1FreeMonetizationEnabled } from "./iosV1MonetizationPolicy";
 import {
   describeCustomerInfoSubscriptionDebug,
   formatPremiumSubscriptionExpiryLabel,
@@ -493,7 +494,9 @@ export function resolveScheduleGateSubscriptionInputs(input: {
 
   // iOS V1 free: never lock schedule/media tools for missing subscription.
   const subscriptionLocked =
-    Platform.OS === "ios" ? false : merged.hasSubscription === false;
+    isMobileV1FreeMonetizationEnabled()
+      ? false
+      : merged.hasSubscription === false;
 
   console.log("KRISTO_SCHEDULE_SUBSCRIPTION_SOURCE", {
     churchId,

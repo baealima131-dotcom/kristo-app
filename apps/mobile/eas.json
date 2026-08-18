@@ -46,10 +46,31 @@
         "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi"
       },
       "autoIncrement": false
+    },
+    "android-v1-free": {
+      "autoIncrement": false,
+      "environment": "production",
+      "distribution": "store",
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_WEB_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_WEB_SHARE_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com",
+        "EXPO_PUBLIC_KRISTO_MOBILE_V1_FREE": "1"
+      },
+      "android": {
+        "buildType": "app-bundle"
+      }
     }
   },
   "submit": {
     "production": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "completed"
+      }
+    },
+    "android-v1-free": {
       "android": {
         "track": "internal",
         "releaseStatus": "completed"

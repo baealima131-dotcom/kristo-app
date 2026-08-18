@@ -37,9 +37,14 @@
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
-        "com.android.vending.BILLING",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
+      ],
+      "versionCode": 1,
+      "blockedPermissions": [
+        "com.android.vending.BILLING",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -73,8 +78,6 @@
       "typedRoutes": true
     },
     "extra": {
-      "stripePublishableKey": "pk_test_xxxxxxxxxxxxxxxxx",
-      "revenuecatAndroidApiKey": "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi",
       "router": {},
       "eas": {
         "projectId": "1dc15ae7-821f-479e-b1fd-feb0450be12f"

@@ -104,8 +104,12 @@ const MESSAGES_MORE_ITEM: Item = {
 /** UI-hidden More cards (routes and feature code remain intact). */
 const HIDDEN_MORE_CARD_KEYS = new Set<string>([
   MESSAGES_MORE_ITEM.key,
-  // iOS V1 free: hide Church Subscription / Payments entry (Android keeps it).
-  ...(Platform.OS === "ios" ? ["payments"] : []),
+  // Mobile V1 free: hide Church Subscription / Payments on iOS and Android.
+  ...(
+    Platform.OS === "ios" || Platform.OS === "android"
+      ? ["payments"]
+      : []
+  ),
 ]);
 
 function shouldShowAgentMoreCard(platformRole: string, access: AgentAccessResponse | null): boolean {
