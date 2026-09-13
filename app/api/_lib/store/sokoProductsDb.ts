@@ -530,3 +530,17 @@ export async function changeSokoProduct(userId: string, kristoId: string, id: st
     WHERE id=${id} AND seller_user_id=${userId} AND (status<>'Deleted' OR ${status}='Deleted') RETURNING id` as {id:string}[];
   if (!rows.length) throw new Error("Listing not found or already deleted.");
 }
+
+export async function getSokoProductById(id: string) {
+  await schema();
+  const productId = String(id || "").trim();
+  if (!productId || productId.length > 100) return null;
+  const sql = sqlClient();
+  const rows = await sql`SELECT * FROM soko_products WHERE id=${productId} LIMIT 1` as Row[];
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...publicProduct(row),
+    sellerUserId: String(row.seller_user_id || "").trim(),
+  };
+}
