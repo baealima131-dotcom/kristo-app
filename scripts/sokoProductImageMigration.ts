@@ -44,6 +44,7 @@ export type ListingMigrationPlan = {
   status: string;
   title: string;
   seller: string;
+  sellerUserId?: string;
   eligibility: ListingEligibility;
   observedImageKeys: string[];
   action: "migrate" | "already_durable" | "skip";
@@ -86,6 +87,13 @@ export function classifyListingEligibility(
 
 export function isApplyEligible(eligibility: ListingEligibility) {
   return eligibility === "eligible_active" || eligibility === "included_sold";
+}
+
+export function isActiveApplyEligible(plan: {
+  status: string;
+  eligibility: ListingEligibility;
+}) {
+  return plan.status === "Active" && plan.eligibility === "eligible_active";
 }
 
 export function listSokoProductImageDiskFiles(diskRoot: string): DiskImage[] {
@@ -153,6 +161,7 @@ export function planSokoProductImageListings(input: {
     status: string;
     title: string;
     seller: string;
+    sellerUserId?: string;
     imageKeys: unknown;
   }>;
   diskFiles: DiskImage[];
@@ -276,6 +285,7 @@ export function planSokoProductImageListings(input: {
       status: listing.status,
       title: listing.title,
       seller: listing.seller,
+      sellerUserId: listing.sellerUserId,
       eligibility,
       observedImageKeys: keys,
       action,
