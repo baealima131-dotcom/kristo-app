@@ -25,6 +25,7 @@ import { HomeFeedVideoPrimer } from "@/src/components/homeFeed/HomeFeedVideoPrim
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 import { SafetyAccountEnforcementGate } from "@/src/components/SafetyAccountEnforcementGate";
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
+import { SokoStripeProvider } from "@/src/lib/payments/SokoStripeProvider";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -83,8 +84,10 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: SPLASH_BG }}>
       {!splashFinished ? <JujujuAnimatedSplash onFinished={onSplashFinished} /> : null}
       <KristoSessionProvider>
-        <RevenueCatBootstrap />
-        <SafetyAccountEnforcementGate />
+        <SokoStripeProvider>
+          <RevenueCatBootstrap />
+          <SafetyAccountEnforcementGate />
+        </SokoStripeProvider>
       </KristoSessionProvider>
       {/* Hidden primer — inline TikTok-style autoplay only. */}
       {isHomeFeedInlineVideoAutoplayEnabled() ? <HomeFeedVideoPrimer /> : null}

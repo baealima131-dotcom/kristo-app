@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { getSokoNeonSql } from "./sokoNeon";
-import { createCashAppServerReference } from "@/app/api/_lib/cashAppPartnerClient";
 import { dbGetVerifiedSellerPaymentMerchant } from "@/app/api/_lib/store/sokoSellerPaymentAccountsDb";
 import {
   SokoPaymentAccountMismatchError,
@@ -80,6 +79,18 @@ function schemaGate(): SchemaGate {
 
 function sqlClient() {
   return getSokoNeonSql();
+}
+
+function createCashAppServerReference(orderId: string) {
+  const id = clean(orderId, 100);
+  if (!id) {
+    throw new Error("Cash App order ID is required.");
+  }
+  const digest = createHash("sha256")
+    .update(id)
+    .digest("hex")
+    .slice(0, 24);
+  return `kristo-${digest}`;
 }
 
 async function runSokoOrdersSchema() {

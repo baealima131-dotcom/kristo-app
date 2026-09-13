@@ -58,6 +58,10 @@ import {
 } from "./homeFeedUtils";
 import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
+import {
+  SokoHomeProductCard,
+  type SokoHomeProduct,
+} from "./SokoHomeProducts";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
 import { FeedReportSheet } from "./FeedReportSheet";
 import { HomeFeedShareSheet } from "./HomeFeedShareSheet";
@@ -86,6 +90,7 @@ type Props = {
   visible: boolean;
   payload: HomeFeedVideoOpenPayload | null;
   relatedItems: any[];
+  sokoProducts: SokoHomeProduct[];
   onClose: () => void;
   onSelectRelated: (payload: HomeFeedVideoOpenPayload) => void;
   onLike: () => void;
@@ -640,6 +645,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   visible,
   payload,
   relatedItems,
+  sokoProducts,
   onClose,
   onSelectRelated,
   onLike,
@@ -690,6 +696,77 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
 
   const item = payload?.item;
+
+  const watchUpNextRows = useMemo(() => {
+    const rows: Array<{
+      kind: "video" | "soko";
+      key: string;
+      item: any;
+    }> = [];
+
+    let productIndex = 0;
+
+    relatedItems.forEach((related, index) => {
+      const videoKey = String(
+        related?.id ||
+        related?.homeFeedRecycleKey ||
+        `watch-video-${index}`
+      ).trim();
+
+      rows.push({
+        kind: "video",
+        key: videoKey,
+        item: related,
+      });
+
+      /*
+       * Insert one marketplace product after every three videos.
+       * This keeps Watch video-first without hiding SOKO.
+       */
+      if (
+        (index + 1) % 3 === 0 &&
+        productIndex < sokoProducts.length
+      ) {
+        const product = sokoProducts[productIndex];
+        const productId = String(
+          product?.sokoProductId ||
+          product?.id ||
+          productIndex
+        ).replace(/^soko:/, "");
+
+        rows.push({
+          kind: "soko",
+          key: `watch-soko-${productId}`,
+          item: product,
+        });
+
+        productIndex += 1;
+      }
+    });
+
+    /*
+     * Short Up Next lists should still show one product.
+     */
+    if (
+      productIndex === 0 &&
+      sokoProducts.length > 0
+    ) {
+      const product = sokoProducts[0];
+      const productId = String(
+        product?.sokoProductId ||
+        product?.id ||
+        "first"
+      ).replace(/^soko:/, "");
+
+      rows.push({
+        kind: "soko",
+        key: `watch-soko-${productId}`,
+        item: product,
+      });
+    }
+
+    return rows;
+  }, [relatedItems, sokoProducts]);
 
   const handleRelatedVideoPress = useCallback(
     (next: HomeFeedVideoOpenPayload) => {
@@ -835,12 +912,23 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           showsVerticalScrollIndicator={false}
         >
           <Text style={styles.upNextLabel}>Up next</Text>
-          {relatedItems.map((related) => {
-            const key = String(related?.id || related?.homeFeedRecycleKey || "").trim();
-            if (!key) return null;
+          {watchUpNextRows.map((row) => {
+            if (row.kind === "soko") {
+              return (
+                <View
+                  key={row.key}
+                  style={styles.watchSokoPost}
+                >
+                  <SokoHomeProductCard product={row.item}/>
+                </View>
+              );
+            }
+
+            const related = row.item;
+
             return (
               <FeedYouTubeCard
-                key={key}
+                key={row.key}
                 item={related}
                 onLike={() => onItemLike(related)}
                 onComment={() => onItemComment(related)}
@@ -1155,6 +1243,10 @@ const styles = StyleSheet.create({
   },
   watchActionLabelActive: {
     color: HOME_FEED_GOLD_SOFT,
+  },
+  watchSokoPost: {
+    marginTop: 14,
+    marginBottom: 14,
   },
   upNextLabel: {
     color: HOME_FEED_MUTED,

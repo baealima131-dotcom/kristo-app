@@ -22,6 +22,7 @@ import {
 import { FeedRow } from "./FeedRow";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
 import { FeedYouTubeSkeletonCard } from "./FeedYouTubeSkeletonCard";
+import { isSokoHomeProductRow, SokoHomeProductCard } from "./SokoHomeProducts";
 import {
   feedRenderKey,
   isVideoPost,
@@ -628,6 +629,9 @@ export const FeedList = memo(
 
   const renderItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
+      if (isSokoHomeProductRow(item)) {
+        return <SokoHomeProductCard product={item} height={contentHeight} />;
+      }
       const videoWarmMode = isVideoPost(item)
         ? resolveHomeFeedVideoWarmMode(index, activeIndex, mountedVideoIndexes, rows)
         : "off";
@@ -701,6 +705,9 @@ export const FeedList = memo(
 
   const renderYouTubeItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
+      if (isSokoHomeProductRow(item)) {
+        return <SokoHomeProductCard product={item} />;
+      }
       if (isHomeFeedSkeletonRow(item)) {
         return <FeedYouTubeSkeletonCard />;
       }

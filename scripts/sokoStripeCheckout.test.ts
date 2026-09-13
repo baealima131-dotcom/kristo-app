@@ -510,6 +510,15 @@ test("PaymentSheet success without webhook remains awaiting_payment in source", 
   assert.match(intent, /payment_method_types: \["card"\]/);
   assert.doesNotMatch(intent, /apple_pay/);
   assert.doesNotMatch(intent, /google_pay/);
+
+  const layout = fs.readFileSync(
+    path.join(root, "apps/mobile/app/_layout.tsx"),
+    "utf8"
+  );
+  assert.match(layout, /SokoStripeProvider/);
+  assert.match(layout, /RevenueCatBootstrap/);
+  assert.match(layout, /<SokoStripeProvider>/);
+  assert.match(layout, /<\/SokoStripeProvider>/);
 });
 
 test("Cash App confirmation files were not edited by this Stripe checkout path", () => {

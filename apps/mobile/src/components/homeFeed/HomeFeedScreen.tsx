@@ -29,6 +29,7 @@ import {
 } from "@/src/lib/homeFeedStore";
 import { CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS } from "@/src/lib/churchLiveControlSchedule";
 import { FeedList, type FeedListHandle } from "./FeedList";
+import SokoHomeProducts, { distributeSokoProducts, type SokoHomeProduct } from "./SokoHomeProducts";
 import { FeedReportSheet } from "./FeedReportSheet";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
 import { HomeFeedShareSheet } from "./HomeFeedShareSheet";
@@ -495,6 +496,7 @@ export default function HomeFeedScreen() {
   }, []);
 
   const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
+  const [sokoProducts, setSokoProducts] = useState<SokoHomeProduct[]>([]);
   const feedViewportHeight = Math.max(280, contentHeight - topBarHeight);
   youtubeScrollMetricsRef.current = {
     ...youtubeScrollMetricsRef.current,
@@ -2374,7 +2376,11 @@ export default function HomeFeedScreen() {
     return rows;
   }, [youtubeShowSkeleton, moderatedYoutubeStreamRows, feedHasMore, youtubePageVisualReady]);
 
-  const feedListRows = youtubeLayout ? youtubeFeedRows : filteredVisibleData;
+  const baseFeedListRows = youtubeLayout ? youtubeFeedRows : filteredVisibleData;
+  const feedListRows = useMemo(
+    () => distributeSokoProducts(baseFeedListRows, sokoProducts),
+    [baseFeedListRows, sokoProducts]
+  );
   const feedCaughtUp =
     youtubeLayout &&
     !youtubeShowSkeleton &&
@@ -3690,6 +3696,7 @@ export default function HomeFeedScreen() {
           youtubeLayout ? styles.feedBodyYoutube : { height: feedViewportHeight },
         ]}
       >
+        <SokoHomeProducts focused={feedFocused} onProductsChange={setSokoProducts} />
         <FeedList
           ref={feedListRef}
           rows={feedListRows}
@@ -3721,6 +3728,7 @@ export default function HomeFeedScreen() {
         visible={Boolean(videoModalPayload)}
         payload={videoModalPayload}
         relatedItems={relatedVideoItems}
+        sokoProducts={sokoProducts}
         onClose={handleCloseVideo}
         onSelectRelated={handleVideoPress}
         onLike={() => {
