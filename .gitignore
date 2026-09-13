@@ -113,3 +113,7 @@ apps/mobile/mediaScheduleSlotTimes
 backups/
 *.log
 .DS_Store
+
+# SOKO local development photos
+.soko-product-images/
+.soko-product-image-migration-state.json
