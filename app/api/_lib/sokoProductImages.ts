@@ -19,6 +19,44 @@ export function sokoImageUrl(key: string) {
   if (!config) throw new Error("Product image storage is unavailable.");
   return buildPublicVideoUrl(config, key);
 }
+
+/** Catalog mapping: never invent a URL. Skip keys that cannot be served. */
+export function trySokoCatalogImageUrl(key: string): string | null {
+  const parts = parseSokoImageKey(key);
+  if (!parts) return null;
+  if (parts[1] === "local" && !localSokoImagesEnabled()) return null;
+  try {
+    const url = sokoImageUrl(key);
+    return typeof url === "string" && url.trim() ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveSokoCatalogPhotos(imageKeys: unknown): string[] {
+  if (!Array.isArray(imageKeys)) return [];
+  const photos: string[] = [];
+  for (const value of imageKeys) {
+    if (typeof value !== "string") continue;
+    const url = trySokoCatalogImageUrl(value);
+    if (url) photos.push(url);
+  }
+  return photos;
+}
+
+export function isolateSokoCatalogProducts<T, U>(
+  rows: T[],
+  project: (row: T) => U,
+  fallback: (row: T) => U
+): U[] {
+  return rows.map((row) => {
+    try {
+      return project(row);
+    } catch {
+      return fallback(row);
+    }
+  });
+}
 export async function verifySokoImage(key: string, userId: string) {
   const parts = parseSokoImageKey(key);
   if (!parts || parts[2] !== sokoImageOwner(userId)) throw new Error("Image does not belong to this seller.");

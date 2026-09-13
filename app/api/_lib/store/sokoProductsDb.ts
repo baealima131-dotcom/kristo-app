@@ -3,7 +3,11 @@ import { neon } from "@neondatabase/serverless";
 import { getDatabaseUrl } from "./authDb";
 import { ensureSokoSellerAccessSchema, dbGetSokoSellerAccess } from "./sokoSellerAccessDb";
 import { ensureSokoSafetySchema, dbGetSokoEnforcementStatus } from "./sokoSafetyDb";
-import { sokoImageUrl, verifySokoImage } from "../sokoProductImages";
+import {
+  isolateSokoCatalogProducts,
+  resolveSokoCatalogPhotos,
+  verifySokoImage,
+} from "../sokoProductImages";
 import {
   configuredSokoStripeSellerUserId,
   sokoStripeCardAvailableOnListing,
@@ -62,8 +66,8 @@ export async function assertSokoPublisher(userId: string, kristoId: string, prod
   if ((state.sellerStatus[userId] || "active") !== "active" || (productId && state.hiddenProductIds.includes(productId))) throw new Error("This seller or product is restricted.");
 }
 function publicProduct(row: Row) {
-  const { imageKeys, ...payload } = row.payload;
-  const photos = (imageKeys as string[]).map(sokoImageUrl);
+  const { imageKeys, ...payload } = row.payload || {};
+  const photos = resolveSokoCatalogPhotos(imageKeys);
   const stockTotal = Math.max(
     1,
     Number(row.stock_total || 1)
@@ -94,7 +98,7 @@ function publicProduct(row: Row) {
     paymentOptions,
     id: row.id,
     photos,
-    image: photos[0],
+    image: photos[0] || "",
     serverId: row.id,
     status: row.status,
     stockTotal,
@@ -102,6 +106,32 @@ function publicProduct(row: Row) {
     soldOut:
       row.status === "Sold" ||
       stockAvailable <= 0,
+    createdAt: row.created_at,
+  };
+}
+function publicProductWithoutImages(row: Row) {
+  const payload =
+    row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+      ? { ...row.payload }
+      : {};
+  delete (payload as { imageKeys?: unknown }).imageKeys;
+  const stockTotal = Math.max(1, Number(row.stock_total || 1));
+  const stockAvailable = Math.max(0, Number(row.stock_available || 0));
+  const paymentOptions =
+    payload.paymentOptions && typeof payload.paymentOptions === "object"
+      ? { ...payload.paymentOptions, stripeCardAvailable: false }
+      : { stripeCardAvailable: false };
+  return {
+    ...payload,
+    paymentOptions,
+    id: row.id,
+    photos: [] as string[],
+    image: "",
+    serverId: row.id,
+    status: row.status,
+    stockTotal,
+    stockAvailable,
+    soldOut: row.status === "Sold" || stockAvailable <= 0,
     createdAt: row.created_at,
   };
 }
@@ -407,7 +437,10 @@ export async function listSokoProducts(before = "", sellerId = "") {
         AND ((s.product_id=p.id AND s.action_type='remove_product') OR (s.seller_user_id=p.seller_user_id AND s.action_type IN ('pause_seller','suspend_seller','ban_seller'))))
     ORDER BY p.created_at DESC,p.id DESC LIMIT 21` as Row[];
   const page = rows.slice(0,20);
-  return { products: page.map(publicProduct), nextCursor: rows.length > 20 ? page[page.length-1].id : null };
+  return {
+    products: isolateSokoCatalogProducts(page, publicProduct, publicProductWithoutImages),
+    nextCursor: rows.length > 20 ? page[page.length-1].id : null,
+  };
 }
 export async function updateSokoProductInventory(
   userId: string,

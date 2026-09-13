@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { guardAuth } from "@/app/api/_lib/rbac";
+import { getViewer } from "@/app/api/_lib/auth";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import {
   publishSokoProduct,
@@ -7,17 +8,26 @@ import {
   changeSokoProduct,
   updateSokoProductInventory,
 } from "@/app/api/_lib/store/sokoProductsDb";
+import { sanitizeSokoCatalogProduct } from "@/app/api/_lib/sokoPublicCatalog";
 import { dbGetMySokoSellerApplication } from "@/app/api/_lib/store/sokoSellerAccessDb";
 import { getMembershipsForUser } from "@/app/api/_lib/memberships";
 import { getChurchById } from "@/app/api/_lib/churches";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-function reply(body: unknown, status=200) { return NextResponse.json(body,{status,headers:{"Cache-Control":"private, no-store"}}); }
-export async function GET(req: NextRequest) {
-  const auth = await guardAuth(req);
-  if (auth instanceof NextResponse) return auth;
-
+function reply(body: unknown, status=200, cache = "private, no-store") {
+  return NextResponse.json(body,{status,headers:{"Cache-Control": cache}});
+}
+async function peekSignedInUserId(req: NextRequest) {
   try {
+    const viewer = await getViewer(req);
+    return String(viewer?.userId || "").trim();
+  } catch {
+    return "";
+  }
+}
+export async function GET(req: NextRequest) {
+  try {
+    const signedInUserId = await peekSignedInUserId(req);
     const result = await listSokoProducts(
       req.nextUrl.searchParams.get("before") || "",
       req.nextUrl.searchParams.get("sellerId") || ""
@@ -94,37 +104,34 @@ export async function GET(req: NextRequest) {
         ? (result as any).products
         : []
       ).map(async (product: any) => {
-        const userId =
-          String(product?.seller?.id || "").trim();
+        try {
+          const userId =
+            String(product?.seller?.id || "").trim();
 
-        if (!userId) return product;
-
-        const seller = await loadSeller(userId);
-        if (!seller) return product;
-
-        return {
-          ...product,
-          seller: {
-            ...(product.seller || {}),
-            id: userId,
-            name:
-              seller.name ||
-              product?.seller?.name ||
-              "Kristo Seller",
-            kristoId:
-              seller.kristoId ||
-              product?.seller?.kristoId ||
-              "",
-            verified: true,
-            avatarUrl: seller.avatarUrl,
-            shopName: seller.shopName,
-            shopCategory: seller.shopCategory,
-            shopLocation: seller.shopLocation,
-            churchId: seller.churchId,
-            churchName: seller.churchName,
-            churchAvatarUrl: seller.churchAvatarUrl,
-          },
-        };
+          const publicSeller = userId ? await loadSeller(userId) : null;
+          const merged = {
+            ...product,
+            seller: {
+              ...(product.seller || {}),
+              ...(publicSeller || {}),
+              ...(signedInUserId && userId ? { id: userId } : {}),
+              name:
+                publicSeller?.name ||
+                product?.seller?.name ||
+                "Kristo Seller",
+              verified: true,
+            },
+          };
+          return sanitizeSokoCatalogProduct(merged, {
+            includeInternalIds: Boolean(signedInUserId),
+          });
+        } catch {
+          return sanitizeSokoCatalogProduct({
+            ...product,
+            photos: [],
+            image: "",
+          });
+        }
       })
     );
 
@@ -132,7 +139,7 @@ export async function GET(req: NextRequest) {
       ok: true,
       ...result,
       products,
-    });
+    }, 200, "private, no-store");
   } catch (error) {
     console.error("KRISTO_SOKO_PRODUCTS_ENRICH_ERROR", error);
     return reply(
