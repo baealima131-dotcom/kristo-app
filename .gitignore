@@ -117,3 +117,4 @@ backups/
 # SOKO local development photos
 .soko-product-images/
 .soko-product-image-migration-state.json
+.soko-product-image-migration-manifest.json
