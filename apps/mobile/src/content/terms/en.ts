@@ -173,10 +173,10 @@ export const en = defineTermsTranslation({
     },
     {
       id: 18,
-      title: "18. Payments and Subscriptions",
+      title: "18. Payments and Commerce",
       paragraphs: [
-        "Some church and platform features may require paid subscriptions.",
-        "Billing may be processed by the applicable app store and is subject to the pricing, renewal, and subscription terms shown in the app store and at purchase time.",
+        "Kristo App church and platform features are free and do not require a paid subscription.",
+        "Purchases made through SOKO or other commerce features are separate transactions for products, delivery, or services and are subject to the price and transaction terms shown before purchase.",
       ],
     },
     {

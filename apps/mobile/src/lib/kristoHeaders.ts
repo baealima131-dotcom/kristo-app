@@ -2,10 +2,7 @@ import { getSessionSync } from "./kristoSessionSync";
 import {
   getKristoClientPlatformHeaderValue,
   KRISTO_CLIENT_PLATFORM_HEADER,
-  KRISTO_IOS_V1_FREE_PROOF_HEADER,
-  mintIosV1FreeProofHeaderValue,
-  describeIosV1FreeProofSecretSource,
-} from "./iosV1MonetizationPolicy";
+} from "./kristoClientPlatform";
 
 export type KristoRole =
   | "Church_Admin"
@@ -47,14 +44,12 @@ export function getKristoHeaders(auth?: Partial<KristoAuth> & { sessionToken?: s
   // (used right after login before the session is persisted), else the stored
   // session token. Production rejects the user-id header without this token.
   const sessionToken = String(auth?.sessionToken || s?.sessionToken || "").trim();
-  const iosV1FreeProof = mintIosV1FreeProofHeaderValue(a.userId);
   return {
     "x-kristo-user-id": a.userId,
     "x-kristo-role": a.role,
     "x-kristo-church-id": a.churchId,
     [KRISTO_CLIENT_PLATFORM_HEADER]: getKristoClientPlatformHeaderValue(),
     ...(sessionToken ? { "x-kristo-session-token": sessionToken } : {}),
-    ...(iosV1FreeProof ? { [KRISTO_IOS_V1_FREE_PROOF_HEADER]: iosV1FreeProof } : {}),
     ...(displayName ? { "x-kristo-user-name": displayName, "x-kristo-display-name": displayName } : {}),
   } as const;
 }
@@ -106,9 +101,6 @@ export function logKristoAuthHeadersDiag(
     hasChurchId: Boolean(headers["x-kristo-church-id"]),
     hasRole: Boolean(headers["x-kristo-role"]),
     hasSessionToken: Boolean(headers["x-kristo-session-token"]),
-    // Presence only — never log proof value or secret material.
-    hasIosV1FreeProof: Boolean(headers[KRISTO_IOS_V1_FREE_PROOF_HEADER]),
-    iosV1FreeProofSecretSource: describeIosV1FreeProofSecretSource(),
     ...(tokenMeta ? { tokenMeta } : {}),
   });
 }

@@ -6,6 +6,8 @@ import {
   roleFallbackLabel,
   sanitizeActorInText,
 } from "@/app/api/_lib/notificationActor";
+
+import type { ActorIdentity } from "@/app/api/_lib/notificationActor";
 import {
   dbCountNotifications,
   dbCreateNotification,
@@ -42,9 +44,6 @@ export type NotificationType =
   | "PrayerRequestPrayedFor"
   | "TrustedMediaHostAdded"
   | "TrustedMediaHostRemoved"
-  | "ChurchSubscriptionActivated"
-  | "ChurchSubscriptionExpiringSoon"
-  | "ChurchSubscriptionExpired"
   | "LiveEventScheduled"
   | "LiveSlotAssigned"
   | "LiveSlotCancelled"

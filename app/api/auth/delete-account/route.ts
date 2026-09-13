@@ -21,7 +21,7 @@ import {
   updateUserPersist,
 } from "@/app/api/auth/_lib/session";
 import { logAuthRequestDiag, resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
-import { listPastorOwnedChurches } from "@/app/api/_lib/subscriptionOwnershipLock";
+import { listPastorOwnedChurches } from "@/app/api/_lib/pastorChurchOwnership";
 
 export const runtime = "nodejs";
 

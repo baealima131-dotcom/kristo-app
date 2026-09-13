@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
       church: result.church,
       redeemedByAgentId: result.redeemedByAgentId,
       redeemedByUserId: result.redeemedByUserId,
-      subscription: result.subscription,
+      activation: result.activation,
     });
   } catch (error: any) {
     return json(

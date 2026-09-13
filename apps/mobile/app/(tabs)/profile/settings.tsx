@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  AppState,
   Modal,
   Pressable,
   ScrollView,
@@ -15,24 +14,11 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import {
-  checkAccountDeletePastorOwnership,
-  checkAccountDeleteSubscription,
-  getAccountDeleteStoreManagementFallbackMessage,
-  isDeleteAccountStoreCancellationComplete,
-  openAccountDeleteSubscriptionManagement,
-  resolveAccountDeleteSubscriptionOwnerGate,
-  type AccountDeletePastorOwnershipCheck,
-  type AccountDeleteSubscriptionCheck,
-} from "@/src/lib/accountDeleteSubscription";
+
 import {
   DeleteAccountFinalConfirmModal,
-  DeleteAccountLockHolderModal,
   DeleteAccountPastorOwnsChurchModal,
-  DeleteAccountSubscriptionChoiceModal,
-  type DeleteAccountChoiceOption,
-  type DeleteAccountFinalConfirmVariant,
-} from "@/src/components/account/DeleteAccountSubscriptionModals";
+} from "@/src/components/account/DeleteAccountModals";
 import {
   apiGet,
   apiPost,
@@ -44,6 +30,72 @@ const GOLD = "#F4D06F";
 const MUTED = "rgba(255,255,255,0.66)";
 const BORDER = "rgba(244,208,111,0.24)";
 const DANGER = "#FF5A5F";
+
+type PastorOwnedChurchSummary = {
+  churchId: string;
+  churchName: string | null;
+};
+
+type AccountDeletePastorOwnershipCheck = {
+  blocked: boolean;
+  churches: PastorOwnedChurchSummary[];
+};
+
+async function checkAccountDeletePastorOwnership(args: {
+  headers: Record<string, string>;
+}): Promise<AccountDeletePastorOwnershipCheck> {
+  const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+
+  if (!base) {
+    return { blocked: false, churches: [] };
+  }
+
+  const res = await fetch(`${base}/api/auth/delete-account/precheck`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      ...args.headers,
+    },
+    body: "{}",
+  });
+
+  const rawText = await res.text();
+
+  let body: {
+    ok?: boolean;
+    canDeleteAccount?: boolean;
+    pastorOwnsChurches?: PastorOwnedChurchSummary[];
+    error?: string;
+  } | null = null;
+
+  try {
+    body = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    body = null;
+  }
+
+  if (!res.ok || body?.ok === false) {
+    throw new Error(String(body?.error || rawText || `HTTP ${res.status}`));
+  }
+
+  const churches = Array.isArray(body?.pastorOwnsChurches)
+    ? body.pastorOwnsChurches
+    : [];
+
+  const blocked =
+    body?.canDeleteAccount === false ||
+    churches.length > 0;
+
+  console.log("KRISTO_ACCOUNT_DELETE_PASTOR_OWNERSHIP_CHECK", {
+    blocked,
+    churchCount: churches.length,
+    churchIds: churches.map((row) => row.churchId),
+  });
+
+  return { blocked, churches };
+}
+
 
 type PersonalPrivacy = {
   showGender: boolean;
@@ -265,38 +317,24 @@ export default function ProfileSettingsScreen() {
     useState(false);
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [choiceModalOpen, setChoiceModalOpen] = useState(false);
-  const [lockHolderModalOpen, setLockHolderModalOpen] = useState(false);
   const [finalConfirmOpen, setFinalConfirmOpen] = useState(false);
-  const [finalConfirmVariant, setFinalConfirmVariant] =
-    useState<DeleteAccountFinalConfirmVariant>("standard");
   const [deleting, setDeleting] = useState(false);
-  const [checkingSubscription, setCheckingSubscription] = useState(false);
+  const [checkingOwnership, setCheckingOwnership] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [processingOption, setProcessingOption] = useState<DeleteAccountChoiceOption | null>(
-    null
-  );
-  const [inlineStatusMessage, setInlineStatusMessage] = useState<string | null>(null);
-  const [managingLockHolderSubscription, setManagingLockHolderSubscription] = useState(false);
-  const [subscriptionCheck, setSubscriptionCheck] = useState<AccountDeleteSubscriptionCheck | null>(
-    null
-  );
+
   const [pastorOwnershipCheck, setPastorOwnershipCheck] =
     useState<AccountDeletePastorOwnershipCheck | null>(null);
-  const [pastorOwnsChurchModalOpen, setPastorOwnsChurchModalOpen] = useState(false);
-  const pendingCancelSubAfterManagementRef = useRef(false);
-  const pendingLockHolderManageRef = useRef(false);
+
+  const [pastorOwnsChurchModalOpen, setPastorOwnsChurchModalOpen] =
+    useState(false);
+
   const deleteContextRef = useRef({
     userId: "",
     role: "Member",
     churchId: "",
   });
 
-  const flowBusy =
-    deleting ||
-    checkingSubscription ||
-    Boolean(processingOption) ||
-    managingLockHolderSubscription;
+  const flowBusy = deleting || checkingOwnership;
 
   useEffect(() => {
     let alive = true;
@@ -786,7 +824,6 @@ export default function ProfileSettingsScreen() {
 
       console.log("KRISTO_DELETE_ACCOUNT_SUCCESS", { userId });
       setDeleteModalOpen(false);
-      setChoiceModalOpen(false);
       setFinalConfirmOpen(false);
       exitSessionFast({ reason: "delete", userId, churchId });
       console.log("KRISTO_DELETE_ACCOUNT_NAVIGATE_LOGIN", { userId });
@@ -808,206 +845,35 @@ export default function ProfileSettingsScreen() {
     }
   }, [deleting, exitSessionFast, router]);
 
-  const openFinalConfirm = useCallback((variant: DeleteAccountFinalConfirmVariant) => {
-    setChoiceModalOpen(false);
-    setLockHolderModalOpen(false);
-    setInlineStatusMessage(null);
-    setProcessingOption(null);
-    setManagingLockHolderSubscription(false);
-    setFinalConfirmVariant(variant);
-    setFinalConfirmOpen(true);
-  }, []);
-
-  const resolveDeleteGate = useCallback((check: AccountDeleteSubscriptionCheck) => {
-    const { userId, role, churchId } = deleteContextRef.current;
-    return resolveAccountDeleteSubscriptionOwnerGate({
-      check,
-      userId,
-      churchId,
-      role,
-    });
-  }, []);
-
-  const runSubscriptionCheck = useCallback(async () => {
-    const { userId, role, churchId } = deleteContextRef.current;
-    if (!userId) {
-      throw new Error("missing_user_id");
-    }
-
-    return checkAccountDeleteSubscription({
-      churchId,
-      headers: getKristoHeaders({
-        userId,
-        role: role as any,
-        churchId,
-      }) as Record<string, string>,
-    });
-  }, []);
-
-  const handleResumeAfterSubscriptionManagement = useCallback(async () => {
-    const { userId, churchId, role } = deleteContextRef.current;
-    if (!userId) return;
-
-    if (pendingLockHolderManageRef.current) {
-      pendingLockHolderManageRef.current = false;
-      setManagingLockHolderSubscription(false);
-      setLockHolderModalOpen(true);
-      return;
-    }
-
-    if (!pendingCancelSubAfterManagementRef.current) return;
-
-    pendingCancelSubAfterManagementRef.current = false;
-    setCheckingSubscription(true);
-    try {
-      const check = await runSubscriptionCheck();
-      setSubscriptionCheck(check);
-      setProcessingOption(null);
-
-      const gate = resolveDeleteGate(check);
-
-      if (!gate.canManageSubscription) {
-        if (gate.modalType === "lock_holder_non_pastor") {
-          setLockHolderModalOpen(true);
-          return;
-        }
-        openFinalConfirm(gate.modalType === "member_confirm" ? "member" : "standard");
-        return;
-      }
-
-      if (isDeleteAccountStoreCancellationComplete(check)) {
-        setInlineStatusMessage(null);
-        openFinalConfirm("after_cancel_subscription");
-        return;
-      }
-
-      setChoiceModalOpen(true);
-      setInlineStatusMessage(
-        "Auto-renew is still enabled on this device. Turn off renewal in the store subscription screen, then choose Delete Account + Cancel Subscription again."
-      );
-    } catch (error: any) {
-      console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CHECK_FAILED", {
-        userId,
-        churchId: churchId || null,
-        message: String(error?.message || error || "unknown"),
-        phase: "app_resume_after_management",
-      });
-      setProcessingOption(null);
-      openFinalConfirm("standard");
-    } finally {
-      setCheckingSubscription(false);
-    }
-  }, [openFinalConfirm, resolveDeleteGate, runSubscriptionCheck]);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState !== "active") return;
-      if (
-        !pendingCancelSubAfterManagementRef.current &&
-        !pendingLockHolderManageRef.current
-      ) {
-        return;
-      }
-      void handleResumeAfterSubscriptionManagement();
-    });
-
-    return () => subscription.remove();
-  }, [handleResumeAfterSubscriptionManagement]);
-
-  const handleDeleteOnlyOption = useCallback(() => {
-    setProcessingOption("delete_only");
-    setInlineStatusMessage(null);
-    openFinalConfirm("delete_only");
-  }, [openFinalConfirm]);
-
-  const handleCancelSubscriptionOption = useCallback(async () => {
-    const check = subscriptionCheck;
-    if (!check) return;
-
-    const gate = resolveDeleteGate(check);
-
-    if (!gate.canManageSubscription) {
-      if (gate.modalType === "lock_holder_non_pastor") {
-        setChoiceModalOpen(false);
-        setLockHolderModalOpen(true);
-        return;
-      }
-      openFinalConfirm(gate.modalType === "member_confirm" ? "member" : "standard");
-      return;
-    }
-
-    setProcessingOption("cancel_subscription");
-    setInlineStatusMessage(null);
-
-    if (isDeleteAccountStoreCancellationComplete(check)) {
-      setProcessingOption(null);
-      openFinalConfirm("after_cancel_subscription");
-      return;
-    }
-
-    pendingCancelSubAfterManagementRef.current = true;
-    const result = await openAccountDeleteSubscriptionManagement(check);
-    if (!result.opened) {
-      pendingCancelSubAfterManagementRef.current = false;
-      setProcessingOption(null);
-      setChoiceModalOpen(true);
-      setInlineStatusMessage(getAccountDeleteStoreManagementFallbackMessage());
-    }
-  }, [openFinalConfirm, resolveDeleteGate, subscriptionCheck]);
-
-  const handleLockHolderManageSubscription = useCallback(async () => {
-    const check = subscriptionCheck;
-    if (!check || flowBusy) return;
-
-    setManagingLockHolderSubscription(true);
-    setInlineStatusMessage(null);
-    pendingLockHolderManageRef.current = true;
-
-    const result = await openAccountDeleteSubscriptionManagement(check);
-    if (!result.opened) {
-      pendingLockHolderManageRef.current = false;
-      setManagingLockHolderSubscription(false);
-      setInlineStatusMessage(getAccountDeleteStoreManagementFallbackMessage());
-    }
-  }, [flowBusy, subscriptionCheck]);
-
-  const handleLockHolderDeleteAccount = useCallback(() => {
-    if (flowBusy) return;
-    openFinalConfirm("lock_holder");
-  }, [flowBusy, openFinalConfirm]);
-
-  const handleChoiceOption = useCallback(
-    (option: DeleteAccountChoiceOption) => {
-      if (flowBusy) return;
-      if (option === "delete_only") {
-        handleDeleteOnlyOption();
-        return;
-      }
-      void handleCancelSubscriptionOption();
-    },
-    [flowBusy, handleCancelSubscriptionOption, handleDeleteOnlyOption]
-  );
-
   const closeDeleteFlow = useCallback(() => {
     if (flowBusy) return;
+
     setDeleteModalOpen(false);
-    setChoiceModalOpen(false);
-    setLockHolderModalOpen(false);
     setPastorOwnsChurchModalOpen(false);
     setFinalConfirmOpen(false);
-    setInlineStatusMessage(null);
-    setProcessingOption(null);
-    setManagingLockHolderSubscription(false);
-    pendingCancelSubAfterManagementRef.current = false;
-    pendingLockHolderManageRef.current = false;
   }, [flowBusy]);
 
   async function onConfirmDeleteAccount() {
     if (flowBusy) return;
 
-    const userId = String(session?.userId || getKristoAuth().userId || "").trim();
-    const role = String(session?.role || session?.churchRole || getKristoAuth().role || "Member");
-    const churchId = String(session?.churchId || getKristoAuth().churchId || "").trim();
+    const userId = String(
+      session?.userId ||
+        getKristoAuth().userId ||
+        ""
+    ).trim();
+
+    const role = String(
+      session?.role ||
+        session?.churchRole ||
+        getKristoAuth().role ||
+        "Member"
+    );
+
+    const churchId = String(
+      session?.churchId ||
+        getKristoAuth().churchId ||
+        ""
+    ).trim();
 
     if (!userId) {
       Alert.alert(
@@ -1017,17 +883,23 @@ export default function ProfileSettingsScreen() {
       return;
     }
 
-    deleteContextRef.current = { userId, role, churchId };
+    deleteContextRef.current = {
+      userId,
+      role,
+      churchId,
+    };
 
-    setCheckingSubscription(true);
+    setCheckingOwnership(true);
+
     try {
-      const pastorCheck = await checkAccountDeletePastorOwnership({
-        headers: getKristoHeaders({
-          userId,
-          role: role as any,
-          churchId,
-        }) as Record<string, string>,
-      });
+      const pastorCheck =
+        await checkAccountDeletePastorOwnership({
+          headers: getKristoHeaders({
+            userId,
+            role: role as any,
+            churchId,
+          }) as Record<string, string>,
+        });
 
       if (pastorCheck.blocked) {
         setPastorOwnershipCheck(pastorCheck);
@@ -1036,42 +908,28 @@ export default function ProfileSettingsScreen() {
         return;
       }
 
-      const check = await runSubscriptionCheck();
-      const gate = resolveDeleteGate(check);
-
       setDeleteModalOpen(false);
-
-      if (gate.modalType === "owner_choice") {
-        setSubscriptionCheck(check);
-        setChoiceModalOpen(true);
-        return;
-      }
-
-      setSubscriptionCheck(check);
-
-      if (gate.modalType === "lock_holder_non_pastor") {
-        setLockHolderModalOpen(true);
-        return;
-      }
-
-      if (gate.modalType === "member_confirm") {
-        openFinalConfirm("member");
-        return;
-      }
-
-      openFinalConfirm("standard");
+      setFinalConfirmOpen(true);
     } catch (error: any) {
-      console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CHECK_FAILED", {
-        userId,
-        churchId: churchId || null,
-        message: String(error?.message || error || "unknown"),
-      });
+      console.log(
+        "KRISTO_ACCOUNT_DELETE_PASTOR_OWNERSHIP_CHECK_FAILED",
+        {
+          userId,
+          churchId: churchId || null,
+          message: String(
+            error?.message ||
+              error ||
+              "unknown"
+          ),
+        }
+      );
+
       Alert.alert(
         "Delete failed",
-        "We could not verify your subscription status. Please try again."
+        "We could not verify whether this account still owns a church. Please try again."
       );
     } finally {
-      setCheckingSubscription(false);
+      setCheckingOwnership(false);
     }
   }
 
@@ -1614,8 +1472,7 @@ export default function ProfileSettingsScreen() {
           <View style={s.modalCard}>
             <Text style={s.modalTitle}>Delete Account?</Text>
             <Text style={s.modalMessage}>
-              This will permanently delete your Kristo account and sign you out. Active App Store or
-              Google Play subscriptions must be cancelled separately to stop renewal charges.
+              This will permanently delete your Kristo account and sign you out. This action cannot be undone.
             </Text>
 
             <View style={s.modalActions}>
@@ -1640,7 +1497,7 @@ export default function ProfileSettingsScreen() {
                   flowBusy && { opacity: 0.55 },
                 ]}
               >
-                {checkingSubscription ? (
+                {checkingOwnership ? (
                   <View style={s.modalDeleteLoading}>
                     <ActivityIndicator color="#fff" size="small" />
                     <Text style={s.modalDeleteText}>Checking...</Text>
@@ -1654,15 +1511,6 @@ export default function ProfileSettingsScreen() {
         </View>
       </Modal>
 
-      <DeleteAccountSubscriptionChoiceModal
-        visible={choiceModalOpen}
-        inlineStatusMessage={inlineStatusMessage}
-        processingOption={processingOption}
-        disabled={checkingSubscription || deleting}
-        onSelectOption={handleChoiceOption}
-        onNotNow={closeDeleteFlow}
-      />
-
       <DeleteAccountPastorOwnsChurchModal
         visible={pastorOwnsChurchModalOpen}
         churches={pastorOwnershipCheck?.churches || []}
@@ -1672,7 +1520,7 @@ export default function ProfileSettingsScreen() {
           String((session as any)?.churchAvatarUri || (session as any)?.churchAvatarUrl || "").trim() ||
           null
         }
-        disabled={checkingSubscription || deleting}
+        disabled={checkingOwnership || deleting}
         onGoToChurch={() => {
           closeDeleteFlow();
           router.push("/more/church" as any);
@@ -1680,21 +1528,9 @@ export default function ProfileSettingsScreen() {
         onNotNow={closeDeleteFlow}
       />
 
-      <DeleteAccountLockHolderModal
-        visible={lockHolderModalOpen}
-        disabled={checkingSubscription || deleting}
-        managing={managingLockHolderSubscription}
-        inlineStatusMessage={inlineStatusMessage}
-        onManageSubscription={() => {
-          void handleLockHolderManageSubscription();
-        }}
-        onDeleteAccount={handleLockHolderDeleteAccount}
-        onNotNow={closeDeleteFlow}
-      />
-
       <DeleteAccountFinalConfirmModal
         visible={finalConfirmOpen}
-        variant={finalConfirmVariant}
+        variant="standard"
         deleting={deleting}
         onConfirm={() => {
           void performAccountDelete();

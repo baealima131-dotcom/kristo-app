@@ -17,8 +17,6 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
-import { isIosV1PremiumFeatureUnlocked } from "@/src/lib/iosV1MonetizationPolicy";
 import {
   msFromCreateMinistryPress,
 } from "@/src/lib/createMinistryNavigation";
@@ -26,15 +24,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
-import { fetchChurchSubscriptionStatus } from "@/src/lib/churchSubscription";
-import { churchIdsMatch } from "@/src/lib/churchPremiumAccess";
-import {
-  ChurchMinistryPremiumLockCard,
-  isMinistryCreationBlocked,
-} from "@/src/components/ChurchPremiumSubscriptionModal";
 import { getSessionSync } from "@/src/lib/kristoSession";
-import { emitMinistriesUpdated, onChurchPremiumAccessChanged } from "@/src/lib/kristoProfileEvents";
+import { emitMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
 import {
   peekMinistriesCache,
   saveMinistriesCache,
@@ -50,11 +41,6 @@ import {
   MINISTRY_MEDIA_ACCESS_LIMIT,
   MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE,
 } from "@/src/lib/ministryMediaAccessLimit";
-import {
-  evaluateMinistryMediaAccessPermission,
-  logMinistryMediaAccessLoad,
-  logMinistryMediaAccessSave,
-} from "@/src/lib/ministryMediaAccessTrace";
 import {
   isMinistryMemberPostSuccess,
   planAdditionalMinistryMemberPosts,
@@ -278,24 +264,12 @@ export default function ChurchMinistryCreateScreen() {
   const nameRef = useRef<TextInput>(null);
   const firstPaintLoggedRef = useRef(false);
   const hydratedLoggedRef = useRef(false);
-  const iosV1Free = isIosV1PremiumFeatureUnlocked();
-  const bypassEnabled = isSubscriptionBypassEnabled();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<MinistryStatus>("Active");
   const [mediaAccess, setMediaAccess] = useState(false);
   const [mediaAccessCount, setMediaAccessCount] = useState(0);
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
-    bypassEnabled || iosV1Free ? true : null
-  );
-  const [canUseMediaTools, setCanUseMediaTools] = useState<boolean | null>(
-    bypassEnabled || iosV1Free ? true : null
-  );
-  // Never block first paint on network for iOS V1 free / bypass — form renders from session.
-  const [subscriptionGateReady, setSubscriptionGateReady] = useState(
-    bypassEnabled || iosV1Free
-  );
 
   const session = getSessionSync() as any;
   const sessionRole = String(session?.role || session?.churchRole || "").trim();
@@ -304,12 +278,8 @@ export default function ChurchMinistryCreateScreen() {
   const canCreateMinistryRole =
     /\bPastor\b/i.test(sessionRole) ||
     sessionRole === "Church_Admin";
-  const ministryCreationBlocked = isMinistryCreationBlocked(
-    churchSubscriptionActive,
-    canUseMediaTools
-  );
-  const canEnableMinistryMediaAccess =
-    churchSubscriptionActive === true || bypassEnabled || iosV1Free;
+  // Kristo App is free. Ministry media access depends on church role, not payment.
+  const canEnableMinistryMediaAccess = canCreateMinistryRole;
   const mediaAccessLimitReached = mediaAccessCount >= MINISTRY_MEDIA_ACCESS_LIMIT;
   const mediaAccessToggleDisabled = !canEnableMinistryMediaAccess || mediaAccessLimitReached;
 
@@ -383,9 +353,8 @@ export default function ChurchMinistryCreateScreen() {
     console.log("KRISTO_CREATE_MINISTRY_FIRST_PAINT", {
       msFromPress: ms,
       cacheHit: membersCacheHit,
-      subscriptionGateReady,
     });
-  }, [membersCacheHit, subscriptionGateReady]);
+  }, [membersCacheHit]);
 
   useEffect(() => {
     if (cachedMediaAccessCount > 0) setMediaAccessCount(cachedMediaAccessCount);
@@ -433,43 +402,6 @@ export default function ChurchMinistryCreateScreen() {
     }
   }, [autoPastorUserId]);
 
-  // Background subscription hydrate — must not delay first paint on iOS V1 free.
-  useEffect(() => {
-    if (!churchId) {
-      setSubscriptionGateReady(true);
-      return;
-    }
-    if (iosV1Free || bypassEnabled) {
-      setSubscriptionGateReady(true);
-    }
-    let alive = true;
-    fetchChurchSubscriptionStatus(getKristoHeaders(), churchId).then((status) => {
-      if (!alive) return;
-      if (!iosV1Free && !bypassEnabled) {
-        setChurchSubscriptionActive(
-          status.backendSubscriptionActive ?? status.subscriptionActive
-        );
-        setCanUseMediaTools(status.canUseMediaTools ?? null);
-      } else if (status.backendSubscriptionActive ?? status.subscriptionActive) {
-        setChurchSubscriptionActive(true);
-      }
-      setSubscriptionGateReady(true);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [churchId, iosV1Free, bypassEnabled]);
-
-  useEffect(() => {
-    if (!churchId) return;
-    return onChurchPremiumAccessChanged((payload) => {
-      if (!churchIdsMatch(payload.churchId, churchId)) return;
-      setChurchSubscriptionActive(true);
-      setCanUseMediaTools(payload.canUseMediaTools);
-      setSubscriptionGateReady(true);
-    });
-  }, [churchId]);
-
   // Load church members for pickers in the background (cache already seeded UI).
   useEffect(() => {
     let alive = true;
@@ -483,17 +415,7 @@ export default function ChurchMinistryCreateScreen() {
         if (!alive) return;
         if (ministriesRes?.ok && Array.isArray(ministriesRes.data)) {
           setMediaAccessCount(countMinistriesWithMediaAccess(ministriesRes.data));
-          logMinistryMediaAccessLoad({
-            churchId,
-            count: ministriesRes.data.length,
-            source: "church/ministries/create",
-            payloadStored: ministriesRes.data.map((m: any) => ({
-              id: m?.id,
-              name: m?.name,
-              mediaAccess: m?.mediaAccess === true,
-            })),
-          });
-        }
+}
         if (membersRes?.ok && Array.isArray(membersRes.data)) {
           const list: PickerMember[] = membersRes.data
             .map((m: any) => ({
@@ -566,35 +488,8 @@ export default function ChurchMinistryCreateScreen() {
         status,
         mediaAccess: canEnableMinistryMediaAccess ? mediaAccess : false,
       };
-
-      logMinistryMediaAccessSave({
-        churchId,
-        mediaAccess: payloadSent.mediaAccess === true,
-        payloadSent,
-        phase: "request",
-        source: "church/ministries/create",
-      });
-
-      const data = await apiCreateMinistry(payloadSent);
-
-      logMinistryMediaAccessSave({
-        ministryId: data.id,
-        churchId,
-        mediaAccess: data.mediaAccess === true,
-        payloadSent,
-        payloadStored: data,
-        phase: "response",
-        source: "church/ministries/create",
-      });
-
-      evaluateMinistryMediaAccessPermission({
-        ministryId: data.id,
-        churchId,
-        mediaAccess: data.mediaAccess === true,
-        churchSubscriptionActive,
-        source: "church/ministries/create",
-      });
-      const session = getSessionSync();
+const data = await apiCreateMinistry(payloadSent);
+const session = getSessionSync();
       const creatorUserId = String(session?.userId || "").trim();
       // Backend already seeds creating viewer as Leader — never re-POST auto pastor / creator.
       const memberPlan = planAdditionalMinistryMemberPosts({
@@ -754,18 +649,6 @@ export default function ChurchMinistryCreateScreen() {
     }
   }
 
-  function openSubscriptionsScreen() {
-    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
-  }
-
-  if (!subscriptionGateReady && !iosV1Free && !bypassEnabled) {
-    return (
-      <View style={[s.screen, s.gateScreen, { paddingTop: insets.top + 24 }]}>
-        <ActivityIndicator color={GOLD} />
-      </View>
-    );
-  }
-
   if (!canCreateMinistryRole) {
     return (
       <View style={[s.screen, { paddingTop: insets.top + 12, paddingHorizontal: 16 }]}>
@@ -775,19 +658,6 @@ export default function ChurchMinistryCreateScreen() {
         <View style={s.gateContent}>
           <Text style={s.gateTitle}>Pastor access required</Text>
           <Text style={s.gateBody}>Only pastor or church admin can create ministries.</Text>
-        </View>
-      </View>
-    );
-  }
-
-  if (ministryCreationBlocked) {
-    return (
-      <View style={[s.screen, { paddingTop: insets.top + 12, paddingHorizontal: 16 }]}>
-        <LuxuryPressable onPress={() => router.back()} style={s.backBtn}>
-          <Ionicons name="chevron-back" size={20} color={TEXT_PRIMARY} />
-        </LuxuryPressable>
-        <View style={{ marginTop: 18 }}>
-          <ChurchMinistryPremiumLockCard onSubscribe={openSubscriptionsScreen} />
         </View>
       </View>
     );
@@ -1038,8 +908,8 @@ export default function ChurchMinistryCreateScreen() {
                     onPress={() => {
                       if (!canEnableMinistryMediaAccess) {
                         Alert.alert(
-                          "Subscription required",
-                          "Subscribe first before enabling ministry media access."
+                          "Admin access required",
+                          "Only the Pastor or Church Admin can enable ministry media access."
                         );
                         return;
                       }

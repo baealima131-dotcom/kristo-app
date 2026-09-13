@@ -1,12 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { evaluateChurchDeleteSubscriptionGuardForPastor } from "@/app/api/_lib/churchDeleteSubscription";
-import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
 import { guard } from "@/app/api/_lib/rbac";
 import { getMembershipsForUser, leaveActiveMembership } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
-import { preserveSubscriptionOwnershipLockTombstoneForChurchDelete } from "@/app/api/_lib/subscriptionOwnershipLock";
 
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -24,65 +21,6 @@ export async function POST(req: NextRequest) {
   );
   const churchId = String(activeMembership?.churchId || headerChurchId || "").trim();
 
-  let pastorDeleteGuard: Awaited<
-    ReturnType<typeof evaluateChurchDeleteSubscriptionGuardForPastor>
-  > | null = null;
-
-  if (churchId) {
-    const access = await evaluateChurchMediaAccess({
-      churchId,
-      userId: viewer.userId,
-      headers: req.headers,
-    });
-
-    if (access.isActualChurchPastor) {
-      pastorDeleteGuard = await evaluateChurchDeleteSubscriptionGuardForPastor({
-        ownerUserId: viewer.userId,
-        churchId,
-      });
-
-      if (pastorDeleteGuard.blocked) {
-        console.log("KRISTO_CHURCH_DELETE_BLOCKED_ACTIVE_SUBSCRIPTION_SERVER", {
-          churchId,
-          userId: viewer.userId,
-          blockReason: pastorDeleteGuard.blockReason,
-          willRenew: pastorDeleteGuard.willRenew,
-        });
-        return json(
-          {
-            ok: false,
-            error: "active-subscription-renewal",
-            reason: pastorDeleteGuard.blockReason,
-            blockReason: pastorDeleteGuard.blockReason,
-            willRenew: pastorDeleteGuard.willRenew,
-            store: pastorDeleteGuard.store,
-          },
-          { status: 403 }
-        );
-      }
-
-      const tombstone = await preserveSubscriptionOwnershipLockTombstoneForChurchDelete({
-        ownerUserId: viewer.userId,
-        churchId,
-      });
-      if (tombstone.reason === "lock-held-by-other-church-skipped") {
-        console.log("KRISTO_CHURCH_DELETE_TOMBSTONE_SKIPPED_OTHER_LOCK", {
-          churchId,
-          userId: viewer.userId,
-          lockedChurchId: tombstone.lock?.lockedChurchId ?? null,
-          reason: tombstone.reason,
-        });
-      } else {
-        console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_SERVER", {
-          churchId,
-          userId: viewer.userId,
-          preserved: tombstone.preserved,
-          reason: tombstone.reason ?? null,
-        });
-      }
-    }
-  }
-
   const r = await leaveActiveMembership(viewer.userId);
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
@@ -97,6 +35,5 @@ export async function POST(req: NextRequest) {
   return json({
     ok: true,
     membership: r.membership,
-    requiresCancellationWarning: pastorDeleteGuard?.requiresCancellationWarning === true,
   });
 }

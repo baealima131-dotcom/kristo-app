@@ -16,7 +16,6 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { loadSession, saveSession, setSessionSync } from "@/src/lib/kristoSession";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
@@ -27,8 +26,6 @@ import {
   clearChurchMediaProfileCache,
 } from "@/src/lib/churchMediaProfileStore";
 import { MAX_CHURCH_MEDIA_HOSTS } from "@/src/lib/churchMediaAccess";
-import { ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
-import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
 
 type HostDraft = {
   userId: string;
@@ -155,13 +152,9 @@ export default function SelectHosts() {
   const [saveSuccess, setSaveSuccess] = useState("");
 
   const churchId = String(session?.churchId || "").trim();
-  const { managementAllowed, managementBlocked, ready: subscriptionGateReady } =
-    useChurchPremiumManagementAccess(churchId);
-  const canEditHosts = canManageHosts && managementAllowed;
+  // Kristo App is free. Host editing is controlled by real church authority only.
+  const canEditHosts = canManageHosts;
 
-  function openSubscriptionsScreen() {
-    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
-  }
 
   const selectedCount = useMemo(
     () => hosts.filter(Boolean).length,
@@ -322,18 +315,6 @@ export default function SelectHosts() {
       );
       return;
     }
-    if (!managementAllowed) {
-      Alert.alert(
-        "Subscription expired",
-        "Trusted media hosts require an active Media Premium subscription.",
-        [
-          { text: "Not now", style: "cancel" },
-          { text: "Subscribe", onPress: openSubscriptionsScreen },
-        ]
-      );
-      return;
-    }
-
     if (!session?.userId || !session?.churchId) {
       Alert.alert("Session missing", "Please sign in again and retry.");
       return;
@@ -508,12 +489,6 @@ export default function SelectHosts() {
           contentContainerStyle={[s.scrollContent, { paddingBottom: bottomContentClearance }]}
           scrollIndicatorInsets={{ bottom: bottomContentClearance * 0.35 }}
         >
-          {managementBlocked && subscriptionGateReady ? (
-            <ChurchSubscriptionExpiredBadge
-              onSubscribe={openSubscriptionsScreen}
-              style={{ marginBottom: 14 }}
-            />
-          ) : null}
           <Text style={s.sectionEyebrow}>Broadcast control</Text>
 
           {hosts.map((host, index) => {
@@ -623,9 +598,7 @@ export default function SelectHosts() {
                       <Text style={s.emptyMicro}>
                         {!canManageHosts
                           ? "Pastor access required"
-                          : managementBlocked
-                            ? "Subscription expired"
-                            : "Tap to assign"}
+                          : "Tap to assign"}
                       </Text>
                     </View>
 
@@ -724,9 +697,7 @@ export default function SelectHosts() {
                   <Text style={[s.saveBtnTextDark, !canEditHosts && s.saveBtnTextMuted]}>
                     {!canManageHosts
                       ? "Pastor access required"
-                      : managementBlocked
-                        ? "Subscription expired"
-                        : "Save Trusted Hosts"}
+                      : "Save Trusted Hosts"}
                   </Text>
                 </>
               )}

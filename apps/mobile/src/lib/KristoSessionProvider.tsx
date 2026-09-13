@@ -42,10 +42,6 @@ import {
   completeSessionExitCleanup,
   isSessionExitInProgress,
 } from "./kristoSessionExit";
-import {
-  logOutRevenueCat,
-  realignRevenueCatIdentityForChurch,
-} from "./payments/mobileSubscriptions";
 import { clearChurchMediaProfileCache } from "./churchMediaProfileStore";
 
 type ExitSessionReason = "delete" | "logout";
@@ -122,11 +118,6 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
         }
         startMoreTabPremount(ready);
         await runCoordinatedAppRefresh(ready, { deferMs: 0 });
-        void realignRevenueCatIdentityForChurch({
-          churchId: String(ready.churchId || "").trim(),
-          userId: ready.userId,
-          reason: "session-hydrate",
-        });
       }, { reason: "session-profile-hydrate" });
     })();
     return () => {
@@ -281,12 +272,6 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       clearResponseCacheForRequest("GET", "/api/church/feed", userId);
       void clearChurchMediaProfileCache(prev);
       void (async () => {
-        await logOutRevenueCat();
-        await realignRevenueCatIdentityForChurch({
-          churchId,
-          userId,
-          reason: "church-switch",
-        });
       })();
       void (async () => {
         const loaded = await loadSession();

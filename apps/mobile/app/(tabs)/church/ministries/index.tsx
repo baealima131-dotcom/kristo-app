@@ -2,13 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { markCreateMinistryPress } from "@/src/lib/createMinistryNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { ChurchMinistryPremiumLockCard, ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
-import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
 import {
   getMinistriesCache,
   isScreenCacheFresh,
@@ -16,8 +13,7 @@ import {
   saveMinistriesCache,
 } from "@/src/lib/screenDataCache";
 import { refreshMinistriesBundleIfNeeded, seedMinistriesRefreshFromCache } from "@/src/lib/churchResourceRefresh";
-import { onMinistriesUpdated, onChurchPremiumAccessChanged } from "@/src/lib/kristoProfileEvents";
-import { churchIdsMatch } from "@/src/lib/churchPremiumAccess";
+import { onMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
 import {
   CHURCH_TAB_REFRESH_MS,
   logChurchFeatureBackgroundRefresh,
@@ -104,10 +100,8 @@ export default function MoreMinistriesList() {
     role === "Church_Admin" ||
     role === "Leader" ||
     role === "Ministry_Leader";
-  const { managementBlocked, ready: subscriptionGateReady } =
-    useChurchPremiumManagementAccess(churchId);
-  const createMinistryLocked = canCreateMinistry && managementBlocked;
-  const showCreateMinistryActions = canCreateMinistry && !createMinistryLocked;
+  // Kristo App is free. Ministry creation is controlled by church role only.
+  const showCreateMinistryActions = canCreateMinistry;
 
   const applyMinistriesCache = useCallback((cachedItems: Ministry[]) => {
     const sig = ministriesSignature(cachedItems);
@@ -287,25 +281,14 @@ export default function MoreMinistriesList() {
     return unsub;
   }, [churchId, userId, applyMinistriesCache, load]);
 
-  useEffect(() => {
-    if (!churchId) return;
-    return onChurchPremiumAccessChanged((payload) => {
-      if (!churchIdsMatch(payload.churchId, churchId)) return;
-      cacheFreshRef.current = false;
-      void load({ force: true });
-    });
-  }, [churchId, load]);
 
   function handleCreateMinistryPress() {
     markCreateMinistryPress("church/ministries");
-    if (!canCreateMinistry || createMinistryLocked) return;
+    if (!canCreateMinistry) return;
     // Navigate immediately — create screen hydrates from session/cache.
     router.push("/church/ministries/create" as any);
   }
 
-  function openSubscriptionsScreen() {
-    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
-  }
 
   const hasItems = useMemo(() => items.length > 0, [items]);
   const showSpinner = loading && !hasLoaded;
@@ -381,18 +364,10 @@ export default function MoreMinistriesList() {
               <Ionicons name="add" size={18} color="#0B0F17" />
               <Text style={s.createBtnText}>Create Ministry</Text>
             </Pressable>
-          ) : createMinistryLocked ? (
-            <ChurchMinistryPremiumLockCard onSubscribe={openSubscriptionsScreen} />
           ) : null}
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: PAD, paddingBottom: 26 }}>
-          {createMinistryLocked && subscriptionGateReady ? (
-            <ChurchSubscriptionExpiredBadge
-              onSubscribe={openSubscriptionsScreen}
-              style={{ marginBottom: 12 }}
-            />
-          ) : null}
           {items.map((m) => {
             const leaders = Number(m.leaderCount ?? m.leadersCount ?? 0);
             const members = Number(m.memberCount ?? m.membersCount ?? 0);

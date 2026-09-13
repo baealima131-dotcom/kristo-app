@@ -27,7 +27,7 @@ import {
   getTermsLanguagePreference,
   saveTermsLanguagePreference,
 } from "@/src/lib/termsLanguagePreference";
-import { SUBSCRIPTION_SUPPORT_URL } from "@/src/components/payments/SubscriptionLegalDisclosure";
+import { KRISTO_SUPPORT_URL } from "@/src/lib/kristoLinks";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -185,7 +185,7 @@ export default function TermsScreen() {
               <Pressable
                 style={[s.supportBtn, isRtl ? s.supportBtnRtl : null]}
                 onPress={() => {
-                  void Linking.openURL(SUBSCRIPTION_SUPPORT_URL);
+                  void Linking.openURL(KRISTO_SUPPORT_URL);
                 }}
               >
                 <Text style={s.supportBtnText}>{copy.contactSupportLabel}</Text>

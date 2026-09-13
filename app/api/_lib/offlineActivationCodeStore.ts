@@ -6,7 +6,6 @@ import {
   updateOfflineActivationJsonFile,
 } from "@/app/api/_lib/store/offlineActivationDb";
 import { getChurchById } from "@/app/api/_lib/churches";
-import { unlockChurchSubscriptionFromOfflineActivation } from "@/app/api/_lib/churchOfflineActivationSubscription";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import { normalizeMembershipChurchId } from "@/app/api/_lib/memberships";
@@ -95,9 +94,6 @@ const STORE_FILE = OFFLINE_ACTIVATION_CODES_STORE_KEY;
 
 export const ACTIVATION_COUNTRY_CODES = ["BDI", "CD", "TZ", "US"] as const;
 export type ActivationCountryCode = (typeof ACTIVATION_COUNTRY_CODES)[number];
-
-export const ACTIVATION_DURATION_MONTHS = [1, 3, 6, 12] as const;
-export type ActivationDurationMonths = (typeof ACTIVATION_DURATION_MONTHS)[number];
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_BATCH_QUANTITY = 200;
@@ -252,17 +248,12 @@ function newCodeId(): string {
   return `actcode_${Date.now().toString(36)}_${randomSegment(8)}`;
 }
 
-export function formatActivationCode(countryCode: string, durationMonths: number): string {
-  return `KR-${countryCode}-M${durationMonths}-${randomSegment()}-${randomSegment()}`;
+export function formatActivationCode(countryCode: string): string {
+  return `KR-${countryCode}-${randomSegment()}-${randomSegment()}`;
 }
 
 export function isAllowedCountryCode(value: unknown): value is ActivationCountryCode {
   return ACTIVATION_COUNTRY_CODES.includes(String(value || "").trim().toUpperCase() as ActivationCountryCode);
-}
-
-export function isAllowedDurationMonths(value: unknown): value is ActivationDurationMonths {
-  const n = Number(value);
-  return ACTIVATION_DURATION_MONTHS.includes(n as ActivationDurationMonths);
 }
 
 async function readStore(): Promise<OfflineActivationCodeStore> {
@@ -319,14 +310,13 @@ function collectExistingCodes(store: OfflineActivationCodeStore): Set<string> {
 function generateUniqueCodes(
   existing: Set<string>,
   countryCode: ActivationCountryCode,
-  durationMonths: ActivationDurationMonths,
   quantity: number
 ): string[] {
   const out: string[] = [];
   const local = new Set(existing);
 
   while (out.length < quantity) {
-    const candidate = formatActivationCode(countryCode, durationMonths);
+    const candidate = formatActivationCode(countryCode);
     const key = candidate.toUpperCase();
     if (local.has(key)) continue;
     local.add(key);
@@ -354,7 +344,6 @@ async function resolveSupervisorDisplay(userId: string, note?: string) {
 
 export type GenerateActivationBatchInput = {
   countryCode: ActivationCountryCode;
-  durationMonths: ActivationDurationMonths;
   quantity: number;
   createdByUserId: string;
 };
@@ -368,15 +357,11 @@ export async function generateActivationCodeBatch(
   input: GenerateActivationBatchInput
 ): Promise<GenerateActivationBatchResult> {
   const countryCode = String(input.countryCode || "").trim().toUpperCase() as ActivationCountryCode;
-  const durationMonths = Number(input.durationMonths) as ActivationDurationMonths;
   const quantity = Math.floor(Number(input.quantity));
   const createdByUserId = String(input.createdByUserId || "").trim();
 
   if (!isAllowedCountryCode(countryCode)) {
     throw new Error("Invalid countryCode");
-  }
-  if (!isAllowedDurationMonths(durationMonths)) {
-    throw new Error("Invalid durationMonths");
   }
   if (!Number.isFinite(quantity) || quantity < 1 || quantity > MAX_BATCH_QUANTITY) {
     throw new Error(`Quantity must be between 1 and ${MAX_BATCH_QUANTITY}`);
@@ -388,16 +373,14 @@ export async function generateActivationCodeBatch(
   const createdAt = new Date().toISOString();
   const batchId = newBatchId();
 
-  let createdBatch: ActivationCodeBatch | null = null;
-
-  await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
+  const generatedResult = await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
     STORE_FILE,
     (current) => {
       const store: OfflineActivationCodeStore = {
         batches: Array.isArray(current?.batches) ? current.batches : [],
       };
       const existing = collectExistingCodes(store);
-      const codeStrings = generateUniqueCodes(existing, countryCode, durationMonths, quantity);
+      const codeStrings = generateUniqueCodes(existing, countryCode, quantity);
 
       const codes: ActivationCode[] = codeStrings.map((code) =>
         normalizeActivationCode({
@@ -405,7 +388,8 @@ export async function generateActivationCodeBatch(
           code,
           batchId,
           countryCode,
-          durationMonths,
+          // Legacy compatibility only: 0 = permanent / non-expiring.
+          durationMonths: 0,
           status: "available",
           createdAt,
           createdByUserId,
@@ -416,7 +400,8 @@ export async function generateActivationCodeBatch(
       const batch: ActivationCodeBatch = {
         batchId,
         countryCode,
-        durationMonths,
+        // Legacy compatibility only: 0 = permanent / non-expiring.
+        durationMonths: 0,
         quantity,
         createdByUserId,
         createdAt,
@@ -424,7 +409,6 @@ export async function generateActivationCodeBatch(
         codes,
       };
 
-      createdBatch = batch;
       return {
         batches: [batch, ...store.batches],
       };
@@ -432,21 +416,23 @@ export async function generateActivationCodeBatch(
     { batches: [] }
   );
 
-  if (!createdBatch) {
+  const generatedBatch = generatedResult.batches[0];
+
+  if (!generatedBatch) {
     throw new Error("Failed to create batch");
   }
 
   const verified = await readStore();
   logActivationCodeStoreSnapshot("after-generate", verified, {
-    generatedBatchId: createdBatch.batchId,
-    generatedCount: createdBatch.codes.length,
-    firstGeneratedCodeStatus: createdBatch.codes[0]?.status || null,
-    firstGeneratedCode: createdBatch.codes[0]?.code || null,
+    generatedBatchId: generatedBatch.batchId,
+    generatedCount: generatedBatch.codes.length,
+    firstGeneratedCodeStatus: generatedBatch.codes[0]?.status || null,
+    firstGeneratedCode: generatedBatch.codes[0]?.code || null,
   });
 
   return {
-    batch: createdBatch,
-    codes: createdBatch.codes,
+    batch: generatedBatch,
+    codes: generatedBatch.codes,
   };
 }
 
@@ -843,7 +829,7 @@ export type SupervisorCodeActivityItem = {
     | "assigned_to_agent"
     | "redeemed"
     | "returned"
-    | "expired"
+    | "disabled"
     | "received";
   title: string;
   subtitle?: string;
@@ -973,9 +959,9 @@ export async function buildSupervisorCodeActivity(
     }
     if (code.status === "disabled") {
       events.push({
-        id: `${code.id}-expired`,
-        type: "expired",
-        title: "Code expired",
+        id: `${code.id}-disabled`,
+        type: "disabled",
+        title: "Code disabled",
         subtitle: code.code,
         code: code.code,
         occurredAt: String(code.redeemedAt || code.assignedAgentAt || code.createdAt),
@@ -1221,9 +1207,9 @@ export function buildAgentCodeActivity(
     }
     if (code.status === "disabled") {
       events.push({
-        id: `${code.id}-expired`,
-        type: "expired",
-        title: "Code expired",
+        id: `${code.id}-disabled`,
+        type: "disabled",
+        title: "Code disabled",
         subtitle: code.code,
         code: code.code,
         occurredAt: String(code.redeemedAt || code.assignedAgentAt || code.createdAt),
@@ -1312,12 +1298,10 @@ export type ActivateChurchWithAgentCodeResult = {
   church: { churchId: string; churchName: string };
   redeemedByAgentId: string;
   redeemedByUserId: string;
-  subscription: {
-    subscriptionActive: true;
-    subscriptionPlan: string;
-    subscriptionExpiresAt: number;
-    subscriptionActivatedAt: number;
-    source: "offline_activation";
+  activation: {
+    activated: true;
+    activatedAt: string;
+    source: "agent_activation_code";
   };
 };
 
@@ -1337,94 +1321,159 @@ export async function activateChurchWithAgentCode(
 
   const registrations = await listAgentsByLinkedUserId(agentUserId);
   const agentIds = new Set(registrations.map((agent) => agent.id));
-  if (agentIds.size === 0) throw new Error("No agent registration found for this user");
+
+  if (agentIds.size === 0) {
+    throw new Error("No agent registration found for this user");
+  }
 
   const church = await getChurchById(churchId);
   if (!church) throw new Error("Church not found");
 
   const redeemedAt = new Date().toISOString();
-  let updatedCode: ActivationCode | null = null;
   let redeemedByAgentId = "";
 
-  await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
-    STORE_FILE,
-    (current) => {
-      const store: OfflineActivationCodeStore = {
-        batches: Array.isArray(current?.batches)
-          ? current.batches.map((batch) => ({
-              ...batch,
-              codes: Array.isArray(batch.codes) ? batch.codes.map((code) => normalizeActivationCode(code)) : [],
-            }))
-          : [],
-      };
+  const redeemedResult =
+    await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
+      STORE_FILE,
+      (current) => {
+        const store: OfflineActivationCodeStore = {
+          batches: Array.isArray(current?.batches)
+            ? current.batches.map((batch) => ({
+                ...batch,
+                codes: Array.isArray(batch.codes)
+                  ? batch.codes.map((code) => normalizeActivationCode(code))
+                  : [],
+              }))
+            : [],
+        };
 
-      let match: { batchIndex: number; codeIndex: number; code: ActivationCode } | null = null;
+        let match: {
+          batchIndex: number;
+          codeIndex: number;
+          code: ActivationCode;
+        } | null = null;
 
-      store.batches.forEach((batch, batchIndex) => {
-        (batch.codes || []).forEach((code, codeIndex) => {
-          if (match) return;
-          if (normalizeActivationCodeInput(code.code) !== codeToken) return;
-          match = { batchIndex, codeIndex, code };
+        for (
+          let batchIndex = 0;
+          batchIndex < store.batches.length;
+          batchIndex += 1
+        ) {
+          const batch = store.batches[batchIndex];
+
+          for (
+            let codeIndex = 0;
+            codeIndex < batch.codes.length;
+            codeIndex += 1
+          ) {
+            const code = batch.codes[codeIndex];
+
+            if (
+              normalizeActivationCodeInput(code.code) ===
+              codeToken
+            ) {
+              match = {
+                batchIndex,
+                codeIndex,
+                code,
+              };
+              break;
+            }
+          }
+
+          if (match) break;
+        }
+
+        if (!match) {
+          throw new Error("Activation code not found");
+        }
+
+        const {
+          batchIndex,
+          codeIndex,
+          code,
+        } = match;
+
+        const assignedAgentId = String(
+          code.assignedAgentUserId || ""
+        ).trim();
+
+        if (
+          !assignedAgentId ||
+          !agentIds.has(assignedAgentId)
+        ) {
+          throw new Error(
+            "Activation code is not assigned to you"
+          );
+        }
+
+        if (code.status === "redeemed") {
+          throw new Error(
+            "Activation code has already been redeemed"
+          );
+        }
+
+        if (code.status === "disabled") {
+          throw new Error("Activation code is disabled");
+        }
+
+        if (code.status !== "assigned_to_agent") {
+          throw new Error(
+            "Activation code is not available for redemption"
+          );
+        }
+
+        redeemedByAgentId = assignedAgentId;
+
+        const redeemedCode = normalizeActivationCode({
+          ...code,
+          status: "redeemed",
+          redeemedAt,
+          redeemedByChurchId: churchId,
+          redeemedByUserId: agentUserId,
+          deliveredToChurchId: churchId,
         });
-      });
 
-      if (!match) throw new Error("Activation code not found");
+        store.batches[batchIndex].codes[codeIndex] =
+          redeemedCode;
 
-      const { batchIndex, codeIndex, code } = match;
-      const assignedAgentId = String(code.assignedAgentUserId || "").trim();
+        return store;
+      },
+      { batches: [] }
+    );
 
-      if (!assignedAgentId || !agentIds.has(assignedAgentId)) {
-        throw new Error("Activation code is not assigned to you");
-      }
-      if (code.status === "redeemed") throw new Error("Activation code has already been redeemed");
-      if (code.status === "disabled") throw new Error("Activation code is expired or disabled");
-      if (code.status !== "assigned_to_agent") {
-        throw new Error("Activation code is not available for redemption");
-      }
+  const redeemedCode = redeemedResult.batches
+    .flatMap((batch) => batch.codes)
+    .find(
+      (code) =>
+        normalizeActivationCodeInput(code.code) === codeToken
+    );
 
-      redeemedByAgentId = assignedAgentId;
-      updatedCode = normalizeActivationCode({
-        ...code,
-        status: "redeemed",
-        redeemedAt,
-        redeemedByChurchId: churchId,
-        redeemedByUserId: agentUserId,
-        deliveredToChurchId: churchId,
-      });
+  if (!redeemedCode) {
+    throw new Error("Failed to redeem activation code");
+  }
 
-      store.batches[batchIndex].codes[codeIndex] = updatedCode;
-      return store;
-    },
-    { batches: [] }
-  );
-
-  if (!updatedCode) throw new Error("Failed to redeem activation code");
-
-  const churchName = String(church.name || churchId).trim() || churchId;
+  const churchName =
+    String(church.name || churchId).trim() || churchId;
 
   console.log("KRISTO_AGENT_ACTIVATE_CHURCH", {
     agentUserId,
     redeemedByAgentId,
     churchId,
-    codeId: updatedCode.id,
-  });
-
-  const subscription = await unlockChurchSubscriptionFromOfflineActivation({
-    churchId,
-    code: updatedCode,
+    codeId: redeemedCode.id,
   });
 
   return {
-    code: updatedCode,
-    church: { churchId, churchName },
+    code: redeemedCode,
+    church: {
+      churchId,
+      churchName,
+    },
     redeemedByAgentId,
     redeemedByUserId: agentUserId,
-    subscription: {
-      subscriptionActive: subscription.subscriptionActive,
-      subscriptionPlan: subscription.subscriptionPlan,
-      subscriptionExpiresAt: subscription.subscriptionExpiresAt,
-      subscriptionActivatedAt: subscription.subscriptionActivatedAt,
-      source: subscription.source,
+    activation: {
+      activated: true,
+      activatedAt: redeemedAt,
+      source: "agent_activation_code",
     },
   };
 }
@@ -1436,8 +1485,6 @@ export type ActivationChurchActivityItem = {
   supervisorUserId?: string | null;
   agentName?: string;
   agentUserId?: string | null;
-  durationMonths: number;
-  durationLabel: string;
   status: "Redeemed";
 };
 
@@ -1481,14 +1528,6 @@ function redeemedAtMonthKey(redeemedAt: string): string | null {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-function formatDurationLabel(months: number): string {
-  const value = Math.floor(Number(months));
-  if (value === 1) return "Monthly";
-  if (value === 12) return "Yearly";
-  if (value === 3) return "3 months";
-  if (value === 6) return "6 months";
-  return `${value} months`;
-}
 
 async function resolveActivationUserName(userId: string | null | undefined): Promise<string | undefined> {
   const uid = String(userId || "").trim();
@@ -1569,8 +1608,6 @@ export async function getOfflineActivationChurchActivity(monthInput?: string): P
         supervisorUserId,
         agentName,
         agentUserId,
-        durationMonths: Number(code.durationMonths || 0),
-        durationLabel: formatDurationLabel(code.durationMonths),
         status: "Redeemed",
       });
     }

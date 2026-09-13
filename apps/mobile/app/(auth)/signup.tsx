@@ -10,7 +10,7 @@ import {
   filterKristoCountries,
   type KristoCountry,
 } from "@/src/lib/countries";
-import { SUBSCRIPTION_SUPPORT_URL } from "@/src/components/payments/SubscriptionLegalDisclosure";
+import { KRISTO_SUPPORT_URL } from "@/src/lib/kristoLinks";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -919,7 +919,7 @@ export default function SignupScreen() {
 
         <Pressable
           onPress={() => {
-            void Linking.openURL(SUBSCRIPTION_SUPPORT_URL);
+            void Linking.openURL(KRISTO_SUPPORT_URL);
           }}
           style={s.supportBtn}
         >

@@ -1,6 +1,6 @@
 /**
  * End-to-end verification: ministry mediaAccess persistence + permission mapping.
- * Does NOT use subscription bypass flags or UI state.
+ * Kristo App V1 is free: ministry mediaAccess is not gated by subscription.
  *
  * Run: npx tsx scripts/verify-ministry-media-access-e2e.ts
  */
@@ -23,11 +23,37 @@ import {
   devPromoteToRoleIfActive,
 } from "../app/api/_lib/memberships";
 import { churchIdsMatchForMinistry } from "../lib/ministryMediaAccessLimit";
-import {
-  evaluateMinistryMediaAccessPermission,
-  logMinistryMediaAccessLoad,
-  logMinistryMediaAccessSave,
-} from "../lib/ministryMediaAccessTrace";
+
+function logMinistryMediaAccessSave(args: Record<string, unknown>) {
+  console.log("KRISTO_MINISTRY_MEDIA_ACCESS_SAVE", args);
+}
+
+function logMinistryMediaAccessLoad(args: Record<string, unknown>) {
+  console.log("KRISTO_MINISTRY_MEDIA_ACCESS_LOAD", args);
+}
+
+function evaluateMinistryMediaAccessPermission(args: {
+  ministryId: string;
+  churchId?: string;
+  mediaAccess?: boolean;
+  ministryRole?: string;
+  source: string;
+}) {
+  const mediaAccess = args.mediaAccess === true;
+  const role = String(args.ministryRole || "").trim().toLowerCase();
+  const isLeaderOrPastor =
+    role.includes("pastor") ||
+    role.includes("leader") ||
+    role.includes("admin") ||
+    role.includes("assistant");
+  return {
+    ministryMediaEnabled: mediaAccess,
+    appearsInMediaAssignment: mediaAccess,
+    assignmentRoomEligible: mediaAccess,
+    mediaStudioMinistryEligible: mediaAccess,
+    ministryToolsEligible: mediaAccess && isLeaderOrPastor,
+  };
+}
 
 type Ministry = {
   id: string;
@@ -62,20 +88,14 @@ function churchIdsMatch(stored: unknown, requested: string): boolean {
   return churchIdsMatchForMinistry(stored, requested);
 }
 
-/** Mirrors create.tsx save payload — subscription active, bypass OFF. */
-function resolveCreateSavePayload(args: {
-  churchSubscriptionActive: boolean | null;
-  bypassEnabled: boolean;
-  uiMediaAccess: boolean;
-}) {
-  const canEnableMinistryMediaAccess =
-    args.churchSubscriptionActive === true || args.bypassEnabled;
+/** Mirrors create.tsx save payload — church features are free. */
+function resolveCreateSavePayload(args: { uiMediaAccess: boolean }) {
   return {
-    canEnableMinistryMediaAccess,
+    canEnableMinistryMediaAccess: true,
     payloadSent: {
       name: "E2E Media Ministry",
       status: "Active" as const,
-      mediaAccess: canEnableMinistryMediaAccess ? args.uiMediaAccess : false,
+      mediaAccess: args.uiMediaAccess,
     },
   };
 }
@@ -140,15 +160,12 @@ async function cleanupTestMinistries() {
   );
 }
 
-async function seedActiveSubscriptionAndMembership() {
+async function seedChurchMediaAndMembership() {
   await upsertChurchMedia({
     churchId: TEST_CHURCH_ID,
     ownerUserId: TEST_USER_ID,
     patch: {
       mediaName: "E2E Verify Church Media",
-      subscriptionActive: true,
-      subscriptionPlan: "premium",
-      subscriptionStatus: "active",
     },
   });
 
@@ -160,7 +177,7 @@ async function seedActiveSubscriptionAndMembership() {
 }
 
 async function verifyHttpApiRoute(baseUrl: string): Promise<Record<string, unknown>> {
-  await seedActiveSubscriptionAndMembership();
+  await seedChurchMediaAndMembership();
 
   const headers = {
     "content-type": "application/json",
@@ -240,7 +257,6 @@ async function verifyHttpApiRoute(baseUrl: string): Promise<Record<string, unkno
     ministryId: created.id,
     churchId: TEST_CHURCH_ID,
     mediaAccess: true,
-    churchSubscriptionActive: true,
     ministryRole: "Leader",
     source: "e2e-verify HTTP leader permission",
   });
@@ -266,30 +282,24 @@ async function main() {
   console.log("=== KRISTO MINISTRY MEDIA ACCESS E2E VERIFY ===");
   console.log("storeMode:", storeMode);
   console.log("bypassFlagsUsed: false");
-  console.log("churchSubscriptionActive: true (simulated)");
+  console.log("churchFeatures: free");
 
   await cleanupTestMinistries();
 
-  const churchSubscriptionActive = true;
-  const bypassEnabled = false;
   const uiMediaAccess = true;
 
   const { canEnableMinistryMediaAccess, payloadSent } = resolveCreateSavePayload({
-    churchSubscriptionActive,
-    bypassEnabled,
     uiMediaAccess,
   });
 
   if (!canEnableMinistryMediaAccess) {
-    throw new Error("FAIL: canEnableMinistryMediaAccess should be true with active subscription");
+    throw new Error("FAIL: canEnableMinistryMediaAccess should be true on free V1");
   }
   if (payloadSent.mediaAccess !== true) {
-    throw new Error("FAIL: payloadSent.mediaAccess must be true (no bypass, subscription active)");
+    throw new Error("FAIL: payloadSent.mediaAccess must be true");
   }
 
   captureConsole("STEP_1_CREATE_PAYLOAD", {
-    churchSubscriptionActive,
-    bypassEnabled,
     uiMediaAccess,
     payloadSent,
   });
@@ -400,7 +410,6 @@ async function main() {
     ministryId,
     churchId: TEST_CHURCH_ID,
     mediaAccess: true,
-    churchSubscriptionActive: true,
     ministryRole: "Leader",
     source: "e2e-verify leader assignment-room",
   });
@@ -409,7 +418,6 @@ async function main() {
     ministryId,
     churchId: TEST_CHURCH_ID,
     mediaAccess: true,
-    churchSubscriptionActive: true,
     ministryRole: "Member",
     source: "e2e-verify member (no tools)",
   });

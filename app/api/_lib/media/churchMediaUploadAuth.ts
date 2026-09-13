@@ -21,11 +21,13 @@ export async function guardChurchMediaUpload(
   });
 
   if (!access.canUseMediaTools) {
-    const error = !access.canOpenMediaScreen
-      ? "Only the church Pastor or assigned media hosts can upload church media."
-      : "Media Premium subscription is required to upload church media.";
-
-    return NextResponse.json({ ok: false, error }, { status: 403 });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Only the church Pastor or assigned media hosts can upload church media.",
+      },
+      { status: 403 }
+    );
   }
 
   return { ...ctxOrRes, access };

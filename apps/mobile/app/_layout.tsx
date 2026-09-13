@@ -12,14 +12,6 @@ import * as SplashScreen from "expo-splash-screen";
 import { useFonts } from "expo-font";
 import { Cinzel_600SemiBold } from "@expo-google-fonts/cinzel/600SemiBold";
 import { KristoSessionProvider, useKristoSession } from "@/src/lib/KristoSessionProvider";
-import {
-  ensurePurchasesConfigured,
-  logAndroidBillingConfigDiagnostics,
-  logRevenueCatException,
-} from "@/src/lib/payments/mobileSubscriptions";
-import { isRevenueCatPurchasingDisabled } from "@/src/lib/subscriptionBypass";
-import { Platform } from "react-native";
-import { runAfterHomeDeferredStartup } from "@/src/lib/homeFeedDeferredStartup";
 import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimatedSplash";
 import { HomeFeedVideoPrimer } from "@/src/components/homeFeed/HomeFeedVideoPrimer";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
@@ -28,26 +20,6 @@ import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import { SokoStripeProvider } from "@/src/lib/payments/SokoStripeProvider";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
-
-function RevenueCatBootstrap() {
-  const { loading } = useKristoSession();
-  const bypassRevenueCat = isRevenueCatPurchasingDisabled();
-
-  React.useEffect(() => {
-    if (bypassRevenueCat || loading) return;
-
-    runAfterHomeDeferredStartup(() => {
-      if (Platform.OS === "android") {
-        logAndroidBillingConfigDiagnostics("app-boot");
-      }
-      ensurePurchasesConfigured().catch((error) => {
-        logRevenueCatException("app-boot-configure", error);
-      });
-    }, { reason: "revenuecat-configure" });
-  }, [bypassRevenueCat, loading]);
-
-  return <Slot />;
-}
 
 export default function RootLayout() {
   const [splashFinished, setSplashFinished] = useState(false);
@@ -85,7 +57,7 @@ export default function RootLayout() {
       {!splashFinished ? <JujujuAnimatedSplash onFinished={onSplashFinished} /> : null}
       <KristoSessionProvider>
         <SokoStripeProvider>
-          <RevenueCatBootstrap />
+          <Slot />
           <SafetyAccountEnforcementGate />
         </SokoStripeProvider>
       </KristoSessionProvider>

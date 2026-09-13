@@ -1,16 +1,6 @@
 import { apiGet } from "@/src/lib/kristoApi";
-import {
-  isChurchMediaRouteFailure,
-  mergeScheduleSubscriptionSignals,
-  parseExplicitServerSubscriptionFromMediaRoute,
-  readChurchScopedEntitlementActive,
-  readSessionMediaProfileSubscriptionActive,
-  isOfflineActivationFromMediaRouteResponse,
-} from "@/src/lib/churchSubscriptionMediaSignals";
-import {
-  getRevenueCatConfiguredAppUserId,
-  logInRevenueCatForChurchSubscription,
-} from "@/src/lib/payments/mobileSubscriptions";
+
+
 
 export const CHURCH_RESOURCE_REFRESH_MS = 75000;
 
@@ -53,21 +43,7 @@ function scopeKey(churchId: string, userId: string) {
   return ministriesScopeKey(churchId, userId);
 }
 
-/** Clears in-memory throttle/snapshot caches so premium unlock refreshes are not skipped. */
-export function clearChurchPremiumResourceRefreshCaches(churchId: string, userId: string) {
-  const key = scopeKey(churchId, userId);
-  mediaInflight.delete(key);
-  mediaLastAt.delete(key);
-  mediaLastSnapshot.delete(key);
-  ministriesInflight.delete(key);
-  ministriesLastAt.delete(key);
-  ministriesLastSnapshot.delete(key);
-  ministryMembersInflight.delete(key);
-  ministryMembersLastAt.delete(key);
-  ministryMembersCache.delete(key);
-  ministriesMembersBundleLastAt.delete(key);
-}
-
+/** Clears in-memory throttle/snapshot caches so church refreshes are not skipped. */
 function ministriesListSignature(rows: any[]) {
   return rows
     .map((m) =>
@@ -443,63 +419,4 @@ export async function refreshMinistriesBundleIfNeeded(args: {
   })();
 
   return slot.promise;
-}
-
-/** Subscription flag from media endpoint — shares media refresh throttle/cache. */
-export async function fetchChurchSubscriptionActiveThrottled(
-  churchId: string,
-  headers?: Record<string, string>,
-  opts?: { userId?: string; force?: boolean }
-): Promise<boolean | null> {
-  const cid = String(churchId || "").trim();
-  const uid = String(opts?.userId || headers?.["x-kristo-user-id"] || "").trim();
-  if (!cid || !uid) return null;
-
-  const result = await refreshChurchMediaIfNeeded({
-    churchId: cid,
-    userId: uid,
-    headers: headers || {},
-    screen: "ChurchSubscription",
-    force: opts?.force,
-    includeHosts: false,
-  });
-
-  if (result.skipped && result.mediaRes) {
-    logMediaRefreshSkipped(result.reason || "cache-hit", { churchId: cid, source: "subscription" });
-  }
-
-  const res = result.mediaRes;
-  if (!res) return null;
-
-  const explicitServerActive = parseExplicitServerSubscriptionFromMediaRoute(res);
-  const offlineActivationActive = isOfflineActivationFromMediaRouteResponse(res);
-  let customerInfo = null;
-  let revenueCatAppUserId: string | null = null;
-  if (!offlineActivationActive) {
-    try {
-      customerInfo = await logInRevenueCatForChurchSubscription(cid);
-      revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
-    } catch {
-      customerInfo = null;
-    }
-  }
-
-  const revenueCatScopedToChurch = Boolean(
-    revenueCatAppUserId && revenueCatAppUserId === cid
-  );
-  const entitlementActive = readChurchScopedEntitlementActive({
-    churchId: cid,
-    customerInfo,
-    revenueCatAppUserId,
-  });
-
-  const merged = mergeScheduleSubscriptionSignals({
-    churchId: cid,
-    explicitServerActive,
-    routeFailed: isChurchMediaRouteFailure(res),
-    entitlementActive,
-    revenueCatScopedToChurch,
-    sessionProfileActive: readSessionMediaProfileSubscriptionActive(cid),
-  });
-  return merged.hasSubscription;
 }

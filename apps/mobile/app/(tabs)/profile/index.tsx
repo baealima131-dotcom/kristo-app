@@ -1,8 +1,6 @@
 import { useRouter,
   useLocalSearchParams
 } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
-import { isIosV1PremiumFeatureUnlocked } from "@/src/lib/iosV1MonetizationPolicy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { AppState, ActivityIndicator,
@@ -46,8 +44,6 @@ import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { openDirectMessageThread } from "@/src/lib/directMessagesApi";
-import { getPaymentsState, subscribePayments } from "../../../src/store/paymentsStore";
-import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { resolveChurchDisplayName } from "@/src/lib/churchStore";
 import { countsAsRealActiveChurchId, resolveActiveChurchFromProfileResponse, isActiveMembershipStatus } from "@/src/lib/churchMembershipSync";
@@ -87,6 +83,11 @@ import {
   loadSafetySupervisorProfileInvites,
   respondSafetySupervisorProfileInvite,
 } from "@/src/lib/profileSafetySupervisorInvites";
+
+import {
+  fetchSokoWorkforceMe,
+  respondSokoWorkforceInvitation,
+} from "@/src/lib/sokoWorkforceApi";
 import {
   fetchProfileCommunicationInboxSnapshot,
   formatProfileCommunicationBadgeCount,
@@ -805,11 +806,8 @@ export default function MeScreen() {
       : null;
 
   const hasMediaProfile = !!mediaProfile;
-  const [paymentsState, setPaymentsState] = useState(() => getPaymentsState());
-  const currentPlan = paymentsState.subscriptions.selectedPlan;
-  const planStatus = paymentsState.subscriptions.planStatus;
-  const hasSubscription = isPlanActive(currentPlan, planStatus);
-  const mediaToolsUnlocked = hasSubscription || isIosV1PremiumFeatureUnlocked();
+  // Kristo App is free. Media access depends only on authorized role/host status.
+  const mediaToolsUnlocked = canShowMediaTab;
   const [contentMode, setContentMode] = useState<"church" | "media">("church");
   const showMediaContent = canShowMediaTab && hasMediaProfile && contentMode === "media";
   const showMediaActivityTab = contentMode === "media";
@@ -1214,38 +1212,33 @@ export default function MeScreen() {
     const posts = Number(postsCount || 0);
     const followers = Number(followersCount || 0);
     const following = Number(followingCount || 0);
-    const subscriptionBoost = hasSubscription ? 1.2 : 0;
     const raw =
       5 +
       Math.min(posts, 24) * 0.08 +
       Math.min(followers, 200) * 0.01 +
-      Math.min(following, 120) * 0.005 +
-      subscriptionBoost;
+      Math.min(following, 120) * 0.005;
     return Math.min(10, raw).toFixed(1);
-  }, [postsCount, followersCount, followingCount, hasSubscription]);
+  }, [postsCount, followersCount, followingCount]);
 
   const creatorCups = useMemo(() => {
     const posts = Number(postsCount || 0);
     const followers = Number(followersCount || 0);
-    return Math.max(1, Math.floor(posts / 3) + Math.floor(followers / 25) + (hasSubscription ? 2 : 0));
-  }, [postsCount, followersCount, hasSubscription]);
+    return Math.max(1, Math.floor(posts / 3) + Math.floor(followers / 25));
+  }, [postsCount, followersCount]);
 
   const creatorStars = useMemo(() => {
     const posts = Number(postsCount || 0);
     const followers = Number(followersCount || 0);
-    return Math.max(3, posts * 2 + Math.floor(followers / 8) + (hasSubscription ? 8 : 0));
-  }, [postsCount, followersCount, hasSubscription]);
+    return Math.max(3, posts * 2 + Math.floor(followers / 8));
+  }, [postsCount, followersCount]);
 
   const awardsDisplay = useMemo(() => {
     return `${creatorCups} Cups • ${creatorStars} Stars`;
   }, [creatorCups, creatorStars]);
 
   const importantSummary = useMemo(() => {
-    if (hasSubscription) {
-      return `Score ${creatorScoreValue} • ${creatorCups} cups • ${creatorStars} stars • Subscription active and ready to push content`;
-    }
-    return `Score ${creatorScoreValue} • ${creatorCups} cups • ${creatorStars} stars • Activate subscription to unlock stronger reach`;
-  }, [creatorScoreValue, creatorCups, creatorStars, hasSubscription]);
+    return `Score ${creatorScoreValue} • ${creatorCups} cups • ${creatorStars} stars`;
+  }, [creatorScoreValue, creatorCups, creatorStars]);
 
   const creatorLevel = useMemo(() => {
     const score = Number(creatorScoreValue || 0);
@@ -1377,7 +1370,44 @@ export default function MeScreen() {
         }
       } catch {}
 
+      let sokoWorkInvites: any[] = [];
+
+      try {
+        const sokoSnapshot =
+          await fetchSokoWorkforceMe();
+
+        sokoWorkInvites =
+          sokoSnapshot.pendingInvitations.map(
+            (invitation) => ({
+              ...invitation,
+              kind: "soko_work",
+            })
+          );
+
+        if (sokoWorkInvites.length) {
+          console.log(
+            "KRISTO_INVITATIONS_SOKO_WORK_INCLUDED",
+            {
+              userId: uid,
+              count:
+                sokoWorkInvites.length,
+            }
+          );
+        }
+      } catch (error: any) {
+        console.log(
+          "KRISTO_INVITATIONS_SOKO_WORK_FAILED",
+          {
+            userId: uid,
+            error: String(
+              error?.message || error
+            ),
+          }
+        );
+      }
+
       const mergedInvites = [
+        ...sokoWorkInvites,
         ...safetySupervisorInvites,
         ...offlineAgentInvites,
         ...offlineSupervisorInvites,
@@ -1416,12 +1446,8 @@ export default function MeScreen() {
     void refreshInvitations();
     void refreshCommunicationInbox();
 
-    const unsubPayments = subscribePayments(() => {
-      setPaymentsState(getPaymentsState());
-    });
 
     return () => {
-      unsubPayments();
     };
   }, [session?.userId, refreshInvitations, refreshCommunicationInbox]);
 
@@ -2891,17 +2917,13 @@ const user = {
                 >
                   <Ionicons name="radio-outline" size={12} color="#07111F" />
                   <Text style={s.mediaActionBtnPrimaryText}>
-                    {mediaToolsUnlocked ? "Open Media" : "Subscribe First"}
+                    Open Media
                   </Text>
                 </Pressable>
 
                 <Pressable
                   style={s.mediaActionBtn}
-                  onPress={() =>
-                    mediaToolsUnlocked
-                      ? router.push("/more/media" as any)
-                      : openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" })
-                  }
+                  onPress={() => router.push("/more/media" as any)}
                 >
                   <Ionicons
                     name={mediaToolsUnlocked ? "add-circle-outline" : "card-outline"}
@@ -2909,7 +2931,7 @@ const user = {
                     color="#FFFFFF"
                   />
                   <Text style={s.mediaActionBtnText}>
-                    {mediaToolsUnlocked ? "Upload Post" : "Open Subscription"}
+                    Upload Post
                   </Text>
                 </Pressable>
               </View>
@@ -3213,6 +3235,981 @@ const user = {
               </View>
             ) : (
               inviteItems.map((inv: any, i: number) => {
+                if (inv?.kind === "soko_work") {
+                  const invitationId =
+                    String(inv?.id || "").trim();
+
+                  const storeName =
+                    String(
+                      inv?.storeName ||
+                        "SOKO Store"
+                    ).trim();
+
+                  const category =
+                    String(
+                      inv?.storeCategory || ""
+                    ).trim();
+
+                  const location =
+                    String(
+                      inv?.storeLocation || ""
+                    ).trim();
+
+                  const employerName =
+                    String(
+                      inv?.sellerDisplayName ||
+                        "SOKO Seller"
+                    ).trim();
+
+                  const sellerKristoId =
+                    String(
+                      inv?.sellerKristoId || ""
+                    )
+                      .trim()
+                      .toUpperCase();
+
+                  const workerName =
+                    String(
+                      inv?.inviteeDisplayName ||
+                        "Kristo Member"
+                    ).trim();
+
+                  const workerKristoId =
+                    String(
+                      inv?.inviteeKristoId || ""
+                    )
+                      .trim()
+                      .toUpperCase();
+
+                  const avatarUrl =
+                    String(
+                      inv?.sellerAvatarUrl || ""
+                    ).trim();
+
+                  const initials =
+                    employerName
+                      .split(/\s+/)
+                      .filter(Boolean)
+                      .slice(0, 2)
+                      .map((x) =>
+                        x.slice(0, 1)
+                      )
+                      .join("")
+                      .toUpperCase() || "SO";
+
+                  const stageNumber =
+                    inv?.stage === "supply"
+                      ? "01"
+                      : inv?.stage === "setup"
+                        ? "02"
+                        : inv?.stage === "costing"
+                          ? "03"
+                          : inv?.stage === "payments"
+                            ? "04"
+                            : inv?.stage === "review"
+                              ? "05"
+                              : "--";
+
+                  const stageTitle =
+                    inv?.stage === "supply"
+                      ? "Supply & sourcing"
+                      : inv?.stage === "setup"
+                        ? "Product setup"
+                        : inv?.stage === "costing"
+                          ? "Cost & pricing"
+                          : inv?.stage === "payments"
+                            ? "Payments"
+                            : inv?.stage === "review"
+                              ? "Final review"
+                              : "SOKO Work";
+
+                  const responsibility =
+                    inv?.stage === "supply"
+                      ? "Find and confirm suppliers, products and quantities."
+                      : inv?.stage === "setup"
+                        ? "Prepare product photos, variants and catalog details."
+                        : inv?.stage === "costing"
+                          ? "Review costs, selling price and profit margin."
+                          : inv?.stage === "payments"
+                            ? "Prepare seller-approved payment methods."
+                            : inv?.stage === "review"
+                              ? "Review the finished product before publishing."
+                              : "Complete your assigned SOKO workflow tasks.";
+
+                  const nextHandoff =
+                    inv?.stage === "supply"
+                      ? "Level 02 • Product setup"
+                      : inv?.stage === "setup"
+                        ? "Level 03 • Cost & pricing"
+                        : inv?.stage === "costing"
+                          ? "Level 04 • Payments"
+                          : inv?.stage === "payments"
+                            ? "Level 05 • Final review"
+                            : inv?.stage === "review"
+                              ? "Publish / Live"
+                              : "Next workflow stage";
+
+                  let sentAt = "Recently";
+
+                  const createdAt =
+                    String(
+                      inv?.createdAt || ""
+                    ).trim();
+
+                  if (createdAt) {
+                    const d =
+                      new Date(createdAt);
+
+                    if (
+                      Number.isFinite(
+                        d.getTime()
+                      )
+                    ) {
+                      sentAt =
+                        d.toLocaleString(
+                          undefined,
+                          {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          }
+                        );
+                    }
+                  }
+
+                  return (
+                    <View
+                      key={`soko-work-${invitationId}-${i}`}
+                      style={{
+                        marginBottom: 30,
+                      }}
+                    >
+                      <Text
+                        style={[
+                          s.inviteSectionLabel,
+                          {
+                            textAlign: "center",
+                            color: GOLD,
+                            letterSpacing: 2.5,
+                            marginBottom: 21,
+                          },
+                        ]}
+                      >
+                        SOKO JOB INVITATION
+                      </Text>
+
+                      <View
+                        style={{
+                          marginTop: 34,
+                          paddingTop: 60,
+                          paddingHorizontal: 20,
+                          paddingBottom: 20,
+                          borderRadius: 32,
+                          borderWidth: 1,
+                          borderColor:
+                            "rgba(246,202,92,0.30)",
+                          backgroundColor:
+                            "#0A1726",
+                          position: "relative",
+                        }}
+                      >
+                        {/* SELLER AVATAR */}
+                        <View
+                          style={{
+                            position: "absolute",
+                            top: -49,
+                            alignSelf: "center",
+                            width: 98,
+                            height: 98,
+                            borderRadius: 49,
+                            padding: 5,
+                            borderWidth: 2,
+                            borderColor: GOLD,
+                            backgroundColor:
+                              "#0A1726",
+                          }}
+                        >
+                          {avatarUrl ? (
+                            <Image
+                              source={{
+                                uri: avatarUrl,
+                              }}
+                              style={{
+                                width: "100%",
+                                height: "100%",
+                                borderRadius: 99,
+                              }}
+                            />
+                          ) : (
+                            <View
+                              style={{
+                                flex: 1,
+                                borderRadius: 99,
+                                backgroundColor:
+                                  "#172A40",
+                                alignItems:
+                                  "center",
+                                justifyContent:
+                                  "center",
+                              }}
+                            >
+                              <Text
+                                style={{
+                                  color: GOLD,
+                                  fontSize: 27,
+                                  fontWeight:
+                                    "900",
+                                }}
+                              >
+                                {initials}
+                              </Text>
+                            </View>
+                          )}
+
+                          <View
+                            style={{
+                              position: "absolute",
+                              right: -2,
+                              bottom: 3,
+                              width: 28,
+                              height: 28,
+                              borderRadius: 14,
+                              alignItems:
+                                "center",
+                              justifyContent:
+                                "center",
+                              backgroundColor:
+                                "#5DE3A9",
+                              borderWidth: 3,
+                              borderColor:
+                                "#0A1726",
+                            }}
+                          >
+                            <Ionicons
+                              name="checkmark"
+                              size={15}
+                              color="#06140E"
+                            />
+                          </View>
+                        </View>
+
+                        {/* STORE */}
+                        <Text
+                          style={{
+                            textAlign: "center",
+                            color:
+                              "rgba(255,255,255,0.42)",
+                            fontSize: 10,
+                            fontWeight: "900",
+                            letterSpacing: 1.8,
+                          }}
+                        >
+                          VERIFIED SOKO STORE
+                        </Text>
+
+                        <Text
+                          style={{
+                            textAlign: "center",
+                            color: "#FFFFFF",
+                            fontSize: 27,
+                            lineHeight: 32,
+                            fontWeight: "900",
+                            marginTop: 5,
+                          }}
+                          numberOfLines={2}
+                        >
+                          {storeName}
+                        </Text>
+
+                        {(category || location) ? (
+                          <Text
+                            style={{
+                              textAlign:
+                                "center",
+                              color:
+                                "rgba(255,255,255,0.53)",
+                              fontSize: 12,
+                              fontWeight:
+                                "700",
+                              marginTop: 6,
+                            }}
+                          >
+                            {[category, location]
+                              .filter(Boolean)
+                              .join(" • ")}
+                          </Text>
+                        ) : null}
+
+                        {/* EMPLOYER */}
+                        <View
+                          style={{
+                            marginTop: 17,
+                            padding: 14,
+                            borderRadius: 18,
+                            backgroundColor:
+                              "rgba(255,255,255,0.035)",
+                            borderWidth: 1,
+                            borderColor:
+                              "rgba(255,255,255,0.07)",
+                          }}
+                        >
+                          <Text
+                            style={{
+                              color:
+                                "rgba(255,255,255,0.38)",
+                              fontSize: 9,
+                              fontWeight: "900",
+                              letterSpacing: 1.2,
+                            }}
+                          >
+                            EMPLOYER / STORE OWNER
+                          </Text>
+
+                          <Text
+                            style={{
+                              color: "#FFFFFF",
+                              fontSize: 17,
+                              fontWeight: "900",
+                              marginTop: 5,
+                            }}
+                          >
+                            {employerName}
+                          </Text>
+
+                          <Text
+                            style={{
+                              color: GOLD,
+                              fontSize: 11,
+                              fontWeight: "800",
+                              marginTop: 3,
+                            }}
+                          >
+                            {sellerKristoId}
+                          </Text>
+                        </View>
+
+                        {/* INVITATION FOR */}
+                        <View
+                          style={{
+                            marginTop: 10,
+                            paddingHorizontal: 14,
+                            paddingVertical: 12,
+                            borderRadius: 18,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            backgroundColor:
+                              "rgba(91,225,168,0.055)",
+                            borderWidth: 1,
+                            borderColor:
+                              "rgba(91,225,168,0.14)",
+                          }}
+                        >
+                          <Ionicons
+                            name="person-outline"
+                            size={20}
+                            color="#61E0A8"
+                          />
+
+                          <View
+                            style={{
+                              flex: 1,
+                              marginLeft: 10,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color:
+                                  "rgba(255,255,255,0.38)",
+                                fontSize: 9,
+                                fontWeight: "900",
+                                letterSpacing: 1.1,
+                              }}
+                            >
+                              THIS INVITATION IS FOR
+                            </Text>
+
+                            <Text
+                              style={{
+                                color: "#FFFFFF",
+                                fontSize: 14,
+                                fontWeight: "900",
+                                marginTop: 3,
+                              }}
+                            >
+                              {workerName}
+                            </Text>
+
+                            <Text
+                              style={{
+                                color:
+                                  "rgba(255,255,255,0.50)",
+                                fontSize: 11,
+                                fontWeight: "700",
+                                marginTop: 2,
+                              }}
+                            >
+                              {workerKristoId}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View
+                          style={{
+                            height: 1,
+                            marginVertical: 19,
+                            backgroundColor:
+                              "rgba(255,255,255,0.07)",
+                          }}
+                        />
+
+                        {/* POSITION */}
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                          }}
+                        >
+                          <View
+                            style={{
+                              width: 62,
+                              height: 62,
+                              borderRadius: 20,
+                              borderWidth: 1,
+                              borderColor:
+                                "rgba(246,202,92,0.30)",
+                              backgroundColor:
+                                "rgba(246,202,92,0.09)",
+                              alignItems:
+                                "center",
+                              justifyContent:
+                                "center",
+                              marginRight: 14,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color: GOLD,
+                                fontSize: 25,
+                                fontWeight: "900",
+                              }}
+                            >
+                              {stageNumber}
+                            </Text>
+                          </View>
+
+                          <View
+                            style={{
+                              flex: 1,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color:
+                                  "rgba(255,255,255,0.38)",
+                                fontSize: 9,
+                                fontWeight: "900",
+                                letterSpacing: 1.3,
+                              }}
+                            >
+                              POSITION
+                            </Text>
+
+                            <Text
+                              style={{
+                                color: "#FFFFFF",
+                                fontSize: 19,
+                                fontWeight: "900",
+                                marginTop: 3,
+                              }}
+                            >
+                              {stageTitle}
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* RESPONSIBILITY */}
+                        <View
+                          style={{
+                            marginTop: 15,
+                            padding: 14,
+                            borderRadius: 18,
+                            backgroundColor:
+                              "rgba(246,202,92,0.045)",
+                            borderWidth: 1,
+                            borderColor:
+                              "rgba(246,202,92,0.12)",
+                          }}
+                        >
+                          <Text
+                            style={{
+                              color: GOLD,
+                              fontSize: 10,
+                              fontWeight: "900",
+                              letterSpacing: 1.1,
+                            }}
+                          >
+                            RESPONSIBILITY
+                          </Text>
+
+                          <Text
+                            style={{
+                              color:
+                                "rgba(255,255,255,0.73)",
+                              fontSize: 13,
+                              lineHeight: 19,
+                              fontWeight: "600",
+                              marginTop: 6,
+                            }}
+                          >
+                            {responsibility}
+                          </Text>
+                        </View>
+
+                        {/* ASSIGNMENT SCOPE */}
+                        <View
+                          style={{
+                            marginTop: 10,
+                            padding: 14,
+                            borderRadius: 18,
+                            backgroundColor:
+                              "rgba(255,255,255,0.03)",
+                            borderWidth: 1,
+                            borderColor:
+                              "rgba(255,255,255,0.07)",
+                          }}
+                        >
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                            }}
+                          >
+                            <Ionicons
+                              name="shield-checkmark-outline"
+                              size={18}
+                              color="#61E0A8"
+                            />
+
+                            <Text
+                              style={{
+                                color: "#61E0A8",
+                                fontSize: 10,
+                                fontWeight: "900",
+                                letterSpacing: 1,
+                                marginLeft: 7,
+                              }}
+                            >
+                              ASSIGNED SCOPE
+                            </Text>
+                          </View>
+
+                          <Text
+                            style={{
+                              color:
+                                "rgba(255,255,255,0.70)",
+                              fontSize: 13,
+                              lineHeight: 19,
+                              fontWeight: "600",
+                              marginTop: 7,
+                            }}
+                          >
+                            Your assignment is Level {stageNumber}: {stageTitle}.
+                          </Text>
+                        </View>
+
+                        {/* NEXT HANDOFF */}
+                        <View
+                          style={{
+                            marginTop: 10,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            padding: 14,
+                            borderRadius: 18,
+                            backgroundColor:
+                              "rgba(117,193,255,0.05)",
+                            borderWidth: 1,
+                            borderColor:
+                              "rgba(117,193,255,0.13)",
+                          }}
+                        >
+                          <Ionicons
+                            name="arrow-forward-circle-outline"
+                            size={21}
+                            color="#75C1FF"
+                          />
+
+                          <View
+                            style={{
+                              flex: 1,
+                              marginLeft: 10,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color:
+                                  "rgba(255,255,255,0.38)",
+                                fontSize: 9,
+                                fontWeight: "900",
+                                letterSpacing: 1,
+                              }}
+                            >
+                              NEXT HANDOFF
+                            </Text>
+
+                            <Text
+                              style={{
+                                color: "#FFFFFF",
+                                fontSize: 13,
+                                fontWeight: "800",
+                                marginTop: 4,
+                              }}
+                            >
+                              {nextHandoff}
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* DETAILS */}
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            gap: 9,
+                            marginTop: 12,
+                          }}
+                        >
+                          <View
+                            style={{
+                              flex: 1,
+                              padding: 13,
+                              borderRadius: 17,
+                              backgroundColor:
+                                "rgba(255,255,255,0.03)",
+                              borderWidth: 1,
+                              borderColor:
+                                "rgba(255,255,255,0.07)",
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color:
+                                  "rgba(255,255,255,0.36)",
+                                fontSize: 9,
+                                fontWeight: "900",
+                              }}
+                            >
+                              CHURCH ID
+                            </Text>
+
+                            <Text
+                              style={{
+                                color: "#FFFFFF",
+                                fontSize: 13,
+                                fontWeight: "900",
+                                marginTop: 5,
+                              }}
+                            >
+                              {String(
+                                inv?.churchId ||
+                                  "—"
+                              )}
+                            </Text>
+                          </View>
+
+                          <View
+                            style={{
+                              flex: 1,
+                              padding: 13,
+                              borderRadius: 17,
+                              backgroundColor:
+                                "rgba(255,255,255,0.03)",
+                              borderWidth: 1,
+                              borderColor:
+                                "rgba(255,255,255,0.07)",
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color:
+                                  "rgba(255,255,255,0.36)",
+                                fontSize: 9,
+                                fontWeight: "900",
+                              }}
+                            >
+                              STATUS
+                            </Text>
+
+                            <Text
+                              style={{
+                                color: GOLD,
+                                fontSize: 13,
+                                fontWeight: "900",
+                                marginTop: 5,
+                              }}
+                            >
+                              Pending
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* COMPENSATION */}
+                        <View
+                          style={{
+                            marginTop: 10,
+                            paddingHorizontal: 14,
+                            paddingVertical: 12,
+                            borderRadius: 17,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            backgroundColor:
+                              "rgba(255,255,255,0.025)",
+                            borderWidth: 1,
+                            borderColor:
+                              "rgba(255,255,255,0.065)",
+                          }}
+                        >
+                          <Ionicons
+                            name="wallet-outline"
+                            size={19}
+                            color="rgba(255,255,255,0.48)"
+                          />
+
+                          <View
+                            style={{
+                              flex: 1,
+                              marginLeft: 10,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color:
+                                  "rgba(255,255,255,0.36)",
+                                fontSize: 9,
+                                fontWeight: "900",
+                                letterSpacing: 1,
+                              }}
+                            >
+                              COMPENSATION
+                            </Text>
+
+                            <Text
+                              style={{
+                                color:
+                                  "rgba(255,255,255,0.68)",
+                                fontSize: 13,
+                                fontWeight: "800",
+                                marginTop: 3,
+                              }}
+                            >
+                              Not specified by store
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            marginTop: 14,
+                          }}
+                        >
+                          <Ionicons
+                            name="time-outline"
+                            size={15}
+                            color="rgba(255,255,255,0.38)"
+                          />
+
+                          <Text
+                            style={{
+                              color:
+                                "rgba(255,255,255,0.43)",
+                              fontSize: 11,
+                              fontWeight: "700",
+                              marginLeft: 6,
+                            }}
+                          >
+                            Sent {sentAt}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* ACTIONS */}
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          gap: 11,
+                          marginTop: 15,
+                        }}
+                      >
+                        <Pressable
+                          disabled={!!inviteBusy}
+                          onPress={async () => {
+                            if (!invitationId) {
+                              return Alert.alert(
+                                "Missing invite ID",
+                                "Please try again later."
+                              );
+                            }
+
+                            try {
+                              setInviteBusy(
+                                "reject"
+                              );
+
+                              await respondSokoWorkforceInvitation({
+                                invitationId,
+                                action:
+                                  "decline",
+                              });
+
+                              await refreshInvitations();
+                            } catch (e: any) {
+                              Alert.alert(
+                                "Could not decline invitation",
+                                String(
+                                  e?.message ||
+                                    e
+                                )
+                              );
+                            } finally {
+                              setInviteBusy("");
+                            }
+                          }}
+                          style={({ pressed }) => [
+                            {
+                              flex: 0.82,
+                              minHeight: 60,
+                              borderRadius: 20,
+                              alignItems:
+                                "center",
+                              justifyContent:
+                                "center",
+                              backgroundColor:
+                                "#111E2E",
+                              borderWidth: 1,
+                              borderColor:
+                                "rgba(255,255,255,0.10)",
+                            },
+                            pressed && {
+                              opacity: 0.72,
+                            },
+                            inviteBusy && {
+                              opacity: 0.5,
+                            },
+                          ]}
+                        >
+                          {inviteBusy ===
+                          "reject" ? (
+                            <ActivityIndicator
+                              color="#FFFFFF"
+                            />
+                          ) : (
+                            <Text
+                              style={{
+                                color: "#FFFFFF",
+                                fontSize: 15,
+                                fontWeight: "900",
+                              }}
+                            >
+                              Decline
+                            </Text>
+                          )}
+                        </Pressable>
+
+                        <Pressable
+                          disabled={!!inviteBusy}
+                          onPress={async () => {
+                            if (!invitationId) {
+                              return Alert.alert(
+                                "Missing invite ID",
+                                "Please try again later."
+                              );
+                            }
+
+                            try {
+                              setInviteBusy(
+                                "accept"
+                              );
+
+                              await respondSokoWorkforceInvitation({
+                                invitationId,
+                                action:
+                                  "accept",
+                              });
+
+                              await refreshInvitations();
+
+                              Alert.alert(
+                                "Job accepted",
+                                `Welcome to ${storeName}. Your SOKO Work dashboard is ready in More.`
+                              );
+                            } catch (e: any) {
+                              Alert.alert(
+                                "Could not accept invitation",
+                                String(
+                                  e?.message ||
+                                    e
+                                )
+                              );
+                            } finally {
+                              setInviteBusy("");
+                            }
+                          }}
+                          style={({ pressed }) => [
+                            {
+                              flex: 1.35,
+                              minHeight: 60,
+                              borderRadius: 20,
+                              alignItems:
+                                "center",
+                              justifyContent:
+                                "center",
+                              flexDirection: "row",
+                              backgroundColor:
+                                GOLD,
+                            },
+                            pressed && {
+                              opacity: 0.82,
+                            },
+                            inviteBusy && {
+                              opacity: 0.5,
+                            },
+                          ]}
+                        >
+                          {inviteBusy ===
+                          "accept" ? (
+                            <ActivityIndicator
+                              color="#07111F"
+                            />
+                          ) : (
+                            <>
+                              <Ionicons
+                                name="checkmark-circle-outline"
+                                size={22}
+                                color="#07111F"
+                              />
+
+                              <Text
+                                style={{
+                                  color:
+                                    "#07111F",
+                                  fontSize: 17,
+                                  fontWeight:
+                                    "900",
+                                  marginLeft: 7,
+                                }}
+                              >
+                                Accept job
+                              </Text>
+                            </>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                }
+
                 if (isSafetySupervisorProfileInvite(inv)) {
                   const invitationId = String(
                     inv.invitationId ||

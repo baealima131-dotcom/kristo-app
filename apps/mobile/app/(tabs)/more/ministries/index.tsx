@@ -14,21 +14,11 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { loadChurchDraft, loadChurchProfileCache } from "@/src/lib/churchStore";
-import {
-  ChurchPremiumSubscriptionModal,
-  isMinistryCreationBlocked,
-} from "@/src/components/ChurchPremiumSubscriptionModal";
-import {
-  CHURCH_SUBSCRIPTION_MEMBER_MESSAGE,
-  CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
-  fetchChurchSubscriptionActive,
-} from "@/src/lib/churchSubscription";
 import {
   getMinistriesCache,
   isScreenCacheFresh,
@@ -459,8 +449,6 @@ export default function MoreMinistriesList() {
     useState<LiveControlSelfStatus>(
       ministriesPeek?.churchLiveControlStatus === "Suspended" ? "Suspended" : "Active"
     );
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(null);
-  const [premiumModalOpen, setPremiumModalOpen] = useState(false);
   const [churchAvatarContext, setChurchAvatarContext] = useState<{
     session: Record<string, any> | null;
     churchDraft: Record<string, any> | null;
@@ -562,22 +550,11 @@ export default function MoreMinistriesList() {
       if (!loadViewerId) throw new Error("User session missing.");
 
       const fetchWork = async () => {
-        const [data, liveControlStatus, subscriptionActive] = await Promise.all([
+        const [data, liveControlStatus] = await Promise.all([
           apiListMinistries(),
           loadChurchId
             ? apiFetchLiveControlSelfStatus(loadViewerId)
             : Promise.resolve("Active" as LiveControlSelfStatus),
-          loadChurchId
-            ? fetchChurchSubscriptionActive(
-                loadChurchId,
-                getKristoHeaders({
-                  userId: loadViewerId,
-                  role: (auth?.role || "Member") as any,
-                  churchId: loadChurchId,
-                }) as Record<string, string>,
-                { isPastor: loadIsChurchAuthority }
-              )
-            : Promise.resolve(false),
         ]);
         const checked = await Promise.all(
           data.map(async (m: Ministry) => {
@@ -612,10 +589,10 @@ export default function MoreMinistriesList() {
           })
         );
 
-        return { data, liveControlStatus, checked, subscriptionActive };
+        return { data, liveControlStatus, checked };
       };
 
-      const { liveControlStatus, checked, subscriptionActive } = await withMinistriesLoadTimeout(
+      const { liveControlStatus, checked } = await withMinistriesLoadTimeout(
         fetchWork(),
         MINISTRIES_LOAD_TIMEOUT_MS
       );
@@ -636,7 +613,6 @@ export default function MoreMinistriesList() {
 
       setItems(sortedItems);
       setChurchLiveControlStatus(liveControlStatus);
-      setChurchSubscriptionActive(subscriptionActive);
       hasRenderableCacheRef.current = sortedItems.length > 0;
 
       // Persist the fresh snapshot so the next focus renders instantly.
@@ -785,9 +761,8 @@ export default function MoreMinistriesList() {
   const showSpinner = loading && !hasItems && !hasChurch;
   const shouldShowChurchControl = hasChurch;
   const isChurchLiveControlSuspended = churchLiveControlStatus === "Suspended";
-  const churchLiveControlSubscriptionLocked =
-    churchSubscriptionActive !== null &&
-    isMinistryCreationBlocked(churchSubscriptionActive);
+  // Kristo App is free. Church Live Control is never payment-locked.
+  const churchLiveControlSubscriptionLocked = false;
   const showGrid = hasItems || shouldShowChurchControl;
 
   return (
@@ -1022,12 +997,6 @@ export default function MoreMinistriesList() {
                     />
 
                     <View style={s.cardTopRight}>
-                      {churchLiveControlSubscriptionLocked ? (
-                        <View style={s.premiumLockPill}>
-                          <Ionicons name="lock-closed" size={10} color="#0B0F17" />
-                          <Text style={s.premiumLockPillText}>Premium</Text>
-                        </View>
-                      ) : null}
                       <View style={[s.statusTopPill, s.churchTopPill]}>
                         <Text style={s.statusTopPillText} numberOfLines={1}>
                           CHURCH
@@ -1040,11 +1009,7 @@ export default function MoreMinistriesList() {
                     Church Members
                   </Text>
                   <Text style={s.cardSub} numberOfLines={2}>
-                    {churchLiveControlSubscriptionLocked
-                      ? isChurchAuthority
-                        ? "Upgrade to unlock Meeting and Schedule"
-                        : CHURCH_SUBSCRIPTION_MEMBER_MESSAGE
-                      : "Whole church control room"}
+                    {"Whole church control room"}
                   </Text>
 
                   <View style={s.cardFooter}>
@@ -1219,16 +1184,6 @@ export default function MoreMinistriesList() {
           </View>
         </ScrollView>
       )}
-
-      <ChurchPremiumSubscriptionModal
-        visible={premiumModalOpen}
-        onClose={() => setPremiumModalOpen(false)}
-        onViewSubscription={() => {
-          setPremiumModalOpen(false);
-          openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
-        }}
-        message={CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE}
-      />
 
       {/* LIST_ONLY_MARKER */}
     </View>

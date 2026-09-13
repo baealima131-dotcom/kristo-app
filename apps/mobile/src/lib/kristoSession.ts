@@ -288,15 +288,6 @@ export async function performLogoutCleanup(params: LogoutCleanupParams = {}): Pr
       await clearChurchMediaProfileCache(churchId);
     }
 
-    const { logOutRevenueCat } = await import("./payments/mobileSubscriptions");
-    if (reason === "delete") {
-      console.log("KRISTO_ACCOUNT_DELETE_RC_LOGOUT", {
-        userId: userId || null,
-        churchId: churchId || null,
-      });
-    }
-    await logOutRevenueCat();
-
     const { resetAuthRefreshStateForLogout } = await import("./refreshCoordinator");
     resetAuthRefreshStateForLogout();
   } catch (error: any) {

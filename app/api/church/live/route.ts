@@ -9,7 +9,6 @@ import {
   resolveChurchPastorUserId,
 } from "@/app/api/_lib/churchPastor";
 import { createNotification } from "@/app/api/_lib/notifications";
-import { requireChurchSubscriptionActive } from "@/app/api/_lib/churchSubscription";
 import { endChurchLiveSessionsForSchedule } from "@/app/api/_lib/churchLiveControl";
 import {
   assertSafetyEnforcementAllows,
@@ -477,17 +476,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Pastor only" }, { status: 403 });
   }
 
-  const subscriptionBlocked = await requireChurchSubscriptionActive(a.churchId, {
-    endpoint: "/api/church/live",
-    churchId: a.churchId,
-    userId: a.userId,
-    role: a.role,
-    action: "start_live",
-    headers: req.headers,
-  });
-  if (subscriptionBlocked) return subscriptionBlocked;
-
-  const body = await req.json().catch(() => ({}));
+const body = await req.json().catch(() => ({}));
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
   const liveId = String(body.liveId || `church-live-${now}`).trim();
@@ -603,16 +592,7 @@ export async function PATCH(req: Request) {
     memberJoinActions.has(action) || (action === "presence" && !isPastor(a.role));
 
   if (!existingSession.live && !isMemberJoinAction) {
-    const subscriptionBlocked = await requireChurchSubscriptionActive(a.churchId, {
-      endpoint: "/api/church/live",
-      churchId: a.churchId,
-      userId: a.userId,
-      role: a.role,
-      action: action || "open_live_session",
-    headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-  }
+}
 
   const session = ensureLiveSession(store, a.churchId, resolvedLiveId, now);
   const live = session.live;

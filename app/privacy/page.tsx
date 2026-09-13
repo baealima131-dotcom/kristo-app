@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   description: "Privacy Policy for Kristo App — how we collect, use, and protect your information.",
 };
 
-const LAST_UPDATED = "June 24, 2026";
+const LAST_UPDATED = "September 12, 2026";
 const CONTACT_EMAIL = "support@kristoapp.com";
 
 export default function PrivacyPolicyPage() {
@@ -54,10 +54,10 @@ export default function PrivacyPolicyPage() {
                 without your knowledge.
               </li>
               <li>
-                <strong>Subscription and payment status</strong> — we receive subscription and
-                purchase status from app stores (Apple App Store, Google Play) and our subscription
-                provider (RevenueCat). We do not store full payment card numbers or complete payment
-                credentials on our servers.
+                <strong>Commerce payment status</strong> — church and platform features in Kristo
+                App are free and do not use in-app subscriptions. For separate SOKO product
+                purchases, we receive payment status from the payment processor. We do not store
+                full payment card numbers or complete payment credentials on our servers.
               </li>
               <li>
                 <strong>Device and diagnostic information</strong> — such as device type, operating
@@ -73,8 +73,8 @@ export default function PrivacyPolicyPage() {
             <ul>
               <li>Provide, operate, and improve Kristo App features and services.</li>
               <li>Authenticate users and manage church, ministry, and community access.</li>
-              <li>Enable messaging, media sharing, live streaming, and subscription features.</li>
-              <li>Process and verify church Media Premium subscription status.</li>
+              <li>Enable messaging, media sharing, live streaming, and church community features.</li>
+              <li>Process separate SOKO commerce transactions when you buy products.</li>
               <li>Respond to support requests and communicate important service updates.</li>
               <li>Protect the safety and integrity of our platform, including fraud prevention.</li>
             </ul>
@@ -101,11 +101,7 @@ export default function PrivacyPolicyPage() {
               </li>
               <li>
                 With service providers that help us operate the app (for example, hosting,
-                analytics, subscription management, and customer support tools).
-              </li>
-              <li>
-                With app store platforms and RevenueCat to manage in-app subscriptions and
-                entitlements.
+                analytics, payment processing for SOKO commerce, and customer support tools).
               </li>
               <li>When required by law, legal process, or to protect rights, safety, and security.</li>
             </ul>

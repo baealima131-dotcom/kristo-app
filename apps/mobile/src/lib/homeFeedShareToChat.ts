@@ -1,7 +1,5 @@
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
-import { isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { CHURCH_MEDIA_ROOM_ID } from "@/src/lib/churchMediaRoomRefresh";
-import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import {
@@ -118,17 +116,9 @@ async function resolveChurchLiveControlShareRoom(): Promise<ShareToChatRoom | nu
   const role = String(auth?.role || "Member");
   const isAuthority = isChurchAuthorityRole(role);
 
-  const [liveStatus, subscriptionActive] = await Promise.all([
-    fetchLiveControlSelfStatus(viewerId),
-    fetchChurchSubscriptionActive(
-      churchId,
-      getKristoHeaders() as Record<string, string>,
-      { isPastor: isAuthority }
-    ).catch(() => null),
-  ]);
+  const liveStatus = await fetchLiveControlSelfStatus(viewerId);
 
   if (liveStatus === "Suspended") return null;
-  if (isMinistryCreationBlocked(subscriptionActive)) return null;
 
   return {
     roomId: CHURCH_MEDIA_ROOM_ID,

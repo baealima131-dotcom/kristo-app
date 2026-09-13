@@ -2,8 +2,6 @@ import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { getChurchMediaByChurchId, upsertChurchMedia, type ChurchMediaProfile } from "@/app/api/_lib/store/mediaDb";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getChurchById } from "@/app/api/_lib/churches";
-import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
-import { diagnoseIosV1SubscriptionGateBypass } from "@/lib/iosV1MonetizationPolicy";
 
 export const MAX_CHURCH_MEDIA_HOSTS = 3;
 
@@ -105,71 +103,64 @@ export async function getStoredMediaHosts(churchId: string): Promise<MediaHostRe
 export async function evaluateChurchMediaAccess(args: {
   churchId: string;
   userId: string;
-  /** Optional request headers — enables iOS V1 free media tools without DB writes. */
   headers?: Headers | Record<string, string | string[] | undefined> | null;
 }) {
   const churchId = String(args.churchId || "").trim();
   const userId = String(args.userId || "").trim();
-  const actualPastorUserId = await resolveActualChurchPastorUserId(churchId);
+
+  const actualPastorUserId =
+    await resolveActualChurchPastorUserId(churchId);
+
   const requesterMembership = userId
     ? await resolveRequesterMembership(churchId, userId)
     : null;
-  /** Broader pastor-role membership (Assistant/Co-Pastor/etc.). Not subscription authority. */
-  const hasPastorRole = isPastorChurchRole(requesterMembership?.churchRole);
+
+  const hasPastorRole =
+    isPastorChurchRole(requesterMembership?.churchRole);
+
   const hosts = await getStoredMediaHosts(churchId);
+
   const mediaHostUserIds = hosts.map((host) => host.userId);
 
-  // Subscription / host-management authority: ONLY the singular canonical pastor.
-  const isActualChurchPastor = Boolean(userId && actualPastorUserId && userIdsMatch(userId, actualPastorUserId));
+  const isActualChurchPastor = Boolean(
+    userId &&
+      actualPastorUserId &&
+      userIdsMatch(userId, actualPastorUserId)
+  );
+
+  // Only the canonical/current Pastor manages Media Hosts and Church Media.
   const canManageMediaHosts = isActualChurchPastor;
-  const canManageChurchSubscription = isActualChurchPastor;
+  const canManageChurchMedia = isActualChurchPastor;
 
-  const isMediaHost = !!userId && mediaHostUserIds.includes(userId);
-  const media = await getChurchMediaByChurchId(churchId);
-  const subscriptionActive = isChurchSubscriptionActiveFromRecord(media);
-  // Non-subscription pastor-role users may still open media (tools if active); they cannot manage.
-  const canOpenMediaScreen = isActualChurchPastor || hasPastorRole || isMediaHost;
-  const iosV1 = diagnoseIosV1SubscriptionGateBypass(args.headers || null, {
-    userId,
-  });
-  const iosV1Free = iosV1.allowed;
-  // iOS V1 free: unlock tools for role-eligible users without flipping subscriptionActive.
-  // Trust = kill switch + HMAC proof bound to userId (platform header alone is insufficient).
-  const canUseMediaTools =
-    (subscriptionActive || iosV1Free) && canOpenMediaScreen;
+  const isMediaHost =
+    !!userId &&
+    mediaHostUserIds.some((id) => userIdsMatch(id, userId));
 
-  // Sanitized only — never log proof header, secret, or MAC.
-  if (canOpenMediaScreen && !subscriptionActive) {
-    console.log(
-      iosV1Free
-        ? "KRISTO_IOS_V1_SUBSCRIPTION_GATE_ALLOWED"
-        : "KRISTO_IOS_V1_SUBSCRIPTION_GATE_DENIED",
-      {
-        endpoint: "evaluateChurchMediaAccess",
-        churchId,
-        userId,
-        action: "canUseMediaTools",
-        reason: iosV1.reason,
-        canUseMediaTools,
-        isActualChurchPastor,
-      }
-    );
-  }
+  // Kristo App is FREE on every platform.
+  // Church Media access is role/authority based.
+  // There is NO subscription/payment gate here.
+  const canOpenMediaScreen =
+    isActualChurchPastor || hasPastorRole || isMediaHost;
+
+  const canUseMediaTools = canOpenMediaScreen;
 
   return {
     actualPastorUserId,
     hosts,
     mediaHostUserIds,
+
     isActualChurchPastor,
     hasPastorRole,
     isMediaHost,
-    subscriptionActive,
+
     canOpenMediaScreen,
     canUseMediaTools,
     canAccessChurchMedia: canOpenMediaScreen,
+
     canManageMediaHosts,
-    canManageChurchSubscription,
-    monetizationPolicy: iosV1Free ? ("ios_v1_free" as const) : ("standard" as const),
+    canManageChurchMedia,
+
+    monetizationPolicy: "free_all_platforms" as const,
   };
 }
 
@@ -255,8 +246,6 @@ export async function ensureChurchMediaProfileForPastor(args: {
     churchId,
     actualPastorUserId: pastorUserId,
     requesterUserId,
-    profileSubscriptionActive: existing?.subscriptionActive ?? null,
-    profileSubscriptionPlan: existing?.subscriptionPlan ?? null,
   });
 
   try {
@@ -273,7 +262,6 @@ export async function ensureChurchMediaProfileForPastor(args: {
         visibility: "church",
         churchId,
         createdBy: pastorUserId,
-        subscriptionActive: false,
       } as Partial<ChurchMediaProfile> & { mediaName: string },
     });
 
@@ -282,11 +270,7 @@ export async function ensureChurchMediaProfileForPastor(args: {
       actualPastorUserId: pastorUserId,
       mediaId: created.id,
       mediaName: created.mediaName,
-      profileSubscriptionActive: created.subscriptionActive ?? false,
-      profileSubscriptionPlan: created.subscriptionPlan ?? null,
-      profileSubscriptionUpdatedAt: created.subscriptionUpdatedAt ?? null,
-      revenueCatActive: null,
-      reason: "profile-created-inactive-default",
+      reason: "profile-created-for-pastor",
     });
 
     return created;

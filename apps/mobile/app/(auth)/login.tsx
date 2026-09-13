@@ -10,8 +10,7 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { resolveActiveChurchFromProfileResponse } from "@/src/lib/churchMembershipSync";
 import { resolvePlatformRoleFromAuthPayload } from "@/src/lib/platformRole";
 import { recoverChurchIdFromMembership } from "@/src/lib/churchLockedRecovery";
-import { realignRevenueCatIdentityForChurch } from "@/src/lib/payments/mobileSubscriptions";
-import { SUBSCRIPTION_SUPPORT_URL } from "@/src/components/payments/SubscriptionLegalDisclosure";
+import { KRISTO_SUPPORT_URL } from "@/src/lib/kristoLinks";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -343,15 +342,6 @@ export default function LoginScreen() {
         offlineActivationRole: platformRole,
       } as any);
 
-      if (sessionChurchId) {
-        void realignRevenueCatIdentityForChurch({
-          churchId: sessionChurchId,
-          userId: finalUserId,
-          reason: "login",
-          forceLogOut: true,
-        });
-      }
-
       const hasProfile = Boolean(fullName.trim());
 
       const nextRoute = !hasProfile
@@ -453,7 +443,7 @@ export default function LoginScreen() {
 
         <Pressable
           onPress={() => {
-            void Linking.openURL(SUBSCRIPTION_SUPPORT_URL);
+            void Linking.openURL(KRISTO_SUPPORT_URL);
           }}
           style={s.supportBtn}
         >

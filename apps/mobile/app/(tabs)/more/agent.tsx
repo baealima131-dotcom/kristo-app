@@ -43,13 +43,12 @@ import {
   configureExpandAnimation,
 } from "@/src/components/systemAdminSupervisorUi";
 import { getSessionSync } from "@/src/lib/kristoSession";
-import { churchIdsMatch, announceChurchPremiumAccessUnlocked } from "@/src/lib/churchPremiumAccess";
+import { churchIdsMatch } from "@/src/lib/churchIdUtils";
 import { clearResponseCacheForRequest } from "@/src/lib/kristoTraffic";
 import {
   clearCoordinatedRefreshLanesForChurch,
   resetChurchMediaAccessCacheOnSwitch,
 } from "@/src/lib/refreshCoordinator";
-import { formatPremiumRenewalDate } from "@/src/lib/payments/mobileSubscriptions";
 import { hasOfflineActivationRole, logOfflineCodesRouteOpened } from "@/src/lib/offlineActivationCodes";
 import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
 import {
@@ -74,22 +73,22 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
 
 const ACTIVITY_LIMIT = 20;
 
-function formatOfflineActivationExpiry(expiresAtMs?: number | null): string | null {
-  if (!expiresAtMs || !Number.isFinite(expiresAtMs)) return null;
-  return formatPremiumRenewalDate(new Date(expiresAtMs));
-}
-
-async function refreshSessionChurchSubscriptionCacheIfNeeded(args: {
+async function refreshSessionChurchMediaCacheIfNeeded(args: {
   activatedChurchId: string;
-  subscriptionActive?: boolean;
-  subscriptionPlan?: string | null;
-  subscriptionExpiresAt?: number | null;
 }) {
   const session = getSessionSync();
+
   const userId = String(session?.userId || "").trim();
-  const sessionChurchId = String(session?.churchId || session?.activeChurchId || "").trim();
+  const sessionChurchId = String(
+    session?.churchId || session?.activeChurchId || ""
+  ).trim();
   const activatedChurchId = String(args.activatedChurchId || "").trim();
-  if (!userId || !sessionChurchId || !churchIdsMatch(sessionChurchId, activatedChurchId)) {
+
+  if (
+    !userId ||
+    !sessionChurchId ||
+    !churchIdsMatch(sessionChurchId, activatedChurchId)
+  ) {
     return;
   }
 
@@ -98,31 +97,31 @@ async function refreshSessionChurchSubscriptionCacheIfNeeded(args: {
     previousChurchId: sessionChurchId,
     nextChurchId: sessionChurchId,
   });
-  clearCoordinatedRefreshLanesForChurch(sessionChurchId, userId);
-  clearResponseCacheForRequest("GET", "/api/church/media", userId, sessionChurchId);
-  clearResponseCacheForRequest("GET", "/api/church/media-hosts", userId, sessionChurchId);
-  clearResponseCacheForRequest("GET", "/api/church/overview", userId, sessionChurchId);
 
-  if (args.subscriptionActive === true) {
-    announceChurchPremiumAccessUnlocked({
-      churchId: sessionChurchId,
-      userId,
-      role: session?.role,
-      churchRole: session?.churchRole,
-      subscriptionActive: true,
-      backendSubscriptionActive: true,
-      canUseMediaTools: true,
-      subscriptionPlan:
-        args.subscriptionPlan === "yearly"
-          ? "yearly"
-          : args.subscriptionPlan === "monthly"
-            ? "monthly"
-            : null,
-      source: "offline-agent-activation",
-      persistedChurchActivation: true,
-    });
-  }
+  clearCoordinatedRefreshLanesForChurch(sessionChurchId, userId);
+
+  clearResponseCacheForRequest(
+    "GET",
+    "/api/church/media",
+    userId,
+    sessionChurchId
+  );
+
+  clearResponseCacheForRequest(
+    "GET",
+    "/api/church/media-hosts",
+    userId,
+    sessionChurchId
+  );
+
+  clearResponseCacheForRequest(
+    "GET",
+    "/api/church/overview",
+    userId,
+    sessionChurchId
+  );
 }
+
 
 const COUNTRY_LOOKUP: Record<string, { flag: string; name: string }> = {
   BDI: { flag: "🇧🇮", name: "Burundi" },
@@ -237,7 +236,7 @@ function ActivateChurchPanel({
         <TextInput
           value={activationCode}
           onChangeText={(value) => onActivationCodeChange(value.toUpperCase())}
-          placeholder="KR-XX-MX-XXXX-XXXX"
+          placeholder="KR-XX-XXXX-XXXX"
           autoCapitalize="characters"
           autoCorrect={false}
           placeholderTextColor="rgba(255,255,255,0.35)"
@@ -262,7 +261,7 @@ function ActivateChurchPanel({
                       {code.code}
                     </Text>
                     <Text style={styles.availableCodeMeta}>
-                      M{code.durationMonths} · {code.countryCode}
+                      {code.countryCode} · One-time
                     </Text>
                   </Pressable>
                 );
@@ -347,7 +346,7 @@ function ActivationCodesPanel({ batches }: { batches: AgentInventoryBatch[] }) {
         <View style={adminStyles.inventoryTableShell}>
           <View style={styles.batchHeaderRow}>
             <Text style={[styles.batchHeaderCell, styles.batchHeaderWide]}>Country</Text>
-            <Text style={styles.batchHeaderCell}>Duration</Text>
+            <Text style={styles.batchHeaderCell}>Type</Text>
             <Text style={styles.batchHeaderCell}>Total</Text>
             <Text style={styles.batchHeaderCell}>Rem</Text>
             <Text style={styles.batchHeaderCell}>Red</Text>
@@ -365,7 +364,7 @@ function ActivationCodesPanel({ batches }: { batches: AgentInventoryBatch[] }) {
 function InventoryBatchRow({ batch, isLast }: { batch: AgentInventoryBatch; isLast: boolean }) {
   const [expanded, setExpanded] = React.useState(false);
   const country = countryDisplay(batch.countryCode);
-  const durationLabel = batch.durationMonths === 1 ? "1 mo" : `${batch.durationMonths} mo`;
+  const durationLabel = "One-time";
 
   return (
     <>
@@ -419,7 +418,7 @@ function RecentActivityPanel({ items }: { items: AgentCodeActivityItem[] }) {
 function activityVisual(item: AgentCodeActivityItem) {
   if (item.type === "assigned_to_agent") return { color: SA_GREEN, icon: "person-add" as const };
   if (item.type === "redeemed") return { color: "#60A5FA", icon: "checkmark-circle" as const };
-  if (item.type === "expired") return { color: SA_RED, icon: "time" as const };
+  if (item.type === "disabled") return { color: SA_RED, icon: "ban" as const };
   if (item.type === "returned") return { color: SA_AMBER, icon: "return-down-back" as const };
   return { color: SA_PURPLE, icon: "download" as const };
 }
@@ -560,20 +559,13 @@ export default function AgentScreen() {
               const result = await activateChurchForAgent({ churchId, activationCode });
               setChurchIdInput("");
               setActivationCodeInput("");
-              await refreshSessionChurchSubscriptionCacheIfNeeded({
+              await refreshSessionChurchMediaCacheIfNeeded({
                 activatedChurchId: result.church.churchId,
-                subscriptionActive: result.subscription?.subscriptionActive,
-                subscriptionPlan: result.subscription?.subscriptionPlan ?? null,
-                subscriptionExpiresAt: result.subscription?.subscriptionExpiresAt ?? null,
               });
               await loadDashboard();
-              const expiryLabel = formatOfflineActivationExpiry(
-                result.subscription?.subscriptionExpiresAt
-              );
-              const expiryLine = expiryLabel ? `\nPremium access until ${expiryLabel}.` : "";
               Alert.alert(
                 "Church activated",
-                `${result.church.churchName} was activated with code ${result.code.code}.${expiryLine}`
+                `${result.church.churchName} was activated with code ${result.code.code}.`
               );
             } catch (e: any) {
               Alert.alert("Activation failed", String(e?.message || "Failed"));

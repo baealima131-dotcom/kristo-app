@@ -1,9 +1,6 @@
 /** Global toggle for extra home-feed logging in dev (off by default). */
 export const KRISTO_VERBOSE_FEED_DEBUG = false;
 
-/** Global toggle for extra RevenueCat logging in dev (off by default). */
-export const KRISTO_VERBOSE_REVENUECAT_DEBUG = false;
-
 export function isKristoVerboseFeedDebug(): boolean {
   return __DEV__ && KRISTO_VERBOSE_FEED_DEBUG;
 }
@@ -23,11 +20,4 @@ export function isKristoVerboseVideoControllerDebug(): boolean {
 /** Avatar resolve + comment count source logs (off by default). */
 export function isKristoVerboseFeedIdentityDebug(): boolean {
   return KRISTO_VERBOSE_FEED_DEBUG;
-}
-
-export function shouldEnableRevenueCatDebug(_route?: string | null): boolean {
-  if (process.env.EXPO_PUBLIC_KRISTO_REVENUECAT_DEBUG === "1") return true;
-  if (!__DEV__) return false;
-  if (_route === "payments") return true;
-  return KRISTO_VERBOSE_REVENUECAT_DEBUG;
 }

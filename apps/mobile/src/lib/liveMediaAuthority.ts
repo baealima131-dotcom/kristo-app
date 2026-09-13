@@ -1,4 +1,3 @@
-import { isIosV1PremiumFeatureUnlocked } from "./iosV1MonetizationPolicy";
 
 export type LiveMediaAuthorityInput = {
   currentUserId?: string;
@@ -172,18 +171,13 @@ export function applyFastLiveStageAuthorityBoost(
     isMediaInstantLive: boolean;
     fastSession: FastLiveSessionAuthority;
     fastSlotWindowOpen: boolean;
-    churchSubscriptionActive: boolean | null;
     routePublisherEligible: boolean;
   }
 ): LiveStageAuthority {
   if (input.isMediaInstantLive || stage.canPublishLiveVideoNow) return stage;
 
-  const subscriptionOk =
-    input.churchSubscriptionActive !== false ||
-    input.routePublisherEligible ||
-    isIosV1PremiumFeatureUnlocked();
-
-  if (!subscriptionOk || !input.fastSlotWindowOpen || !input.fastSession.trustedOwnsActiveSlot) {
+  // Kristo App is free. Fast-live publishing is controlled by trusted slot authority.
+  if (!input.fastSlotWindowOpen || !input.fastSession.trustedOwnsActiveSlot) {
     return stage;
   }
 
@@ -322,7 +316,6 @@ export type LiveStageAuthorityInput = {
   roleLooksLikeHost: boolean;
   approvedViewerSeatType: string;
   /** When false, all publish/management media ops are blocked (view-only). */
-  churchSubscriptionActive?: boolean | null;
 };
 
 export type LiveStageAuthority = {
@@ -403,22 +396,6 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     canPublishClaimedCameraNow,
     canPublishLiveVideoNow,
   };
-
-  // Church subscription gates Media Studio tools (pastor/host). Claimed schedule slot
-  // speakers may publish their slot without target-church media-tool entitlement.
-  // iOS V1 free: monetization off — do not strip pastor/host tools for inactive subscription.
-  if (input.churchSubscriptionActive === false && !isIosV1PremiumFeatureUnlocked()) {
-    const claimedSlotMic = userHasClaimedScheduleSlot;
-    const claimedSlotCamera = userOwnsCurrentActiveSlot && activeSlotCameraWindowOpen;
-    return {
-      ...result,
-      pastorPermanentMicNow: false,
-      mediaHostPermanentMicNow: false,
-      canPublishClaimedMicNow: claimedSlotMic,
-      canPublishClaimedCameraNow: claimedSlotCamera,
-      canPublishLiveVideoNow: input.isMediaInstantLive ? false : claimedSlotCamera,
-    };
-  }
 
   return result;
 }

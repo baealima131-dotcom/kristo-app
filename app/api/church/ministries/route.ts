@@ -9,9 +9,6 @@ import {
 } from "@/app/api/_lib/store/ministryDb";
 import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
-import {
-  requireChurchSubscriptionActive,
-} from "@/app/api/_lib/churchSubscription";
 import { getUserJoinedMinistries, logMinistryScope, resolveMinistryViewerUserId } from "@/app/api/_lib/ministryMembership";
 import {
   MINISTRY_MEDIA_ACCESS_LIMIT,
@@ -23,11 +20,6 @@ import {
   ministryMediaAccessLimitPayload,
   parseMinistryMediaAccessInput,
 } from "@/lib/ministryMediaAccessLimit";
-import {
-  logMinistryMediaAccessLoad,
-  logMinistryMediaAccessSave,
-} from "@/lib/ministryMediaAccessTrace";
-
 /* =========================
    TYPES
    ========================= */
@@ -269,35 +261,14 @@ export async function GET(req: NextRequest) {
     if (!one) {
       return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
     }
-
-    logMinistryMediaAccessLoad({
-      ministryId: one.id,
-      churchId,
-      mediaAccess: one.mediaAccess === true,
-      payloadStored: one,
-      source: "api/church/ministries?id",
-    });
-
-    return json<Ministry>({
+return json<Ministry>({
       ok: true,
       data: materializeMinistryResponse(one as Ministry & Record<string, unknown>),
     });
   }
 
   const churchMinistries = all.filter((m) => churchIdsMatch(m.churchId, churchId));
-
-  logMinistryMediaAccessLoad({
-    churchId,
-    count: churchMinistries.length,
-    source: "api/church/ministries",
-    payloadStored: churchMinistries.map((m) => ({
-      id: m.id,
-      name: m.name,
-      mediaAccess: m.mediaAccess === true,
-    })),
-  });
-
-  if (mineMode) {
+if (mineMode) {
     const data = await getUserJoinedMinistries(churchId, viewer.userId);
     const joinedMinistryIds = data.map((m) => String(m.id || "")).filter(Boolean);
     const identity = await resolveMinistryViewerUserId(viewer.userId);
@@ -341,17 +312,7 @@ export async function POST(req: NextRequest) {
   const viewerUserId = String(viewer?.userId || "").trim();
   const viewerRole = String(viewer?.role || "").trim();
 
-  const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-    endpoint: "/api/church/ministries",
-    churchId,
-    userId: viewerUserId,
-    role: viewerRole,
-    action: "create_ministry",
-    headers: req.headers,
-  });
-  if (subscriptionBlocked) return subscriptionBlocked;
-
-  const body = await asBody(req);
+const body = await asBody(req);
   if (!body) return json({ ok: false, error: "Invalid JSON body" } satisfies ApiErr, { status: 400 });
 
   const name = sanitizeName(body.name);
@@ -374,26 +335,8 @@ export async function POST(req: NextRequest) {
     mediaAccess,
     ...fieldTypes,
   });
-
-  logMinistryMediaAccessSave({
-    churchId,
-    mediaAccess,
-    payloadSent: { name, status, description, mediaAccess, rawMediaAccessInput },
-    phase: "request",
-    source: "api/church/ministries POST",
-  });
-
-  if (mediaAccess) {
-    const mediaSubscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/ministries",
-      churchId,
-      userId: viewerUserId,
-      role: viewerRole,
-      action: "grant_ministry_media_access",
-    headers: req.headers,
-    });
-    if (mediaSubscriptionBlocked) return mediaSubscriptionBlocked;
-  }
+if (mediaAccess) {
+}
 
   const created = materializeMinistryMediaAccessRecord({
     id: id(),
@@ -504,27 +447,7 @@ export async function POST(req: NextRequest) {
       ...fieldTypes,
     });
 
-    logMinistryMediaAccessSave({
-      ministryId: responseMinistry.id,
-      churchId,
-      mediaAccess: responseMinistry.mediaAccess === true,
-      payloadSent: { name, status, description, mediaAccess, rawMediaAccessInput },
-      payloadStored: responseMinistry,
-      phase: "persist",
-      source: "api/church/ministries POST",
-    });
-
-    logMinistryMediaAccessSave({
-      ministryId: responseMinistry.id,
-      churchId,
-      mediaAccess: responseMinistry.mediaAccess === true,
-      payloadSent: { name, status, description, mediaAccess, rawMediaAccessInput },
-      payloadStored: responseMinistry,
-      phase: "response",
-      source: "api/church/ministries POST",
-    });
-
-    return json<Ministry>({ ok: true, data: responseMinistry }, { status: 201 });
+return json<Ministry>({ ok: true, data: responseMinistry }, { status: 201 });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error || "ministry_save_failed");
 
@@ -576,16 +499,7 @@ export async function PATCH(req: NextRequest) {
 
   if (body.mediaAccess !== undefined && parseMinistryMediaAccessInput(extractMinistryMediaAccessFromBody(body))) {
     const viewerRole = String(viewer?.role || "").trim();
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/ministries",
-      churchId,
-      userId: viewerUserId,
-      role: viewerRole,
-      action: "grant_ministry_media_access",
-    headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-  }
+}
 
   let updated: Ministry | null = null;
   let notFound = false;
@@ -676,18 +590,7 @@ export async function PATCH(req: NextRequest) {
   if (notFound || !updated) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
   const u = updated as any as Ministry;
-
-  logMinistryMediaAccessSave({
-    ministryId: u.id,
-    churchId,
-    mediaAccess: u.mediaAccess === true,
-    payloadSent: body,
-    payloadStored: u,
-    phase: "persist",
-    source: "api/church/ministries PATCH",
-  });
-
-  const statusToggled = !!(prevStatus && nextStatusForAudit && prevStatus !== nextStatusForAudit);
+const statusToggled = !!(prevStatus && nextStatusForAudit && prevStatus !== nextStatusForAudit);
 
   await logAudit({
     req,

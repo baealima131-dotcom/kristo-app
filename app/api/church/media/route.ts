@@ -5,32 +5,12 @@ import { guard } from "@/app/api/_lib/rbac";
 import {
   getChurchMediaByChurchId,
   isMediaDatabaseError,
-  patchChurchMediaSubscription,
   resolveMediaStoreMode,
   upsertChurchMedia,
   confirmChurchMediaPersisted,
 } from "@/app/api/_lib/store/mediaDb";
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
-import { reconcileChurchSubscriptionExpiryNotifications } from "@/app/api/_lib/churchMediaNotifications";
 import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
-import {
-  reconcileChurchMediaSubscriptionSource,
-  shouldPreserveActiveSubscriptionWithoutRevenueCat,
-  syncChurchSubscriptionFromRevenueCat,
-} from "@/app/api/_lib/churchSubscriptionSync";
-import {
-  payloadFromLockForChurch,
-  resolveSubscriptionOwnershipLockForChurch,
-} from "@/app/api/_lib/subscriptionOwnershipLock";
-import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
-import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
-import {
-  CHURCH_MEDIA_SUBSCRIPTION_DECISION_EVENT,
-  classifyChurchSubscriptionDecisionBlocker,
-  type ChurchSubscriptionDecisionSnapshot,
-  type ChurchSubscriptionSyncDiagnostics,
-} from "@/app/api/_lib/churchSubscriptionDecisionDiagnostics";
-
 export const runtime = "nodejs";
 
 function auth(req: Request) {
@@ -82,131 +62,11 @@ export async function GET(req: NextRequest) {
       userId,
       headers: req.headers,
     });
-    let mediaForResponse = media;
-    let hasProfile = Boolean(String(media?.mediaName || "").trim());
-    let subscriptionActive = access.subscriptionActive;
+    const mediaForResponse = media;
+    const hasProfile = Boolean(String(media?.mediaName || "").trim());
 
-    // TEMPORARY diagnostic state — captured across the decision, emitted once at the end.
-    let subscriptionActiveBeforeSync = subscriptionActive;
-    let syncEligible = false;
-    let syncRan = false;
-    let syncSynced: boolean | null = null;
-    let syncReason: string | null = null;
-    let syncDiagnostics: ChurchSubscriptionSyncDiagnostics | null = null;
-
-    console.log("KRISTO_CHURCH_MEDIA_GET_BEFORE_SYNC", {
-      churchId,
-      userId,
-      hasProfile,
-      subscriptionActive,
-      canManageMediaHosts: access.canManageMediaHosts,
-      profileSubscriptionPlan: media?.subscriptionPlan ?? null,
-      profileSubscriptionSource: media?.subscriptionSource ?? null,
-      profileSubscriptionExpiresAt: media?.subscriptionExpiresAt ?? null,
-      profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
-    });
-
-    // Source classification writes the media profile / may create locks — canonical pastor only.
-    if (
-      access.canManageChurchSubscription &&
-      hasProfile &&
-      subscriptionActive &&
-      !mediaForResponse?.subscriptionSource
-    ) {
-      const classified = await reconcileChurchMediaSubscriptionSource({
-        churchId,
-        media: mediaForResponse,
-      });
-      if (classified.media) {
-        mediaForResponse = classified.media;
-        subscriptionActive = isChurchSubscriptionActiveFromRecord(classified.media);
-        if (classified.classified) {
-          access = await evaluateChurchMediaAccess({ churchId, userId, headers: req.headers });
-        }
-      }
-      console.log("KRISTO_CHURCH_MEDIA_SUBSCRIPTION_SOURCE_RECONCILE", {
-        churchId,
-        userId,
-        classified: classified.classified,
-        classification: classified.classification,
-        reason: classified.reason,
-        profileSubscriptionSource: mediaForResponse?.subscriptionSource ?? null,
-      });
-    }
-
-    // Reconcile only when a profile already exists but subscription is inactive.
-    // Missing profiles are created via PATCH activate_church_subscription after an
-    // explicit purchase or restore — never from passive GET + RevenueCat login.
-    subscriptionActiveBeforeSync = subscriptionActive;
-    syncEligible = access.canManageChurchSubscription && hasProfile && !subscriptionActive;
-    if (syncEligible) {
-      syncRan = true;
-      console.log("KRISTO_CHURCH_MEDIA_GET_SYNC_ATTEMPT", {
-        churchId,
-        userId,
-        reason: "existing-profile-inactive-reconcile",
-      });
-      const sync = await syncChurchSubscriptionFromRevenueCat({
-        churchId,
-        requesterUserId: userId,
-      });
-      syncSynced = sync.synced;
-      syncReason = sync.reason;
-      syncDiagnostics = sync.diagnostics ?? null;
-      if (sync.media) {
-        mediaForResponse = sync.media;
-        hasProfile = Boolean(String(sync.media.mediaName || "").trim());
-        subscriptionActive = isChurchSubscriptionActiveFromRecord(sync.media);
-        if (sync.synced) {
-          access = await evaluateChurchMediaAccess({ churchId, userId, headers: req.headers });
-        }
-      }
-      console.log("KRISTO_CHURCH_MEDIA_GET_AFTER_SYNC", {
-        churchId,
-        userId,
-        syncReason: sync.reason,
-        syncSynced: sync.synced,
-        subscriptionActivated: sync.subscriptionActivated,
-        profileSubscriptionActive: sync.media?.subscriptionActive ?? null,
-        profileSubscriptionPlan: sync.media?.subscriptionPlan ?? null,
-        revenueCatActive: sync.synced,
-        reason: sync.reason,
-      });
-    } else if (access.canManageChurchSubscription && hasProfile && subscriptionActive) {
-      const preserveWithoutRevenueCat =
-        shouldPreserveActiveSubscriptionWithoutRevenueCat(mediaForResponse);
-
-      if (!preserveWithoutRevenueCat) {
-        const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
-        if (!verification.active) {
-          console.log("KRISTO_CHURCH_MEDIA_DEACTIVATE_STALE_SUBSCRIPTION", {
-            churchId,
-            userId,
-            profileSubscriptionActive: mediaForResponse?.subscriptionActive ?? null,
-            profileSubscriptionPlan: mediaForResponse?.subscriptionPlan ?? null,
-            revenueCatActive: verification.active,
-            revenueCatReason: verification.reason,
-            reason: "profile-active-without-verified-entitlement",
-          });
-          const deactivated = await patchChurchMediaSubscription(churchId, {
-            subscriptionActive: false,
-            subscriptionPlan: null,
-          });
-          if (deactivated) {
-            mediaForResponse = deactivated;
-            subscriptionActive = false;
-            access = await evaluateChurchMediaAccess({ churchId, userId, headers: req.headers });
-            console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_DEACTIVATE", {
-              churchId,
-              profileSubscriptionActive: deactivated.subscriptionActive ?? false,
-              profileSubscriptionPlan: deactivated.subscriptionPlan ?? null,
-              revenueCatActive: verification.active,
-              reason: "stale-subscription-cleared",
-            });
-          }
-        }
-      }
-    }
+    // Church media is free. This flag is not a billing check.
+    const churchMediaAvailable = true;
 
     const canOpenMediaScreen = access.canOpenMediaScreen;
     const canViewProfile = hasProfile && canOpenMediaScreen;
@@ -215,26 +75,6 @@ export async function GET(req: NextRequest) {
       await confirmChurchMediaPersisted(churchId, mediaForResponse?.mediaName);
     }
 
-    if (access.canManageChurchSubscription && access.actualPastorUserId && hasProfile && mediaForResponse) {
-      try {
-        const reconcileResult = await reconcileChurchSubscriptionExpiryNotifications({
-          churchId,
-          pastorUserId: access.actualPastorUserId,
-          media: mediaForResponse,
-        });
-        if (reconcileResult.expired) {
-          mediaForResponse = await getChurchMediaByChurchId(churchId);
-          hasProfile = Boolean(String(mediaForResponse?.mediaName || "").trim());
-          subscriptionActive = isChurchSubscriptionActiveFromRecord(mediaForResponse);
-          access = await evaluateChurchMediaAccess({ churchId, userId, headers: req.headers });
-        }
-      } catch (notifyError: any) {
-        console.log("KRISTO_SUBSCRIPTION_RECONCILE_FAILED", {
-          churchId,
-          message: String(notifyError?.message || notifyError),
-        });
-      }
-    }
 
     const mode: "pastor" | "host" | "blocked" = access.isActualChurchPastor
       ? "pastor"
@@ -263,7 +103,7 @@ export async function GET(req: NextRequest) {
         churchId,
         userId,
         found: hasProfile,
-        subscriptionActive,
+        churchMediaAvailable,
         canOpenMediaScreen,
         canUseMediaTools: access.canUseMediaTools,
         canAccessChurchMedia: access.canAccessChurchMedia,
@@ -277,64 +117,19 @@ export async function GET(req: NextRequest) {
     console.log("KRISTO_CHURCH_MEDIA_GET_RESPONSE", {
       churchId,
       userId,
-      subscriptionActive,
-      subscriptionPlan: mediaForResponse?.subscriptionPlan ?? null,
-      subscriptionSource: mediaForResponse?.subscriptionSource ?? null,
-      subscriptionExpiresAt: mediaForResponse?.subscriptionExpiresAt ?? null,
-      subscriptionUpdatedAt: mediaForResponse?.subscriptionUpdatedAt ?? null,
       hasProfile,
       profileMissing: !hasProfile,
-    });
-
-    // TEMPORARY structured diagnostic: one PII-safe line summarizing the whole
-    // subscription decision so the exact blocking branch is identifiable from a
-    // single request. Store identity is reduced to a boolean; no tx id / receipt /
-    // key / token / raw RevenueCat payload is logged. Remove once diagnosed.
-    const decisionSnapshot: ChurchSubscriptionDecisionSnapshot = {
-      churchId,
-      requesterUserId: userId,
-      hasProfile,
-      isActualPastor: access.isActualChurchPastor,
-      canManageMediaHosts: access.canManageMediaHosts,
-      subscriptionActiveBeforeSync,
-      syncEligible,
-      syncRan,
-      syncSynced,
-      syncReason,
-      revenueCatActive: syncDiagnostics?.revenueCatActive ?? null,
-      revenueCatReason: syncDiagnostics?.revenueCatReason ?? null,
-      detectedEntitlement: syncDiagnostics?.detectedEntitlement ?? null,
-      revenueCatAppUserId: syncDiagnostics?.revenueCatAppUserId ?? null,
-      revenueCatSubscriberAliased: syncDiagnostics?.revenueCatSubscriberAliased ?? null,
-      store: syncDiagnostics?.store ?? null,
-      storeSubscriptionIdentityPresent:
-        syncDiagnostics?.storeSubscriptionIdentityPresent ?? null,
-      ownershipLockAllowed: syncDiagnostics?.ownershipLockAllowed ?? null,
-      ownershipLockReason: syncDiagnostics?.ownershipLockReason ?? null,
-      subscriptionActiveAfterSync: subscriptionActive,
-      canUseMediaToolsAfterSync: access.canUseMediaTools,
-    };
-    console.log(CHURCH_MEDIA_SUBSCRIPTION_DECISION_EVENT, {
-      ...decisionSnapshot,
-      blocker: classifyChurchSubscriptionDecisionBlocker(decisionSnapshot),
-    });
-
-    // Lock peek for non-canonical requesters is read-only (no backfill/create/update).
-    // Mutation (backfill/migration/metadata persist) is reserved for the canonical pastor.
-    const lockOwnerUserId = String(access.actualPastorUserId || "").trim();
-    const { payload: subscriptionOwnershipLock } = await resolveSubscriptionOwnershipLockForChurch({
-      churchId,
-      ownerUserId: lockOwnerUserId,
-      media: mediaForResponse,
-      allowMutation: access.canManageChurchSubscription,
+      canOpenMediaScreen,
+      canUseMediaTools: access.canUseMediaTools,
+      monetizationPolicy: "free_all_platforms",
     });
 
     return NextResponse.json({
       ok: true,
       media: canViewProfile ? mediaForResponse : null,
       profileMissing: !hasProfile,
-      subscriptionActive,
-      subscriptionOwnershipLock,
+      churchMediaAvailable,
+      monetizationPolicy: "free_all_platforms",
       viewerCanManage: access.canManageMediaHosts,
       viewerIsHost: access.isMediaHost,
       canOpenMediaScreen: access.canOpenMediaScreen,
@@ -342,7 +137,6 @@ export async function GET(req: NextRequest) {
       canAccessChurchMedia: access.canAccessChurchMedia,
       isActualChurchPastor: access.isActualChurchPastor,
       hasPastorRole: access.hasPastorRole,
-      canManageChurchSubscription: access.canManageChurchSubscription,
       actualPastorUserId: access.actualPastorUserId,
       mediaHostUserIds: access.mediaHostUserIds,
       storeMode: resolveMediaStoreMode(),
@@ -448,7 +242,7 @@ export async function PATCH(req: Request) {
     userId: a.userId,
       headers: req.headers,
   });
-  if (!access.canManageChurchSubscription) {
+  if (!access.canManageChurchMedia) {
     return NextResponse.json(
       {
         ok: false,
@@ -459,141 +253,8 @@ export async function PATCH(req: Request) {
     );
   }
 
-  try {
-    const body = await req.json().catch(() => ({}));
-    const action = String(body?.action || "").trim();
-    const isSyncAction =
-      action === "activate_church_subscription" ||
-      action === "sync_church_subscription_from_revenuecat";
-
-    if (!isSyncAction) {
-      return NextResponse.json({ ok: false, error: "Unsupported action" }, { status: 400 });
-    }
-
-    const sync = await syncChurchSubscriptionFromRevenueCat({
-      churchId: a.churchId,
-      requesterUserId: a.userId,
-      requestedPlan: body?.subscriptionPlan,
-    });
-
-    if (!sync.synced) {
-      if (
-        sync.reason === "not-pastor" ||
-        sync.reason === "not-canonical-pastor" ||
-        sync.reason === "profile-create-forbidden"
-      ) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "Only the current church Pastor can activate a church subscription",
-            reason: sync.reason,
-          },
-          { status: 403 }
-        );
-      }
-
-      if (
-        sync.reason === "no-entitlement" ||
-        sync.reason === "expired" ||
-        sync.reason.startsWith("revenuecat-http-") ||
-        sync.reason === "no-secret" ||
-        sync.reason === "timeout" ||
-        sync.reason === "fetch-error" ||
-        sync.reason === "missing-app-user-id"
-      ) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "Subscription could not be verified with the App Store.",
-            reason: sync.reason,
-            revenueCatLane: sync.revenueCatLane ?? null,
-            sandboxPurchase: sync.sandboxPurchase === true,
-          },
-          { status: 402 }
-        );
-      }
-
-      if (
-        sync.reason === "unverified-store-identity" ||
-        sync.reason === "conflict-pending-verification"
-      ) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "Subscription ownership could not be verified with the App Store.",
-            reason: sync.reason,
-            revenueCatLane: sync.revenueCatLane ?? null,
-            sandboxPurchase: sync.sandboxPurchase === true,
-          },
-          { status: 423 }
-        );
-      }
-
-      if (
-        sync.reason === "subscription-ownership-lock" ||
-        sync.reason === "store-subscription-ownership-conflict"
-      ) {
-        const subscriptionOwnershipLock = sync.ownershipLock
-          ? payloadFromLockForChurch({ lock: sync.ownershipLock, churchId: a.churchId })
-          : null;
-        return NextResponse.json(
-          {
-            ok: false,
-            error:
-              sync.reason === "store-subscription-ownership-conflict"
-                ? "An existing Media Premium subscription is still linked to a previous church and cannot be moved here."
-                : "This Kristo ID already has an active subscription for another church. Manage or cancel that subscription first.",
-            reason: sync.reason,
-            subscriptionOwnershipLock,
-          },
-          { status: 409 }
-        );
-      }
-
-      if (
-        sync.reason === "profile-create-forbidden" ||
-        sync.reason === "profile-create-failed" ||
-        sync.reason === "subscription-patch-failed" ||
-        sync.reason === "partial"
-      ) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "Church media profile required before activating subscription",
-            reason: sync.reason,
-          },
-          { status: 400 }
-        );
-      }
-
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "Subscription activation could not be completed.",
-          reason: sync.reason,
-        },
-        { status: 400 }
-      );
-    }
-
-    return NextResponse.json({
-      ok: true,
-      media: sync.media,
-      storeMode: resolveMediaStoreMode(),
-      profileCreated: sync.profileCreated,
-      subscriptionActivated: sync.subscriptionActivated,
-    });
-  } catch (error: any) {
-    if (isMediaDatabaseError(error)) {
-      return NextResponse.json(
-        { ok: false, error: "Media database not configured", reason: "missing_db" },
-        { status: 503 }
-      );
-    }
-    console.error("[church/media] PATCH failed", error);
-    return NextResponse.json(
-      { ok: false, error: String(error?.message || error || "Failed to update media profile") },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json(
+    { ok: false, error: "Unsupported action" },
+    { status: 400 }
+  );
 }

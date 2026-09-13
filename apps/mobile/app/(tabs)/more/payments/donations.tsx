@@ -13,7 +13,7 @@ import {
   subscribePayments,
   type DonationModuleKey,
   type GivingType,
-} from "../../../../src/store/paymentsStore";
+} from "../../../../src/store/donationsStore";
 
 const MODULES: {
   key: DonationModuleKey;

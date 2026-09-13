@@ -19,7 +19,7 @@ import { preloadTlmcAssets } from "@/src/lib/tlmcPreload";
 import { preloadMediaAssets } from "@/src/lib/mediaPreload";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { resolveSessionChurchId } from "@/src/lib/churchStore";
-import { isPastorSessionRole } from "@/src/lib/churchSubscription";
+import { isPastorSessionRole } from "@/src/lib/churchRoleUtils";
 import {
   logMoreMediaCardGate,
   shouldShowMoreMediaCard,
@@ -113,8 +113,8 @@ const MESSAGES_MORE_ITEM: Item = {
 /** UI-hidden More cards (routes and feature code remain intact). */
 const HIDDEN_MORE_CARD_KEYS = new Set<string>([
   MESSAGES_MORE_ITEM.key,
-  // iOS V1 free: hide Church Subscription / Payments entry (Android keeps it).
-  ...(Platform.OS === "ios" ? ["payments"] : []),
+  // Kristo App is free on every platform. Church Subscription / Payments UI is retired.
+  "payments",
 ]);
 
 function shouldShowAgentMoreCard(platformRole: string, access: AgentAccessResponse | null): boolean {
@@ -148,14 +148,6 @@ const ITEMS: Item[] = [
     iconLib: "ion",
     icon: "notifications",
     href: "/more/notifications",
-  },
-  {
-    key: "payments",
-    title: "Church Subscription",
-    sub: "Monthly plans • manage premium",
-    iconLib: "ion",
-    icon: "card",
-    href: "/more/payments/subscriptions",
   },
   {
     key: "media",

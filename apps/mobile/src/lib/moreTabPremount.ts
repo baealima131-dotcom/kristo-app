@@ -2,7 +2,7 @@ import type { KristoSession } from "./kristoSession";
 import { runAfterHomeDeferredStartup } from "./homeFeedDeferredStartup";
 import { seedChurchMediaAccessFromSession } from "./refreshCoordinator";
 import { resolveSessionChurchId } from "./churchStore";
-import { isPastorSessionRole } from "./churchSubscription";
+import { isPastorSessionRole } from "./churchRoleUtils";
 import { preloadTlmcAssets } from "./tlmcPreload";
 
 export type MoreTabPremountSnapshot = {

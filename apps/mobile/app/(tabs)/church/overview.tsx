@@ -18,7 +18,6 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { markCreateMinistryPress } from "@/src/lib/createMinistryNavigation";
 import { Ionicons } from "@expo/vector-icons";
 import { buildKristoRequestHeaders, getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -68,15 +67,6 @@ import {
 } from "@/src/lib/screenOpenState";
 
 const CHURCH_OVERVIEW_SCREEN = "ChurchOverview";
-import { ChurchMinistryPremiumLockCard, ChurchSubscriptionExpiredBadge, isMinistryCreationAllowed } from "@/src/components/ChurchPremiumSubscriptionModal";
-import { fetchChurchSubscriptionStatus } from "@/src/lib/churchSubscription";
-import { churchIdsMatch } from "@/src/lib/churchPremiumAccess";
-import { onChurchPremiumAccessChanged } from "@/src/lib/kristoProfileEvents";
-import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
-import {
-  evaluateMinistryMediaAccessPermission,
-  logMinistryMediaAccessLoad,
-} from "@/src/lib/ministryMediaAccessTrace";
 import {
   isMinistryMediaAccessLimitReachedError,
   MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE,
@@ -396,9 +386,7 @@ export default function ChurchOverviewScreen() {
   const [previewChecked, setPreviewChecked] = useState(!invitePreview);
   const [previewCount, setPreviewCount] = useState(0);
   const [previewLimitReached, setPreviewLimitReached] = useState(false);
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(null);
-  const [canUseMediaTools, setCanUseMediaTools] = useState<boolean | null>(null);
-  const contentOpacity = useRef(new Animated.Value(0)).current;
+const contentOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (!effectiveAuthUserId || !churchId) return;
@@ -423,36 +411,6 @@ export default function ChurchOverviewScreen() {
     }
   }, [bootLoading, err, invitePreview, previewLimitReached, contentOpacity]);
 
-  useEffect(() => {
-    if (!churchId || invitePreview) {
-      setChurchSubscriptionActive(null);
-      setCanUseMediaTools(null);
-      return;
-    }
-
-    let alive = true;
-    fetchChurchSubscriptionStatus(getHeaders(), churchId).then((status) => {
-      if (!alive) return;
-      setChurchSubscriptionActive(
-        status.backendSubscriptionActive ?? status.subscriptionActive
-      );
-      setCanUseMediaTools(status.canUseMediaTools ?? null);
-    });
-
-    return () => {
-      alive = false;
-    };
-  }, [churchId, invitePreview, refreshAt]);
-
-  useEffect(() => {
-    if (!churchId || invitePreview) return;
-
-    return onChurchPremiumAccessChanged((payload) => {
-      if (!churchIdsMatch(payload.churchId, churchId)) return;
-      setChurchSubscriptionActive(true);
-      setCanUseMediaTools(payload.canUseMediaTools);
-    });
-  }, [churchId, invitePreview]);
 
   useEffect(() => {
     let alive = true;
@@ -1012,18 +970,8 @@ export default function ChurchOverviewScreen() {
   const canCreateMinistryRole =
     !invitePreview &&
     (isPastor || isChurchAdmin || isActualChurchPastor);
-  const subscriptionGateReady =
-    isSubscriptionBypassEnabled() ||
-    churchSubscriptionActive !== null ||
-    canUseMediaTools !== null;
-  const ministryCreationAllowed = isMinistryCreationAllowed(
-    churchSubscriptionActive,
-    canUseMediaTools
-  );
-  const showCreateMinistryCard =
-    canCreateMinistryRole && subscriptionGateReady && ministryCreationAllowed;
-  const showMinistryPremiumLockCard =
-    canCreateMinistryRole && subscriptionGateReady && !ministryCreationAllowed;
+  // Kristo App is free. Ministry creation is controlled by church role only.
+  const showCreateMinistryCard = canCreateMinistryRole;
   const hasExistingMinistries = stats.ministries > 0;
   const canOpenOfferings = !invitePreview && canSeeOfferings;
   const canEditProfile = !invitePreview && (isPastor || isChurchAdmin);
@@ -1035,17 +983,15 @@ export default function ChurchOverviewScreen() {
   const isPastorSession = /\bPastor\b/i.test(sessionRoleText);
   const canManageMinistryMediaAccess =
     !invitePreview &&
-    churchSubscriptionActive === true &&
     (isActualChurchPastor || isPastor || isPastorSession);
+
   const canOpenMediaStudio =
     !invitePreview &&
-    churchSubscriptionActive === true &&
     (canAccessChurchMedia || isPastor || isPastorSession);
+
   const showMediaControlCard =
     !invitePreview &&
-    (canOpenMediaStudio ||
-      canManageMinistryMediaAccess ||
-      ((isPastor || isPastorSession) && churchSubscriptionActive !== true));
+    (canOpenMediaStudio || canManageMinistryMediaAccess);
   const showMemberChurchAccessCard = !invitePreview && isMember && !showMediaControlCard;
 
   useEffect(() => {
@@ -1099,30 +1045,13 @@ export default function ChurchOverviewScreen() {
       return;
     }
 
-    if (!ministryCreationAllowed) {
-      openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
-      return;
-    }
-
     // Navigate immediately — do not await members/media/live/subscription.
     router.push("/church/ministries/create" as any);
   }
 
-  function openSubscriptionsScreen() {
-    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
-  }
-
-  function guardPremiumManagementAction(actionLabel: string): boolean {
-    if (ministryCreationAllowed) return true;
-    Alert.alert(
-      "Subscription expired",
-      `${actionLabel} requires an active Media Premium subscription.`,
-      [
-        { text: "Not now", style: "cancel" },
-        { text: "Subscribe", onPress: openSubscriptionsScreen },
-      ]
-    );
-    return false;
+  function guardPremiumManagementAction(_actionLabel: string): boolean {
+    // Kristo App is free. Existing role checks remain authoritative.
+    return true;
   }
 
   async function saveMediaAccessChanges() {
@@ -1183,31 +1112,12 @@ export default function ChurchOverviewScreen() {
       });
 
       const list = Array.isArray(j?.data) ? j.data : [];
-
-      logMinistryMediaAccessLoad({
-        churchId,
-        count: list.length,
-        source: "church/overview media picker",
-        payloadStored: list.map((m: any) => ({
-          id: m?.id,
-          name: m?.name,
-          mediaAccess: m?.mediaAccess === true,
-        })),
-      });
-
-      setMediaTargets(
+setMediaTargets(
         list
           .map((m: any) => {
             const persistedMediaAccess = m?.mediaAccess === true;
             if (persistedMediaAccess) {
-              evaluateMinistryMediaAccessPermission({
-                ministryId: String(m?.id || ""),
-                churchId,
-                mediaAccess: true,
-                churchSubscriptionActive,
-                source: "church/overview media picker",
-              });
-            }
+}
 
             return {
               id: String(m?.id || ""),
@@ -1668,12 +1578,7 @@ export default function ChurchOverviewScreen() {
                 </View>
               </View>
 
-              {!ministryCreationAllowed && subscriptionGateReady ? (
-                <ChurchSubscriptionExpiredBadge
-                  onSubscribe={openSubscriptionsScreen}
-                  style={{ marginBottom: 10 }}
-                />
-              ) : null}
+
 
               <View style={s.powerActions}>
                 <LuxuryPressable
@@ -1799,19 +1704,7 @@ export default function ChurchOverviewScreen() {
           ) : null}
         </View>
 
-        {showMinistryPremiumLockCard ? (
-          hasExistingMinistries ? (
-            <ChurchSubscriptionExpiredBadge
-              onSubscribe={openSubscriptionsScreen}
-              style={s.ministryPremiumLockCard}
-            />
-          ) : (
-            <ChurchMinistryPremiumLockCard
-              onSubscribe={openSubscriptionsScreen}
-              style={s.ministryPremiumLockCard}
-            />
-          )
-        ) : null}
+
 
           
         </Animated.ScrollView>

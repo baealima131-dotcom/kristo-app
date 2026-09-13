@@ -13,7 +13,6 @@ import {
   Image,
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { Ionicons } from "@expo/vector-icons";
 import {
   CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
@@ -61,12 +60,6 @@ import {
   fetchChurchPastorUserId,
   logChurchPastorResolution,
 } from "@/src/lib/churchPastorResolver";
-import {
-  alertChurchSubscriptionRequired,
-  isChurchSubscriptionRequiredError,
-  isPastorSessionRole,
-  requireActiveChurchSubscriptionForSchedule,
-} from "@/src/lib/churchSubscription";
 import { clearThreadMessages } from "@/src/lib/messagesStore";
 import { applyScheduleDeleteToLocalRoom, purgeFeedSchedulesAfterBatchDelete } from "@/src/lib/scheduleRoomMessageSync";
 import { resolveRealSlotTopic, resolveScheduleSlotScriptForSave, logScheduleTopicTrace } from "@/src/lib/slotTopicUtils";
@@ -471,30 +464,6 @@ export default function ChurchProjectToolScreen() {
   const routeMinistryId = String((params as any)?.ministryId || assignmentId || "").trim();
   const routeMediaAccess = String((params as any)?.mediaAccess || "").trim();
 
-  function toolMediaSubscriptionGateOpts() {
-    const session = getSessionSync() as any;
-    const sessionRole = String(session?.role || role || "").trim().toLowerCase();
-    const routeRole = String(role || "").trim().toLowerCase();
-    const isPastor =
-      isPastorSessionRole(sessionRole) ||
-      String(session?.churchRole || "").trim().toLowerCase() === "pastor" ||
-      routeRole.includes("pastor");
-    const viewerIsHost = routeRole.includes("host") || routeMediaAccess === "1";
-    const ministryToolAllowed =
-      String((params as any)?.mcAccess || "") === "1" ||
-      routeRole.includes("leader") ||
-      routeRole.includes("admin") ||
-      isPastor ||
-      routeRole.includes("host");
-    return {
-      isPastor,
-      isApprovedMediaHost: viewerIsHost,
-      viewerIsHost,
-      ministryRole: routeRole,
-      ministryToolAllowed,
-      toolKey: effectiveTool,
-    };
-  }
 
   const meta = useMemo(
     () =>
@@ -2908,16 +2877,6 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       const headers = getKristoHeaders() as Record<string, string>;
       const churchId = String(getSessionSync()?.churchId || "").trim();
 
-      if (
-        !(await requireActiveChurchSubscriptionForSchedule(churchId, headers as any, {
-          ...toolMediaSubscriptionGateOpts(),
-          screen: "church-project-tool.media-schedule",
-          gate: "publishScheduleSlotOnce",
-        }))
-      ) {
-        return false;
-      }
-
       const result = await upsertScheduleRoomMessageCard(slot, headers, {
         slotNumber,
         parentTopic,
@@ -2925,23 +2884,6 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       });
 
       if (!result.ok) {
-        if (
-          isChurchSubscriptionRequiredError(
-            { ok: false, error: result.error },
-            {
-              ...toolMediaSubscriptionGateOpts(),
-              screen: "church-project-tool.media-schedule",
-              gate: "publishScheduleSlotOnce.api",
-            }
-          )
-        ) {
-          alertChurchSubscriptionRequired({
-            ...toolMediaSubscriptionGateOpts(),
-            screen: "church-project-tool.media-schedule",
-            gate: "publishScheduleSlotOnce.api",
-            onUpgrade: () => openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" }),
-          });
-        }
         return false;
       }
 
@@ -3089,15 +3031,6 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     try {
     const churchId = String(getSessionSync()?.churchId || "").trim();
     const scheduleApiHeaders = getKristoHeaders() as any;
-    if (
-      !(await requireActiveChurchSubscriptionForSchedule(churchId, scheduleApiHeaders, {
-        ...toolMediaSubscriptionGateOpts(),
-        screen: "church-project-tool.media-schedule",
-        gate: "handleSendMeetingToSchedule",
-      }))
-    ) {
-      return;
-    }
 
     let speakerSlotsForConflict = Array.isArray(scheduleSpeakerSlots) ? scheduleSpeakerSlots : [];
     let backendCardsForConflict = Array.isArray(backendScheduleCards) ? backendScheduleCards : [];
@@ -3958,17 +3891,6 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       try {
         const churchId = String(getSessionSync()?.churchId || "").trim();
         const apiHeaders = getKristoHeaders() as any;
-
-        if (
-          !(await requireActiveChurchSubscriptionForSchedule(churchId, apiHeaders, {
-            ...toolMediaSubscriptionGateOpts(),
-            screen: "church-project-tool.media-schedule",
-            gate: "publishScheduleSlotsBatch",
-          }))
-        ) {
-          saveChurchProjectMeetingPlan(assignmentId, { sentToSchedule: false });
-          return;
-        }
 
         if (churchId) {
           const activeSchedule = await findActiveMediaScheduleForChurchFromSources(churchId, {

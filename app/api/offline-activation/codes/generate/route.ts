@@ -4,10 +4,8 @@ import type { NextRequest } from "next/server";
 import {
   generateActivationCodeBatch,
   isAllowedCountryCode,
-  isAllowedDurationMonths,
   readActivationCodeStoreForDebug,
   type ActivationCountryCode,
-  type ActivationDurationMonths,
 } from "@/app/api/_lib/offlineActivationCodeStore";
 import {
   buildActivationStoreRouteDebug,
@@ -27,14 +25,10 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}));
   const countryCode = String(body?.countryCode || "").trim().toUpperCase();
-  const durationMonths = Number(body?.durationMonths);
   const quantity = Number(body?.quantity);
 
   if (!isAllowedCountryCode(countryCode)) {
     return json({ ok: false, error: "Invalid countryCode. Use BDI, CD, TZ, or US." }, { status: 400 });
-  }
-  if (!isAllowedDurationMonths(durationMonths)) {
-    return json({ ok: false, error: "Invalid durationMonths. Use 1, 3, 6, or 12." }, { status: 400 });
   }
   if (!Number.isFinite(quantity) || quantity < 1) {
     return json({ ok: false, error: "Quantity must be at least 1." }, { status: 400 });
@@ -42,9 +36,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await generateActivationCodeBatch({
-      countryCode: countryCode as ActivationCountryCode,
-      durationMonths: durationMonths as ActivationDurationMonths,
-      quantity: Math.floor(quantity),
+      countryCode: countryCode as ActivationCountryCode,      quantity: Math.floor(quantity),
       createdByUserId: ctxOrRes.viewer.userId,
     });
 

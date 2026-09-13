@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { listPastorOwnedChurches } from "@/app/api/_lib/subscriptionOwnershipLock";
+import { listPastorOwnedChurches } from "@/app/api/_lib/pastorChurchOwnership";
 import { getProfileByUserCode } from "@/app/api/auth/_lib/profile";
 import { logAuthRequestDiag, resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 

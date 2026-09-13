@@ -269,7 +269,6 @@ import {
   describePosterVisibleIdentity,
   posterFeedIdentitySetsEqual,
 } from "@/src/lib/homeFeedPosterIdentity";
-import { fetchChurchSubscriptionActiveThrottled } from "@/src/lib/churchResourceRefresh";
 import {
   isYoutubeFeedPaginationLocked,
   setYoutubeFeedPaginationLocked,
@@ -1678,36 +1677,10 @@ export default function HomeFeedScreen() {
       return;
     }
 
-    let cancelled = false;
-
-    const loadSubscription = () => {
-      void fetchChurchSubscriptionActiveThrottled(
-        viewerChurchId,
-        getKristoHeaders({
-          userId: viewerUserId,
-          role: (session?.role || "Member") as any,
-          churchId: viewerChurchId,
-        }) as Record<string, string>,
-        { userId: viewerUserId }
-      ).then((active) => {
-        if (cancelled) return;
-        const canSee = active === true;
-        setHomeFeedViewerCanSeeMediaSlots(viewerChurchId, canSee);
-        setViewerCanSeeMediaSlots(canSee);
-      });
-    };
-
-    runAfterHomeDeferredStartup(
-      () => {
-        loadSubscription();
-      },
-      { reason: "home-feed-church-subscription" }
-    );
-
-    return () => {
-      cancelled = true;
-    };
-  }, [viewerChurchId, viewerUserId, session?.role]);
+    // Kristo App is free: church media-slot visibility is not billing based.
+    setHomeFeedViewerCanSeeMediaSlots(viewerChurchId, true);
+    setViewerCanSeeMediaSlots(true);
+  }, [viewerChurchId, viewerUserId]);
 
   const feedRows = useMemo(() => {
     if (youtubeLayout) {

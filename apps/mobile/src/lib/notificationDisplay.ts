@@ -91,7 +91,6 @@ export type NotificationCategory =
   | "Ministry"
   | "Live"
   | "Prayer"
-  | "Subscription"
   | "Feed"
   | "General";
 
@@ -109,7 +108,6 @@ const CATEGORY_ICONS = {
   Ministry: "people-outline",
   Live: "radio-outline",
   Prayer: "heart-outline",
-  Subscription: "card-outline",
   Feed: "newspaper-outline",
   General: "notifications-outline",
 } as const;
@@ -147,12 +145,6 @@ const CATEGORY_STYLES: Record<
     accent: "#63D18C",
     border: "rgba(52,211,153,0.35)",
     background: "rgba(12,45,32,0.95)",
-  },
-  Subscription: {
-    icon: CATEGORY_ICONS.Subscription,
-    accent: "#D9B35F",
-    border: "rgba(217,179,95,0.35)",
-    background: "rgba(35,28,14,0.95)",
   },
   Feed: {
     icon: CATEGORY_ICONS.Feed,
@@ -246,10 +238,6 @@ export function resolveNotificationCategory(notification: NotificationLike): Not
     return "Prayer";
   }
 
-  if (type.startsWith("ChurchSubscription")) {
-    return "Subscription";
-  }
-
   if (
     type === "ChurchAnnouncementPosted" ||
     type === "ChurchTestimonyPosted" ||
@@ -298,10 +286,6 @@ export function resolveNotificationRoute(notification: NotificationLike): string
   }
 
   if (type === "TrustedMediaHostAdded" || type === "TrustedMediaHostRemoved") {
-    return "/more/media";
-  }
-
-  if (type.startsWith("ChurchSubscription")) {
     return "/more/media";
   }
 

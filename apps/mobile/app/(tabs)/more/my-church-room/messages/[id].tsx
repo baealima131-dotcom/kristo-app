@@ -34,7 +34,6 @@ import {
 import { BlurView } from "expo-blur";
 import Slider from "@react-native-community/slider";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useIsFocused } from "@react-navigation/native";
 import {
   getCachedParticipant,
@@ -144,7 +143,6 @@ import {
   resolveMinistryAuthority,
   type MinistryToolKey,
 } from "@/src/lib/ministryAuthority";
-import { requireActiveChurchSubscriptionForSchedule } from "@/src/lib/churchSubscription";
 import {
   buildMinistryLiveRoomRouteParams,
   extractAssignmentScheduleCards,
@@ -10064,38 +10062,6 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
   async function openAssignmentToolScreen(tool: string) {
     const lockedTools = ["meeting", "schedule"];
-
-    if (lockedTools.includes(String(tool))) {
-      const cid = String(auth?.churchId || churchId || "").trim();
-      const headers = getKristoHeaders({
-        userId: effectiveAuthUserId,
-        role: effectiveAuthRole as any,
-        churchId: cid,
-      }) as Record<string, string>;
-      const toolKey = tool === "schedule" ? "schedule" : "meeting";
-      const ministryToolAllowed = ministryToolAccess[toolKey] === true;
-      const isPastorGate =
-        ministryAuthority.tier === "pastor" ||
-        String(effectiveAuthRole || "").toLowerCase().includes("pastor");
-      const viewerIsHost =
-        ministryAuthority.tier === "host" || isSelectedMcHost === true;
-
-      if (
-        !(await requireActiveChurchSubscriptionForSchedule(cid, headers, {
-          isPastor: isPastorGate,
-          isApprovedMediaHost: viewerIsHost,
-          viewerIsHost,
-          ministryRole: resolvedMinistryRoleLabel,
-          ministryToolAllowed,
-          toolKey,
-          screen: "my-church-room.openAssignmentToolScreen",
-          gate: `assignment-tool.${tool}`,
-          onUpgrade: () => openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" }),
-        }))
-      ) {
-        return;
-      }
-    }
 
     if (isAssignmentThread && lockedTools.includes(String(tool)) && !ministryToolAccess.meeting) {
       Alert.alert("Access locked", ministryToolLockMessage(tool === "schedule" ? "schedule" : "meeting"));

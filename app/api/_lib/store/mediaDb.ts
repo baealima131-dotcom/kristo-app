@@ -19,19 +19,29 @@ export type ChurchMediaProfile = {
   bio?: string;
   tags?: string[];
   hosts?: any[];
-  subscriptionActive?: boolean;
-  subscriptionPlan?: string;
-  subscriptionUpdatedAt?: number;
-  subscriptionExpiresAt?: number;
-  subscriptionSource?: "app_store" | "stripe" | "offline_activation" | "backend_activation";
-  subscriptionActivatedAt?: number;
-  /** Sticky iOS rotating App Store product (church_premium_monthly_g2…g5). */
-  iosPremiumProductId?: string;
-  offlineActivationCode?: string;
-  offlineActivationBatchId?: string;
   createdAt: number;
   updatedAt: number;
 };
+
+const RETIRED_CHURCH_BILLING_KEYS = [
+  "subscriptionActive",
+  "subscriptionPlan",
+  "subscriptionUpdatedAt",
+  "subscriptionExpiresAt",
+  "subscriptionSource",
+  "subscriptionActivatedAt",
+  "iosPremiumProductId",
+  "offlineActivationCode",
+  "offlineActivationBatchId",
+] as const;
+
+function stripRetiredChurchBillingFields<T>(profile: T): T {
+  const rec = profile as T & Record<string, unknown>;
+  for (const key of RETIRED_CHURCH_BILLING_KEYS) {
+    delete rec[key];
+  }
+  return profile;
+}
 
 const STORE_FILE = "church-media.json";
 
@@ -97,7 +107,7 @@ async function ensureMediaSchema() {
 
 function rowToMedia(row: MediaRow): ChurchMediaProfile {
   const data = row.data && typeof row.data === "object" ? row.data : ({} as ChurchMediaProfile);
-  return {
+  return stripRetiredChurchBillingFields({
     ...data,
     id: data.id || `church-media-${row.church_id}`,
     churchId: row.church_id,
@@ -105,7 +115,7 @@ function rowToMedia(row: MediaRow): ChurchMediaProfile {
     mediaName: String(data.mediaName || ""),
     createdAt: Number(data.createdAt || Date.parse(row.created_at) || Date.now()),
     updatedAt: Number(data.updatedAt || Date.parse(String(row.updated_at || "")) || Date.now()),
-  };
+  });
 }
 
 function normalizeChurchId(churchId: string) {
@@ -178,11 +188,11 @@ async function getLocalByChurchId(churchId: string): Promise<ChurchMediaProfile 
 
   const store = await readLocalStore();
   const target = cid.toUpperCase();
-  return (
+  const found =
     Object.values(store).find(
       (media) => normalizeChurchId(media.churchId).toUpperCase() === target
-    ) || null
-  );
+    ) || null;
+  return found ? stripRetiredChurchBillingFields({ ...found }) : null;
 }
 
 export async function confirmChurchMediaPersisted(
@@ -310,12 +320,7 @@ export async function upsertChurchMedia(input: {
     updatedAt: now,
   };
 
-  if (!existing && input.patch.subscriptionActive !== true) {
-    next.subscriptionActive = false;
-    delete next.subscriptionPlan;
-    delete next.subscriptionUpdatedAt;
-    delete next.subscriptionExpiresAt;
-  }
+  stripRetiredChurchBillingFields(next);
 
   if (!next.mediaName) {
     throw new Error("mediaName required");
@@ -349,72 +354,10 @@ export async function upsertChurchMedia(input: {
     mediaId: confirmed.id,
     mediaName: confirmed.mediaName,
     hostCount: Array.isArray(confirmed.hosts) ? confirmed.hosts.length : 0,
-    subscriptionActive: confirmed.subscriptionActive ?? false,
-    subscriptionPlan: confirmed.subscriptionPlan ?? null,
-    subscriptionUpdatedAt: confirmed.subscriptionUpdatedAt ?? null,
     storeMode: resolveMediaStoreMode(),
   });
 
   return confirmed;
-}
-
-export async function patchChurchMediaSubscription(
-  churchId: string,
-  patch: {
-    subscriptionActive: boolean;
-    subscriptionPlan?: string | null;
-    subscriptionExpiresAt?: number | null;
-    subscriptionSource?: ChurchMediaProfile["subscriptionSource"] | null;
-  }
-): Promise<ChurchMediaProfile | null> {
-  const existing = await getChurchMediaByChurchId(churchId);
-  if (!existing) return null;
-
-  const now = Date.now();
-  const nextPatch: Partial<ChurchMediaProfile> = {
-    ...existing,
-    mediaName: existing.mediaName,
-    subscriptionActive: patch.subscriptionActive,
-    subscriptionUpdatedAt: patch.subscriptionActive ? now : undefined,
-  };
-
-  if (patch.subscriptionPlan !== undefined) {
-    if (patch.subscriptionPlan) {
-      nextPatch.subscriptionPlan = patch.subscriptionPlan;
-    } else {
-      delete nextPatch.subscriptionPlan;
-    }
-  } else if (!patch.subscriptionActive) {
-    delete nextPatch.subscriptionPlan;
-  }
-
-  if (patch.subscriptionExpiresAt !== undefined) {
-    if (patch.subscriptionExpiresAt === null) {
-      delete nextPatch.subscriptionExpiresAt;
-    } else {
-      nextPatch.subscriptionExpiresAt = patch.subscriptionExpiresAt;
-    }
-  } else if (!patch.subscriptionActive) {
-    delete nextPatch.subscriptionExpiresAt;
-  }
-
-  if (patch.subscriptionSource !== undefined) {
-    if (patch.subscriptionSource) {
-      nextPatch.subscriptionSource = patch.subscriptionSource;
-    } else {
-      delete nextPatch.subscriptionSource;
-    }
-  }
-
-  if (!patch.subscriptionActive) {
-    delete nextPatch.subscriptionUpdatedAt;
-  }
-
-  return upsertChurchMedia({
-    churchId,
-    ownerUserId: existing.ownerUserId,
-    patch: nextPatch as Partial<ChurchMediaProfile> & { mediaName: string },
-  });
 }
 
 export function isMediaDatabaseError(error: unknown) {

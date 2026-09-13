@@ -2,9 +2,6 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import {
-  requireChurchSubscriptionActive,
-} from "@/app/api/_lib/churchSubscription";
-import {
   assertSafetyEnforcementAllows,
 } from "@/app/api/_lib/rbac";
 import { getProfile } from "@/app/api/auth/_lib/profile";
@@ -759,20 +756,6 @@ export async function POST(req: Request) {
     optionalFields.slot !== undefined;
 
   if (isScheduleOrClaimSlotCreate) {
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/room-messages",
-      churchId,
-      userId,
-      role: String(body?.role || req.headers.get("x-kristo-role") || ""),
-      action:
-        kind === "assignment_card"
-          ? "assignment_card"
-          : optionalFields.slot !== undefined
-            ? "claim_slot"
-            : "schedule_create",
-      headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
   }
 
   // Block + DM request limit after validation, immediately before persist.

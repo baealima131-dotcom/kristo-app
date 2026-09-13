@@ -18,15 +18,12 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { openChurchSubscriptionScreen } from "@/src/lib/iosV1SubscriptionNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoAuth } from "@/src/lib/kristoHeaders";
 import { apiPatch } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { fetchMinistryById, uploadMinistryAvatar } from "@/src/lib/ministriesApi";
 import * as ImagePicker from "expo-image-picker";
-import { ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
-import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
 import { emitMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
 
 type MinistryStatus = "Active" | "Paused";
@@ -121,12 +118,7 @@ export default function ChurchMinistryEditScreen() {
     effectiveAuthRole === "Pastor" ||
     effectiveAuthRole === "Ministry_Leader";
 
-  const { managementBlocked, ready: subscriptionGateReady } =
-    useChurchPremiumManagementAccess(churchId);
 
-  function openSubscriptionsScreen() {
-    openChurchSubscriptionScreen(router, { fallbackHref: "/more/media" });
-  }
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -397,18 +389,6 @@ const [name, setName] = useState("");
     );
   }
 
-  if (subscriptionGateReady && managementBlocked) {
-    return (
-      <View style={[s.screen, { paddingTop: insets.top + 12, paddingHorizontal: PAD }]}>
-        <Pressable onPress={goBackTarget} style={s.backBtn}>
-          <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.88)" />
-        </Pressable>
-        <View style={{ marginTop: 18 }}>
-          <ChurchSubscriptionExpiredBadge onSubscribe={openSubscriptionsScreen} />
-        </View>
-      </View>
-    );
-  }
 
   return (
     <Pressable style={s.screen} onPress={Keyboard.dismiss} accessible={false}>

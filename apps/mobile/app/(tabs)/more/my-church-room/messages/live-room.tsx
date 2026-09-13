@@ -87,7 +87,6 @@ import {
   isChurchLiveControlScheduleScope,
 } from "@/src/lib/churchLiveControlSchedule";
 import { subscribeChurchLiveControlRoomSync } from "@/src/lib/churchLiveControlRoomSync";
-import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import {
   applyRingClaimHintsToScheduleSlots,
   enrichClaimedSlotsFromMemberAvatars,
@@ -6956,66 +6955,6 @@ export default function LiveRoomScreen() {
   const [liveKitHostLocked, setLiveKitHostLocked] = useState(
     () => routePublisherEligibleEarly && !!routeClaimedByUserIdEarly
   );
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(() => {
-    const uid = String(session?.userId || "").trim();
-    if (
-      routePublisherEligibleEarly &&
-      uid &&
-      routeClaimedByUserIdEarly &&
-      routeClaimedByUserIdEarly === uid
-    ) {
-      return true;
-    }
-    return null;
-  });
-
-  useEffect(() => {
-    if (!liveRouteChurchId) {
-      setChurchSubscriptionActive(null);
-      return;
-    }
-
-    let alive = true;
-    void fetchChurchSubscriptionActive(
-      liveRouteChurchId,
-      getKristoHeaders({
-        ...(session || {}),
-        churchId: liveRouteChurchId,
-      } as any)
-    ).then((active) => {
-      if (!alive) return;
-      const uid = String(session?.userId || "").trim();
-      const isClaimedActiveSlotSpeaker =
-        routePublisherEligibleEarly &&
-        !!routeClaimedByUserIdEarly &&
-        routeClaimedByUserIdEarly === uid;
-
-      if (isClaimedActiveSlotSpeaker && active === false) {
-        console.log("KRISTO_LIVE_ROOM_SUBSCRIPTION_GATE_BYPASS", {
-          liveRouteChurchId,
-          viewerUserId: uid,
-          reason: "claimed-active-slot-speaker-not-media-studio",
-          routeCanPublishCamera: String((params as any)?.canPublishCamera || ""),
-          note: "Target church media tools may be locked; schedule slot publish still allowed.",
-        });
-        setChurchSubscriptionActive(null);
-        return;
-      }
-
-      console.log("KRISTO_LIVE_ROOM_TARGET_CHURCH_MEDIA_CHECK", {
-        liveRouteChurchId,
-        viewerUserId: uid,
-        churchSubscriptionActive: active,
-        isClaimedActiveSlotSpeaker,
-        routeCanPublishCamera: String((params as any)?.canPublishCamera || ""),
-      });
-      setChurchSubscriptionActive(active);
-    });
-
-    return () => {
-      alive = false;
-    };
-  }, [liveRouteChurchId, session?.userId, session?.role, (session as any)?.churchRole]);
 
   const routeIsMinistryLive = useMemo(
     () =>
@@ -9015,7 +8954,6 @@ export default function LiveRoomScreen() {
     isPastorLiveOwner,
     roleLooksLikeHost,
     approvedViewerSeatType,
-    churchSubscriptionActive,
   });
 
   const fastLiveAuth = useMemo(
@@ -9068,7 +9006,6 @@ export default function LiveRoomScreen() {
     isMediaInstantLive,
     fastSession: fastLiveAuth,
     fastSlotWindowOpen: fastActiveSlotWindow.windowOpen,
-    churchSubscriptionActive,
     routePublisherEligible: routePublisherEligibleEarly,
   });
 
@@ -9353,8 +9290,7 @@ export default function LiveRoomScreen() {
     !!currentUserId && !!userOwnsCurrentActiveSlot && !!isMyScheduledLiveTurn;
 
   const canManageLiveHostActions =
-    churchSubscriptionActive === true &&
-    (isMediaInstantLive
+    isMediaInstantLive
       ? !!(
           isPastorForLiveRoom ||
           isApprovedMediaHostForLiveRoom ||
@@ -9367,7 +9303,7 @@ export default function LiveRoomScreen() {
           isApprovedMediaHostForLiveRoom ||
           isChurchAdminForLiveRoom ||
           isSystemAdminForLiveRoom
-        ));
+        );
 
   const canSeeLiveHostControls =
     isPastorForLiveRoom ||
@@ -11125,7 +11061,6 @@ export default function LiveRoomScreen() {
   useEffect(() => {
     liveRoomGuardStateRef.current = {
       pathname,
-      churchSubscriptionActive,
       userOwnsCurrentActiveSlot,
       canPublishLiveVideoNow,
       cameraPublishAllowedNow,
@@ -11149,7 +11084,6 @@ export default function LiveRoomScreen() {
     };
   }, [
     pathname,
-    churchSubscriptionActive,
     userOwnsCurrentActiveSlot,
     canPublishLiveVideoNow,
     cameraPublishAllowedNow,
@@ -14616,7 +14550,6 @@ export default function LiveRoomScreen() {
       currentUserId,
       routeClaimedByUserId,
       claimedByMeRoute,
-      churchSubscriptionActive,
       audienceGateAllowed,
       finalAudienceGateAllowed,
       liveScheduleReady,
@@ -14647,7 +14580,6 @@ export default function LiveRoomScreen() {
     (params as any)?.canPublish,
     (params as any)?.canPublishMic,
     (params as any)?.canPublishCamera,
-    churchSubscriptionActive,
     audienceGateAllowed,
     finalAudienceGateAllowed,
     liveScheduleReady,

@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { requireChurchSubscriptionActive } from "@/app/api/_lib/churchSubscription";
 import {
   isLiveDatabaseError,
   readLiveJsonFile as readJsonFile,
@@ -16,7 +15,7 @@ import { getUserById } from "@/app/api/auth/_lib/session";
 
 const STORE_FILE = "church-live-control-members.json";
 const MC_HOSTS_FILE = "mc-hosts.json";
-export const CHURCH_LIVE_CONTROL_ROOM_ID = "church-media-room";
+const CHURCH_LIVE_CONTROL_ROOM_ID = "church-media-room";
 
 type LiveControlMemberRow = {
   id: string;
@@ -349,16 +348,6 @@ export async function PATCH(req: NextRequest) {
       console.log("[LiveControlMembers] suspend failed", { reason: "missing-userId" });
       return json({ ok: false, error: "Missing userId" } satisfies ApiErr, { status: 400 });
     }
-
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/live-control-members",
-      churchId,
-      userId: viewerUserId,
-      role: viewerRole,
-      action: `live_control_${action}`,
-    headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
 
     const memberships = await getMembershipsForChurch(churchId, "Active");
     const targetMembership = memberships.find((m) => String(m.userId || "") === userId);

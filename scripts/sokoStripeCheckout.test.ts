@@ -516,7 +516,7 @@ test("PaymentSheet success without webhook remains awaiting_payment in source", 
     "utf8"
   );
   assert.match(layout, /SokoStripeProvider/);
-  assert.match(layout, /RevenueCatBootstrap/);
+  assert.doesNotMatch(layout, /RevenueCatBootstrap/);
   assert.match(layout, /<SokoStripeProvider>/);
   assert.match(layout, /<\/SokoStripeProvider>/);
 });

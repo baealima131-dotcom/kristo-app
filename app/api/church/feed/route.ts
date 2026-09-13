@@ -38,10 +38,6 @@ import {
   notifyLiveSlotCancelled,
 } from "@/app/api/_lib/liveEventNotifications";
 import {
-  isChurchSubscriptionActive,
-  requireChurchSubscriptionActive,
-} from "@/app/api/_lib/churchSubscription";
-import {
   bumpMediaScheduleSync,
   bumpMediaScheduleSyncForFeedItem,
   getMediaScheduleSync,
@@ -3129,10 +3125,8 @@ async function handleFeedGet(
     });
 
     const hasMembership = await viewerHasActiveChurchMembership(churchId, viewerUserId);
-    const viewerSubscriptionActive = churchId
-      ? await isChurchSubscriptionActive(churchId, { gate: "home_feed_media_slots" })
-      : false;
-    const viewerCanSeeMediaSlots = hasMembership && viewerSubscriptionActive;
+    // Kristo App is free: active church membership is the access gate.
+    const viewerCanSeeMediaSlots = hasMembership;
 
     const forcedMediaHomeRows = rawRows.filter((x: any) => {
       const sameChurch =
@@ -3225,7 +3219,7 @@ async function handleFeedGet(
       viewerUserId,
       viewerRole,
       hasMembership,
-      viewerSubscriptionActive,
+      viewerSubscriptionActive: Boolean(churchId),
       viewerCanSeeMediaSlots,
       total: resolvedItems.length,
       scheduleCount: scheduleRows.length,
@@ -3393,17 +3387,7 @@ async function handleClearMediaScheduleSlots(
   if (!targetChurchId) return err("churchId is required", 400);
 
   const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
-  const subscriptionBlocked = await requireChurchSubscriptionActive(targetChurchId, {
-    endpoint: "/api/church/feed",
-    churchId: targetChurchId,
-    userId: viewerUserId,
-    role: viewerAppRole,
-    action: "clear_media_schedule_slots",
-    headers: headers || null,
-  });
-  if (subscriptionBlocked) return subscriptionBlocked;
-
-  const item = await getFeedItemById(postId);
+const item = await getFeedItemById(postId);
   if (!item) return err("Feed item not found", 404);
 
   const itemChurchId = String(item?.churchId || targetChurchId || "").trim();
@@ -3939,17 +3923,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     if (!postId) return err("postId/feedId is required", 400);
 
     const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/feed",
-      churchId,
-      userId: viewerUserId,
-      role: viewerAppRole,
-      action: "update-schedule-slots",
-    headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-
-    const item = await getFeedItemById(postId);
+const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
 
     const permissionErr = await assertScheduleEditPermission({
@@ -4133,17 +4107,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       return err("Join a church to claim schedule slots", 403);
     }
 
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/feed",
-      churchId,
-      userId: viewerUserId,
-      role: String(ctx?.viewer?.role || ""),
-      action: "claim_schedule_slot",
-    headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-
-    const postId = cleanText(body?.postId, 240);
+const postId = cleanText(body?.postId, 240);
     const slotId = cleanText(body?.slotId, 240);
     const claim = body?.claim || {};
 
@@ -4262,17 +4226,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     if (!slotId) return err("slotId is required", 400);
 
     const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/feed",
-      churchId,
-      userId: viewerUserId,
-      role: viewerAppRole,
-      action: "assign_schedule_slot",
-    headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-
-    const item = await getFeedItemById(postId);
+const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
 
     const permissionErr = await assertScheduleEditPermission({
@@ -4336,14 +4290,6 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const targetChurchId = String(activeMembership?.churchId || "").trim();
     if (!targetChurchId) {
       return err("Member must belong to an active church", 403);
-    }
-
-    const targetChurchSubActive = await isChurchSubscriptionActive(targetChurchId);
-    if (!targetChurchSubActive) {
-      return err(
-        "This member's church must have an active subscription before they can be assigned.",
-        403
-      );
     }
 
     const profile = (await getProfile(targetUserId)) || null;
@@ -4419,17 +4365,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
   }
 
   if (action === "unclaim_schedule_slot") {
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/feed",
-      churchId,
-      userId: viewerUserId,
-      role: String(ctx?.viewer?.role || ""),
-      action: "unclaim_schedule_slot",
-    headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-
-    const postId = cleanText(body?.postId || body?.feedId, 240);
+const postId = cleanText(body?.postId || body?.feedId, 240);
     const slotId = cleanText(body?.slotId, 240);
     const targetUserId = cleanText(body?.userId || viewerUserId, 240);
 
@@ -4928,17 +4864,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     }
 
     const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/feed",
-      churchId,
-      userId: viewerUserId,
-      role: viewerAppRole,
-      action: "create_media_schedule",
-    headers: req.headers,
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-
-    const ministryId = resolveScheduleMinistryId(null, body);
+const ministryId = resolveScheduleMinistryId(null, body);
     const isMediaHost = await isMediaHostForChurch(churchId, viewerUserId);
     const canCreate = await canCreateOrEditScheduleSlots({
       churchId,

@@ -1,4 +1,3 @@
-import { isIosV1PremiumFeatureUnlocked } from "./iosV1MonetizationPolicy";
 
 export const MAX_CHURCH_MEDIA_HOSTS = 3;
 
@@ -7,10 +6,9 @@ export type ChurchMediaAccessState = {
   mediaHostUserIds: string[];
   isActualChurchPastor: boolean;
   isMediaHost: boolean;
-  subscriptionActive?: boolean;
-  /** Role-based screen entry — not blocked by inactive subscription. */
+  /** Role-based screen entry. */
   canOpenMediaScreen: boolean;
-  /** Subscription-gated media/live tools (slots, guests, hosts, publish). */
+  /** Role-authorized media/live tools (slots, guests, hosts, publish). */
   canUseMediaTools: boolean;
   /** @deprecated Alias for canOpenMediaScreen (More tab / legacy callers). */
   canAccessChurchMedia: boolean;
@@ -136,7 +134,6 @@ export function evaluateChurchMediaAccessClient(args: {
   mediaHostUserIds?: string[];
   isActualChurchPastor?: boolean;
   isMediaHost?: boolean;
-  subscriptionActive?: boolean;
   canOpenMediaScreen?: boolean;
   canUseMediaTools?: boolean;
   canAccessChurchMedia?: boolean;
@@ -169,18 +166,14 @@ export function evaluateChurchMediaAccessClient(args: {
       ? args.isMediaHost
       : !!userId && mediaHostUserIds.includes(userId);
 
-  const subscriptionActive =
-    typeof args.subscriptionActive === "boolean" ? args.subscriptionActive : undefined;
-
   const serverCanManageMediaHosts =
     typeof args.canManageMediaHosts === "boolean"
       ? args.canManageMediaHosts
       : false;
 
   const canOpenMediaScreen = isActualChurchPastor || isMediaHost;
-  const canUseMediaTools =
-    (subscriptionActive === true || isIosV1PremiumFeatureUnlocked()) &&
-    (isActualChurchPastor || isMediaHost);
+  // Kristo App is free. Media tools are authorized by church role only.
+  const canUseMediaTools = isActualChurchPastor || isMediaHost;
   const canAccessChurchMedia = canOpenMediaScreen;
   const canManageMediaHosts = isActualChurchPastor || serverCanManageMediaHosts;
 
@@ -189,7 +182,6 @@ export function evaluateChurchMediaAccessClient(args: {
     mediaHostUserIds,
     isActualChurchPastor,
     isMediaHost,
-    subscriptionActive,
     canOpenMediaScreen,
     canUseMediaTools,
     canAccessChurchMedia,
@@ -228,10 +220,6 @@ export function evaluateChurchMediaAccessFromSession(
         : typeof apiRes?.viewerIsHost === "boolean"
           ? apiRes.viewerIsHost
           : undefined,
-    subscriptionActive:
-      typeof apiRes?.subscriptionActive === "boolean"
-        ? apiRes.subscriptionActive
-        : undefined,
     canOpenMediaScreen:
       typeof apiRes?.canOpenMediaScreen === "boolean"
         ? apiRes.canOpenMediaScreen
@@ -281,9 +269,6 @@ export function evaluateChurchMediaAccessMerged(
     } else if (typeof source.viewerIsHost === "boolean") {
       merged.isMediaHost = source.viewerIsHost;
     }
-    if (typeof source.subscriptionActive === "boolean") {
-      merged.subscriptionActive = source.subscriptionActive;
-    }
     if (typeof source.canOpenMediaScreen === "boolean") {
       merged.canOpenMediaScreen = source.canOpenMediaScreen;
     } else if (typeof source.canAccessChurchMedia === "boolean") {
@@ -315,12 +300,11 @@ export function isPastorSessionRole(session?: ChurchMediaAccessSession | null): 
   return resolveIsActualChurchPastor(pastorRoleSourcesFromSession(session));
 }
 
-/** Never downgrade pastor/host access while a background refresh is in flight — except subscription lapse. */
+/** Never downgrade Pastor/Media Host access while a background refresh is in flight. */
 export function stabilizeChurchMediaAccess(
   prev: ChurchMediaAccessState | null | undefined,
   next: ChurchMediaAccessState,
-  session?: ChurchMediaAccessSession | null,
-  subscriptionActive?: boolean | null
+  session?: ChurchMediaAccessSession | null
 ): ChurchMediaAccessState {
   const sessionSources = pastorRoleSourcesFromSession(session);
   const sessionAccess = evaluateChurchMediaAccessFromSession(session);
@@ -332,16 +316,6 @@ export function stabilizeChurchMediaAccess(
       Boolean(prev?.isActualChurchPastor) ||
       sessionAccess.isActualChurchPastor,
   });
-  const subscriptionKnown =
-    subscriptionActive === true ||
-    subscriptionActive === false ||
-    next.subscriptionActive === true ||
-    next.subscriptionActive === false;
-  const effectiveSubscriptionActive =
-    subscriptionActive === true || subscriptionActive === false
-      ? subscriptionActive
-      : next.subscriptionActive;
-
   const canOpenMediaScreen =
     next.canOpenMediaScreen ||
     Boolean(prev?.canOpenMediaScreen) ||
@@ -350,13 +324,11 @@ export function stabilizeChurchMediaAccess(
     next.isMediaHost ||
     Boolean(prev?.isMediaHost);
 
+  // Never downgrade authorized Pastor/Media Host tools during background refresh.
   const canUseMediaTools =
-    effectiveSubscriptionActive === true || isIosV1PremiumFeatureUnlocked()
-      ? next.canUseMediaTools ||
-        Boolean(prev?.canUseMediaTools) ||
-        (canOpenMediaScreen &&
-          (effectiveSubscriptionActive === true || isIosV1PremiumFeatureUnlocked()))
-      : false;
+    next.canUseMediaTools ||
+    Boolean(prev?.canUseMediaTools) ||
+    canOpenMediaScreen;
 
   const stabilized: ChurchMediaAccessState = {
     actualPastorUserId:
@@ -378,7 +350,6 @@ export function stabilizeChurchMediaAccess(
           pastorLocked,
       }),
     isMediaHost: next.isMediaHost || Boolean(prev?.isMediaHost) || sessionAccess.isMediaHost,
-    subscriptionActive: subscriptionKnown ? effectiveSubscriptionActive : next.subscriptionActive,
     canOpenMediaScreen,
     canUseMediaTools,
     canAccessChurchMedia: canOpenMediaScreen,
@@ -462,39 +433,4 @@ export function logMediaCenterGate(args: {
   if (loggedMediaCenterGate.has(key)) return;
   loggedMediaCenterGate.add(key);
   console.log("KRISTO_MEDIA_CENTER_GATE", args);
-}
-
-const loggedMediaScreenAccessDiag = new Set<string>();
-
-export function logMediaScreenAccessDiag(args: {
-  role?: string;
-  churchRole?: string;
-  isActualChurchPastor?: boolean;
-  churchId?: string;
-  churchSubscriptionActive?: boolean | null;
-  canOpenMediaScreen?: boolean;
-  canUseMediaTools?: boolean;
-  reason?: string;
-}) {
-  const key = [
-    args.churchId || "",
-    args.role || "",
-    args.churchRole || "",
-    String(args.churchSubscriptionActive),
-    String(args.canOpenMediaScreen),
-    String(args.canUseMediaTools),
-    args.reason || "",
-  ].join(":");
-  if (loggedMediaScreenAccessDiag.has(key)) return;
-  loggedMediaScreenAccessDiag.add(key);
-  console.log("KRISTO_MEDIA_SCREEN_ACCESS_DIAG", {
-    role: args.role || null,
-    churchRole: args.churchRole || null,
-    isActualChurchPastor: args.isActualChurchPastor === true,
-    churchId: args.churchId || null,
-    churchSubscriptionActive: args.churchSubscriptionActive ?? null,
-    canOpenMediaScreen: args.canOpenMediaScreen === true,
-    canUseMediaTools: args.canUseMediaTools === true,
-    reason: args.reason || null,
-  });
 }
