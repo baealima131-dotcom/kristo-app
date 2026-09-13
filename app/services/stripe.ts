@@ -1,5 +1,10 @@
-// TODO: Add Stripe integration helpers here (server-side)
-// Placeholder for future Stripe service. Do NOT add real keys here.
+import Stripe from "stripe";
+
 export const StripeService = {
-  // createPaymentIntent: async (...) => { /* TODO */ },
+  sdk: "stripe",
+  versionPinnedInPackageJson: "22.6.2",
+  note:
+    "SOKO V1 card checkout uses the official Stripe Node SDK. Secrets stay server-side (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET).",
 };
+
+export { Stripe };

@@ -34,6 +34,7 @@ import {
   emptySafetyIntelligenceTimelines,
   ensureSafetyIntelligenceHistoryReady,
 } from "@/app/api/_lib/store/safetyIntelligenceHistoryDb";
+import { invalidateSafetyEnforcementCache } from "@/app/api/_lib/safetyEnforcementCache";
 
 neonConfig.fetchConnectionCache = true;
 
@@ -258,11 +259,25 @@ type SupervisorAgentRow = {
   updated_at: string | Date;
 };
 
-let sqlClient: ReturnType<typeof neon> | null = null;
+type SafetyNeonGate = {
+  client: ReturnType<typeof neon> | null;
+};
+
+function neonGate(): SafetyNeonGate {
+  const globalState = globalThis as typeof globalThis & {
+    __kristoSafetyNeon?: SafetyNeonGate;
+  };
+  if (!globalState.__kristoSafetyNeon) {
+    globalState.__kristoSafetyNeon = { client: null };
+  }
+  return globalState.__kristoSafetyNeon;
+}
+
 let schemaReady: Promise<void> | null = null;
 
 function getSql() {
-  if (!sqlClient) {
+  const state = neonGate();
+  if (!state.client) {
     const url = getDatabaseUrl();
 
     if (!url) {
@@ -271,10 +286,10 @@ function getSql() {
       );
     }
 
-    sqlClient = neon(url);
+    state.client = neon(url);
   }
 
-  return sqlClient;
+  return state.client;
 }
 
 function usePostgres() {
@@ -4191,6 +4206,9 @@ export async function dbIssueSafetyReportDecision(
     enforcementId: enforcementId || null,
     tableName: "kristo_safety_account_enforcements",
   });
+  if (enforcementUserId) {
+    invalidateSafetyEnforcementCache(enforcementUserId);
+  }
 
   if (enforcementId) {
     try {
@@ -5902,6 +5920,25 @@ export type SafetyAccountEnforcementRecord = {
 };
 
 async function ensureSafetyAccountEnforcementSchema() {
+  const globalState = globalThis as typeof globalThis & {
+    __kristoSafetyEnforcementSchema?: { promise: Promise<void> | null };
+  };
+  if (!globalState.__kristoSafetyEnforcementSchema) {
+    globalState.__kristoSafetyEnforcementSchema = { promise: null };
+  }
+  const gate = globalState.__kristoSafetyEnforcementSchema;
+  if (!gate.promise) {
+    gate.promise = (async () => {
+      await ensureSafetyAccountEnforcementSchemaOnce();
+    })().catch((error) => {
+      gate.promise = null;
+      throw error;
+    });
+  }
+  await gate.promise;
+}
+
+async function ensureSafetyAccountEnforcementSchemaOnce() {
   await ensureSafetyReportSchema();
 
   const sql = getSql();
@@ -6216,6 +6253,7 @@ export async function dbApplySafetyAccountEnforcement(
     )
   `;
 
+  invalidateSafetyEnforcementCache(userId);
   return {
     id,
     userId,
@@ -6258,19 +6296,6 @@ export async function dbGetActiveSafetyAccountEnforcement(
     };
   }
 
-  await sql`
-    UPDATE
-      kristo_safety_account_enforcements
-    SET
-      status = 'expired',
-      updated_at = NOW()
-    WHERE
-      user_id = ${userId}
-      AND status = 'active'
-      AND expires_at IS NOT NULL
-      AND expires_at <= NOW()
-  `;
-
   type Row = {
     id: string;
     user_id: string;
@@ -6307,6 +6332,10 @@ export async function dbGetActiveSafetyAccountEnforcement(
     WHERE
       user_id = ${userId}
       AND status = 'active'
+      AND (
+        expires_at IS NULL
+        OR expires_at > NOW()
+      )
     ORDER BY
       created_at DESC
   `) as Row[];

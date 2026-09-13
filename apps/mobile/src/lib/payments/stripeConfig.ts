@@ -1,8 +1,32 @@
-import Constants from "expo-constants";
+const EXPO_STRIPE_PUBLISHABLE_KEY = String(
+  process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || ""
+).trim();
 
-const extra =
-  (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
+export const STRIPE_URL_SCHEME = "mobile";
 
-export const STRIPE_PUBLISHABLE_KEY = extra.stripePublishableKey || "";
-export const STRIPE_MERCHANT_IDENTIFIER =
-  extra.stripeMerchantIdentifier || "merchant.com.princefariji.kristoapp";
+export function getExpoStripePublishableKey() {
+  return EXPO_STRIPE_PUBLISHABLE_KEY;
+}
+
+export function expoStripePublishableMode() {
+  if (EXPO_STRIPE_PUBLISHABLE_KEY.startsWith("pk_test_")) return "test" as const;
+  if (EXPO_STRIPE_PUBLISHABLE_KEY.startsWith("pk_live_")) return "live" as const;
+  return null;
+}
+
+export function isExpoStripePublishableConfigured() {
+  return expoStripePublishableMode() !== null;
+}
+
+export function expoStripeModeMatchesLivemode(livemode: boolean) {
+  const mode = expoStripePublishableMode();
+  if (!mode) return false;
+  return livemode ? mode === "live" : mode === "test";
+}
+
+export function stripeCardCheckoutConfigMessage() {
+  if (!isExpoStripePublishableConfigured()) {
+    return "Card checkout is not configured yet.";
+  }
+  return "";
+}

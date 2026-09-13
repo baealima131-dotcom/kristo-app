@@ -487,6 +487,25 @@ export async function readSession(req?: any) {
   return devAutoSession();
 }
 
+/** Cookie sid only — never honors unsigned x-kristo-user-id. */
+export async function readCookieSessionUserId(): Promise<string> {
+  try {
+    const jar = await cookies();
+    const sid = jar.get(SESSION_COOKIE)?.value || "";
+    if (!sid) return "";
+    const store = sessStore();
+    const session = store[sid];
+    if (!session) return "";
+    if (Date.now() > session.expiresAt) {
+      delete store[sid];
+      return "";
+    }
+    return String(session.userId || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function touchSession(sessionId: string) {
   const store = sessStore();
   const s = store[sessionId];

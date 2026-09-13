@@ -1,6 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
-import { neon } from "@neondatabase/serverless";
-import { getDatabaseUrl } from "./authDb";
+import { getSokoNeonSql } from "./sokoNeon";
+import { createCashAppServerReference } from "@/app/api/_lib/cashAppPartnerClient";
+import { dbGetVerifiedSellerPaymentMerchant } from "@/app/api/_lib/store/sokoSellerPaymentAccountsDb";
+import {
+  SokoPaymentAccountMismatchError,
+  cashAppCaptureAuditMetadata,
+  isPayableSokoOrderStatus,
+  resolveApprovedCashAppRecipient,
+} from "@/app/api/_lib/cashAppPaymentConfirmation";
+import {
+  SOKO_STRIPE_PAYMENT_METHOD,
+  SOKO_STRIPE_PROVIDER,
+  assertSokoStripeSellerGate,
+  configuredSokoStripeSellerUserId,
+  toStripeAmountMinor,
+} from "@/app/api/_lib/sokoStripeCheckout";
+import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
+import {
+  findReusableSokoShippingQuote,
+  sokoShippingAddressFingerprint,
+  sokoShippingOriginFingerprint,
+  verifyShippoParcelRate,
+} from "@/app/api/_lib/sokoShippingQuotes";
 
 export type SokoOrderStatus =
   | "awaiting_delivery_quote"
@@ -43,18 +64,28 @@ type OrderRow = {
 
 let ready: Promise<void> | null = null;
 
-function sqlClient() {
-  const url = getDatabaseUrl();
-  if (!url) throw new Error("Database unavailable.");
-  return neon(url);
+type SchemaGate = {
+  promise: Promise<void> | null;
+};
+
+function schemaGate(): SchemaGate {
+  const globalState = globalThis as typeof globalThis & {
+    __kristoSokoOrdersSchema?: SchemaGate;
+  };
+  if (!globalState.__kristoSokoOrdersSchema) {
+    globalState.__kristoSokoOrdersSchema = { promise: null };
+  }
+  return globalState.__kristoSokoOrdersSchema;
 }
 
-async function schema() {
-  if (!ready) {
-    ready = (async () => {
-      const sql = sqlClient();
+function sqlClient() {
+  return getSokoNeonSql();
+}
 
-      await sql`CREATE TABLE IF NOT EXISTS soko_orders (
+async function runSokoOrdersSchema() {
+  const sql = sqlClient();
+
+  await sql`CREATE TABLE IF NOT EXISTS soko_orders (
         id TEXT PRIMARY KEY,
         product_id TEXT NOT NULL,
         buyer_user_id TEXT NOT NULL,
@@ -90,24 +121,34 @@ async function schema() {
         UNIQUE(buyer_user_id, client_key)
       )`;
 
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS proof_base64 TEXT`;
+  await Promise.all([
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS proof_base64 TEXT`,
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS proof_mime TEXT`,
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS payment_proof_sha256 TEXT NOT NULL DEFAULT ''`,
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS inventory_reserved BOOLEAN
+        NOT NULL DEFAULT FALSE`,
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS buyer_hidden BOOLEAN
+        NOT NULL DEFAULT FALSE`,
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS seller_hidden BOOLEAN
+        NOT NULL DEFAULT FALSE`,
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS payment_provider TEXT
+        NOT NULL DEFAULT ''`,
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS provider_payment_id TEXT
+        NOT NULL DEFAULT ''`,
+    sql`ALTER TABLE soko_orders
+        ADD COLUMN IF NOT EXISTS provider_reference TEXT
+        NOT NULL DEFAULT ''`,
+  ]);
 
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS proof_mime TEXT`;
-
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS payment_proof_sha256 TEXT NOT NULL DEFAULT ''`;
-
-      /*
-       * KRISTO_SOKO_MULTI_PROOF_TABLE_V1
-       *
-       * Original payment screenshots are stored separately so
-       * one order can safely keep up to five full-size proofs.
-       * Existing single-proof columns remain untouched for
-       * backward compatibility.
-       */
-      await sql`CREATE TABLE IF NOT EXISTS soko_order_payment_proofs (
+  await sql`CREATE TABLE IF NOT EXISTS soko_order_payment_proofs (
         id TEXT PRIMARY KEY,
         order_id TEXT NOT NULL
           REFERENCES soko_orders(id)
@@ -125,81 +166,10 @@ async function schema() {
         UNIQUE(order_id, position)
       )`;
 
-      await sql`CREATE INDEX IF NOT EXISTS
-        soko_order_payment_proofs_order_idx
-        ON soko_order_payment_proofs(
-          order_id,
-          position
-        )`;
-
-      await sql`CREATE UNIQUE INDEX IF NOT EXISTS
-        soko_order_payment_proofs_cashapp_sha256_uidx
-        ON soko_order_payment_proofs(proof_sha256)
-        WHERE payment_method='cash_app'`;
-
-      /*
-       * One exact Cash App screenshot can belong to only
-       * one order. Empty legacy hashes are excluded.
-       *
-       * This unique index is the final race-condition guard
-       * even if two submissions happen at the same moment.
-       */
-      await sql`CREATE UNIQUE INDEX IF NOT EXISTS
-        soko_orders_cash_app_proof_sha256_uidx
-        ON soko_orders(payment_proof_sha256)
-        WHERE payment_method='cash_app'
-          AND payment_proof_sha256 <> ''`;
-
-      /*
-       * Race-safe protection for manual Cash App references.
-       * The application-level check gives the friendly error;
-       * this index is the final database boundary.
-       */
-      await sql`CREATE UNIQUE INDEX IF NOT EXISTS
-        soko_orders_cash_app_transaction_reference_uidx
-        ON soko_orders(
-          seller_user_id,
-          LOWER(BTRIM(transaction_reference))
-        )
-        WHERE payment_method='cash_app'
-          AND BTRIM(transaction_reference) <> ''
-          AND status IN (
-            'payment_submitted',
-            'payment_approved',
-            'payment_rejected',
-            'preparing_shipment',
-            'shipped',
-            'delivered'
-          )`;
-
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS inventory_reserved BOOLEAN
-        NOT NULL DEFAULT FALSE`;
-
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS buyer_hidden BOOLEAN
-        NOT NULL DEFAULT FALSE`;
-
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS seller_hidden BOOLEAN
-        NOT NULL DEFAULT FALSE`;
-
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS payment_provider TEXT
-        NOT NULL DEFAULT ''`;
-
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS provider_payment_id TEXT
-        NOT NULL DEFAULT ''`;
-
-      await sql`ALTER TABLE soko_orders
-        ADD COLUMN IF NOT EXISTS provider_reference TEXT
-        NOT NULL DEFAULT ''`;
-
-      await sql`ALTER TABLE soko_orders
+  await sql`ALTER TABLE soko_orders
         DROP CONSTRAINT IF EXISTS soko_orders_status_check`;
 
-      await sql`ALTER TABLE soko_orders
+  await sql`ALTER TABLE soko_orders
         ADD CONSTRAINT soko_orders_status_check CHECK (
           status IN (
             'awaiting_delivery_quote',
@@ -215,44 +185,81 @@ async function schema() {
           )
         )`;
 
-      await sql`CREATE INDEX IF NOT EXISTS soko_orders_buyer_idx
-        ON soko_orders(buyer_user_id, created_at DESC)`;
-
-      await sql`CREATE INDEX IF NOT EXISTS soko_orders_seller_idx
-        ON soko_orders(seller_user_id, created_at DESC)`;
-
-      await sql`CREATE INDEX IF NOT EXISTS soko_orders_product_idx
-        ON soko_orders(product_id, created_at DESC)`;
-
-      await sql`CREATE INDEX IF NOT EXISTS soko_orders_provider_payment_idx
+  await Promise.all([
+    sql`CREATE INDEX IF NOT EXISTS
+        soko_order_payment_proofs_order_idx
+        ON soko_order_payment_proofs(
+          order_id,
+          position
+        )`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS
+        soko_order_payment_proofs_cashapp_sha256_uidx
+        ON soko_order_payment_proofs(proof_sha256)
+        WHERE payment_method='cash_app'`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS
+        soko_orders_cash_app_proof_sha256_uidx
+        ON soko_orders(payment_proof_sha256)
+        WHERE payment_method='cash_app'
+          AND payment_proof_sha256 <> ''`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS
+        soko_orders_cash_app_transaction_reference_uidx
+        ON soko_orders(
+          seller_user_id,
+          LOWER(BTRIM(transaction_reference))
+        )
+        WHERE payment_method='cash_app'
+          AND BTRIM(transaction_reference) <> ''
+          AND status IN (
+            'payment_submitted',
+            'payment_approved',
+            'payment_rejected',
+            'preparing_shipment',
+            'shipped',
+            'delivered'
+          )`,
+    sql`CREATE INDEX IF NOT EXISTS soko_orders_buyer_idx
+        ON soko_orders(buyer_user_id, created_at DESC)`,
+    sql`CREATE INDEX IF NOT EXISTS soko_orders_seller_idx
+        ON soko_orders(seller_user_id, created_at DESC)`,
+    sql`CREATE INDEX IF NOT EXISTS soko_orders_product_idx
+        ON soko_orders(product_id, created_at DESC)`,
+    sql`CREATE INDEX IF NOT EXISTS soko_orders_provider_payment_idx
         ON soko_orders(
           payment_provider,
           provider_payment_id
         )
-        WHERE provider_payment_id <> ''`;
-
-      await sql`CREATE UNIQUE INDEX IF NOT EXISTS
+        WHERE provider_payment_id <> ''`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS
         soko_orders_provider_payment_uidx
         ON soko_orders(
           payment_provider,
           provider_payment_id
         )
-        WHERE provider_payment_id <> ''`;
-
-      await sql`CREATE UNIQUE INDEX IF NOT EXISTS
+        WHERE provider_payment_id <> ''`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS
         soko_orders_provider_reference_uidx
         ON soko_orders(
           payment_provider,
           provider_reference
         )
-        WHERE provider_reference <> ''`;
-    })().catch((error) => {
-      ready = null;
+        WHERE provider_reference <> ''`,
+  ]);
+}
+
+async function schema() {
+  const gate = schemaGate();
+  if (!gate.promise) {
+    gate.promise = runSokoOrdersSchema().catch((error) => {
+      gate.promise = null;
       throw error;
     });
   }
+  ready = gate.promise;
+  return gate.promise;
+}
 
-  return ready;
+export function ensureSokoOrdersSchema() {
+  return schema();
 }
 
 function clean(value: unknown, max: number) {
@@ -260,6 +267,24 @@ function clean(value: unknown, max: number) {
 }
 
 function publicOrder(row: OrderRow) {
+  const snapshot =
+    row.snapshot && typeof row.snapshot === "object"
+      ? { ...row.snapshot }
+      : row.snapshot;
+  const payment =
+    snapshot &&
+    typeof snapshot === "object" &&
+    snapshot.payment &&
+    typeof snapshot.payment === "object"
+      ? { ...snapshot.payment }
+      : null;
+
+  if (payment) {
+    delete payment.merchantId;
+    delete payment.merchant_id;
+    snapshot.payment = payment;
+  }
+
   return {
     id: row.id,
     productId: row.product_id,
@@ -267,7 +292,7 @@ function publicOrder(row: OrderRow) {
     sellerUserId: row.seller_user_id,
     paymentMethod: row.payment_method,
     status: row.status,
-    product: row.snapshot,
+    product: snapshot,
     buyerNote: row.buyer_note,
     transactionReference: row.transaction_reference,
     paymentDate: row.payment_date,
@@ -282,9 +307,38 @@ function publicOrder(row: OrderRow) {
   };
 }
 
+export async function ensureSokoCashAppOrderReference(
+  order: OrderRow
+) {
+  if (order.payment_method !== "cash_app") {
+    return order;
+  }
+
+  const reference = createCashAppServerReference(order.id);
+
+  if (clean(order.provider_reference, 180)) {
+    return order;
+  }
+
+  const sql = sqlClient();
+  const rows = await sql`
+    UPDATE soko_orders
+    SET
+      payment_provider = 'cash_app',
+      provider_reference = ${reference},
+      updated_at = NOW()
+    WHERE id = ${order.id}
+      AND payment_method = 'cash_app'
+      AND provider_reference = ''
+    RETURNING *
+  ` as OrderRow[];
+
+  return rows[0] || order;
+}
+
 export async function createSokoOrder(args: {
   buyerUserId: string;
-  buyerName: string;
+  buyerName: string | Promise<string>;
   productId: string;
   paymentMethod: string;
   clientKey: string;
@@ -292,7 +346,9 @@ export async function createSokoOrder(args: {
   deliverySelection: Record<string, unknown>;
   requestDeliveryQuote?: boolean;
 }) {
+  const timer = sokoCheckoutTimer("createSokoOrder");
   await schema();
+  timer.stage("schema");
 
   const sql = sqlClient();
   const productId = clean(args.productId, 100);
@@ -320,7 +376,11 @@ export async function createSokoOrder(args: {
     throw new Error("Invalid order information.");
   }
 
-  if (!["cash", "cash_app", "mobile_money"].includes(paymentMethod)) {
+  if (
+    !["cash", "cash_app", "mobile_money", "stripe_card"].includes(
+      paymentMethod
+    )
+  ) {
     throw new Error("Invalid payment method.");
   }
 
@@ -338,26 +398,43 @@ export async function createSokoOrder(args: {
     );
   }
 
-  const existing = await sql`
-    SELECT * FROM soko_orders
-    WHERE buyer_user_id=${args.buyerUserId}
-      AND client_key=${clientKey}
-    LIMIT 1
-  ` as OrderRow[];
+  const [existing, products, buyerName] = await Promise.all([
+    sql`
+      SELECT * FROM soko_orders
+      WHERE buyer_user_id=${args.buyerUserId}
+        AND client_key=${clientKey}
+      LIMIT 1
+    `,
+    sql`
+      SELECT id,seller_user_id,payload,status
+      FROM soko_products
+      WHERE id=${productId} AND status='Active'
+      LIMIT 1
+    `,
+    Promise.resolve(args.buyerName).then((value) =>
+      clean(value, 120) || "Kristo buyer"
+    ),
+  ]) as unknown as [
+    OrderRow[],
+    Array<{
+      id: string;
+      seller_user_id: string;
+      payload: Record<string, any>;
+      status: string;
+    }>,
+    string
+  ];
+  timer.stage("order_product_lookup", {
+    existing: Boolean(existing[0]),
+  });
 
-  if (existing[0]) return publicOrder(existing[0]);
-
-  const products = await sql`
-    SELECT id,seller_user_id,payload,status
-    FROM soko_products
-    WHERE id=${productId} AND status='Active'
-    LIMIT 1
-  ` as Array<{
-    id: string;
-    seller_user_id: string;
-    payload: Record<string, any>;
-    status: string;
-  }>;
+  if (existing[0]) {
+    const current = await ensureSokoCashAppOrderReference(
+      existing[0] as OrderRow
+    );
+    timer.stage("existing_order");
+    return publicOrder(current);
+  }
 
   const product = products[0];
 
@@ -370,7 +447,19 @@ export async function createSokoOrder(args: {
     ? product.payload.paymentOptions.methods
     : [];
 
-  if (!methods.includes(paymentMethod)) {
+  if (paymentMethod === SOKO_STRIPE_PAYMENT_METHOD) {
+    const stripeGate = assertSokoStripeSellerGate({
+      sellerUserId: product.seller_user_id,
+      buyerUserId: args.buyerUserId,
+      productStatus: product.status,
+      currency: clean(product.payload?.currency, 10),
+      allowedSellerUserId: configuredSokoStripeSellerUserId(),
+    });
+
+    if (!stripeGate.ok) {
+      throw new Error(stripeGate.error);
+    }
+  } else if (!methods.includes(paymentMethod)) {
     throw new Error("Seller does not accept this payment method.");
   }
 
@@ -454,64 +543,95 @@ export async function createSokoOrder(args: {
       );
     }
 
-    const vehicleResponse = await fetch(
-      "https://carhauler247.com/api/public/v1/quote" +
-        "?fromZip=" + encodeURIComponent(fromZip) +
-        "&toZip=" + encodeURIComponent(toZip) +
-        "&vehicleType=" + encodeURIComponent(vehicleType),
-      {
-        headers: {
-          Accept: "application/json",
-        },
-        signal: AbortSignal.timeout(15000),
-        cache: "no-store",
-      }
-    );
-
-    const vehicleData = await vehicleResponse
-      .json()
-      .catch(() => ({}));
-
-    const quote =
-      vehicleData?.quote &&
-      typeof vehicleData.quote === "object"
-        ? vehicleData.quote
-        : {};
-
-    const amount = Number(quote.price);
-
-    if (
-      !vehicleResponse.ok ||
-      vehicleData?.success !== true ||
-      !Number.isFinite(amount) ||
-      amount <= 0
-    ) {
-      throw new Error(
-        "Automatic vehicle delivery quote is temporarily unavailable."
-      );
-    }
-
-    verifiedDelivery = {
-      ...verifiedDelivery,
+    const addressFp = sokoShippingAddressFingerprint(deliveryDetails);
+    const originFp = sokoShippingOriginFingerprint({
+      fulfillmentType: "freight",
+      from,
+      vehicleType,
+    });
+    const reused = await findReusableSokoShippingQuote({
+      buyerUserId: args.buyerUserId,
+      productId,
       rateId: "automatic-vehicle-transport",
       shipmentId: "",
-      provider: "CarHauler247",
-      service: "Open vehicle transport",
-      amount,
-      currency: "USD",
-      estimatedDays: null,
-      type: "freight",
-    };
+      addressFp,
+      originFp,
+    });
 
-    (verifiedDelivery as any).durationTerms = clean(
-      quote.estimatedDays,
-      240
-    );
+    if (reused.ok) {
+      timer.stage("shipping_reuse", { kind: "freight" });
+      verifiedDelivery = {
+        ...verifiedDelivery,
+        rateId: "automatic-vehicle-transport",
+        shipmentId: "",
+        provider: reused.quote.provider || "CarHauler247",
+        service: reused.quote.service || "Open vehicle transport",
+        amount: reused.quote.amount,
+        currency: "USD",
+        estimatedDays: reused.quote.estimatedDays,
+        type: "freight",
+      };
+    } else {
+      const vehicleResponse = await fetch(
+        "https://carhauler247.com/api/public/v1/quote" +
+          "?fromZip=" + encodeURIComponent(fromZip) +
+          "&toZip=" + encodeURIComponent(toZip) +
+          "&vehicleType=" + encodeURIComponent(vehicleType),
+        {
+          headers: {
+            Accept: "application/json",
+          },
+          signal: AbortSignal.timeout(15000),
+          cache: "no-store",
+        }
+      );
 
-    (verifiedDelivery as any).distanceMiles =
-      Number(quote.distance) > 0
-        ? Number(quote.distance)
-        : null;
+      const vehicleData = await vehicleResponse
+        .json()
+        .catch(() => ({}));
+
+      const quote =
+        vehicleData?.quote &&
+        typeof vehicleData.quote === "object"
+          ? vehicleData.quote
+          : {};
+
+      const amount = Number(quote.price);
+
+      if (
+        !vehicleResponse.ok ||
+        vehicleData?.success !== true ||
+        !Number.isFinite(amount) ||
+        amount <= 0
+      ) {
+        throw new Error(
+          "Automatic vehicle delivery quote is temporarily unavailable."
+        );
+      }
+
+      timer.stage("shipping_revalidate", { kind: "freight" });
+      verifiedDelivery = {
+        ...verifiedDelivery,
+        rateId: "automatic-vehicle-transport",
+        shipmentId: "",
+        provider: "CarHauler247",
+        service: "Open vehicle transport",
+        amount,
+        currency: "USD",
+        estimatedDays: null,
+        type: "freight",
+      };
+
+      (verifiedDelivery as any).durationTerms = clean(
+        quote.estimatedDays,
+        240
+      );
+
+      (verifiedDelivery as any).distanceMiles =
+        Number(quote.distance) > 0
+          ? Number(quote.distance)
+          : null;
+    }
 
     (verifiedDelivery as any).timingNotice =
       "Transit estimate starts after vehicle pickup. Pickup scheduling is confirmed separately.";
@@ -543,7 +663,24 @@ export async function createSokoOrder(args: {
     };
   } else if (fulfillmentType === "parcel") {
     const rateId = clean(selection.rateId, 120);
+    const shipmentId = clean(selection.shipmentId, 120);
     const token = clean(process.env.SHIPPO_API_TOKEN, 300);
+    const from =
+      fulfillment.addressFrom &&
+      typeof fulfillment.addressFrom === "object"
+        ? fulfillment.addressFrom
+        : {};
+    const parcel =
+      fulfillment.parcel &&
+      typeof fulfillment.parcel === "object"
+        ? fulfillment.parcel
+        : {};
+    const addressFp = sokoShippingAddressFingerprint(deliveryDetails);
+    const originFp = sokoShippingOriginFingerprint({
+      fulfillmentType: "parcel",
+      from,
+      parcel,
+    });
 
     if (!rateId || !token) {
       throw new Error(
@@ -551,68 +688,45 @@ export async function createSokoOrder(args: {
       );
     }
 
-    const response = await fetch(
-      "https://api.goshippo.com/rates/" +
-        encodeURIComponent(rateId),
-      {
-        headers: {
-          Authorization: `ShippoToken ${token}`,
-        },
-        signal: AbortSignal.timeout(15000),
-      }
-    );
-
-    const rate = await response.json().catch(() => ({}));
-
-    if (
-      !response.ok ||
-      !rate ||
-      typeof rate !== "object"
-    ) {
-      throw new Error(
-        "Carrier delivery rate could not be verified."
-      );
-    }
-
-    const amount = Number(rate.amount);
-    const rateCurrency = clean(rate.currency, 10);
-
-    if (
-      !Number.isFinite(amount) ||
-      amount <= 0 ||
-      !rateCurrency
-    ) {
-      throw new Error("Carrier returned an invalid rate.");
-    }
-
-    const provider =
-      rate.provider &&
-      typeof rate.provider === "object"
-        ? clean(rate.provider.name, 80)
-        : clean(rate.provider, 80);
-
-    const service =
-      clean(rate.servicelevel_name, 120) ||
-      (
-        rate.servicelevel &&
-        typeof rate.servicelevel === "object"
-          ? clean(rate.servicelevel.name, 120)
-          : ""
-      );
-
-    verifiedDelivery = {
+    const reused = await findReusableSokoShippingQuote({
+      buyerUserId: args.buyerUserId,
+      productId,
       rateId,
-      shipmentId: clean(selection.shipmentId, 120),
-      provider,
-      service,
-      amount,
-      currency: rateCurrency,
-      estimatedDays:
-        Number(rate.estimated_days) > 0
-          ? Number(rate.estimated_days)
-          : null,
-      type: "parcel",
-    };
+      shipmentId,
+      addressFp,
+      originFp,
+    });
+
+    if (reused.ok) {
+      timer.stage("shipping_reuse", { kind: "parcel" });
+      verifiedDelivery = {
+        rateId: reused.quote.rateId,
+        shipmentId: reused.quote.shipmentId,
+        provider: reused.quote.provider,
+        service: reused.quote.service,
+        amount: reused.quote.amount,
+        currency: reused.quote.currency,
+        estimatedDays: reused.quote.estimatedDays,
+        type: "parcel",
+      };
+    } else {
+      const rate = await verifyShippoParcelRate({
+        rateId,
+        shipmentId,
+        token,
+      });
+      timer.stage("shipping_revalidate", { kind: "parcel" });
+      verifiedDelivery = {
+        rateId: rate.rateId,
+        shipmentId: rate.shipmentId,
+        provider: rate.provider,
+        service: rate.service,
+        amount: rate.amount,
+        currency: rate.currency,
+        estimatedDays: rate.estimatedDays,
+        type: "parcel",
+      };
+    }
   } else {
     throw new Error(
       "Seller delivery method is incomplete."
@@ -621,6 +735,10 @@ export async function createSokoOrder(args: {
 
   const itemPrice = Number(product.payload?.price || 0);
   const finalTotal = itemPrice + verifiedDelivery.amount;
+  timer.stage("shipping_ready", {
+    paymentMethod,
+    amountMinor: Math.round(finalTotal * 100),
+  });
 
   const snapshot = {
     title: clean(product.payload?.title, 120),
@@ -633,7 +751,7 @@ export async function createSokoOrder(args: {
       quantity: 1,
       reserved: true,
     },
-    buyerName: clean(args.buyerName, 120),
+    buyerName,
     deliveryDetails,
     delivery: verifiedDelivery,
     fulfillment: {
@@ -662,10 +780,8 @@ export async function createSokoOrder(args: {
     },
     payment: {
       method: paymentMethod,
-      cashTag:
-        paymentMethod === "cash_app"
-          ? clean(product.payload?.paymentOptions?.cashTag, 20)
-          : "",
+      cashTag: "",
+      merchantId: "",
       mobileNetwork:
         paymentMethod === "mobile_money"
           ? clean(product.payload?.paymentOptions?.mobileNetwork, 80)
@@ -681,11 +797,37 @@ export async function createSokoOrder(args: {
     },
   };
 
+  if (paymentMethod === "cash_app") {
+    const sellerPayment = await dbGetVerifiedSellerPaymentMerchant({
+      sellerUserId: product.seller_user_id,
+      provider: "cash_app",
+    });
+    const recipient = resolveApprovedCashAppRecipient({
+      listingCashTag: product.payload?.paymentOptions?.cashTag,
+      approvedCashTag: sellerPayment?.cashTag || "",
+      merchantId: sellerPayment?.externalMerchantId || "",
+    });
+
+    if (!recipient.ok) {
+      if (recipient.code === "PAYMENT_ACCOUNT_MISMATCH") {
+        throw new SokoPaymentAccountMismatchError();
+      }
+      throw new Error("Seller Cash App tag is unavailable.");
+    }
+
+    snapshot.payment.cashTag = recipient.cashTag;
+    snapshot.payment.merchantId = recipient.merchantId;
+  }
+
   if (!snapshot.title || !snapshot.price || !snapshot.currency) {
     throw new Error("Product payment information is incomplete.");
   }
 
-  if (paymentMethod === "cash_app" && !snapshot.payment.cashTag) {
+  if (
+    paymentMethod === "cash_app" &&
+    !snapshot.payment.cashTag &&
+    !snapshot.payment.merchantId
+  ) {
     throw new Error("Seller Cash App tag is unavailable.");
   }
 
@@ -760,7 +902,11 @@ export async function createSokoOrder(args: {
     SELECT * FROM inserted_order
   ` as OrderRow[];
 
-  if (inserted[0]) return publicOrder(inserted[0]);
+  if (inserted[0]) {
+    const current = await ensureSokoCashAppOrderReference(inserted[0]);
+    timer.stage("order_inserted");
+    return publicOrder(current);
+  }
 
   const raced = await sql`
     SELECT * FROM soko_orders
@@ -775,7 +921,8 @@ export async function createSokoOrder(args: {
     );
   }
 
-  return publicOrder(raced[0]);
+  const current = await ensureSokoCashAppOrderReference(raced[0]);
+  return publicOrder(current);
 }
 
 export async function listSokoOrders(userId: string, mode: string) {
@@ -2180,7 +2327,6 @@ export async function getSokoCashAppPaymentContext(args: {
     !Number.isSafeInteger(amountMinor) ||
     amountMinor <= 0 ||
     !currency ||
-    !cashTag ||
     !order.seller_user_id
   ) {
     throw new Error(
@@ -2201,6 +2347,23 @@ export async function getSokoCashAppPaymentContext(args: {
       clean(order.provider_reference, 180),
     status: order.status,
   };
+}
+
+export async function ensureSokoCashAppOrderReferenceById(
+  orderId: string
+) {
+  await schema();
+  const id = clean(orderId, 180);
+  if (!id) return null;
+  const sql = sqlClient();
+  const rows = await sql`
+    SELECT * FROM soko_orders
+    WHERE id = ${id}
+      AND payment_method = 'cash_app'
+    LIMIT 1
+  ` as OrderRow[];
+  if (!rows[0]) return null;
+  return ensureSokoCashAppOrderReference(rows[0]);
 }
 
 export async function bindSokoOrderProviderPayment(args: {
@@ -2341,7 +2504,26 @@ export async function findSokoCashAppOrderMatch(args: {
 
   const sql = sqlClient();
 
-  const rows = await sql`
+  const consumed = await sql`
+    SELECT id, status
+    FROM soko_orders
+    WHERE payment_method = 'cash_app'
+      AND payment_provider = 'cash_app'
+      AND provider_payment_id = ${providerPaymentId}
+      AND status IN (
+        'payment_approved',
+        'preparing_shipment',
+        'shipped',
+        'delivered'
+      )
+    LIMIT 1
+  ` as Array<{ id: string; status: string }>;
+
+  if (consumed[0]) {
+    return null;
+  }
+
+  const boundRows = await sql`
     SELECT *
     FROM soko_orders
     WHERE payment_method = 'cash_app'
@@ -2351,8 +2533,7 @@ export async function findSokoCashAppOrderMatch(args: {
       )
       AND status IN (
         'awaiting_payment',
-        'payment_submitted',
-        'payment_rejected'
+        'payment_submitted'
       )
       AND UPPER(
         COALESCE(
@@ -2396,11 +2577,62 @@ export async function findSokoCashAppOrderMatch(args: {
    * Zero matches: no action.
    * Multiple matches: ambiguous, no action.
    */
-  if (rows.length !== 1) {
+  if (boundRows.length === 1) {
+    return publicOrder(boundRows[0]);
+  }
+
+  if (boundRows.length > 1 || !providerReference) {
     return null;
   }
 
-  return publicOrder(rows[0]);
+  const referenced = await sql`
+    SELECT *
+    FROM soko_orders
+    WHERE payment_method = 'cash_app'
+      AND payment_provider = 'cash_app'
+      AND (
+        ${sellerUserId} = ''
+        OR seller_user_id = ${sellerUserId}
+      )
+      AND status IN (
+        'awaiting_payment',
+        'payment_submitted'
+      )
+      AND provider_reference = ${providerReference}
+      AND UPPER(
+        COALESCE(
+          snapshot->'totals'->>'currency',
+          snapshot->>'currency',
+          ''
+        )
+      ) = ${currency}
+      AND ROUND(
+        (
+          COALESCE(
+            NULLIF(
+              snapshot->'totals'->>'finalTotal',
+              ''
+            ),
+            NULLIF(
+              snapshot->>'price',
+              ''
+            )
+          )
+        )::numeric * 100
+      )::bigint = ${args.amountMinor}
+      AND (
+        provider_payment_id = ''
+        OR provider_payment_id = ${providerPaymentId}
+      )
+    ORDER BY created_at DESC
+    LIMIT 2
+  ` as OrderRow[];
+
+  if (referenced.length !== 1) {
+    return null;
+  }
+
+  return publicOrder(referenced[0]);
 }
 
 /**
@@ -2571,13 +2803,20 @@ export async function applyCashAppCapturedPaymentToOrder(args: {
     ![
       "awaiting_payment",
       "payment_submitted",
-      "payment_rejected",
-    ].includes(existing.status)
+    ].includes(existing.status) ||
+    !isPayableSokoOrderStatus(existing.status)
   ) {
     throw new Error(
       "Order is not eligible for provider payment approval."
     );
   }
+
+  const captureAudit = cashAppCaptureAuditMetadata({
+    amountMinor: args.amountMinor,
+    currency,
+    eventType: "payment.status.updated",
+    paymentStatus: "CAPTURED",
+  });
 
   /*
    * Atomic status transition.
@@ -2590,14 +2829,24 @@ export async function applyCashAppCapturedPaymentToOrder(args: {
     SET
       status = 'payment_approved',
       payment_date = COALESCE(payment_date, NOW()),
+      payment_provider = 'cash_app',
+      provider_payment_id = CASE
+        WHEN provider_payment_id = ''
+          THEN ${providerPaymentId}
+        ELSE provider_payment_id
+      END,
+      snapshot = jsonb_set(
+        COALESCE(snapshot, '{}'::jsonb),
+        '{payment,captureAudit}',
+        ${JSON.stringify(captureAudit)}::jsonb
+      ),
       updated_at = NOW()
     WHERE id = ${orderId}
       AND payment_method = 'cash_app'
       AND payment_provider = 'cash_app'
       AND status IN (
         'awaiting_payment',
-        'payment_submitted',
-        'payment_rejected'
+        'payment_submitted'
       )
       AND (
         ${sellerUserId} = ''
@@ -2740,6 +2989,364 @@ export async function applyCashAppCapturedPaymentToOrder(args: {
       inventoryDeductedAgain: false,
     }
   );
+
+  return {
+    order: publicOrder(approved),
+    applied: true,
+    alreadyApplied: false,
+  };
+}
+
+function stripeOrderAmountMinor(order: OrderRow) {
+  const totals =
+    order.snapshot?.totals &&
+    typeof order.snapshot.totals === "object"
+      ? order.snapshot.totals
+      : {};
+
+  return toStripeAmountMinor(
+    Number(totals.finalTotal),
+    clean(totals.currency || order.snapshot?.currency, 10)
+  );
+}
+
+export async function getSokoStripePaymentContext(args: {
+  orderId: string;
+  buyerUserId: string;
+}) {
+  await schema();
+
+  const orderId = clean(args.orderId, 100);
+  const buyerUserId = clean(args.buyerUserId, 180);
+
+  if (!orderId || !buyerUserId) {
+    throw new Error("Valid order and buyer identity are required.");
+  }
+
+  const sql = sqlClient();
+  const rows = await sql`
+    SELECT *
+    FROM soko_orders
+    WHERE id = ${orderId}
+      AND buyer_user_id = ${buyerUserId}
+      AND payment_method = ${SOKO_STRIPE_PAYMENT_METHOD}
+    LIMIT 1
+  ` as OrderRow[];
+
+  const order = rows[0];
+
+  if (!order) {
+    throw new Error("Card payment is unavailable for this order.");
+  }
+
+  if (order.buyer_user_id !== buyerUserId) {
+    throw new Error("Card payment is unavailable for this order.");
+  }
+
+  const gate = assertSokoStripeSellerGate({
+    sellerUserId: order.seller_user_id,
+    buyerUserId,
+    productStatus: "Active",
+    currency: clean(
+      order.snapshot?.totals?.currency || order.snapshot?.currency,
+      10
+    ),
+    allowedSellerUserId: configuredSokoStripeSellerUserId(),
+  });
+
+  if (!gate.ok) {
+    throw new Error(gate.error);
+  }
+
+  const amountMinor = stripeOrderAmountMinor(order);
+  const currency = clean(
+    order.snapshot?.totals?.currency || order.snapshot?.currency,
+    10
+  ).toUpperCase();
+
+  if (!amountMinor || !currency) {
+    throw new Error("Authoritative card payment information is incomplete.");
+  }
+
+  const retry = Number(
+    order.snapshot?.payment?.stripeIdempotencyRetry || 0
+  );
+
+  return {
+    order,
+    orderId: order.id,
+    buyerUserId: order.buyer_user_id,
+    sellerUserId: order.seller_user_id,
+    status: order.status,
+    amountMinor,
+    currency,
+    providerPaymentId: clean(order.provider_payment_id, 180),
+    retry: Number.isFinite(retry) && retry > 0 ? Math.trunc(retry) : 0,
+    totals: {
+      itemPrice: Number(order.snapshot?.totals?.itemPrice),
+      deliveryPrice: Number(order.snapshot?.totals?.deliveryPrice),
+      finalTotal: Number(order.snapshot?.totals?.finalTotal),
+      currency,
+    },
+  };
+}
+
+export async function bindSokoStripePaymentIntent(args: {
+  orderId: string;
+  buyerUserId: string;
+  paymentIntentId: string;
+  replacePreviousId?: string;
+  retry?: number;
+}) {
+  await schema();
+
+  const orderId = clean(args.orderId, 180);
+  const buyerUserId = clean(args.buyerUserId, 180);
+  const paymentIntentId = clean(args.paymentIntentId, 180);
+  const replacePreviousId = clean(args.replacePreviousId, 180);
+  const retry =
+    typeof args.retry === "number" && Number.isFinite(args.retry)
+      ? Math.max(0, Math.trunc(args.retry))
+      : 0;
+
+  if (!orderId || !buyerUserId || !paymentIntentId) {
+    throw new Error("Valid Stripe payment identity is required.");
+  }
+
+  const sql = sqlClient();
+  const rows = await sql`
+    UPDATE soko_orders
+    SET
+      payment_provider = ${SOKO_STRIPE_PROVIDER},
+      provider_payment_id = ${paymentIntentId},
+      provider_reference = CASE
+        WHEN provider_reference = ''
+          THEN ${paymentIntentId}
+        ELSE provider_reference
+      END,
+      snapshot = jsonb_set(
+        jsonb_set(
+          COALESCE(snapshot, '{}'::jsonb),
+          '{payment,stripePaymentIntentId}',
+          ${JSON.stringify(paymentIntentId)}::jsonb
+        ),
+        '{payment,stripeIdempotencyRetry}',
+        ${JSON.stringify(retry)}::jsonb
+      ),
+      updated_at = NOW()
+    WHERE id = ${orderId}
+      AND buyer_user_id = ${buyerUserId}
+      AND seller_user_id = ${configuredSokoStripeSellerUserId()}
+      AND payment_method = ${SOKO_STRIPE_PAYMENT_METHOD}
+      AND status = 'awaiting_payment'
+      AND (
+        provider_payment_id = ''
+        OR provider_payment_id = ${paymentIntentId}
+        OR (
+          ${replacePreviousId} <> ''
+          AND payment_provider = ${SOKO_STRIPE_PROVIDER}
+          AND provider_payment_id = ${replacePreviousId}
+        )
+      )
+    RETURNING *
+  ` as OrderRow[];
+
+  if (!rows[0]) {
+    throw new Error("Order cannot be bound to this card payment.");
+  }
+
+  return publicOrder(rows[0]);
+}
+
+export async function findSokoOrderByStripePaymentIntent(
+  paymentIntentId: string
+) {
+  await schema();
+  const id = clean(paymentIntentId, 180);
+  if (!id) return null;
+  const sql = sqlClient();
+  const rows = await sql`
+    SELECT *
+    FROM soko_orders
+    WHERE payment_provider = ${SOKO_STRIPE_PROVIDER}
+      AND provider_payment_id = ${id}
+    LIMIT 2
+  ` as OrderRow[];
+  return rows;
+}
+
+export async function applySokoStripeCapturedPaymentToOrder(args: {
+  orderId: string;
+  paymentIntentId: string;
+  amountMinor: number;
+  currency: string;
+  eventId: string;
+  livemode: boolean;
+}) {
+  await schema();
+
+  const orderId = clean(args.orderId, 180);
+  const paymentIntentId = clean(args.paymentIntentId, 180);
+  const currency = clean(args.currency, 10).toUpperCase();
+  const eventId = clean(args.eventId, 180);
+  const allowedSellerUserId = configuredSokoStripeSellerUserId();
+  const amountMinor = Math.trunc(args.amountMinor);
+
+  if (
+    !orderId ||
+    !paymentIntentId ||
+    !currency ||
+    !Number.isSafeInteger(amountMinor) ||
+    amountMinor <= 0
+  ) {
+    throw new Error("Valid Stripe capture is required.");
+  }
+
+  const sql = sqlClient();
+  const existingRows = await sql`
+    SELECT *
+    FROM soko_orders
+    WHERE id = ${orderId}
+      AND payment_method = ${SOKO_STRIPE_PAYMENT_METHOD}
+      AND payment_provider = ${SOKO_STRIPE_PROVIDER}
+      AND provider_payment_id = ${paymentIntentId}
+      AND seller_user_id = ${allowedSellerUserId}
+    LIMIT 1
+  ` as OrderRow[];
+
+  const existing = existingRows[0];
+  if (!existing) {
+    throw new Error("Provider payment does not match this order.");
+  }
+
+  if (
+    [
+      "payment_approved",
+      "preparing_shipment",
+      "shipped",
+      "delivered",
+    ].includes(existing.status)
+  ) {
+    await syncProviderApprovedProduct({
+      orderId: existing.id,
+      productId: existing.product_id,
+      sellerUserId: existing.seller_user_id,
+    });
+
+    return {
+      order: publicOrder(existing),
+      applied: false,
+      alreadyApplied: true,
+    };
+  }
+
+  if (existing.status !== "awaiting_payment") {
+    throw new Error("Order is not eligible for card payment approval.");
+  }
+
+  const captureAudit = {
+    provider: SOKO_STRIPE_PROVIDER,
+    paymentIntentId,
+    eventId,
+    amountMinor,
+    currency,
+    livemode: args.livemode === true,
+    capturedAt: new Date().toISOString(),
+  };
+
+  const approvedRows = await sql`
+    UPDATE soko_orders
+    SET
+      status = 'payment_approved',
+      payment_date = COALESCE(payment_date, NOW()),
+      payment_provider = ${SOKO_STRIPE_PROVIDER},
+      provider_payment_id = ${paymentIntentId},
+      snapshot = jsonb_set(
+        COALESCE(snapshot, '{}'::jsonb),
+        '{payment,stripeCaptureAudit}',
+        ${JSON.stringify(captureAudit)}::jsonb
+      ),
+      updated_at = NOW()
+    WHERE id = ${orderId}
+      AND payment_method = ${SOKO_STRIPE_PAYMENT_METHOD}
+      AND payment_provider = ${SOKO_STRIPE_PROVIDER}
+      AND status = 'awaiting_payment'
+      AND seller_user_id = ${allowedSellerUserId}
+      AND provider_payment_id = ${paymentIntentId}
+      AND UPPER(
+        COALESCE(
+          snapshot->'totals'->>'currency',
+          snapshot->>'currency',
+          ''
+        )
+      ) = ${currency}
+      AND ROUND(
+        (
+          COALESCE(
+            NULLIF(
+              snapshot->'totals'->>'finalTotal',
+              ''
+            ),
+            NULLIF(
+              snapshot->>'price',
+              ''
+            )
+          )
+        )::numeric * 100
+      )::bigint = ${amountMinor}
+    RETURNING *
+  ` as OrderRow[];
+
+  if (!approvedRows[0]) {
+    const currentRows = await sql`
+      SELECT *
+      FROM soko_orders
+      WHERE id = ${orderId}
+        AND payment_method = ${SOKO_STRIPE_PAYMENT_METHOD}
+        AND payment_provider = ${SOKO_STRIPE_PROVIDER}
+        AND provider_payment_id = ${paymentIntentId}
+        AND status IN (
+          'payment_approved',
+          'preparing_shipment',
+          'shipped',
+          'delivered'
+        )
+      LIMIT 1
+    ` as OrderRow[];
+
+    if (currentRows[0]) {
+      await syncProviderApprovedProduct({
+        orderId: currentRows[0].id,
+        productId: currentRows[0].product_id,
+        sellerUserId: currentRows[0].seller_user_id,
+      });
+
+      return {
+        order: publicOrder(currentRows[0]),
+        applied: false,
+        alreadyApplied: true,
+      };
+    }
+
+    throw new Error(
+      "Order changed before card payment could be applied."
+    );
+  }
+
+  const approved = approvedRows[0];
+  await syncProviderApprovedProduct({
+    orderId: approved.id,
+    productId: approved.product_id,
+    sellerUserId: approved.seller_user_id,
+  });
+
+  console.log("KRISTO_SOKO_STRIPE_PAYMENT_APPROVED", {
+    orderId: approved.id,
+    productId: approved.product_id,
+    provider: SOKO_STRIPE_PROVIDER,
+    sellerUserId: approved.seller_user_id,
+    inventoryDeductedAgain: false,
+  });
 
   return {
     order: publicOrder(approved),

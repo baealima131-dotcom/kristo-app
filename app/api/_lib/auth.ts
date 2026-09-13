@@ -1,5 +1,10 @@
 import type { NextRequest } from "next/server";
-import { getUserById, readSession, seedUserIfMissing } from "@/app/api/auth/_lib/session";
+import {
+  getUserById,
+  readCookieSessionUserId,
+  readSession,
+  seedUserIfMissing,
+} from "@/app/api/auth/_lib/session";
 import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 
 /**
@@ -104,5 +109,81 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
     name: publicViewerName(u),
     role: "Member",
     churchId: "",
+  };
+}
+
+/**
+ * Checkout identity: verify the signed session token (or cookie sid)
+ * without hydrating profile, church membership, or demo-user seed.
+ * Unsigned x-kristo-user-id is never accepted in production.
+ */
+export async function getCheckoutViewer(req: NextRequest): Promise<{
+  userId: string;
+  via: string;
+  tokenVerified: boolean;
+  profileHydrated: false;
+}> {
+  if (process.env.KRISTO_DEV_HEADER_AUTH === "1") {
+    const headerUid = String(req.headers.get("x-kristo-user-id") || "").trim();
+    if (headerUid) {
+      const resolved = resolveRequestUserId(req);
+      if (resolved.userId) {
+        return {
+          userId: resolved.userId,
+          via: resolved.via,
+          tokenVerified: resolved.via === "token" || resolved.via === "token-only",
+          profileHydrated: false,
+        };
+      }
+    }
+  }
+
+  if (
+    process.env.NODE_ENV === "development" &&
+    process.env.KRISTO_DEV_AUTO_LOGIN === "1"
+  ) {
+    return {
+      userId: process.env.KRISTO_DEV_USER_ID || "u-demo-1",
+      via: "dev-auto",
+      tokenVerified: false,
+      profileHydrated: false,
+    };
+  }
+
+  const resolved = resolveRequestUserId(req);
+  if (resolved.userId) {
+    return {
+      userId: resolved.userId,
+      via: resolved.via,
+      tokenVerified: resolved.via === "token" || resolved.via === "token-only",
+      profileHydrated: false,
+    };
+  }
+
+  const headerUid = String(req.headers.get("x-kristo-user-id") || "").trim();
+  if (headerUid) {
+    return {
+      userId: "",
+      via: "none",
+      tokenVerified: false,
+      profileHydrated: false,
+    };
+  }
+
+  const cookieUserId = await readCookieSessionUserId();
+  if (cookieUserId) {
+    return {
+      userId: cookieUserId,
+      via: "cookie",
+      tokenVerified: false,
+      profileHydrated: false,
+    };
+  }
+
+  return {
+    userId: "",
+    via: resolved.via || "none",
+    tokenVerified: false,
+    profileHydrated: false,
   };
 }

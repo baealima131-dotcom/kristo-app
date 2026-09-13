@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { guardAuth } from "@/app/api/_lib/rbac";
+import { guardCheckoutAuth } from "@/app/api/_lib/rbac";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import {
   createSokoOrder,
   listSokoOrders,
   updateSokoOrder,
 } from "@/app/api/_lib/store/sokoOrdersDb";
+import { SokoPaymentAccountMismatchError } from "@/app/api/_lib/cashAppPaymentConfirmation";
+import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,7 +53,7 @@ async function readJson(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await guardAuth(req);
+  const auth = await guardCheckoutAuth(req);
   if (auth instanceof NextResponse) return auth;
 
   try {
@@ -68,16 +70,21 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await guardAuth(req);
+  const timer = sokoCheckoutTimer("orders");
+  const auth = await guardCheckoutAuth(req);
+  timer.stage("auth");
   if (auth instanceof NextResponse) return auth;
 
   try {
     const body = await readJson(req);
-    const profile = await getProfile(auth.viewer.userId);
+    timer.stage("body");
+    const buyerNamePromise = getProfile(auth.viewer.userId).then((profile) =>
+      String(profile?.fullName || auth.viewer.name || "Kristo buyer")
+    );
 
     const order = await createSokoOrder({
       buyerUserId: auth.viewer.userId,
-      buyerName: String(profile?.fullName || auth.viewer.name || "Kristo buyer"),
+      buyerName: buyerNamePromise,
       productId: String(body.productId || ""),
       paymentMethod: String(body.paymentMethod || ""),
       clientKey: String(body.clientKey || ""),
@@ -95,9 +102,22 @@ export async function POST(req: NextRequest) {
           : {},
       requestDeliveryQuote: body.requestDeliveryQuote === true,
     });
-
-    return reply({ ok: true, order }, 201);
+    timer.stage("createSokoOrder");
+    const response = reply({ ok: true, order }, 201);
+    timer.stage("response");
+    return response;
   } catch (error) {
+    if (error instanceof SokoPaymentAccountMismatchError) {
+      return reply(
+        {
+          ok: false,
+          code: error.code,
+          error: "Seller payment account does not match this listing.",
+        },
+        409
+      );
+    }
+
     return reply(
       {
         ok: false,
@@ -112,7 +132,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const auth = await guardAuth(req);
+  const auth = await guardCheckoutAuth(req);
   if (auth instanceof NextResponse) return auth;
 
   try {

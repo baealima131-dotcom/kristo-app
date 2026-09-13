@@ -15,6 +15,11 @@ import {
 import {
   getProfile,
 } from "@/app/api/auth/_lib/profile";
+import {
+  configuredSokoStripeSellerUserId,
+  sokoStripeCardAvailableOnListing,
+} from "@/app/api/_lib/sokoStripeCheckout";
+import { sokoStripeServerConfigured } from "@/app/api/_lib/sokoStripeServer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -57,12 +62,23 @@ export async function GET(
       await dbGetSokoSellerAccess(
         identity
       );
+    const stripeCardAvailable =
+      sokoStripeCardAvailableOnListing({
+        serverConfigured:
+          sokoStripeServerConfigured(),
+        sellerUserId: identity.userId,
+        productStatus: "Active",
+        currency: "USD",
+        allowedSellerUserId:
+          configuredSokoStripeSellerUserId(),
+      });
 
     return NextResponse.json(
       {
         ok: true,
         access,
         identity,
+        stripeCardAvailable,
       },
       {
         headers: {
@@ -138,10 +154,22 @@ export async function POST(
       }
     );
 
+    const stripeCardAvailable =
+      sokoStripeCardAvailableOnListing({
+        serverConfigured:
+          sokoStripeServerConfigured(),
+        sellerUserId: identity.userId,
+        productStatus: "Active",
+        currency: "USD",
+        allowedSellerUserId:
+          configuredSokoStripeSellerUserId(),
+      });
+
     return NextResponse.json({
       ok: true,
       access,
       identity,
+      stripeCardAvailable,
     });
   } catch (error: any) {
     return NextResponse.json(

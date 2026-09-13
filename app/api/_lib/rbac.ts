@@ -4,8 +4,13 @@ import type { NextRequest } from "next/server";
 import {
   dbGetActiveSafetyAccountEnforcement,
 } from "@/app/api/_lib/store/safetyReportDb";
+import {
+  loadSafetyEnforcementCached,
+  readSafetyEnforcementCache,
+} from "@/app/api/_lib/safetyEnforcementCache";
+import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
 
-import { getViewer } from "@/app/api/_lib/auth";
+import { getCheckoutViewer, getViewer } from "@/app/api/_lib/auth";
 import {
   getActiveMembership,
   requestMembership,
@@ -198,10 +203,20 @@ export async function assertSafetyEnforcementAllows(
   userId: string,
   method: string
 ): Promise<NextResponse | null> {
-  const enforcement =
-    await dbGetActiveSafetyAccountEnforcement(
-      userId
-    );
+  const loaded = await loadSafetyEnforcementCached(userId, async () => {
+    const enforcement = await dbGetActiveSafetyAccountEnforcement(userId);
+    return {
+      permanentBan: Boolean(enforcement.permanentBan),
+      suspension: Boolean(enforcement.suspension),
+      restriction: Boolean(enforcement.restriction),
+    };
+  });
+  logGuardAuthTiming("safety_lookup", {
+    cacheHit: loaded.cacheHit,
+    coalesced: loaded.coalesced,
+    queried: !loaded.cacheHit && !loaded.coalesced,
+  });
+  const enforcement = loaded.value;
 
   if (enforcement.permanentBan) {
     console.log(
@@ -210,8 +225,6 @@ export async function assertSafetyEnforcementAllows(
         event: "auth_blocked",
         code: "SAFETY_PERMANENT_BAN",
         userId,
-        reportId:
-          enforcement.permanentBan.reportId,
         at: new Date().toISOString(),
       })
     );
@@ -223,8 +236,6 @@ export async function assertSafetyEnforcementAllows(
           "This Kristo account has been permanently banned.",
         details: {
           code: "SAFETY_PERMANENT_BAN",
-          reportId:
-            enforcement.permanentBan.reportId,
         },
       } satisfies ApiErr,
       { status: 403 }
@@ -238,11 +249,6 @@ export async function assertSafetyEnforcementAllows(
         event: "auth_blocked",
         code: "SAFETY_ACCOUNT_SUSPENDED",
         userId,
-        reportId:
-          enforcement.suspension.reportId,
-        expiresAt:
-          enforcement.suspension.expiresAt ||
-          null,
         at: new Date().toISOString(),
       })
     );
@@ -254,11 +260,6 @@ export async function assertSafetyEnforcementAllows(
           "This Kristo account is temporarily suspended.",
         details: {
           code: "SAFETY_ACCOUNT_SUSPENDED",
-          expiresAt:
-            enforcement.suspension.expiresAt ||
-            null,
-          reportId:
-            enforcement.suspension.reportId,
         },
       } satisfies ApiErr,
       { status: 403 }
@@ -282,11 +283,6 @@ export async function assertSafetyEnforcementAllows(
         code: "SAFETY_ACCOUNT_RESTRICTED",
         userId,
         method: normalizedMethod,
-        reportId:
-          enforcement.restriction.reportId,
-        expiresAt:
-          enforcement.restriction.expiresAt ||
-          null,
         at: new Date().toISOString(),
       })
     );
@@ -298,11 +294,6 @@ export async function assertSafetyEnforcementAllows(
           "This Kristo account is temporarily restricted to read-only access.",
         details: {
           code: "SAFETY_ACCOUNT_RESTRICTED",
-          expiresAt:
-            enforcement.restriction.expiresAt ||
-            null,
-          reportId:
-            enforcement.restriction.reportId,
         },
       } satisfies ApiErr,
       { status: 403 }
@@ -359,6 +350,22 @@ export async function assertSafetyAllowsAuthentication(
   return null;
 }
 
+function logGuardAuthTiming(
+  route: string,
+  stages: Record<string, unknown>
+) {
+  const safe: Record<string, unknown> = { route };
+  for (const [key, value] of Object.entries(stages)) {
+    if (typeof value === "number" || typeof value === "boolean") {
+      safe[key] = value;
+    }
+    if (typeof value === "string" && value.length <= 40) {
+      safe[key] = value;
+    }
+  }
+  console.log("KRISTO_GUARD_AUTH_TIMING", safe);
+}
+
 /** ✅ Use this for endpoints that only require login (no church yet) */
 export async function guardAuth(
   req: NextRequest
@@ -366,26 +373,85 @@ export async function guardAuth(
   AuthOnlyContext |
   NextResponse
 > {
+  const started = Date.now();
   const auth =
     await requireAuthOnly(req);
+  const viewerMs = Date.now() - started;
 
   if (
     auth instanceof NextResponse
   ) {
+    logGuardAuthTiming("guardAuth", {
+      viewerMs,
+      safetyMs: 0,
+      ok: false,
+      profileHydrated: true,
+    });
     return auth;
   }
 
+  const safetyStarted = Date.now();
   const blocked =
     await assertSafetyEnforcementAllows(
       auth.viewer.userId,
       req.method
     );
+  const safetyMs = Date.now() - safetyStarted;
+  logGuardAuthTiming("guardAuth", {
+    viewerMs,
+    safetyMs,
+    totalMs: Date.now() - started,
+    ok: !blocked,
+    profileHydrated: true,
+  });
 
   if (blocked) {
     return blocked;
   }
 
   return auth;
+}
+
+/**
+ * Checkout writes: signed session token (expiry + uid bind) without
+ * profile/church hydration. Safety bans/suspends/restricts still apply.
+ */
+export async function guardCheckoutAuth(
+  req: NextRequest
+): Promise<AuthOnlyContext | NextResponse> {
+  const timer = sokoCheckoutTimer("checkout-auth");
+  const viewer = await getCheckoutViewer(req);
+  timer.stage("token_verify", {
+    via: viewer.via,
+    tokenVerified: viewer.tokenVerified,
+    profileHydrated: viewer.profileHydrated,
+    hasUserId: Boolean(viewer.userId),
+  });
+
+  if (!viewer.userId) {
+    return json(
+      {
+        ok: false,
+        error: "Unauthorized",
+        details: { hint: "You must be signed in." },
+      } satisfies ApiErr,
+      { status: 401 }
+    );
+  }
+
+  const safetyCached = Boolean(readSafetyEnforcementCache(viewer.userId));
+  const blocked = await assertSafetyEnforcementAllows(
+    viewer.userId,
+    req.method
+  );
+  timer.stage("safety", {
+    blocked: Boolean(blocked),
+    cacheHit: safetyCached,
+  });
+
+  if (blocked) return blocked;
+
+  return { viewer: { userId: viewer.userId } };
 }
 
 /** ✅ Use this for church-scoped endpoints (Active membership required) */
