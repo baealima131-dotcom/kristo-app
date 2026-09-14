@@ -1,13 +1,29 @@
 import { apiGet, apiPatch, apiPost } from "@/src/lib/kristoApi";
+import { resolveApiBase } from "@/src/lib/kristoEnv";
 import {
   describeKristoSessionToken,
   getKristoHeaders,
   logKristoAuthHeadersDiag,
 } from "@/src/lib/kristoHeaders";
-import { getSessionSync, loadSession } from "@/src/lib/kristoSession";
+import { getSessionSync, loadSession, saveSession } from "@/src/lib/kristoSession";
+import {
+  CHECKOUT_AUTH_MISMATCH_MESSAGE,
+  checkoutRequestAllowedWhileReconnecting,
+  evaluateSessionRenewal,
+  isLiveCheckoutUnauthorized,
+  isUnverifiableCheckoutToken,
+  KRISTO_SESSION_REISSUE_MESSAGE,
+  logCheckoutAuthEvent,
+  SOKO_SESSION_EXPIRED_MESSAGE,
+  SOKO_SESSION_NOT_RENEWED_MESSAGE,
+} from "@/src/lib/sokoCheckoutReconnect";
 
-export const SOKO_SESSION_EXPIRED_MESSAGE =
-  "Your Kristo session expired. Sign in again to continue checkout.";
+export {
+  CHECKOUT_AUTH_MISMATCH_MESSAGE,
+  KRISTO_SESSION_REISSUE_MESSAGE,
+  SOKO_SESSION_EXPIRED_MESSAGE,
+  SOKO_SESSION_NOT_RENEWED_MESSAGE,
+} from "@/src/lib/sokoCheckoutReconnect";
 
 type CheckoutHttp = {
   get: typeof apiGet;
@@ -22,6 +38,8 @@ let http: CheckoutHttp = {
 };
 
 let blockedToken = "";
+let reconnecting = false;
+let silentRestoreAttempted = false;
 
 export function setSokoCheckoutHttpForTests(next?: Partial<CheckoutHttp>) {
   http = {
@@ -33,6 +51,68 @@ export function setSokoCheckoutHttpForTests(next?: Partial<CheckoutHttp>) {
 
 export function resetSokoCheckoutAuthGateForTests() {
   blockedToken = "";
+  reconnecting = false;
+  silentRestoreAttempted = false;
+}
+
+export function getBlockedCheckoutToken() {
+  return blockedToken;
+}
+
+export function setCheckoutReconnecting(next: boolean) {
+  reconnecting = next === true;
+}
+
+export function isCheckoutReconnecting() {
+  return reconnecting === true;
+}
+
+export function quarantineRejectedCheckoutToken(tokenKey: string) {
+  const key = String(tokenKey || "").trim();
+  if (!key || key === ":") return false;
+  blockedToken = key;
+  return true;
+}
+
+export function beginForcedCheckoutReauth() {
+  const session = getSessionSync();
+  const userId = String(session?.userId || "").trim();
+  const sessionToken = String(session?.sessionToken || "").trim();
+  const quarantined = quarantineRejectedCheckoutToken(
+    blockedToken || `${userId}:${sessionToken}`
+  );
+  reconnecting = true;
+  logCheckoutAuthEvent("home-checkout", "started", {
+    quarantined,
+    hasUserId: Boolean(userId),
+    hasSessionToken: Boolean(sessionToken),
+    reason: "member_reauth",
+  });
+}
+
+export async function trySilentCheckoutSessionRestore() {
+  if (silentRestoreAttempted) {
+    return { restored: false, tokenChanged: false as const };
+  }
+  silentRestoreAttempted = true;
+  const previousKey = blockedToken;
+  const reloaded = await loadSession();
+  const nextKey = `${String(reloaded?.userId || "").trim()}:${String(
+    reloaded?.sessionToken || ""
+  ).trim()}`;
+  const renewal = evaluateSessionRenewal({
+    blockedToken: previousKey,
+    nextToken: nextKey,
+  });
+  if (!renewal.accepted) {
+    return { restored: false, tokenChanged: false as const };
+  }
+  reconnecting = false;
+  return {
+    restored: true,
+    tokenChanged: true as const,
+    session: reloaded,
+  };
 }
 
 async function ensureCheckoutSession() {
@@ -45,10 +125,21 @@ async function ensureCheckoutSession() {
   return session;
 }
 
-function unauthorized(result: { status?: number; error?: string } | null | undefined) {
-  const status = Number(result?.status || 0);
-  const error = String(result?.error || "").trim().toLowerCase();
-  return status === 401 || error === "unauthorized";
+async function checkoutProfileSessionStillValid() {
+  try {
+    const session = await ensureCheckoutSession();
+    const result = await http.get("/api/auth/profile", {
+      headers: checkoutHeaders(session || {}),
+    });
+    const status = Number((result as { status?: number })?.status || 0);
+    return (
+      (result as { ok?: boolean })?.ok === true ||
+      status === 200 ||
+      Boolean((result as { profile?: unknown })?.profile)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function checkoutHeaders(session: {
@@ -63,6 +154,19 @@ function checkoutHeaders(session: {
     churchId: String(session.churchId || "").trim(),
     sessionToken: String(session.sessionToken || "").trim(),
   }) as Record<string, string>;
+}
+
+function unauthorized(result: {
+  status?: number;
+  error?: string;
+  details?: { hint?: unknown; code?: unknown };
+} | null | undefined) {
+  return isLiveCheckoutUnauthorized({
+    status: result?.status,
+    error: result?.error,
+    details: result?.details,
+    message: result?.error,
+  });
 }
 
 function parseBody(body: unknown) {
@@ -87,18 +191,23 @@ async function send(
   path: string,
   method: string,
   body?: unknown,
-  extraHeaders?: HeadersInit
-) {
+  extraHeaders?: HeadersInit,
+  options?: { silentRetried?: boolean }
+): Promise<any> {
   const session = await ensureCheckoutSession();
   const userId = String(session?.userId || "").trim();
   const sessionToken = String(session?.sessionToken || "").trim();
   const tokenKey = `${userId}:${sessionToken}`;
 
+  if (!checkoutRequestAllowedWhileReconnecting(reconnecting)) {
+    throw new Error(SOKO_SESSION_EXPIRED_MESSAGE);
+  }
   if (blockedToken && blockedToken === tokenKey) {
     throw new Error(SOKO_SESSION_EXPIRED_MESSAGE);
   }
   if (blockedToken && blockedToken !== tokenKey) {
     blockedToken = "";
+    silentRestoreAttempted = false;
   }
 
   if (!userId || !sessionToken) {
@@ -147,9 +256,67 @@ async function send(
   });
 
   if (unauthorized(result)) {
-    blockedToken = tokenKey;
+    const authCode = String(result?.details?.code || "").trim();
+    const failedPath = String(path || "").split("?")[0];
+    if (isUnverifiableCheckoutToken(result)) {
+      quarantineRejectedCheckoutToken(tokenKey);
+      logCheckoutAuthEvent("home-checkout", "required", {
+        path: failedPath,
+        status: 401,
+        reason: "unverifiable_session_token",
+        quarantined: true,
+        hasUserId: Boolean(userId),
+        hasSessionToken: Boolean(sessionToken),
+      });
+      console.warn("SOKO_API_REQUEST_FAILED", {
+        path: failedPath,
+        status: 401,
+        hasUserId: Boolean(headers["x-kristo-user-id"]),
+        hasSessionToken: Boolean(headers["x-kristo-session-token"]),
+        hasRole: Boolean(headers["x-kristo-role"]),
+        hasChurchId: Boolean(headers["x-kristo-church-id"]),
+        message: "Unauthorized",
+      });
+      throw new Error(KRISTO_SESSION_REISSUE_MESSAGE);
+    }
+    if (
+      failedPath !== "/api/auth/profile" &&
+      authCode !== "CHECKOUT_SESSION_EXPIRED"
+    ) {
+      const profileOk = await checkoutProfileSessionStillValid();
+      if (profileOk) {
+        console.log("CHECKOUT_AUTH_MISMATCH", {
+          path: failedPath,
+          status: 401,
+          reason: authCode || "delivery_route_auth_mismatch",
+          quarantined: false,
+          source: "home-checkout",
+          hasUserId: Boolean(userId),
+          hasSessionToken: Boolean(sessionToken),
+        });
+        console.warn("SOKO_API_REQUEST_FAILED", {
+          path: failedPath,
+          status: 401,
+          hasUserId: Boolean(headers["x-kristo-user-id"]),
+          hasSessionToken: Boolean(headers["x-kristo-session-token"]),
+          hasRole: Boolean(headers["x-kristo-role"]),
+          hasChurchId: Boolean(headers["x-kristo-church-id"]),
+          message: "Unauthorized",
+        });
+        throw new Error(CHECKOUT_AUTH_MISMATCH_MESSAGE);
+      }
+    }
+    quarantineRejectedCheckoutToken(tokenKey);
+    logCheckoutAuthEvent("home-checkout", "required", {
+      path: failedPath,
+      status: 401,
+      reason: "expired_session",
+      quarantined: true,
+      hasUserId: Boolean(userId),
+      hasSessionToken: Boolean(sessionToken),
+    });
     console.warn("SOKO_API_REQUEST_FAILED", {
-      path: String(path || "").split("?")[0],
+      path: failedPath,
       status: 401,
       hasUserId: Boolean(headers["x-kristo-user-id"]),
       hasSessionToken: Boolean(headers["x-kristo-session-token"]),
@@ -157,10 +324,104 @@ async function send(
       hasChurchId: Boolean(headers["x-kristo-church-id"]),
       message: "Unauthorized",
     });
+    if (!options?.silentRetried) {
+      const silent = await trySilentCheckoutSessionRestore();
+      if (silent.restored) {
+        const retried = await send(path, method, body, extraHeaders, {
+          silentRetried: true,
+        });
+        if (failedPath === "/api/soko/delivery/rates") {
+          logCheckoutAuthEvent("home-checkout", "resumed", {
+            path: "/api/soko/delivery/rates",
+            status: Number(retried?.status || 200),
+            once: true,
+            tokenChanged: true,
+            restoredDraft: true,
+            reason: "silent_restore",
+          });
+        }
+        return retried;
+      }
+    }
     throw new Error(SOKO_SESSION_EXPIRED_MESSAGE);
   }
 
   return result;
+}
+
+export async function renewKristoCheckoutSession(input: {
+  identifier: string;
+  password: string;
+}) {
+  const previous = await ensureCheckoutSession();
+  const previousUserId = String(previous?.userId || "").trim();
+  const previousToken = String(previous?.sessionToken || "").trim();
+  const previousKey = blockedToken || `${previousUserId}:${previousToken}`;
+  quarantineRejectedCheckoutToken(previousKey);
+  const identifier = String(input.identifier || "").trim();
+  const password = String(input.password || "");
+  if (!identifier || password.length < 8) {
+    throw new Error("Enter your Kristo email, phone or Kristo ID and password.");
+  }
+
+  const response = await fetch(`${resolveApiBase()}/api/auth/signin`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: identifier,
+      password,
+    }),
+  });
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (!response.ok || !data?.ok) {
+    throw new Error(
+      String(data?.error || "Wrong email, phone or password.")
+    );
+  }
+
+  const userId = String(data?.userId || "").trim();
+  const sessionToken = String(data?.sessionToken || data?.token || "").trim();
+  const role = String(data?.role || data?.churchRole || "Member").trim();
+  const churchId = String(data?.churchId || "").trim();
+  const churchRole = String(data?.churchRole || data?.role || "Member").trim();
+  if (!userId || !sessionToken) {
+    throw new Error("Kristo login did not return valid session credentials.");
+  }
+
+  const nextKey = `${userId}:${sessionToken}`;
+  const renewal = evaluateSessionRenewal({
+    blockedToken: previousKey,
+    nextToken: nextKey,
+  });
+  if (!renewal.accepted) {
+    throw new Error(SOKO_SESSION_NOT_RENEWED_MESSAGE);
+  }
+
+  const nextSession = {
+    ...(previous || {}),
+    userId,
+    sessionToken,
+    role,
+    churchId: churchId || String(previous?.churchId || "").trim(),
+    churchRole,
+  };
+  await saveSession(nextSession as any);
+  reconnecting = false;
+  silentRestoreAttempted = false;
+  logCheckoutAuthEvent("home-checkout", "succeeded", {
+    tokenChanged: true,
+    restoredDraft: true,
+    quarantined: true,
+    hasUserId: Boolean(userId),
+    hasSessionToken: true,
+    reason: "renewed",
+  });
+  return nextSession;
 }
 
 export async function sokoCheckoutJson(path: string, init?: RequestInit) {
