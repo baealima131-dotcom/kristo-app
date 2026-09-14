@@ -19,7 +19,7 @@ import {
 
 export type SokoHomeProduct={id:string;title:string;price:number;currency:string;quantity?:number;stockTotal?:number;stockAvailable?:number;soldOut?:boolean;image:string;photos:string[];description:string;location:string;condition:string;paymentOptions?:{methods?:("cash"|"cash_app"|"mobile_money")[];cashTag?:string;mobileNetwork?:string;mobileNumber?:string;recipientName?:string;stripeCardAvailable?:boolean};fulfillmentOptions?:{type?:"pickup"|"local_delivery"|"parcel"|"freight";flatFee?:number;estimatedDays?:number};seller:{id?:string;kristoId?:string;name:string;verified?:boolean;church?:string;avatarUrl?:string;shopName?:string;shopCategory?:string;shopLocation?:string;churchId?:string;churchName?:string;churchAvatarUrl?:string};_homeFeedKind?:"soko-product";sokoProductId?:string};
 const SAVE_KEY="@kristo/soko-home-saved-v1";
-const PRODUCT_CACHE_KEY="@kristo/soko-home-products-v1";
+const PRODUCT_CACHE_KEY="@kristo/soko-home-products-v2";
 
 const DELIVERY_DETAILS_KEY=
   "@kristo/soko-delivery-details-v1";
