@@ -165,3 +165,50 @@ test("routes enforce checkout auth, product-row seller, and no Church DM", () =>
   assert.doesNotMatch(messages, /cash-app/);
   assert.doesNotMatch(conversations, /cash-app/);
 });
+
+test("Kristo mobile Contact Seller and Cash App V1 use product conversations only", () => {
+  const home = read("apps/mobile/src/components/homeFeed/SokoHomeProducts.tsx");
+  const chat = read("apps/mobile/src/components/homeFeed/SokoBuyerSellerChat.tsx");
+  const api = read("apps/mobile/src/lib/sokoCheckoutApi.ts");
+  const contactStart = home.indexOf("const openSokoProductConversation");
+  const contactEnd = home.indexOf("const viewSellerProfile");
+  const contact = home.slice(contactStart, contactEnd);
+  const cashAppChip = home.slice(
+    home.indexOf("paymentMethods.map(method=>{"),
+    home.indexOf("styles.commerceActions")
+  );
+
+  assert.ok(contactStart >= 0 && contactEnd > contactStart);
+  assert.match(contact, /setSokoChatOpen\(true\)/);
+  assert.doesNotMatch(contact, /openDirectMessageThread/);
+  assert.doesNotMatch(contact, /targetUserId|sellerUserId/);
+  assert.doesNotMatch(contact, /\/api\/church\/direct-messages/);
+  assert.doesNotMatch(contact, /\/api\/soko\/payments\/cash-app/);
+  assert.doesNotMatch(contact, /payment-proof/);
+
+  assert.match(cashAppChip, /openSokoProductConversation/);
+  assert.doesNotMatch(cashAppChip, /openSecureCheckout\("cash_app"\)/);
+  assert.doesNotMatch(cashAppChip, /\/api\/soko\/payments\/cash-app/);
+
+  assert.match(home, /Contact seller to pay with Cash App/);
+  assert.match(home, /buyWithCard\?openSecureCheckout\("stripe_card"\):openSokoProductConversation\(\)/);
+  assert.doesNotMatch(home, /openDirectMessageThread/);
+  assert.doesNotMatch(home, /\/api\/soko\/payments\/cash-app/);
+  assert.doesNotMatch(home, /\/api\/church\/direct-messages/);
+  assert.doesNotMatch(home, /\/api\/church\/room-messages/);
+
+  assert.match(chat, /sokoOpenBuyerSellerConversation/);
+  assert.match(chat, /sokoListBuyerSellerMessages/);
+  assert.match(chat, /sokoSendBuyerSellerMessage/);
+  assert.doesNotMatch(chat, /openDirectMessageThread/);
+  assert.doesNotMatch(chat, /sellerUserId|targetUserId/);
+  assert.doesNotMatch(chat, /cash-app/);
+  assert.doesNotMatch(chat, /direct-messages|room-messages/);
+
+  assert.match(api, /JSON\.stringify\(\{ productId: listingId \}\)/);
+  assert.match(api, /JSON\.stringify\(\{ conversationId: id, text: trimmed \}\)/);
+  assert.doesNotMatch(api, /sellerUserId|targetUserId/);
+  assert.match(api, /loadSession/);
+  assert.match(api, /logKristoAuthHeadersDiag/);
+  assert.match(api, /blockedToken/);
+});

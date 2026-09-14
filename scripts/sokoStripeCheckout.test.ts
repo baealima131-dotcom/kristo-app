@@ -127,6 +127,7 @@ test("existing Seller 1 listings expose Card without stripe in paymentOptions.me
   assert.match(mobile, /Buy with Card/);
   assert.match(mobile, /Card — Secured by Stripe/);
   assert.match(mobile, /openSecureCheckout\("stripe_card"\)/);
+  assert.match(mobile, /openSokoProductConversation/);
   assert.match(mobile, /Buy with Cash App/);
   assert.doesNotMatch(mobile, /setCheckoutPaymentPhase\("paid"\)[\s\S]{0,120}initPaymentSheet/);
 });

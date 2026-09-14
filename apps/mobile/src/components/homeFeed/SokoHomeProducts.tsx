@@ -6,8 +6,9 @@ import { ActivityIndicator, Alert, AppState, Image, Linking, Modal, Pressable, S
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useStripe } from "@stripe/stripe-react-native";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { openDirectMessageThread } from "@/src/lib/directMessagesApi";
+import { getSessionSync, loadSession } from "@/src/lib/kristoSession";
+import { sokoCheckoutJson } from "@/src/lib/sokoCheckoutApi";
+import SokoBuyerSellerChat from "@/src/components/homeFeed/SokoBuyerSellerChat";
 import { recognizeText } from "@infinitered/react-native-mlkit-text-recognition";
 import {
   STRIPE_URL_SCHEME,
@@ -24,6 +25,20 @@ const DELIVERY_DETAILS_KEY=
   "@kristo/soko-delivery-details-v1";
 const base=String(process.env.EXPO_PUBLIC_API_BASE||"https://kristo-app.vercel.app").trim().replace(/\/+$/,"");
 const absolute=(value:string)=>value.startsWith("/")?base+value:value;
+function SokoProductPhoto({uri,style,resizeMode="cover"}:{uri?:string;style?:any;resizeMode?:"cover"|"contain"}){
+  const src=String(uri||"").trim();
+  const [failed,setFailed]=useState(false);
+  useEffect(()=>{setFailed(false);},[src]);
+  if(!src||failed){
+    return (
+      <View style={[styles.photoPlaceholder,style]}>
+        <Ionicons name="image-outline" size={36} color="#90A098"/>
+        <Text style={styles.photoPlaceholderText}>Photo unavailable</Text>
+      </View>
+    );
+  }
+  return <Image source={{uri:src}} style={style} resizeMode={resizeMode} onError={()=>setFailed(true)}/>;
+}
 const formatMoneyAmount=(currency:string,amount:unknown)=>{
   const value=typeof amount==="string"?Number(String(amount).trim()):Number(amount);
   if(!Number.isFinite(value))return "—";
@@ -189,7 +204,6 @@ export default function SokoHomeProducts({focused,onProductsChange}:{focused:boo
         const response=await fetch(
           base+"/api/soko/products",
           {
-            headers:getKristoHeaders(),
             signal:controller.signal
           }
         );
@@ -283,6 +297,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
   const [checkoutBusyStage,setCheckoutBusyStage]=useState<""|"verifying_delivery"|"creating_order"|"opening_card">("");
   const [confirmedTotals,setConfirmedTotals]=useState<null|{itemPrice:number;deliveryPrice:number;finalTotal:number;currency:string}>(null);
   const [checkoutPaymentMethod,setCheckoutPaymentMethod]=useState<"stripe_card"|"cash_app">("cash_app");
+  const [sokoChatOpen,setSokoChatOpen]=useState(false);
   const checkoutOpenRef=useRef(false);
   const refreshCheckoutPaymentStatusRef=useRef<()=>Promise<void>>(async()=>{});
   const beginCheckoutCashAppPaymentRef=useRef<()=>Promise<void>>(async()=>{});
@@ -333,17 +348,16 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
   },[checkoutOpen,checkoutPaymentPhase,order?.id]);
   const toggleSaved=async()=>{const value=await AsyncStorage.getItem(SAVE_KEY).catch(()=>null);const parsed=value?JSON.parse(value):[];const ids:string[]=Array.isArray(parsed)?parsed.filter(item=>typeof item==="string"):[];const next=ids.includes(realId)?ids.filter(id=>id!==realId):[realId,...ids];setSaved(next.includes(realId));await AsyncStorage.setItem(SAVE_KEY,JSON.stringify(next)).catch(()=>{});};
   const share=async()=>{await Share.share({message:product.title+" · "+money(product)+" · "+product.location+" — SOKO on Kristo App"}).catch(()=>{});};
+  const openSokoProductConversation=()=>{
+    if(!String(realId||"").trim()){
+      Alert.alert("Contact Seller","This listing is not available for messaging yet.");
+      return;
+    }
+    setCheckoutOpen(false);
+    setSokoChatOpen(true);
+  };
   const contactSeller=async()=>{
-    const targetUserId=String(product.seller.id||"").trim();
-    if(!targetUserId){Alert.alert("Contact Seller","Seller huyu bado hajaunganisha Kristo Messages.");return;}
-    if(contacting)return;
-    setContacting(true);
-    try{
-      const thread=await openDirectMessageThread({targetUserId});
-      router.push({pathname:"/(tabs)/profile/messages/[id]",params:{id:thread.roomId,title:thread.title||product.seller.name,sub:thread.subtitle||"SOKO Seller",avatar:thread.avatarUri||"",roomKind:"direct",peerUserId:thread.peerUserId||targetUserId,churchId:thread.churchId||""}} as any);
-    }catch(error){
-      Alert.alert("Contact Seller",String((error instanceof Error?error.message:error)||"Chat haikuweza kufunguka."));
-    }finally{setContacting(false);}
+    openSokoProductConversation();
   };
   const viewSellerProfile=()=>{
     const userId=String(product.seller.id||"").trim();
@@ -372,110 +386,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
       }
     } as any);
   };
-  const apiJson=async(path:string,init:RequestInit)=>{
-    const controller=new AbortController();
-    const timeout=setTimeout(
-      ()=>controller.abort(),
-      25000
-    );
-    const startedAt=Date.now();
-
-    console.log(
-      "SOKO_API_REQUEST_START",
-      {
-        path,
-        base,
-        method:String(init.method||"GET")
-      }
-    );
-
-    try{
-      const headers={
-        ...(await getKristoHeaders()),
-        ...(init.headers||{})
-      } as Record<string,string>;
-
-      const response=await fetch(
-        base+path,
-        {
-          ...init,
-          headers,
-          signal:controller.signal
-        }
-      );
-
-      const data=await response
-        .json()
-        .catch(()=>({}));
-
-      console.log(
-        "SOKO_API_REQUEST_END",
-        {
-          path,
-          status:response.status,
-          ms:Date.now()-startedAt
-        }
-      );
-
-      if(!response.ok||data?.ok===false){
-        throw new Error(
-          String(
-            data?.error||
-            "Request failed."
-          )
-        );
-      }
-
-      return data;
-    }catch(error){
-      const timedOut=
-        (error as any)?.name==="AbortError";
-
-      console.warn(
-        "SOKO_API_REQUEST_FAILED",
-        {
-          path,
-          base,
-          ms:Date.now()-startedAt,
-          timedOut,
-          message:String(
-            (error as Error)?.message||
-            error||
-            ""
-          )
-        }
-      );
-
-      if(timedOut){
-        throw new Error(
-          "Delivery server did not respond within 25 seconds. Confirm that the phone and Mac use the same Wi-Fi, then try again."
-        );
-      }
-
-      throw error;
-    }finally{
-      clearTimeout(timeout);
-    }
-  };
-  const cashAppRequest=async(path:string,init:RequestInit)=>{
-    const controller=new AbortController();
-    const timeout=setTimeout(()=>controller.abort(),25000);
-    try{
-      const headers={
-        ...(await getKristoHeaders()),
-        ...(init.headers||{})
-      } as Record<string,string>;
-      const response=await fetch(base+path,{
-        ...init,
-        headers,
-        signal:controller.signal
-      });
-      const data=await response.json().catch(()=>({}));
-      return {status:response.status,data:data&&typeof data==="object"?data:{}};
-    }finally{
-      clearTimeout(timeout);
-    }
-  };
+  const apiJson=async(path:string,init:RequestInit)=>sokoCheckoutJson(path,init);
   const visitSellerStore=async()=>{
     const sellerId=String(product.seller.id||"").trim();
     if(!sellerId){
@@ -570,11 +481,9 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
 
     void (async()=>{
       try{
-        const headers=await getKristoHeaders();
+        const session=await loadSession();
         const userId=String(
-          (
-            headers as Record<string,string>
-          )["x-kristo-user-id"]||""
+          (session||getSessionSync())?.userId||""
         ).trim();
 
         if(!userId)return;
@@ -803,12 +712,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
     }
 
     try{
-      const headers=await getKristoHeaders();
-      const userId=String(
-        (
-          headers as Record<string,string>
-        )["x-kristo-user-id"]||""
-      ).trim();
+      const userId=String(getSessionSync()?.userId||"").trim();
 
       if(userId){
         await AsyncStorage.setItem(
@@ -865,7 +769,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
       return;
     }
 
-    await beginCheckoutCashAppPaymentRef.current();
+    openSokoProductConversation();
   };
 
   const applyCheckoutOrderStatus=(status:string)=>{
@@ -907,46 +811,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
         setCheckoutPaymentNotice("Confirming payment…");
         return;
       }
-      const initiate=await cashAppRequest(
-        "/api/soko/payments/cash-app/initiate?orderId="+encodeURIComponent(orderId),
-        {method:"GET"}
-      );
-      const initiateStatus=String(initiate.data?.status||"").toLowerCase();
-      if(
-        initiateStatus==="authorization_declined"||
-        initiateStatus==="authorization_expired"||
-        initiateStatus==="authorization_failed"||
-        initiateStatus==="expired"||
-        initiateStatus==="failed"||
-        initiateStatus==="declined"
-      ){
-        setCheckoutPaymentPhase("failed");
-        checkoutAttemptIdRef.current=newCheckoutAttemptId();
-        setCheckoutPaymentError("This Cash App payment expired or failed.");
-        return;
-      }
-      if(
-        initiateStatus==="grant_verified"||
-        initiateStatus==="authorization_approved"||
-        initiateStatus==="approved"
-      ){
-        await cashAppRequest(
-          "/api/soko/payments/cash-app/create-payment",
-          {
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({orderId})
-          }
-        );
-        const afterCreate=await apiJson("/api/soko/orders?mode=buying",{method:"GET"});
-        const afterRows=Array.isArray(afterCreate.orders)?afterCreate.orders:[];
-        const after=afterRows.find((item:any)=>String(item?.id||"")===orderId)||null;
-        if(after){
-          setOrder(after);
-          applyCheckoutOrderStatus(String(after.status||""));
-        }
-      }
-      setCheckoutPaymentPhase(prev=>prev==="paid"||prev==="failed"?prev:"awaiting");
+      return;
     }catch(error){
       setCheckoutPaymentError(
         checkoutPaymentErrorCopy(
@@ -1125,118 +990,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
   };
 
   const beginCheckoutCashAppPayment=async()=>{
-    if(paymentBusy||checkoutPaymentPhase==="preparing")return;
-    setPaymentBusy(true);
-    setCheckoutPaymentPhase("preparing");
-    setCheckoutPaymentError("");
-    try{
-      const itemAmount=Number(product.price||0);
-      const shippingAmount=Number(selectedDelivery.amount);
-      const displayedTotal=
-        Number.isFinite(itemAmount)&&Number.isFinite(shippingAmount)
-          ? itemAmount+shippingAmount
-          : null;
-      const displayedCents=moneyCents(displayedTotal);
-      const data=await apiJson("/api/soko/orders",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          productId:realId,
-          paymentMethod:"cash_app",
-          clientKey:checkoutClientKey(
-            realId,
-            String(selectedDelivery.id||""),
-            delivery.postalCode,
-            checkoutAttemptIdRef.current
-          ),
-          deliveryDetails:{
-            fullName:delivery.fullName.trim(),
-            phone:delivery.phone.trim(),
-            country:delivery.country.trim(),
-            state:delivery.state.trim(),
-            city:delivery.city.trim(),
-            streetAddress:delivery.streetAddress.trim(),
-            postalCode:delivery.postalCode.trim(),
-            instructions:delivery.instructions.trim()
-          },
-          deliverySelection:{
-            rateId:String(selectedDelivery.id||""),
-            shipmentId:String(selectedDelivery.shipmentId||"")
-          }
-        })
-      });
-      const activeOrder=data.order;
-      setOrder(activeOrder);
-      const status=String(activeOrder?.status||"");
-      if(applyCheckoutOrderStatus(status)!=="pending"){
-        return;
-      }
-      const totals=
-        activeOrder?.product?.totals &&
-        typeof activeOrder.product.totals==="object"
-          ? activeOrder.product.totals
-          : {};
-      const serverItem=Number(totals.itemPrice);
-      const serverShip=Number(totals.deliveryPrice);
-      const serverTotal=Number(totals.finalTotal);
-      const serverCurrency=String(totals.currency||activeOrder?.product?.currency||"").toUpperCase().trim();
-      if(!Number.isFinite(serverTotal)||serverTotal<=0||serverCurrency!=="USD"){
-        throw new Error("Confirmed order total is unavailable.");
-      }
-      const serverCents=moneyCents(serverTotal);
-      const reviewedCents=moneyCents(confirmedTotals?.finalTotal);
-      if(
-        Number.isFinite(displayedCents) &&
-        displayedCents>0 &&
-        serverCents!==displayedCents &&
-        reviewedCents!==serverCents
-      ){
-        setConfirmedTotals({
-          itemPrice:Number.isFinite(serverItem)?serverItem:serverTotal,
-          deliveryPrice:Number.isFinite(serverShip)?serverShip:0,
-          finalTotal:serverTotal,
-          currency:serverCurrency
-        });
-        setCheckoutPaymentNotice("Your total changed. Review the updated amount before continuing.");
-        setCheckoutPaymentPhase("idle");
-        return;
-      }
-      setConfirmedTotals({
-        itemPrice:Number.isFinite(serverItem)?serverItem:serverTotal,
-        deliveryPrice:Number.isFinite(serverShip)?serverShip:0,
-        finalTotal:serverTotal,
-        currency:serverCurrency
-      });
-      setCheckoutPaymentNotice("");
-      const orderId=String(activeOrder?.id||"").trim();
-      const initiate=await cashAppRequest(
-        "/api/soko/payments/cash-app/initiate",
-        {
-          method:"POST",
-          headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({orderId})
-        }
-      );
-      const partnerUrl=String(initiate.data?.authorizationUrl||"").trim();
-      if(initiate.status>=400 || !partnerUrl){
-        throw new Error("Cash App checkout is not available yet.");
-      }
-      if(!isSafeCashAppLaunchUrl(partnerUrl)||isCashAppCashtagPrefillPath(partnerUrl)){
-        throw new Error("Cash App checkout is not available yet.");
-      }
-      await openValidatedCashAppUrl(partnerUrl);
-      checkoutPollTicksRef.current=0;
-      // Opening Cash App is not payment confirmation. Order stays awaiting_payment until verified webhook/provider confirmation.
-      setCheckoutPaymentPhase("awaiting");
-      setCheckoutPaymentNotice("Waiting for payment confirmation");
-    }catch(error){
-      const message=String((error as Error)?.message||error||"Payment could not start.");
-      setCheckoutPaymentPhase("idle");
-      setCheckoutPaymentError(checkoutPaymentErrorCopy(message));
-    }finally{
-      setPaymentBusy(false);
-      setCheckoutPaymentPhase(prev=>prev==="preparing"?"idle":prev);
-    }
+    openSokoProductConversation();
   };
   beginCheckoutCashAppPaymentRef.current=beginCheckoutCashAppPayment;
 
@@ -1565,7 +1319,7 @@ Ukikubali, malipo yatafunguliwa.`
     setReference("");
     setBuyerNote("");
     setBuyerOrdersOpen(false);
-    await beginCashAppPayment(buyerOrder);
+    openSokoProductConversation();
   };
 
   /*
@@ -2290,10 +2044,17 @@ Ukikubali, malipo yatafunguliwa.`
   const deliveryDays=deliveryRates.map(item=>Number(item?.estimatedDays)).filter(value=>Number.isFinite(value)&&value>0);
   const fastestDeliveryDays=deliveryDays.length?Math.min(...deliveryDays):null;
 
-  return <View style={height?{height}:undefined}><View style={[styles.card,{width:cardWidth}]}>
-    <Pressable style={styles.media} onPress={()=>setSelected(true)}><Image source={{uri:product.image}} style={[styles.cover,{height:imageHeight}]} resizeMode="cover"/><View style={styles.badge}><Text style={styles.badgeText}>{product.condition.toUpperCase()}</Text></View></Pressable>
+  return <View style={height?{height}:undefined}>
+    <SokoBuyerSellerChat
+      visible={sokoChatOpen}
+      productId={realId}
+      sellerName={product.seller.name}
+      productTitle={product.title}
+      onClose={()=>setSokoChatOpen(false)}
+    /><View style={[styles.card,{width:cardWidth}]}>
+    <Pressable style={styles.media} onPress={()=>setSelected(true)}><SokoProductPhoto uri={product.image} style={[styles.cover,{height:imageHeight}]}/><View style={styles.badge}><Text style={styles.badgeText}>{product.condition.toUpperCase()}</Text></View></Pressable>
     <Pressable style={styles.identity} onPress={()=>setSelected(true)}><View style={styles.avatar}>{sellerAvatarUri&&!avatarFailed?<Image source={{uri:absolute(sellerAvatarUri)}} style={styles.avatarImage} onError={()=>setAvatarFailed(true)}/>:<Text style={styles.avatarText}>{initial}</Text>}</View><View style={styles.body}><View style={styles.sellerLine}><Text numberOfLines={1} style={styles.seller}>{product.seller.name}</Text><Ionicons name="checkmark-circle" size={15} color="#18724B"/></View><Text numberOfLines={2} style={styles.title}>{product.title}</Text><View style={styles.meta}><Text style={styles.price}>{money(product)}</Text><Text style={styles.dot}>•</Text><Text numberOfLines={1} style={styles.location}>{product.location}</Text></View></View></Pressable>
-    {(paymentMethods.length>0||stripeCardAvailable)&&<View style={styles.payments}><Text style={styles.paymentsLabel}>PAY WITH</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paymentList}>{stripeCardAvailable?<Pressable key="stripe_card" disabled={paymentBusy} onPress={()=>openSecureCheckout("stripe_card")} style={[styles.paymentChip,styles.cashAppChip,paymentBusy&&styles.disabledChip]}><View style={[styles.paymentIcon,styles.cashAppIcon]}><Ionicons name="card-outline" size={14} color="#FFF"/></View><Text style={[styles.paymentText,styles.cashAppText]}>{paymentBusy?"Opening…":"Card"}</Text></Pressable>:null}{paymentMethods.map(method=>{const cashApp=method==="cash_app";const mobile=method==="mobile_money";return <Pressable key={method} disabled={!cashApp||paymentBusy} onPress={()=>openSecureCheckout("cash_app")} style={[styles.paymentChip,cashApp&&styles.cashAppChip,paymentBusy&&cashApp&&styles.disabledChip]}><View style={[styles.paymentIcon,cashApp&&styles.cashAppIcon]}><Ionicons name={cashApp?"logo-usd":mobile?"phone-portrait-outline":"cash-outline"} size={14} color={cashApp?"#FFF":"#176844"}/></View><Text style={[styles.paymentText,cashApp&&styles.cashAppText]}>{cashApp?(paymentBusy?"Opening…":"Cash App"):mobile?(product.paymentOptions?.mobileNetwork||"Mobile Money"):"Cash"}</Text></Pressable>;})}</ScrollView></View>}
+    {(paymentMethods.length>0||stripeCardAvailable)&&<View style={styles.payments}><Text style={styles.paymentsLabel}>PAY WITH</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paymentList}>{stripeCardAvailable?<Pressable key="stripe_card" disabled={paymentBusy} onPress={()=>openSecureCheckout("stripe_card")} style={[styles.paymentChip,styles.cashAppChip,paymentBusy&&styles.disabledChip]}><View style={[styles.paymentIcon,styles.cashAppIcon]}><Ionicons name="card-outline" size={14} color="#FFF"/></View><Text style={[styles.paymentText,styles.cashAppText]}>{paymentBusy?"Opening…":"Card"}</Text></Pressable>:null}{paymentMethods.map(method=>{const cashApp=method==="cash_app";const mobile=method==="mobile_money";return <Pressable key={method} disabled={!cashApp||paymentBusy} onPress={()=>cashApp?void openSokoProductConversation():undefined} style={[styles.paymentChip,cashApp&&styles.cashAppChip,paymentBusy&&cashApp&&styles.disabledChip]}><View style={[styles.paymentIcon,cashApp&&styles.cashAppIcon]}><Ionicons name={cashApp?"logo-usd":mobile?"phone-portrait-outline":"cash-outline"} size={14} color={cashApp?"#FFF":"#176844"}/></View><Text style={[styles.paymentText,cashApp&&styles.cashAppText]}>{cashApp?(paymentBusy?"Opening…":"Cash App"):mobile?(product.paymentOptions?.mobileNetwork||"Mobile Money"):"Cash"}</Text></Pressable>;})}</ScrollView></View>}
     <View style={styles.commerceActions}><Pressable style={styles.contactButton} onPress={()=>void contactSeller()} disabled={contacting}><Ionicons name="chatbubble-ellipses" size={20} color="#FFF"/><Text style={styles.contactText}>{contacting?"Opening…":"Contact Seller"}</Text></Pressable><Action icon="share-outline" label="Share" onPress={()=>void share()}/><Action icon={saved?"bookmark":"bookmark-outline"} label={saved?"Saved":"Save"} active={saved} onPress={()=>void toggleSaved()}/><Action icon="information-circle-outline" label="Details" onPress={()=>setSelected(true)}/></View>
   </View><Modal visible={selected} animationType="slide" onRequestClose={()=>setSelected(false)}>
     <View style={styles.pdRoot}>
@@ -2324,8 +2085,8 @@ Ukikubali, malipo yatafunguliwa.`
               setGalleryPage(Math.max(0,Math.round(x/Math.max(1,width))));
             }}
           >
-            {galleryUris.map(uri=>
-              <Image key={uri} source={{uri}} style={[styles.pdHero,{width,height:detailHeroHeight}]} resizeMode="cover"/>
+            {(galleryUris.length?galleryUris:[""]).map((uri,index)=>
+              <SokoProductPhoto key={uri||"missing-"+index} uri={uri} style={[styles.pdHero,{width,height:detailHeroHeight}]}/>
             )}
           </ScrollView>
           {galleryUris.length>1?
@@ -2444,7 +2205,7 @@ Ukikubali, malipo yatafunguliwa.`
           <Pressable
             style={[styles.pdBuyBtn,(paymentBusy||soldOut)&&styles.submitDisabled,soldOut&&styles.pdBuyBtnSold]}
             disabled={paymentBusy||soldOut}
-            onPress={()=>openSecureCheckout(buyWithCard?"stripe_card":"cash_app")}
+            onPress={()=>buyWithCard?openSecureCheckout("stripe_card"):openSokoProductConversation()}
             accessibilityRole="button"
             accessibilityLabel={soldOut?"Sold Out":buyWithCard?"Buy with Card":"Buy with Cash App"}
           >
@@ -2524,8 +2285,8 @@ Ukikubali, malipo yatafunguliwa.`
                   </View>
                 : storeProducts.map(item=>
                     <View key={item.id} style={styles.storeProductCard}>
-                      <Image
-                        source={{uri:absolute(item.image)}}
+                      <SokoProductPhoto
+                        uri={absolute(item.image)}
                         style={styles.storeProductImage}
                       />
                       <View style={styles.storeProductBody}>
@@ -2792,11 +2553,11 @@ Ukikubali, malipo yatafunguliwa.`
                         gap:11
                       }}
                     >
-                      <Image
-                        source={{uri:String(
+                      <SokoProductPhoto
+                        uri={String(
                           snapshot.image||
                           product.image
-                        )}}
+                        )}
                         style={{
                           width:72,
                           height:72,
@@ -3062,7 +2823,7 @@ Ukikubali, malipo yatafunguliwa.`
                             fontWeight:"900"
                           }}
                         >
-                          Continue to Cash App
+                          Contact seller to pay with Cash App
                         </Text>
                       </Pressable>}
                   </View>;
@@ -3364,18 +3125,8 @@ Ukikubali, malipo yatafunguliwa.`
           <Pressable
             accessibilityRole="button"
             onPress={()=>{
-              const url=String(
-                cashConfirmation?.url||""
-              );
               setCashConfirmation(null);
-              setPaymentOpen(true);
-
-              void Linking.openURL(url).catch(()=>{
-                Alert.alert(
-                  "Unable to open Cash App",
-                  "Open Cash App manually and verify the recipient before paying."
-                );
-              });
+              openSokoProductConversation();
             }}
             style={{
               marginTop:19,
@@ -3405,7 +3156,7 @@ Ukikubali, malipo yatafunguliwa.`
                 fontWeight:"900"
               }}
             >
-              Continue to Cash App
+              Contact seller to pay with Cash App
             </Text>
             <Ionicons
               name="arrow-forward"
@@ -3475,7 +3226,7 @@ Ukikubali, malipo yatafunguliwa.`
         contentContainerStyle={[styles.checkoutContent,{paddingBottom:Math.max(24,insets.bottom+16)}]}
       >
         <View style={styles.checkoutProduct}>
-          <Image source={{uri:product.image}} style={styles.checkoutImage}/>
+          <SokoProductPhoto uri={product.image} style={styles.checkoutImage}/>
           <View style={styles.checkoutProductBody}>
             <Text numberOfLines={2} style={styles.checkoutProductTitle}>
               {product.title}
@@ -3848,7 +3599,7 @@ Ukikubali, malipo yatafunguliwa.`
               </View>
               <View style={styles.deliveryRateBody}>
                 <Text style={styles.deliveryRateTitle}>Cash App</Text>
-                <Text style={styles.deliveryRateCopy}>Opens only when Cash App Partner checkout is ready</Text>
+                <Text style={styles.deliveryRateCopy}>Contact seller to pay with Cash App</Text>
               </View>
               <Ionicons
                 name={checkoutPaymentMethod==="cash_app"?"checkmark-circle":"ellipse-outline"}
@@ -3921,7 +3672,7 @@ Ukikubali, malipo yatafunguliwa.`
                         :selectedDelivery
                           ?checkoutPaymentMethod==="stripe_card"
                             ?"Pay securely by card"
-                            :"Continue to Cash App"
+                            :"Contact seller to pay with Cash App"
                           :deliveryRates.length>0
                             ?"Choose a delivery option"
                             :"Calculate Delivery"}
@@ -3940,7 +3691,7 @@ Ukikubali, malipo yatafunguliwa.`
         :null}
       </ScrollView>
     </View>
-  </Modal><Modal visible={paymentOpen} transparent animationType="slide" onRequestClose={()=>setPaymentOpen(false)}><View style={styles.paymentBackdrop}><SafeAreaView style={styles.paymentSheet}><View style={styles.sheetHandle}/><View style={styles.sheetHeader}><View><Text style={styles.sheetEyebrow}>SOKO SECURE ORDER</Text><Text style={styles.sheetTitle}>{paymentSent?"Payment submitted":"Confirm your payment"}</Text></View><Pressable style={styles.sheetClose} onPress={()=>setPaymentOpen(false)}><Ionicons name="close" size={22} color="#405047"/></Pressable></View>{paymentSent?<View style={styles.successCard}><View style={styles.successIcon}><Ionicons name="checkmark" size={28} color="#FFF"/></View><Text style={styles.successTitle}>Proof received</Text><Text style={styles.successCopy}>Seller atathibitisha fedha. Usafirishaji hautaanza mpaka malipo yaidhinishwe.</Text><View style={styles.statusPill}><View style={styles.statusDot}/><Text style={styles.statusText}>PAYMENT SUBMITTED</Text></View><Pressable style={styles.doneButton} onPress={()=>setPaymentOpen(false)}><Text style={styles.doneText}>Done</Text></Pressable></View>:<ScrollView contentContainerStyle={styles.paymentForm} keyboardShouldPersistTaps="handled"><View style={styles.orderSummary}><Image source={{uri:product.image}} style={styles.orderImage}/><View style={styles.orderBody}><Text numberOfLines={1} style={styles.orderTitle}>{product.title}</Text><Text style={styles.orderPrice}>{paymentAmountLabel()}</Text>{!!paymentDeliveryLabel()&&<Text style={{color:"#68756D",fontSize:10,fontWeight:"800",marginTop:2}}>{paymentDeliveryLabel()}</Text>}<Text numberOfLines={1} style={styles.orderSeller}>To: {product.seller.name}</Text><Text style={styles.orderTag}>${product.paymentOptions?.cashTag}</Text></View></View><View style={styles.stepCard}><View style={styles.stepNumber}><Text style={styles.stepNumberText}>1</Text></View><View style={styles.stepBody}><Text style={styles.stepTitle}>Complete payment in Cash App</Text><Text style={styles.stepCopy}>Tuma kiasi kamili kinachoonyeshwa juu. Kiasi hicho kinajumuisha bidhaa na delivery iliyokubaliwa.</Text><Pressable style={styles.reopenCash} onPress={()=>void beginCashAppPayment()} disabled={paymentBusy}><Ionicons name="logo-usd" size={18} color="#FFF"/><Text style={styles.reopenCashText}>Open Cash App again</Text></Pressable></View></View><View style={styles.stepCard}>
+  </Modal><Modal visible={paymentOpen} transparent animationType="slide" onRequestClose={()=>setPaymentOpen(false)}><View style={styles.paymentBackdrop}><SafeAreaView style={styles.paymentSheet}><View style={styles.sheetHandle}/><View style={styles.sheetHeader}><View><Text style={styles.sheetEyebrow}>SOKO SECURE ORDER</Text><Text style={styles.sheetTitle}>{paymentSent?"Payment submitted":"Confirm your payment"}</Text></View><Pressable style={styles.sheetClose} onPress={()=>setPaymentOpen(false)}><Ionicons name="close" size={22} color="#405047"/></Pressable></View>{paymentSent?<View style={styles.successCard}><View style={styles.successIcon}><Ionicons name="checkmark" size={28} color="#FFF"/></View><Text style={styles.successTitle}>Proof received</Text><Text style={styles.successCopy}>Seller atathibitisha fedha. Usafirishaji hautaanza mpaka malipo yaidhinishwe.</Text><View style={styles.statusPill}><View style={styles.statusDot}/><Text style={styles.statusText}>PAYMENT SUBMITTED</Text></View><Pressable style={styles.doneButton} onPress={()=>setPaymentOpen(false)}><Text style={styles.doneText}>Done</Text></Pressable></View>:<ScrollView contentContainerStyle={styles.paymentForm} keyboardShouldPersistTaps="handled"><View style={styles.orderSummary}><SokoProductPhoto uri={product.image} style={styles.orderImage}/><View style={styles.orderBody}><Text numberOfLines={1} style={styles.orderTitle}>{product.title}</Text><Text style={styles.orderPrice}>{paymentAmountLabel()}</Text>{!!paymentDeliveryLabel()&&<Text style={{color:"#68756D",fontSize:10,fontWeight:"800",marginTop:2}}>{paymentDeliveryLabel()}</Text>}<Text numberOfLines={1} style={styles.orderSeller}>To: {product.seller.name}</Text><Text style={styles.orderTag}>${product.paymentOptions?.cashTag}</Text></View></View><View style={styles.stepCard}><View style={styles.stepNumber}><Text style={styles.stepNumberText}>1</Text></View><View style={styles.stepBody}><Text style={styles.stepTitle}>Complete payment in Cash App</Text><Text style={styles.stepCopy}>Tuma kiasi kamili kinachoonyeshwa juu. Kiasi hicho kinajumuisha bidhaa na delivery iliyokubaliwa.</Text><Pressable style={styles.reopenCash} onPress={()=>void beginCashAppPayment()} disabled={paymentBusy}><Ionicons name="logo-usd" size={18} color="#FFF"/><Text style={styles.reopenCashText}>Open Cash App again</Text></Pressable></View></View><View style={styles.stepCard}>
   <View style={styles.stepNumber}>
     <Text style={styles.stepNumberText}>2</Text>
   </View>
@@ -4113,4 +3864,4 @@ Ukikubali, malipo yatafunguliwa.`
 <View style={styles.fieldGroup}><Text style={styles.fieldLabel}>Transaction reference</Text><TextInput value={reference} onChangeText={setReference} placeholder="Example: Cash App confirmation number" placeholderTextColor="#929A95" style={styles.field} maxLength={120}/></View><View style={styles.fieldGroup}><Text style={styles.fieldLabel}>Message to seller (optional)</Text><TextInput value={buyerNote} onChangeText={setBuyerNote} placeholder="Example: I have completed the payment." placeholderTextColor="#929A95" style={[styles.field,styles.noteField]} multiline maxLength={500}/></View><View style={styles.dateRow}><Ionicons name="calendar-outline" size={18} color="#176844"/><Text style={styles.dateText}>Payment date: {new Date().toLocaleDateString()}</Text></View><Text style={styles.proofWarning}>Screenshot pekee si uthibitisho wa mwisho. Seller lazima ahakikishe fedha zimeingia kwenye account yake.</Text><Pressable style={[styles.submitProof,(proofImages.length===0||reference.trim().length<3||paymentBusy)&&styles.submitDisabled]} onPress={()=>void submitPaymentProof()} disabled={proofImages.length===0||reference.trim().length<3||paymentBusy}>{paymentBusy?<ActivityIndicator color="#FFF"/>:<Ionicons name="shield-checkmark" size={20} color="#FFF"/>}<Text style={styles.submitProofText}>{paymentBusy?"Submitting…":"Submit payment proof"}</Text></Pressable></ScrollView>}</SafeAreaView></View></Modal></View>;
 }
 function Action({icon,label,onPress,active=false}:{icon:keyof typeof Ionicons.glyphMap;label:string;onPress:()=>void;active?:boolean}){return <Pressable style={styles.action} onPress={onPress}><Ionicons name={icon} size={25} color={active?"#18724B":"#667169"}/><Text style={[styles.actionText,active&&styles.active]}>{label}</Text></Pressable>;}
-const styles=StyleSheet.create({card:{alignSelf:"center",marginTop:-14,marginBottom:8,backgroundColor:"#FFF",borderColor:"#D9E7DF",borderWidth:2,borderRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.18,shadowRadius:12,shadowOffset:{width:0,height:5},elevation:5},media:{position:"relative",overflow:"hidden",backgroundColor:"#EDF2EE"},cover:{width:"100%"},badge:{position:"absolute",top:14,left:14,backgroundColor:"rgba(255,255,255,0.95)",borderRadius:99,paddingHorizontal:15,paddingVertical:8},badgeText:{color:"#145D3E",fontSize:13,fontWeight:"900",letterSpacing:.8},identity:{flexDirection:"row",alignItems:"center",paddingHorizontal:15,paddingVertical:10,minHeight:98},avatar:{width:40,height:40,borderRadius:20,backgroundColor:"#145D3E",borderWidth:2,borderColor:"#DDF25B",alignItems:"center",justifyContent:"center",marginRight:11,overflow:"hidden"},avatarImage:{width:"100%",height:"100%"},avatarText:{color:"#DDF25B",fontSize:16,fontWeight:"700"},body:{flex:1,minWidth:0},sellerLine:{flexDirection:"row",alignItems:"center",gap:4},seller:{color:"#18724B",fontSize:14,fontWeight:"600",maxWidth:"88%"},title:{color:"#111511",fontSize:16,fontWeight:"600",lineHeight:20,marginTop:2},meta:{flexDirection:"row",alignItems:"center",marginTop:2},price:{color:"#18724B",fontSize:16,fontWeight:"700"},dot:{color:"#768078",marginHorizontal:7},location:{color:"#68726B",fontSize:13,fontWeight:"400",flex:1},payments:{minHeight:57,paddingHorizontal:14,paddingVertical:8,borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#E1E8E3",flexDirection:"row",alignItems:"center",gap:10},paymentsLabel:{color:"#667169",fontSize:10,fontWeight:"900",letterSpacing:1.1},paymentList:{alignItems:"center",gap:7,paddingRight:14},paymentChip:{height:39,minWidth:126,borderRadius:13,paddingHorizontal:11,backgroundColor:"#EDF5F0",borderWidth:1.5,borderColor:"#CCE0D4",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7},cashAppChip:{backgroundColor:"#00C748",borderColor:"#00B942",shadowColor:"#00B942",shadowOpacity:.24,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:3},paymentIcon:{width:26,height:26,borderRadius:9,backgroundColor:"#D8EBDF",alignItems:"center",justifyContent:"center"},cashAppIcon:{backgroundColor:"rgba(255,255,255,.20)",borderWidth:1,borderColor:"rgba(255,255,255,.35)"},paymentText:{color:"#176844",fontSize:14,fontWeight:"900"},cashAppText:{color:"#FFF",fontSize:13,fontWeight:"900"},disabledChip:{opacity:.6},checkoutScreen:{flex:1,backgroundColor:"#F7F6F2"},checkoutHeader:{paddingHorizontal:8,paddingBottom:12,backgroundColor:"#145D3E",flexDirection:"row",alignItems:"center",overflow:"hidden"},checkoutScroll:{flex:1},checkoutBack:{width:44,height:44,borderRadius:22,backgroundColor:"rgba(255,255,255,.16)",borderWidth:1,borderColor:"rgba(255,255,255,.28)",alignItems:"center",justifyContent:"center"},checkoutHeaderBody:{flex:1,alignItems:"center",paddingHorizontal:8,minWidth:0},checkoutEyebrow:{color:"#DDF25B",fontSize:10,fontWeight:"600",letterSpacing:1.2},checkoutTitle:{color:"#FFF",fontSize:27,fontWeight:"600",marginTop:2},checkoutHeaderCopy:{color:"rgba(255,255,255,.78)",fontSize:13,fontWeight:"400",marginTop:2,textAlign:"center"},checkoutHeaderSpacer:{width:44,height:44},checkoutContent:{paddingHorizontal:16,paddingTop:16,paddingBottom:24,gap:16},checkoutProduct:{minHeight:92,borderRadius:18,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D9E4DC",padding:10,flexDirection:"row",alignItems:"center"},checkoutImage:{width:70,height:70,borderRadius:13,backgroundColor:"#E8EEE9"},checkoutProductBody:{flex:1,minWidth:0,paddingHorizontal:11},checkoutProductTitle:{color:"#172019",fontSize:15,fontWeight:"900"},checkoutPrice:{color:"#17784D",fontSize:17,fontWeight:"900",marginTop:3},checkoutSeller:{color:"#748078",fontSize:10,fontWeight:"700",marginTop:3},checkoutSecureBadge:{width:36,height:36,borderRadius:18,backgroundColor:"#E8F5ED",alignItems:"center",justifyContent:"center"},checkoutNotice:{borderRadius:15,backgroundColor:"#EAF5EE",padding:12,flexDirection:"row",alignItems:"center",gap:9},checkoutNoticeText:{flex:1,color:"#4A6055",fontSize:11,lineHeight:17,fontWeight:"700"},checkoutSection:{borderRadius:19,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D9E5DD",padding:14,gap:12},checkoutSectionTitleRow:{flexDirection:"row",alignItems:"center",gap:9},checkoutStep:{width:28,height:28,borderRadius:14,backgroundColor:"#176844",alignItems:"center",justifyContent:"center"},checkoutStepText:{color:"#FFF",fontSize:12,fontWeight:"900"},checkoutSectionTitle:{color:"#253129",fontSize:16,fontWeight:"900"},checkoutFieldGroup:{gap:6},checkoutLabel:{color:"#435148",fontSize:11,fontWeight:"900"},checkoutField:{minHeight:48,borderRadius:13,borderWidth:1,borderColor:"#CBDACF",backgroundColor:"#FBFCFB",paddingHorizontal:12,color:"#18231C",fontSize:13},checkoutInstructions:{minHeight:82,paddingTop:12,textAlignVertical:"top"},checkoutRow:{flexDirection:"row",gap:9},checkoutHalf:{flex:1,gap:6},checkoutPrivacy:{minHeight:46,borderRadius:13,backgroundColor:"#EDF3EF",paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:8},checkoutPrivacyText:{flex:1,color:"#627068",fontSize:10,fontWeight:"700"},deliveryRate:{minHeight:82,borderRadius:14,borderWidth:1,borderColor:"#D5E1D9",backgroundColor:"#FFF",paddingHorizontal:12,paddingVertical:12,flexDirection:"row",alignItems:"center",gap:10},deliveryRateActive:{borderColor:"#188052",backgroundColor:"#ECF8F0"},deliveryRateIcon:{width:32,height:32,borderRadius:10,backgroundColor:"#E3F1E8",alignItems:"center",justifyContent:"center"},deliveryRateBody:{flex:1,minWidth:0},deliveryRateTitle:{color:"#26342B",fontSize:14,fontWeight:"600",lineHeight:18},deliveryRateCopy:{color:"#6B746E",fontSize:12,fontWeight:"400",marginTop:4,lineHeight:16},deliveryRateMeta:{alignItems:"flex-end",flexShrink:0,gap:6,marginLeft:8},deliveryRatePrice:{color:"#176844",fontSize:14,fontWeight:"700"},deliveryBadgeRow:{flexDirection:"row",flexWrap:"wrap",gap:6,marginTop:4},deliveryBadgeCheap:{color:"#176844",fontSize:9,fontWeight:"700",letterSpacing:0.4,backgroundColor:"#E8F7EE",overflow:"hidden",borderRadius:6,paddingHorizontal:6,paddingVertical:2},deliveryBadgeFast:{color:"#805C00",fontSize:9,fontWeight:"700",letterSpacing:0.4,backgroundColor:"#FFF5D9",overflow:"hidden",borderRadius:6,paddingHorizontal:6,paddingVertical:2},deliveryCount:{color:"#6B746E",fontSize:12,fontWeight:"500",marginLeft:"auto"},deliveryQuoteCard:{minHeight:76,borderRadius:16,backgroundColor:"#FFF7DF",borderWidth:1,borderColor:"#EACF7A",padding:13,flexDirection:"row",alignItems:"center",gap:10},deliveryQuoteTitle:{color:"#745200",fontSize:14,fontWeight:"900"},deliveryQuoteCopy:{color:"#806D3E",fontSize:10,lineHeight:15,fontWeight:"700",marginTop:3},checkoutTotalsCard:{borderRadius:16,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D8E4DC",padding:16,gap:10,width:"100%"},checkoutSummaryTitle:{color:"#161C18",fontSize:16,fontWeight:"600"},checkoutAmountRow:{flexDirection:"row",alignItems:"center",width:"100%",gap:12},checkoutAmountLabel:{flex:1,flexShrink:1,minWidth:0,color:"#68756D",fontSize:13,fontWeight:"500"},checkoutAmountValue:{flexShrink:0,color:"#2E3C33",fontSize:13,fontWeight:"600"},checkoutAmountDivider:{height:1,backgroundColor:"#E1E8E3"},quoteButton:{backgroundColor:"#9A7100",shadowColor:"#795900"},checkoutTotal:{minHeight:67,borderRadius:16,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D8E4DC",paddingHorizontal:14,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},checkoutTotalLabel:{flex:1,flexShrink:1,color:"#161C18",fontSize:15,fontWeight:"600"},checkoutTotalCopy:{color:"#8B948E",fontSize:9,fontWeight:"700",marginTop:3},checkoutTotalPrice:{flexShrink:0,color:"#176F49",fontSize:22,fontWeight:"700"},continuePayment:{height:56,minHeight:56,borderRadius:16,backgroundColor:"#00C748",paddingHorizontal:16,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:10},continueCashIcon:{width:34,height:34,borderRadius:11,backgroundColor:"rgba(255,255,255,.2)",borderWidth:1,borderColor:"rgba(255,255,255,.35)",alignItems:"center",justifyContent:"center"},continuePaymentText:{color:"#FFF",fontSize:16,fontWeight:"600"},continuePaymentSub:{color:"rgba(255,255,255,.84)",fontSize:8,fontWeight:"700",marginTop:2},paymentBackdrop:{flex:1,backgroundColor:"rgba(0,0,0,.52)",justifyContent:"flex-end"},paymentSheet:{maxHeight:"92%",backgroundColor:"#F6F9F6",borderTopLeftRadius:28,borderTopRightRadius:28,overflow:"hidden"},sheetHandle:{width:44,height:5,borderRadius:5,backgroundColor:"#C5CEC8",alignSelf:"center",marginTop:9},sheetHeader:{paddingHorizontal:18,paddingTop:12,paddingBottom:13,borderBottomWidth:StyleSheet.hairlineWidth,borderBottomColor:"#D3DED6",flexDirection:"row",alignItems:"center",justifyContent:"space-between"},sheetEyebrow:{color:"#17804F",fontSize:9,fontWeight:"900",letterSpacing:1.2},sheetTitle:{color:"#122019",fontSize:22,fontWeight:"900",marginTop:2},sheetClose:{width:38,height:38,borderRadius:19,backgroundColor:"#E4EBE6",alignItems:"center",justifyContent:"center"},paymentForm:{padding:16,paddingBottom:35,gap:13},orderSummary:{backgroundColor:"#FFF",borderRadius:18,padding:11,flexDirection:"row",borderWidth:1,borderColor:"#D8E4DC"},orderImage:{width:76,height:76,borderRadius:13,backgroundColor:"#E9EFEB"},orderBody:{flex:1,minWidth:0,justifyContent:"center",paddingLeft:11},orderTitle:{color:"#18221C",fontSize:16,fontWeight:"900"},orderPrice:{color:"#16784C",fontSize:18,fontWeight:"900",marginTop:2},orderSeller:{color:"#657068",fontSize:12,fontWeight:"700"},orderTag:{color:"#00A83D",fontSize:13,fontWeight:"900",marginTop:2},stepCard:{backgroundColor:"#FFF",borderRadius:17,padding:13,flexDirection:"row",gap:11,borderWidth:1,borderColor:"#DCE6DF"},stepNumber:{width:28,height:28,borderRadius:14,backgroundColor:"#176844",alignItems:"center",justifyContent:"center"},stepNumberText:{color:"#FFF",fontWeight:"900"},stepBody:{flex:1,gap:6},stepTitle:{color:"#1A271F",fontSize:15,fontWeight:"900"},stepCopy:{color:"#68736C",fontSize:12,lineHeight:17},reopenCash:{height:39,borderRadius:12,backgroundColor:"#00C748",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,marginTop:3},reopenCashText:{color:"#FFF",fontSize:13,fontWeight:"900"},proofPicker:{minHeight:112,borderRadius:14,borderWidth:1.5,borderStyle:"dashed",borderColor:"#8DC5A5",backgroundColor:"#F3FBF6",alignItems:"center",justifyContent:"center",padding:10},proofPickerReady:{padding:3,borderStyle:"solid"},proofPreview:{width:"100%",height:150,borderRadius:11,resizeMode:"contain",backgroundColor:"#EDF1EE"},proofPickerTitle:{color:"#176844",fontWeight:"900",marginTop:4},proofPickerCopy:{color:"#7B857F",fontSize:10,marginTop:2},changeProof:{color:"#16794C",fontSize:12,fontWeight:"900",textAlign:"center"},fieldGroup:{gap:6},fieldLabel:{color:"#334139",fontSize:12,fontWeight:"900"},field:{minHeight:47,borderWidth:1,borderColor:"#CFDCD3",backgroundColor:"#FFF",borderRadius:13,paddingHorizontal:13,color:"#17221B",fontSize:14},noteField:{minHeight:82,paddingTop:12,textAlignVertical:"top"},dateRow:{height:42,borderRadius:12,backgroundColor:"#EAF4ED",paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},dateText:{color:"#376047",fontSize:12,fontWeight:"800"},proofWarning:{color:"#7B6641",fontSize:11,lineHeight:16,backgroundColor:"#FFF7E8",padding:11,borderRadius:11},submitProof:{height:52,borderRadius:15,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8},submitDisabled:{opacity:.5},submitProofText:{color:"#FFF",fontSize:15,fontWeight:"900"},successCard:{margin:18,backgroundColor:"#FFF",borderRadius:22,padding:22,alignItems:"center",gap:10},successIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#198754",alignItems:"center",justifyContent:"center"},successTitle:{color:"#163122",fontSize:23,fontWeight:"900"},successCopy:{color:"#66736B",fontSize:14,lineHeight:21,textAlign:"center"},statusPill:{height:34,borderRadius:17,backgroundColor:"#FFF5D8",paddingHorizontal:13,flexDirection:"row",alignItems:"center",gap:7},statusDot:{width:8,height:8,borderRadius:4,backgroundColor:"#E2A916"},statusText:{color:"#80610C",fontSize:10,fontWeight:"900",letterSpacing:.8},doneButton:{height:48,alignSelf:"stretch",borderRadius:14,backgroundColor:"#176844",alignItems:"center",justifyContent:"center",marginTop:4},doneText:{color:"#FFF",fontSize:15,fontWeight:"900"},commerceActions:{height:62,paddingHorizontal:10,borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#D8E0DA",flexDirection:"row",alignItems:"center",justifyContent:"space-between"},contactButton:{height:42,minWidth:138,paddingHorizontal:14,borderRadius:14,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,shadowColor:"#176844",shadowOpacity:.24,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:3},contactText:{color:"#FFF",fontSize:13,fontWeight:"900"},action:{minWidth:58,alignItems:"center",gap:1,paddingVertical:4},actionText:{color:"#667169",fontSize:11,fontWeight:"700"},active:{color:"#18724B"},modal:{flex:1,backgroundColor:"#F7F9F5"},detailHeader:{minHeight:104,paddingHorizontal:16,paddingBottom:13,backgroundColor:"#145D3E",borderBottomLeftRadius:24,borderBottomRightRadius:24,flexDirection:"row",alignItems:"flex-end",shadowColor:"#061A11",shadowOpacity:.2,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:5},backButton:{width:44,height:44,borderRadius:22,backgroundColor:"rgba(255,255,255,.16)",borderWidth:1,borderColor:"rgba(255,255,255,.28)",alignItems:"center",justifyContent:"center"},headerTitles:{flex:1,alignItems:"center",justifyContent:"center",paddingBottom:2},headerEyebrow:{color:"#DDF25B",fontSize:9,fontWeight:"900",letterSpacing:2},headerTitle:{color:"#FFFFFF",fontSize:18,fontWeight:"900",marginTop:2},headerSpacer:{width:44,height:44},detail:{padding:16,gap:14},detailImage:{height:330,marginRight:8,borderRadius:20,backgroundColor:"#E8EEE9"},detailTitle:{color:"#111511",fontSize:26,fontWeight:"900"},detailPrice:{color:"#18724B",fontSize:21,fontWeight:"900"},detailCopy:{color:"#4D5851",fontSize:16},sellerProfileCard:{backgroundColor:"#FFF",borderRadius:20,borderWidth:1.5,borderColor:"#D5E5DA",overflow:"hidden",shadowColor:"#173E2A",shadowOpacity:.1,shadowRadius:9,shadowOffset:{width:0,height:4},elevation:3},sellerCardTop:{padding:15,flexDirection:"row",alignItems:"center"},sellerLargeAvatar:{width:66,height:66,borderRadius:33,backgroundColor:"#145D3E",borderWidth:3,borderColor:"#DDF25B",alignItems:"center",justifyContent:"center",position:"relative",overflow:"visible"},sellerAvatarImage:{width:"100%",height:"100%",borderRadius:30},sellerLargeInitial:{color:"#DDF25B",fontSize:28,fontWeight:"900"},sellerVerifiedBadge:{position:"absolute",right:-2,bottom:-1,width:22,height:22,borderRadius:11,backgroundColor:"#187A50",borderWidth:2,borderColor:"#FFF",alignItems:"center",justifyContent:"center"},sellerCardIdentity:{flex:1,minWidth:0,paddingLeft:13},sellerCardEyebrow:{color:"#768078",fontSize:9,fontWeight:"900",letterSpacing:1.1},sellerShopName:{color:"#125C3D",fontSize:20,fontWeight:"900",marginTop:2},sellerNameLine:{flexDirection:"row",alignItems:"center",gap:5,marginTop:3},sellerCardName:{color:"#253129",fontSize:14,fontWeight:"800",maxWidth:"88%"},sellerKristoId:{color:"#748078",fontSize:11,fontWeight:"700",marginTop:2},sellerFacts:{borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#DDE6E0",paddingHorizontal:14,paddingVertical:5},sellerFactRow:{minHeight:52,flexDirection:"row",alignItems:"center",borderBottomWidth:StyleSheet.hairlineWidth,borderBottomColor:"#E3E9E5"},sellerFactIcon:{width:34,height:34,borderRadius:11,backgroundColor:"#EAF5EE",alignItems:"center",justifyContent:"center"},churchFactIcon:{backgroundColor:"#FFF6D8"},sellerFactBody:{flex:1,minWidth:0,paddingHorizontal:10},sellerFactLabel:{color:"#879088",fontSize:8,fontWeight:"900",letterSpacing:.9},sellerFactValue:{color:"#354139",fontSize:13,fontWeight:"800",marginTop:2},sellerCardButtons:{padding:12,flexDirection:"row",gap:9},viewSellerButton:{flex:1,height:43,borderRadius:13,borderWidth:1.5,borderColor:"#BBD6C5",backgroundColor:"#F3FAF5",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:6},viewSellerText:{color:"#176844",fontSize:12,fontWeight:"900"},viewChurchButton:{flex:1,height:43,borderRadius:13,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:6},viewChurchText:{color:"#FFF",fontSize:12,fontWeight:"900"},sellerButtonDisabled:{opacity:.42},detailCommerceButtons:{flexDirection:"row",gap:10},buyNowButton:{flex:1,minHeight:58,borderRadius:16,backgroundColor:"#00C748",paddingHorizontal:13,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:9,shadowColor:"#00A93B",shadowOpacity:.28,shadowRadius:7,shadowOffset:{width:0,height:4},elevation:4},buyCashIcon:{width:32,height:32,borderRadius:10,backgroundColor:"rgba(255,255,255,.2)",borderWidth:1,borderColor:"rgba(255,255,255,.35)",alignItems:"center",justifyContent:"center"},buyNowText:{color:"#FFF",fontSize:15,fontWeight:"900"},buyNowSub:{color:"rgba(255,255,255,.84)",fontSize:9,fontWeight:"800",marginTop:1},visitStoreButton:{flex:1,minHeight:58,borderRadius:16,backgroundColor:"#F2FAF5",borderWidth:1.5,borderColor:"#B8D8C4",paddingHorizontal:13,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:9},visitStoreWide:{flexBasis:"100%"},visitStoreText:{color:"#176844",fontSize:14,fontWeight:"900"},visitStoreSub:{color:"#748078",fontSize:9,fontWeight:"700",marginTop:1},storeButtonPressed:{opacity:.72,transform:[{scale:.98}]},storeScreen:{flex:1,backgroundColor:"#F4F7F4"},storeHeader:{minHeight:132,paddingHorizontal:16,paddingBottom:15,backgroundColor:"#145D3E",borderBottomLeftRadius:27,borderBottomRightRadius:27,flexDirection:"row",alignItems:"flex-end",shadowColor:"#071A11",shadowOpacity:.22,shadowRadius:11,shadowOffset:{width:0,height:5},elevation:6},storeBackButton:{width:44,height:44,borderRadius:22,backgroundColor:"rgba(255,255,255,.16)",borderWidth:1,borderColor:"rgba(255,255,255,.28)",alignItems:"center",justifyContent:"center"},storeHeaderTitles:{flex:1,minWidth:0,alignItems:"center",paddingHorizontal:8},storeHeaderEyebrow:{color:"#DDF25B",fontSize:8,fontWeight:"900",letterSpacing:1.6},storeHeaderTitle:{color:"#FFF",fontSize:20,fontWeight:"900",marginTop:2,maxWidth:"100%"},storeHeaderSeller:{color:"rgba(255,255,255,.72)",fontSize:10,fontWeight:"700",marginTop:2},storeHeaderSpacer:{width:44,height:44},storeCentered:{flex:1,alignItems:"center",justifyContent:"center",padding:28,gap:13},storeLoadingText:{color:"#66736B",fontSize:14,fontWeight:"800"},storeErrorText:{color:"#6F5530",fontSize:14,lineHeight:21,textAlign:"center"},storeRetryButton:{height:44,minWidth:130,borderRadius:13,backgroundColor:"#176844",alignItems:"center",justifyContent:"center"},storeRetryText:{color:"#FFF",fontSize:13,fontWeight:"900"},storeContent:{padding:15,paddingBottom:38,gap:11},storeSummary:{minHeight:72,borderRadius:18,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D9E5DD",paddingHorizontal:13,flexDirection:"row",alignItems:"center"},storeSummaryIcon:{width:42,height:42,borderRadius:13,backgroundColor:"#EAF5EE",alignItems:"center",justifyContent:"center"},storeSummaryBody:{flex:1,paddingHorizontal:11},storeSummaryTitle:{color:"#253129",fontSize:15,fontWeight:"900"},storeSummaryCopy:{color:"#768078",fontSize:11,fontWeight:"700",marginTop:2},activeStorePill:{height:27,borderRadius:14,backgroundColor:"#ECF8F0",paddingHorizontal:9,flexDirection:"row",alignItems:"center",gap:5},activeStoreDot:{width:7,height:7,borderRadius:4,backgroundColor:"#19A35B"},activeStoreText:{color:"#18724B",fontSize:8,fontWeight:"900",letterSpacing:.7},emptyStore:{marginTop:35,alignItems:"center",padding:25,gap:8},emptyStoreTitle:{color:"#354139",fontSize:19,fontWeight:"900"},emptyStoreCopy:{color:"#7A857E",fontSize:13,lineHeight:19,textAlign:"center"},storeProductCard:{minHeight:132,borderRadius:18,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D9E4DC",padding:9,flexDirection:"row",shadowColor:"#173A28",shadowOpacity:.08,shadowRadius:7,shadowOffset:{width:0,height:3},elevation:2},storeProductImage:{width:116,height:116,borderRadius:14,backgroundColor:"#E8EEE9"},storeProductBody:{flex:1,minWidth:0,paddingHorizontal:12,paddingVertical:3},storeProductStatus:{alignSelf:"flex-start",borderRadius:9,backgroundColor:"#EFF6F1",paddingHorizontal:7,paddingVertical:4},storeProductStatusText:{color:"#176844",fontSize:8,fontWeight:"900",letterSpacing:.6},storeProductTitle:{color:"#172019",fontSize:16,fontWeight:"900",lineHeight:20,marginTop:6},storeProductPrice:{color:"#187A50",fontSize:17,fontWeight:"900",marginTop:5},storeProductLocation:{flexDirection:"row",alignItems:"center",gap:3,marginTop:5},storeProductLocationText:{color:"#758078",fontSize:10,fontWeight:"700",flex:1},detailPayment:{backgroundColor:"#FFF",padding:15,borderRadius:14,borderWidth:1,borderColor:"#D7E5DB",gap:7},detailPaymentTitle:{color:"#145D3E",fontSize:16,fontWeight:"900"},detailPaymentLine:{color:"#39483E",fontSize:15,fontWeight:"700"},detailContactButton:{height:50,borderRadius:15,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8},description:{color:"#263129",fontSize:16,lineHeight:24,backgroundColor:"#FFF",padding:15,borderRadius:14},notice:{color:"#68726B",fontSize:13,lineHeight:19,backgroundColor:"#EAF1EC",padding:13,borderRadius:12},pdRoot:{flex:1,backgroundColor:"#F7F6F2"},pdHeader:{minHeight:48,paddingHorizontal:4,paddingBottom:8,backgroundColor:"#145D3E",flexDirection:"row",alignItems:"center"},pdHeaderBtn:{width:44,height:44,alignItems:"center",justifyContent:"center"},pdHeaderCenter:{flex:1,alignItems:"center",justifyContent:"center"},pdHeaderKicker:{color:"#DDF25B",fontSize:8,fontWeight:"700",letterSpacing:1.4,lineHeight:10},pdHeaderTitle:{color:"#FFF",fontSize:18,fontWeight:"600",marginTop:1},pdScroll:{backgroundColor:"#F7F6F2"},pdScrollFlex:{flex:1},pdGallery:{position:"relative",overflow:"hidden",backgroundColor:"#EEECE6"},pdHero:{backgroundColor:"#EEECE6"},pdDots:{position:"absolute",left:0,right:0,bottom:10,flexDirection:"row",justifyContent:"center",gap:6},pdDot:{width:6,height:6,borderRadius:3,backgroundColor:"rgba(255,255,255,0.7)"},pdDotOn:{backgroundColor:"#145D3E"},pdSummary:{paddingHorizontal:16,paddingTop:14,paddingBottom:6,gap:8},pdNew:{alignSelf:"flex-start",backgroundColor:"#EAF5EE",borderRadius:8,paddingHorizontal:8,paddingVertical:3},pdNewText:{color:"#176844",fontSize:11,fontWeight:"600"},pdName:{color:"#161C18",fontSize:22,fontWeight:"600",lineHeight:28},pdPrice:{color:"#176844",fontSize:24,fontWeight:"700"},pdMeta:{color:"#6B746E",fontSize:13,fontWeight:"400"},pdSeller:{marginHorizontal:16,marginTop:10,padding:12,borderRadius:16,borderWidth:1,borderColor:"#DDE6E0",backgroundColor:"#FFF",flexDirection:"row",alignItems:"center"},pdSellerAvatar:{width:48,height:48,borderRadius:24,backgroundColor:"#145D3E",overflow:"hidden",alignItems:"center",justifyContent:"center"},pdSellerAvatarImg:{width:"100%",height:"100%"},pdSellerInitial:{color:"#DDF25B",fontSize:18,fontWeight:"700"},pdSellerBody:{flex:1,minWidth:0,marginHorizontal:10},pdVerified:{color:"#176844",fontSize:10,fontWeight:"600",marginBottom:2},pdStore:{color:"#145D3E",fontSize:16,fontWeight:"600"},pdSellerNameRow:{flexDirection:"row",alignItems:"center",gap:4,marginTop:2},pdSellerName:{color:"#3A433E",fontSize:13,fontWeight:"400",flexShrink:1},pdSellerPlace:{color:"#6B746E",fontSize:12,marginTop:2},pdContactMini:{minWidth:44,height:44,paddingHorizontal:12,borderRadius:12,borderWidth:1,borderColor:"#B7D4C4",backgroundColor:"#F3FAF6",alignItems:"center",justifyContent:"center"},pdContactMiniText:{color:"#176844",fontSize:13,fontWeight:"600"},pdStock:{marginHorizontal:16,marginTop:10,color:"#176844",fontSize:13,fontWeight:"600"},pdStockOut:{color:"#A23B3B"},pdSecondaryRow:{flexDirection:"row",gap:8,marginHorizontal:16,marginTop:12},pdGhost:{flex:1,minHeight:44,height:44,borderRadius:12,borderWidth:1,borderColor:"#D5E5DA",backgroundColor:"#FFF",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:6},pdGhostText:{color:"#176844",fontSize:13,fontWeight:"600"},pdSection:{marginHorizontal:16,marginTop:16,paddingTop:12,borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#E1E8E3"},pdSectionTitle:{color:"#161C18",fontSize:15,fontWeight:"600",marginBottom:6},pdSectionBody:{color:"#4D5851",fontSize:14,lineHeight:21},pdRow:{flexDirection:"row",justifyContent:"space-between",alignItems:"flex-start",paddingVertical:8,borderBottomWidth:StyleSheet.hairlineWidth,borderBottomColor:"#E8EEE9"},pdRowLabel:{color:"#6B746E",fontSize:13},pdRowValue:{color:"#161C18",fontSize:13,fontWeight:"600",flex:1,textAlign:"right",marginLeft:16},pdLink:{color:"#176844",fontSize:13,fontWeight:"600",marginTop:6},pdSellerInfoToggle:{flexDirection:"row",alignItems:"center",justifyContent:"space-between"},pdTextLink:{minHeight:44,justifyContent:"center"},pdNotice:{marginHorizontal:16,marginTop:16,marginBottom:8,color:"#68726B",fontSize:12,lineHeight:18},pdBuyBar:{borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#E1E8E3",backgroundColor:"#F7F6F2",paddingHorizontal:16,paddingTop:10,flexDirection:"row",alignItems:"center",gap:12},pdBuyPriceWrap:{maxWidth:"36%"},pdBuyPriceLabel:{color:"#6B746E",fontSize:11,fontWeight:"500"},pdBuyPrice:{color:"#176844",fontSize:18,fontWeight:"700"},pdBuyBtn:{flex:1,height:54,borderRadius:14,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8},pdBuyBtnSold:{backgroundColor:"#8B4545"},pdBuyBtnText:{color:"#FFF",fontSize:16,fontWeight:"600"},deliveryInlineNotice:{color:"#6F5205",fontSize:12,lineHeight:18,marginTop:8,marginBottom:4},deliveryInlineError:{marginTop:8,padding:12,borderRadius:12,backgroundColor:"#FCECEC",borderWidth:1,borderColor:"#E9BBBB"},deliveryInlineErrorText:{color:"#983A3A",fontSize:13,lineHeight:19,fontWeight:"600"},deliveryRetry:{marginTop:10,alignSelf:"flex-start",minHeight:44,paddingHorizontal:14,borderRadius:12,backgroundColor:"#176844",alignItems:"center",justifyContent:"center"},deliveryRetryText:{color:"#FFF",fontSize:13,fontWeight:"600"},deliverySkeleton:{minHeight:67,height:67,borderRadius:14,backgroundColor:"#EDF2EE",marginTop:8}});
+const styles=StyleSheet.create({card:{alignSelf:"center",marginTop:-14,marginBottom:8,backgroundColor:"#FFF",borderColor:"#D9E7DF",borderWidth:2,borderRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.18,shadowRadius:12,shadowOffset:{width:0,height:5},elevation:5},media:{position:"relative",overflow:"hidden",backgroundColor:"#EDF2EE"},cover:{width:"100%"},photoPlaceholder:{width:"100%",backgroundColor:"#EDF2EE",alignItems:"center",justifyContent:"center",gap:8},photoPlaceholderText:{color:"#5F6F68",fontSize:13,fontWeight:"700"},badge:{position:"absolute",top:14,left:14,backgroundColor:"rgba(255,255,255,0.95)",borderRadius:99,paddingHorizontal:15,paddingVertical:8},badgeText:{color:"#145D3E",fontSize:13,fontWeight:"900",letterSpacing:.8},identity:{flexDirection:"row",alignItems:"center",paddingHorizontal:15,paddingVertical:10,minHeight:98},avatar:{width:40,height:40,borderRadius:20,backgroundColor:"#145D3E",borderWidth:2,borderColor:"#DDF25B",alignItems:"center",justifyContent:"center",marginRight:11,overflow:"hidden"},avatarImage:{width:"100%",height:"100%"},avatarText:{color:"#DDF25B",fontSize:16,fontWeight:"700"},body:{flex:1,minWidth:0},sellerLine:{flexDirection:"row",alignItems:"center",gap:4},seller:{color:"#18724B",fontSize:14,fontWeight:"600",maxWidth:"88%"},title:{color:"#111511",fontSize:16,fontWeight:"600",lineHeight:20,marginTop:2},meta:{flexDirection:"row",alignItems:"center",marginTop:2},price:{color:"#18724B",fontSize:16,fontWeight:"700"},dot:{color:"#768078",marginHorizontal:7},location:{color:"#68726B",fontSize:13,fontWeight:"400",flex:1},payments:{minHeight:57,paddingHorizontal:14,paddingVertical:8,borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#E1E8E3",flexDirection:"row",alignItems:"center",gap:10},paymentsLabel:{color:"#667169",fontSize:10,fontWeight:"900",letterSpacing:1.1},paymentList:{alignItems:"center",gap:7,paddingRight:14},paymentChip:{height:39,minWidth:126,borderRadius:13,paddingHorizontal:11,backgroundColor:"#EDF5F0",borderWidth:1.5,borderColor:"#CCE0D4",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7},cashAppChip:{backgroundColor:"#00C748",borderColor:"#00B942",shadowColor:"#00B942",shadowOpacity:.24,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:3},paymentIcon:{width:26,height:26,borderRadius:9,backgroundColor:"#D8EBDF",alignItems:"center",justifyContent:"center"},cashAppIcon:{backgroundColor:"rgba(255,255,255,.20)",borderWidth:1,borderColor:"rgba(255,255,255,.35)"},paymentText:{color:"#176844",fontSize:14,fontWeight:"900"},cashAppText:{color:"#FFF",fontSize:13,fontWeight:"900"},disabledChip:{opacity:.6},checkoutScreen:{flex:1,backgroundColor:"#F7F6F2"},checkoutHeader:{paddingHorizontal:8,paddingBottom:12,backgroundColor:"#145D3E",flexDirection:"row",alignItems:"center",overflow:"hidden"},checkoutScroll:{flex:1},checkoutBack:{width:44,height:44,borderRadius:22,backgroundColor:"rgba(255,255,255,.16)",borderWidth:1,borderColor:"rgba(255,255,255,.28)",alignItems:"center",justifyContent:"center"},checkoutHeaderBody:{flex:1,alignItems:"center",paddingHorizontal:8,minWidth:0},checkoutEyebrow:{color:"#DDF25B",fontSize:10,fontWeight:"600",letterSpacing:1.2},checkoutTitle:{color:"#FFF",fontSize:27,fontWeight:"600",marginTop:2},checkoutHeaderCopy:{color:"rgba(255,255,255,.78)",fontSize:13,fontWeight:"400",marginTop:2,textAlign:"center"},checkoutHeaderSpacer:{width:44,height:44},checkoutContent:{paddingHorizontal:16,paddingTop:16,paddingBottom:24,gap:16},checkoutProduct:{minHeight:92,borderRadius:18,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D9E4DC",padding:10,flexDirection:"row",alignItems:"center"},checkoutImage:{width:70,height:70,borderRadius:13,backgroundColor:"#E8EEE9"},checkoutProductBody:{flex:1,minWidth:0,paddingHorizontal:11},checkoutProductTitle:{color:"#172019",fontSize:15,fontWeight:"900"},checkoutPrice:{color:"#17784D",fontSize:17,fontWeight:"900",marginTop:3},checkoutSeller:{color:"#748078",fontSize:10,fontWeight:"700",marginTop:3},checkoutSecureBadge:{width:36,height:36,borderRadius:18,backgroundColor:"#E8F5ED",alignItems:"center",justifyContent:"center"},checkoutNotice:{borderRadius:15,backgroundColor:"#EAF5EE",padding:12,flexDirection:"row",alignItems:"center",gap:9},checkoutNoticeText:{flex:1,color:"#4A6055",fontSize:11,lineHeight:17,fontWeight:"700"},checkoutSection:{borderRadius:19,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D9E5DD",padding:14,gap:12},checkoutSectionTitleRow:{flexDirection:"row",alignItems:"center",gap:9},checkoutStep:{width:28,height:28,borderRadius:14,backgroundColor:"#176844",alignItems:"center",justifyContent:"center"},checkoutStepText:{color:"#FFF",fontSize:12,fontWeight:"900"},checkoutSectionTitle:{color:"#253129",fontSize:16,fontWeight:"900"},checkoutFieldGroup:{gap:6},checkoutLabel:{color:"#435148",fontSize:11,fontWeight:"900"},checkoutField:{minHeight:48,borderRadius:13,borderWidth:1,borderColor:"#CBDACF",backgroundColor:"#FBFCFB",paddingHorizontal:12,color:"#18231C",fontSize:13},checkoutInstructions:{minHeight:82,paddingTop:12,textAlignVertical:"top"},checkoutRow:{flexDirection:"row",gap:9},checkoutHalf:{flex:1,gap:6},checkoutPrivacy:{minHeight:46,borderRadius:13,backgroundColor:"#EDF3EF",paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:8},checkoutPrivacyText:{flex:1,color:"#627068",fontSize:10,fontWeight:"700"},deliveryRate:{minHeight:82,borderRadius:14,borderWidth:1,borderColor:"#D5E1D9",backgroundColor:"#FFF",paddingHorizontal:12,paddingVertical:12,flexDirection:"row",alignItems:"center",gap:10},deliveryRateActive:{borderColor:"#188052",backgroundColor:"#ECF8F0"},deliveryRateIcon:{width:32,height:32,borderRadius:10,backgroundColor:"#E3F1E8",alignItems:"center",justifyContent:"center"},deliveryRateBody:{flex:1,minWidth:0},deliveryRateTitle:{color:"#26342B",fontSize:14,fontWeight:"600",lineHeight:18},deliveryRateCopy:{color:"#6B746E",fontSize:12,fontWeight:"400",marginTop:4,lineHeight:16},deliveryRateMeta:{alignItems:"flex-end",flexShrink:0,gap:6,marginLeft:8},deliveryRatePrice:{color:"#176844",fontSize:14,fontWeight:"700"},deliveryBadgeRow:{flexDirection:"row",flexWrap:"wrap",gap:6,marginTop:4},deliveryBadgeCheap:{color:"#176844",fontSize:9,fontWeight:"700",letterSpacing:0.4,backgroundColor:"#E8F7EE",overflow:"hidden",borderRadius:6,paddingHorizontal:6,paddingVertical:2},deliveryBadgeFast:{color:"#805C00",fontSize:9,fontWeight:"700",letterSpacing:0.4,backgroundColor:"#FFF5D9",overflow:"hidden",borderRadius:6,paddingHorizontal:6,paddingVertical:2},deliveryCount:{color:"#6B746E",fontSize:12,fontWeight:"500",marginLeft:"auto"},deliveryQuoteCard:{minHeight:76,borderRadius:16,backgroundColor:"#FFF7DF",borderWidth:1,borderColor:"#EACF7A",padding:13,flexDirection:"row",alignItems:"center",gap:10},deliveryQuoteTitle:{color:"#745200",fontSize:14,fontWeight:"900"},deliveryQuoteCopy:{color:"#806D3E",fontSize:10,lineHeight:15,fontWeight:"700",marginTop:3},checkoutTotalsCard:{borderRadius:16,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D8E4DC",padding:16,gap:10,width:"100%"},checkoutSummaryTitle:{color:"#161C18",fontSize:16,fontWeight:"600"},checkoutAmountRow:{flexDirection:"row",alignItems:"center",width:"100%",gap:12},checkoutAmountLabel:{flex:1,flexShrink:1,minWidth:0,color:"#68756D",fontSize:13,fontWeight:"500"},checkoutAmountValue:{flexShrink:0,color:"#2E3C33",fontSize:13,fontWeight:"600"},checkoutAmountDivider:{height:1,backgroundColor:"#E1E8E3"},quoteButton:{backgroundColor:"#9A7100",shadowColor:"#795900"},checkoutTotal:{minHeight:67,borderRadius:16,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D8E4DC",paddingHorizontal:14,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},checkoutTotalLabel:{flex:1,flexShrink:1,color:"#161C18",fontSize:15,fontWeight:"600"},checkoutTotalCopy:{color:"#8B948E",fontSize:9,fontWeight:"700",marginTop:3},checkoutTotalPrice:{flexShrink:0,color:"#176F49",fontSize:22,fontWeight:"700"},continuePayment:{height:56,minHeight:56,borderRadius:16,backgroundColor:"#00C748",paddingHorizontal:16,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:10},continueCashIcon:{width:34,height:34,borderRadius:11,backgroundColor:"rgba(255,255,255,.2)",borderWidth:1,borderColor:"rgba(255,255,255,.35)",alignItems:"center",justifyContent:"center"},continuePaymentText:{color:"#FFF",fontSize:16,fontWeight:"600"},continuePaymentSub:{color:"rgba(255,255,255,.84)",fontSize:8,fontWeight:"700",marginTop:2},paymentBackdrop:{flex:1,backgroundColor:"rgba(0,0,0,.52)",justifyContent:"flex-end"},paymentSheet:{maxHeight:"92%",backgroundColor:"#F6F9F6",borderTopLeftRadius:28,borderTopRightRadius:28,overflow:"hidden"},sheetHandle:{width:44,height:5,borderRadius:5,backgroundColor:"#C5CEC8",alignSelf:"center",marginTop:9},sheetHeader:{paddingHorizontal:18,paddingTop:12,paddingBottom:13,borderBottomWidth:StyleSheet.hairlineWidth,borderBottomColor:"#D3DED6",flexDirection:"row",alignItems:"center",justifyContent:"space-between"},sheetEyebrow:{color:"#17804F",fontSize:9,fontWeight:"900",letterSpacing:1.2},sheetTitle:{color:"#122019",fontSize:22,fontWeight:"900",marginTop:2},sheetClose:{width:38,height:38,borderRadius:19,backgroundColor:"#E4EBE6",alignItems:"center",justifyContent:"center"},paymentForm:{padding:16,paddingBottom:35,gap:13},orderSummary:{backgroundColor:"#FFF",borderRadius:18,padding:11,flexDirection:"row",borderWidth:1,borderColor:"#D8E4DC"},orderImage:{width:76,height:76,borderRadius:13,backgroundColor:"#E9EFEB"},orderBody:{flex:1,minWidth:0,justifyContent:"center",paddingLeft:11},orderTitle:{color:"#18221C",fontSize:16,fontWeight:"900"},orderPrice:{color:"#16784C",fontSize:18,fontWeight:"900",marginTop:2},orderSeller:{color:"#657068",fontSize:12,fontWeight:"700"},orderTag:{color:"#00A83D",fontSize:13,fontWeight:"900",marginTop:2},stepCard:{backgroundColor:"#FFF",borderRadius:17,padding:13,flexDirection:"row",gap:11,borderWidth:1,borderColor:"#DCE6DF"},stepNumber:{width:28,height:28,borderRadius:14,backgroundColor:"#176844",alignItems:"center",justifyContent:"center"},stepNumberText:{color:"#FFF",fontWeight:"900"},stepBody:{flex:1,gap:6},stepTitle:{color:"#1A271F",fontSize:15,fontWeight:"900"},stepCopy:{color:"#68736C",fontSize:12,lineHeight:17},reopenCash:{height:39,borderRadius:12,backgroundColor:"#00C748",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,marginTop:3},reopenCashText:{color:"#FFF",fontSize:13,fontWeight:"900"},proofPicker:{minHeight:112,borderRadius:14,borderWidth:1.5,borderStyle:"dashed",borderColor:"#8DC5A5",backgroundColor:"#F3FBF6",alignItems:"center",justifyContent:"center",padding:10},proofPickerReady:{padding:3,borderStyle:"solid"},proofPreview:{width:"100%",height:150,borderRadius:11,resizeMode:"contain",backgroundColor:"#EDF1EE"},proofPickerTitle:{color:"#176844",fontWeight:"900",marginTop:4},proofPickerCopy:{color:"#7B857F",fontSize:10,marginTop:2},changeProof:{color:"#16794C",fontSize:12,fontWeight:"900",textAlign:"center"},fieldGroup:{gap:6},fieldLabel:{color:"#334139",fontSize:12,fontWeight:"900"},field:{minHeight:47,borderWidth:1,borderColor:"#CFDCD3",backgroundColor:"#FFF",borderRadius:13,paddingHorizontal:13,color:"#17221B",fontSize:14},noteField:{minHeight:82,paddingTop:12,textAlignVertical:"top"},dateRow:{height:42,borderRadius:12,backgroundColor:"#EAF4ED",paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},dateText:{color:"#376047",fontSize:12,fontWeight:"800"},proofWarning:{color:"#7B6641",fontSize:11,lineHeight:16,backgroundColor:"#FFF7E8",padding:11,borderRadius:11},submitProof:{height:52,borderRadius:15,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8},submitDisabled:{opacity:.5},submitProofText:{color:"#FFF",fontSize:15,fontWeight:"900"},successCard:{margin:18,backgroundColor:"#FFF",borderRadius:22,padding:22,alignItems:"center",gap:10},successIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#198754",alignItems:"center",justifyContent:"center"},successTitle:{color:"#163122",fontSize:23,fontWeight:"900"},successCopy:{color:"#66736B",fontSize:14,lineHeight:21,textAlign:"center"},statusPill:{height:34,borderRadius:17,backgroundColor:"#FFF5D8",paddingHorizontal:13,flexDirection:"row",alignItems:"center",gap:7},statusDot:{width:8,height:8,borderRadius:4,backgroundColor:"#E2A916"},statusText:{color:"#80610C",fontSize:10,fontWeight:"900",letterSpacing:.8},doneButton:{height:48,alignSelf:"stretch",borderRadius:14,backgroundColor:"#176844",alignItems:"center",justifyContent:"center",marginTop:4},doneText:{color:"#FFF",fontSize:15,fontWeight:"900"},commerceActions:{height:62,paddingHorizontal:10,borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#D8E0DA",flexDirection:"row",alignItems:"center",justifyContent:"space-between"},contactButton:{height:42,minWidth:138,paddingHorizontal:14,borderRadius:14,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,shadowColor:"#176844",shadowOpacity:.24,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:3},contactText:{color:"#FFF",fontSize:13,fontWeight:"900"},action:{minWidth:58,alignItems:"center",gap:1,paddingVertical:4},actionText:{color:"#667169",fontSize:11,fontWeight:"700"},active:{color:"#18724B"},modal:{flex:1,backgroundColor:"#F7F9F5"},detailHeader:{minHeight:104,paddingHorizontal:16,paddingBottom:13,backgroundColor:"#145D3E",borderBottomLeftRadius:24,borderBottomRightRadius:24,flexDirection:"row",alignItems:"flex-end",shadowColor:"#061A11",shadowOpacity:.2,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:5},backButton:{width:44,height:44,borderRadius:22,backgroundColor:"rgba(255,255,255,.16)",borderWidth:1,borderColor:"rgba(255,255,255,.28)",alignItems:"center",justifyContent:"center"},headerTitles:{flex:1,alignItems:"center",justifyContent:"center",paddingBottom:2},headerEyebrow:{color:"#DDF25B",fontSize:9,fontWeight:"900",letterSpacing:2},headerTitle:{color:"#FFFFFF",fontSize:18,fontWeight:"900",marginTop:2},headerSpacer:{width:44,height:44},detail:{padding:16,gap:14},detailImage:{height:330,marginRight:8,borderRadius:20,backgroundColor:"#E8EEE9"},detailTitle:{color:"#111511",fontSize:26,fontWeight:"900"},detailPrice:{color:"#18724B",fontSize:21,fontWeight:"900"},detailCopy:{color:"#4D5851",fontSize:16},sellerProfileCard:{backgroundColor:"#FFF",borderRadius:20,borderWidth:1.5,borderColor:"#D5E5DA",overflow:"hidden",shadowColor:"#173E2A",shadowOpacity:.1,shadowRadius:9,shadowOffset:{width:0,height:4},elevation:3},sellerCardTop:{padding:15,flexDirection:"row",alignItems:"center"},sellerLargeAvatar:{width:66,height:66,borderRadius:33,backgroundColor:"#145D3E",borderWidth:3,borderColor:"#DDF25B",alignItems:"center",justifyContent:"center",position:"relative",overflow:"visible"},sellerAvatarImage:{width:"100%",height:"100%",borderRadius:30},sellerLargeInitial:{color:"#DDF25B",fontSize:28,fontWeight:"900"},sellerVerifiedBadge:{position:"absolute",right:-2,bottom:-1,width:22,height:22,borderRadius:11,backgroundColor:"#187A50",borderWidth:2,borderColor:"#FFF",alignItems:"center",justifyContent:"center"},sellerCardIdentity:{flex:1,minWidth:0,paddingLeft:13},sellerCardEyebrow:{color:"#768078",fontSize:9,fontWeight:"900",letterSpacing:1.1},sellerShopName:{color:"#125C3D",fontSize:20,fontWeight:"900",marginTop:2},sellerNameLine:{flexDirection:"row",alignItems:"center",gap:5,marginTop:3},sellerCardName:{color:"#253129",fontSize:14,fontWeight:"800",maxWidth:"88%"},sellerKristoId:{color:"#748078",fontSize:11,fontWeight:"700",marginTop:2},sellerFacts:{borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#DDE6E0",paddingHorizontal:14,paddingVertical:5},sellerFactRow:{minHeight:52,flexDirection:"row",alignItems:"center",borderBottomWidth:StyleSheet.hairlineWidth,borderBottomColor:"#E3E9E5"},sellerFactIcon:{width:34,height:34,borderRadius:11,backgroundColor:"#EAF5EE",alignItems:"center",justifyContent:"center"},churchFactIcon:{backgroundColor:"#FFF6D8"},sellerFactBody:{flex:1,minWidth:0,paddingHorizontal:10},sellerFactLabel:{color:"#879088",fontSize:8,fontWeight:"900",letterSpacing:.9},sellerFactValue:{color:"#354139",fontSize:13,fontWeight:"800",marginTop:2},sellerCardButtons:{padding:12,flexDirection:"row",gap:9},viewSellerButton:{flex:1,height:43,borderRadius:13,borderWidth:1.5,borderColor:"#BBD6C5",backgroundColor:"#F3FAF5",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:6},viewSellerText:{color:"#176844",fontSize:12,fontWeight:"900"},viewChurchButton:{flex:1,height:43,borderRadius:13,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:6},viewChurchText:{color:"#FFF",fontSize:12,fontWeight:"900"},sellerButtonDisabled:{opacity:.42},detailCommerceButtons:{flexDirection:"row",gap:10},buyNowButton:{flex:1,minHeight:58,borderRadius:16,backgroundColor:"#00C748",paddingHorizontal:13,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:9,shadowColor:"#00A93B",shadowOpacity:.28,shadowRadius:7,shadowOffset:{width:0,height:4},elevation:4},buyCashIcon:{width:32,height:32,borderRadius:10,backgroundColor:"rgba(255,255,255,.2)",borderWidth:1,borderColor:"rgba(255,255,255,.35)",alignItems:"center",justifyContent:"center"},buyNowText:{color:"#FFF",fontSize:15,fontWeight:"900"},buyNowSub:{color:"rgba(255,255,255,.84)",fontSize:9,fontWeight:"800",marginTop:1},visitStoreButton:{flex:1,minHeight:58,borderRadius:16,backgroundColor:"#F2FAF5",borderWidth:1.5,borderColor:"#B8D8C4",paddingHorizontal:13,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:9},visitStoreWide:{flexBasis:"100%"},visitStoreText:{color:"#176844",fontSize:14,fontWeight:"900"},visitStoreSub:{color:"#748078",fontSize:9,fontWeight:"700",marginTop:1},storeButtonPressed:{opacity:.72,transform:[{scale:.98}]},storeScreen:{flex:1,backgroundColor:"#F4F7F4"},storeHeader:{minHeight:132,paddingHorizontal:16,paddingBottom:15,backgroundColor:"#145D3E",borderBottomLeftRadius:27,borderBottomRightRadius:27,flexDirection:"row",alignItems:"flex-end",shadowColor:"#071A11",shadowOpacity:.22,shadowRadius:11,shadowOffset:{width:0,height:5},elevation:6},storeBackButton:{width:44,height:44,borderRadius:22,backgroundColor:"rgba(255,255,255,.16)",borderWidth:1,borderColor:"rgba(255,255,255,.28)",alignItems:"center",justifyContent:"center"},storeHeaderTitles:{flex:1,minWidth:0,alignItems:"center",paddingHorizontal:8},storeHeaderEyebrow:{color:"#DDF25B",fontSize:8,fontWeight:"900",letterSpacing:1.6},storeHeaderTitle:{color:"#FFF",fontSize:20,fontWeight:"900",marginTop:2,maxWidth:"100%"},storeHeaderSeller:{color:"rgba(255,255,255,.72)",fontSize:10,fontWeight:"700",marginTop:2},storeHeaderSpacer:{width:44,height:44},storeCentered:{flex:1,alignItems:"center",justifyContent:"center",padding:28,gap:13},storeLoadingText:{color:"#66736B",fontSize:14,fontWeight:"800"},storeErrorText:{color:"#6F5530",fontSize:14,lineHeight:21,textAlign:"center"},storeRetryButton:{height:44,minWidth:130,borderRadius:13,backgroundColor:"#176844",alignItems:"center",justifyContent:"center"},storeRetryText:{color:"#FFF",fontSize:13,fontWeight:"900"},storeContent:{padding:15,paddingBottom:38,gap:11},storeSummary:{minHeight:72,borderRadius:18,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D9E5DD",paddingHorizontal:13,flexDirection:"row",alignItems:"center"},storeSummaryIcon:{width:42,height:42,borderRadius:13,backgroundColor:"#EAF5EE",alignItems:"center",justifyContent:"center"},storeSummaryBody:{flex:1,paddingHorizontal:11},storeSummaryTitle:{color:"#253129",fontSize:15,fontWeight:"900"},storeSummaryCopy:{color:"#768078",fontSize:11,fontWeight:"700",marginTop:2},activeStorePill:{height:27,borderRadius:14,backgroundColor:"#ECF8F0",paddingHorizontal:9,flexDirection:"row",alignItems:"center",gap:5},activeStoreDot:{width:7,height:7,borderRadius:4,backgroundColor:"#19A35B"},activeStoreText:{color:"#18724B",fontSize:8,fontWeight:"900",letterSpacing:.7},emptyStore:{marginTop:35,alignItems:"center",padding:25,gap:8},emptyStoreTitle:{color:"#354139",fontSize:19,fontWeight:"900"},emptyStoreCopy:{color:"#7A857E",fontSize:13,lineHeight:19,textAlign:"center"},storeProductCard:{minHeight:132,borderRadius:18,backgroundColor:"#FFF",borderWidth:1,borderColor:"#D9E4DC",padding:9,flexDirection:"row",shadowColor:"#173A28",shadowOpacity:.08,shadowRadius:7,shadowOffset:{width:0,height:3},elevation:2},storeProductImage:{width:116,height:116,borderRadius:14,backgroundColor:"#E8EEE9"},storeProductBody:{flex:1,minWidth:0,paddingHorizontal:12,paddingVertical:3},storeProductStatus:{alignSelf:"flex-start",borderRadius:9,backgroundColor:"#EFF6F1",paddingHorizontal:7,paddingVertical:4},storeProductStatusText:{color:"#176844",fontSize:8,fontWeight:"900",letterSpacing:.6},storeProductTitle:{color:"#172019",fontSize:16,fontWeight:"900",lineHeight:20,marginTop:6},storeProductPrice:{color:"#187A50",fontSize:17,fontWeight:"900",marginTop:5},storeProductLocation:{flexDirection:"row",alignItems:"center",gap:3,marginTop:5},storeProductLocationText:{color:"#758078",fontSize:10,fontWeight:"700",flex:1},detailPayment:{backgroundColor:"#FFF",padding:15,borderRadius:14,borderWidth:1,borderColor:"#D7E5DB",gap:7},detailPaymentTitle:{color:"#145D3E",fontSize:16,fontWeight:"900"},detailPaymentLine:{color:"#39483E",fontSize:15,fontWeight:"700"},detailContactButton:{height:50,borderRadius:15,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8},description:{color:"#263129",fontSize:16,lineHeight:24,backgroundColor:"#FFF",padding:15,borderRadius:14},notice:{color:"#68726B",fontSize:13,lineHeight:19,backgroundColor:"#EAF1EC",padding:13,borderRadius:12},pdRoot:{flex:1,backgroundColor:"#F7F6F2"},pdHeader:{minHeight:48,paddingHorizontal:4,paddingBottom:8,backgroundColor:"#145D3E",flexDirection:"row",alignItems:"center"},pdHeaderBtn:{width:44,height:44,alignItems:"center",justifyContent:"center"},pdHeaderCenter:{flex:1,alignItems:"center",justifyContent:"center"},pdHeaderKicker:{color:"#DDF25B",fontSize:8,fontWeight:"700",letterSpacing:1.4,lineHeight:10},pdHeaderTitle:{color:"#FFF",fontSize:18,fontWeight:"600",marginTop:1},pdScroll:{backgroundColor:"#F7F6F2"},pdScrollFlex:{flex:1},pdGallery:{position:"relative",overflow:"hidden",backgroundColor:"#EEECE6"},pdHero:{backgroundColor:"#EEECE6"},pdDots:{position:"absolute",left:0,right:0,bottom:10,flexDirection:"row",justifyContent:"center",gap:6},pdDot:{width:6,height:6,borderRadius:3,backgroundColor:"rgba(255,255,255,0.7)"},pdDotOn:{backgroundColor:"#145D3E"},pdSummary:{paddingHorizontal:16,paddingTop:14,paddingBottom:6,gap:8},pdNew:{alignSelf:"flex-start",backgroundColor:"#EAF5EE",borderRadius:8,paddingHorizontal:8,paddingVertical:3},pdNewText:{color:"#176844",fontSize:11,fontWeight:"600"},pdName:{color:"#161C18",fontSize:22,fontWeight:"600",lineHeight:28},pdPrice:{color:"#176844",fontSize:24,fontWeight:"700"},pdMeta:{color:"#6B746E",fontSize:13,fontWeight:"400"},pdSeller:{marginHorizontal:16,marginTop:10,padding:12,borderRadius:16,borderWidth:1,borderColor:"#DDE6E0",backgroundColor:"#FFF",flexDirection:"row",alignItems:"center"},pdSellerAvatar:{width:48,height:48,borderRadius:24,backgroundColor:"#145D3E",overflow:"hidden",alignItems:"center",justifyContent:"center"},pdSellerAvatarImg:{width:"100%",height:"100%"},pdSellerInitial:{color:"#DDF25B",fontSize:18,fontWeight:"700"},pdSellerBody:{flex:1,minWidth:0,marginHorizontal:10},pdVerified:{color:"#176844",fontSize:10,fontWeight:"600",marginBottom:2},pdStore:{color:"#145D3E",fontSize:16,fontWeight:"600"},pdSellerNameRow:{flexDirection:"row",alignItems:"center",gap:4,marginTop:2},pdSellerName:{color:"#3A433E",fontSize:13,fontWeight:"400",flexShrink:1},pdSellerPlace:{color:"#6B746E",fontSize:12,marginTop:2},pdContactMini:{minWidth:44,height:44,paddingHorizontal:12,borderRadius:12,borderWidth:1,borderColor:"#B7D4C4",backgroundColor:"#F3FAF6",alignItems:"center",justifyContent:"center"},pdContactMiniText:{color:"#176844",fontSize:13,fontWeight:"600"},pdStock:{marginHorizontal:16,marginTop:10,color:"#176844",fontSize:13,fontWeight:"600"},pdStockOut:{color:"#A23B3B"},pdSecondaryRow:{flexDirection:"row",gap:8,marginHorizontal:16,marginTop:12},pdGhost:{flex:1,minHeight:44,height:44,borderRadius:12,borderWidth:1,borderColor:"#D5E5DA",backgroundColor:"#FFF",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:6},pdGhostText:{color:"#176844",fontSize:13,fontWeight:"600"},pdSection:{marginHorizontal:16,marginTop:16,paddingTop:12,borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#E1E8E3"},pdSectionTitle:{color:"#161C18",fontSize:15,fontWeight:"600",marginBottom:6},pdSectionBody:{color:"#4D5851",fontSize:14,lineHeight:21},pdRow:{flexDirection:"row",justifyContent:"space-between",alignItems:"flex-start",paddingVertical:8,borderBottomWidth:StyleSheet.hairlineWidth,borderBottomColor:"#E8EEE9"},pdRowLabel:{color:"#6B746E",fontSize:13},pdRowValue:{color:"#161C18",fontSize:13,fontWeight:"600",flex:1,textAlign:"right",marginLeft:16},pdLink:{color:"#176844",fontSize:13,fontWeight:"600",marginTop:6},pdSellerInfoToggle:{flexDirection:"row",alignItems:"center",justifyContent:"space-between"},pdTextLink:{minHeight:44,justifyContent:"center"},pdNotice:{marginHorizontal:16,marginTop:16,marginBottom:8,color:"#68726B",fontSize:12,lineHeight:18},pdBuyBar:{borderTopWidth:StyleSheet.hairlineWidth,borderTopColor:"#E1E8E3",backgroundColor:"#F7F6F2",paddingHorizontal:16,paddingTop:10,flexDirection:"row",alignItems:"center",gap:12},pdBuyPriceWrap:{maxWidth:"36%"},pdBuyPriceLabel:{color:"#6B746E",fontSize:11,fontWeight:"500"},pdBuyPrice:{color:"#176844",fontSize:18,fontWeight:"700"},pdBuyBtn:{flex:1,height:54,borderRadius:14,backgroundColor:"#176844",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8},pdBuyBtnSold:{backgroundColor:"#8B4545"},pdBuyBtnText:{color:"#FFF",fontSize:16,fontWeight:"600"},deliveryInlineNotice:{color:"#6F5205",fontSize:12,lineHeight:18,marginTop:8,marginBottom:4},deliveryInlineError:{marginTop:8,padding:12,borderRadius:12,backgroundColor:"#FCECEC",borderWidth:1,borderColor:"#E9BBBB"},deliveryInlineErrorText:{color:"#983A3A",fontSize:13,lineHeight:19,fontWeight:"600"},deliveryRetry:{marginTop:10,alignSelf:"flex-start",minHeight:44,paddingHorizontal:14,borderRadius:12,backgroundColor:"#176844",alignItems:"center",justifyContent:"center"},deliveryRetryText:{color:"#FFF",fontSize:13,fontWeight:"600"},deliverySkeleton:{minHeight:67,height:67,borderRadius:14,backgroundColor:"#EDF2EE",marginTop:8}});
