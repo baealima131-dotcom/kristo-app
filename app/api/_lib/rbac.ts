@@ -11,7 +11,7 @@ import {
 import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
 
 import { getCheckoutViewer, getViewer } from "@/app/api/_lib/auth";
-import { describeCheckoutAuthDiag } from "@/app/api/auth/_lib/sessionToken";
+import { describeCheckoutAuthDiag, describeSessionSecretConfig } from "@/app/api/auth/_lib/sessionToken";
 import {
   getActiveMembership,
   requestMembership,
@@ -439,8 +439,11 @@ export async function guardCheckoutAuth(
     verifiedVia: diag.verifiedVia,
     headerUidHash: diag.headerUidHash,
     tokenUidHash: diag.tokenUidHash,
+    tokenVersion: diag.tokenVersion,
+    tokenIssuer: diag.tokenIssuer,
     resolveVia: diag.resolveVia,
     resolveOk: diag.resolveOk,
+    secrets: describeSessionSecretConfig(),
   });
   timer.stage("token_verify", {
     via: viewer.via,

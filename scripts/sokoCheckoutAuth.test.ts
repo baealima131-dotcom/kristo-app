@@ -153,6 +153,8 @@ test("checkout auth diagnostics cover valid token and failure reasons", () => {
     assert.equal(valid.resolveOk, true);
     assert.equal(valid.resolveVia, "token");
     assert.equal(valid.sessionTokenLen, token.length);
+    assert.equal(valid.tokenVersion, 2);
+    assert.equal(valid.tokenIssuer, "kristo");
     assert.equal(valid.headerUidHash, shortAuthHash(uid));
     assert.equal(valid.tokenUidHash, shortAuthHash(uid));
     assert.equal(valid.headerUidHash, valid.tokenUidHash);
@@ -434,6 +436,8 @@ test("checkout auth path skips profile hydrate and still enforces safety", () =>
   );
   assert.match(rbac, /CHECKOUT_SESSION_EXPIRED/);
   assert.match(rbac, /CHECKOUT_UNAUTHENTICATED/);
+  assert.match(rbac, /tokenVersion/);
+  assert.match(rbac, /describeSessionSecretConfig/);
   assert.match(sessionToken, /export function describeCheckoutAuthDiag/);
   assert.match(sessionToken, /export function resolveCheckoutMobileIdentity/);
   assert.match(sessionToken, /export function applyCheckoutIssuedCookieSession/);

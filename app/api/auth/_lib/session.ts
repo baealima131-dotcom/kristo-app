@@ -3,6 +3,10 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import {
+  logDeprecatedHeaderSession,
+  resolvePresentedMobileSession,
+} from "@/app/api/auth/_lib/sessionToken";
+import {
   dbCountUsers,
   dbCreateUser,
   dbDeleteProfile,
@@ -463,7 +467,32 @@ export function createSession(userId: string) {
 export async function readSession(req?: any) {
   try {
     const headerUserId = String(req?.headers?.get?.("x-kristo-user-id") || "").trim();
+    const token = String(req?.headers?.get?.("x-kristo-session-token") || "").trim();
+    if (token) {
+      const presented = resolvePresentedMobileSession(req);
+      if (presented.via === "verified-token" && presented.userId) {
+        const now = Date.now();
+        return {
+          id: `token-session-${presented.userId}`,
+          userId: presented.userId,
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: now + SESSION_MAX_AGE_MS,
+        };
+      }
+    }
+    // Stage-1: keep header-session for installed older profile/church clients.
+    // Checkout/orders must not call this function.
     if (headerUserId) {
+      logDeprecatedHeaderSession({
+        source: "readSession",
+        hasToken: Boolean(token),
+        tokenVerified: false,
+        reason: token
+          ? resolvePresentedMobileSession(req).reason || "unverified-token"
+          : "missing_token",
+        via: "header-session",
+      });
       const now = Date.now();
       return {
         id: `header-session-${headerUserId}`,

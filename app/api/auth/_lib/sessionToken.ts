@@ -21,6 +21,8 @@ import crypto from "crypto";
 
 const DEV_FALLBACK_SECRET = "kristo-dev-session-secret-not-for-production";
 const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, matches mobile session
+export const KRISTO_SESSION_TOKEN_VERSION = 2;
+export const KRISTO_SESSION_TOKEN_ISSUER = "kristo";
 
 type VerificationSecret = {
   secret: string;
@@ -32,6 +34,10 @@ function getDedicatedSessionSecret(): string {
   return String(process.env.KRISTO_SESSION_SECRET || "").trim();
 }
 
+function getPreviousSessionSecret(): string {
+  return String(process.env.KRISTO_SESSION_SECRET_PREVIOUS || "").trim();
+}
+
 function getSharedFallbackSecret(): string {
   return String(
     process.env.KRISTO_OTP_SECRET?.trim() ||
@@ -40,15 +46,30 @@ function getSharedFallbackSecret(): string {
   ).trim();
 }
 
-/** Legacy signing secrets from before KRISTO_SESSION_SECRET rotation (verify-only). */
+function fingerprintSecret(secret: string) {
+  const value = String(secret || "").trim();
+  if (!value) return null;
+  return crypto.createHash("sha256").update(value).digest("hex").slice(0, 8);
+}
+
+/** Previous dedicated secret plus pre-dedicated OTP/Resend signers (verify-only). */
 function getLegacyVerificationSecrets(): VerificationSecret[] {
-  if (process.env.KRISTO_SESSION_LEGACY_VERIFY === "0") return [];
-
   const current = getDedicatedSessionSecret();
-  if (!current) return [];
-
-  const seen = new Set<string>([current]);
+  const seen = new Set<string>(current ? [current] : []);
   const out: VerificationSecret[] = [];
+
+  const previous = getPreviousSessionSecret();
+  if (previous && !seen.has(previous)) {
+    seen.add(previous);
+    out.push({
+      secret: previous,
+      kind: "legacy",
+      label: "KRISTO_SESSION_SECRET_PREVIOUS",
+    });
+  }
+
+  if (process.env.KRISTO_SESSION_LEGACY_VERIFY === "0") return out;
+  if (!current) return out;
 
   const otp = String(process.env.KRISTO_OTP_SECRET || "").trim();
   if (otp && !seen.has(otp)) {
@@ -63,6 +84,33 @@ function getLegacyVerificationSecrets(): VerificationSecret[] {
   }
 
   return out;
+}
+
+/** Names and fingerprints only. Never includes secret values. */
+export function describeSessionSecretConfig() {
+  const dedicated = getDedicatedSessionSecret();
+  const previous = getPreviousSessionSecret();
+  const otp = String(process.env.KRISTO_OTP_SECRET || "").trim();
+  const resend = String(process.env.RESEND_API_KEY || "").trim();
+  return {
+    hasKristoSessionSecret: Boolean(dedicated),
+    hasPreviousSessionSecret: Boolean(previous),
+    hasOtpSecret: Boolean(otp),
+    hasResendApiKey: Boolean(resend),
+    legacyVerifyEnabled: process.env.KRISTO_SESSION_LEGACY_VERIFY !== "0",
+    issueLabel: dedicated
+      ? "KRISTO_SESSION_SECRET"
+      : process.env.NODE_ENV === "production"
+        ? "missing"
+        : "dev-or-shared",
+    fingerprints: {
+      KRISTO_SESSION_SECRET: fingerprintSecret(dedicated),
+      KRISTO_SESSION_SECRET_PREVIOUS: fingerprintSecret(previous),
+      KRISTO_OTP_SECRET: fingerprintSecret(otp),
+      RESEND_API_KEY: fingerprintSecret(resend),
+    },
+    verifierCount: getVerificationSecrets().length,
+  };
 }
 
 /** Primary secret for issuing new tokens. Production requires KRISTO_SESSION_SECRET. */
@@ -124,13 +172,32 @@ function getVerificationSecrets(): VerificationSecret[] {
 
 /**
  * Dev / explicit-header-auth mode may trust the raw user id header without a
- * signed token. Production must not.
+ * signed token. Stage-1 production church/profile still keep a header-session
+ * fallback in readSession; checkout/orders never use this helper for identity.
  */
 export function shouldTrustRawHeaderIdentity(): boolean {
   return (
     process.env.NODE_ENV !== "production" ||
     process.env.KRISTO_DEV_HEADER_AUTH === "1"
   );
+}
+
+/** Safe Stage-1 diagnostic for legacy non-commerce header-session fallback. */
+export function logDeprecatedHeaderSession(input: {
+  source: string;
+  hasToken: boolean;
+  tokenVerified: boolean;
+  reason?: string | null;
+  via: string;
+}) {
+  console.log("KRISTO_HEADER_SESSION_DEPRECATED", {
+    source: String(input.source || "").trim() || "unknown",
+    hasToken: input.hasToken === true,
+    tokenVerified: input.tokenVerified === true,
+    reason: String(input.reason || "").trim() || null,
+    via: String(input.via || "").trim() || "header-session",
+    note: "Stage-1 legacy fallback for non-commerce routes; checkout/orders do not use this path.",
+  });
 }
 
 function base64url(input: Buffer | string): string {
@@ -157,7 +224,11 @@ function signatureMatches(payloadB64: string, providedSig: string, secret: strin
 }
 
 /** Issue a signed token binding `userId`. Returns "" if it cannot be signed. */
-export function issueSessionToken(userId: string, ttlMs: number = DEFAULT_TTL_MS): string {
+export function issueSessionToken(
+  userId: string,
+  ttlMs: number = DEFAULT_TTL_MS,
+  version: 1 | 2 = KRISTO_SESSION_TOKEN_VERSION
+): string {
   const uid = String(userId || "").trim();
   if (!uid) return "";
 
@@ -170,8 +241,19 @@ export function issueSessionToken(userId: string, ttlMs: number = DEFAULT_TTL_MS
     return "";
   }
 
+  const ttl = Number.isFinite(Number(ttlMs)) ? Number(ttlMs) : DEFAULT_TTL_MS;
   const now = Date.now();
-  const payloadB64 = base64url(JSON.stringify({ uid, iat: now, exp: now + ttlMs }));
+  const payload =
+    version === 1
+      ? { uid, iat: now, exp: now + ttl }
+      : {
+          v: KRISTO_SESSION_TOKEN_VERSION,
+          iss: KRISTO_SESSION_TOKEN_ISSUER,
+          uid,
+          iat: now,
+          exp: now + ttl,
+        };
+  const payloadB64 = base64url(JSON.stringify(payload));
   return `${payloadB64}.${sign(payloadB64, secret)}`;
 }
 
@@ -184,11 +266,19 @@ export type SessionTokenVerification = {
 };
 
 function validateVerifiedPayload(
-  payload: { uid?: string; exp?: number },
+  payload: { uid?: string; exp?: number; v?: number; iss?: string },
   expectedUserId?: string
 ): SessionTokenVerification {
   const uid = String(payload?.uid || "").trim();
   if (!uid) return { ok: false, reason: "no-uid" };
+  const version = Number(payload?.v || 1);
+  if (version === 2) {
+    if (String(payload?.iss || "").trim() !== KRISTO_SESSION_TOKEN_ISSUER) {
+      return { ok: false, reason: "bad-issuer" };
+    }
+  } else if (version !== 1) {
+    return { ok: false, reason: "unsupported-version" };
+  }
   if (Number(payload?.exp || 0) < Date.now()) return { ok: false, reason: "expired" };
   if (expectedUserId && String(expectedUserId).trim() !== uid) {
     return { ok: false, reason: "uid-mismatch" };
@@ -312,17 +402,76 @@ export function shortAuthHash(value: string) {
 }
 
 function peekSessionTokenUid(token: string) {
+  return String(peekSessionTokenMeta(token).uid || "").trim();
+}
+
+export function peekSessionTokenMeta(token: string) {
   const raw = String(token || "").trim();
   const dot = raw.indexOf(".");
-  if (dot <= 0 || dot >= raw.length - 1) return "";
+  if (dot <= 0 || dot >= raw.length - 1) {
+    return { uid: "", version: null as number | null, issuer: "" };
+  }
   try {
     const payload = JSON.parse(base64urlDecode(raw.slice(0, dot))) as {
       uid?: string;
+      v?: number;
+      iss?: string;
     };
-    return String(payload?.uid || "").trim();
+    const version = payload?.v == null ? 1 : Number(payload.v);
+    return {
+      uid: String(payload?.uid || "").trim(),
+      version: Number.isFinite(version) ? version : null,
+      issuer: String(payload?.iss || "").trim(),
+    };
   } catch {
-    return "";
+    return { uid: "", version: null as number | null, issuer: "" };
   }
+}
+
+/**
+ * Token present: identity only from HMAC verification.
+ * No token: header uid only in non-production. Never synthesizes a
+ * header-session from a bad-signature token.
+ */
+export function resolvePresentedMobileSession(req: HeaderBag | undefined): {
+  userId: string;
+  via: "verified-token" | "dev-header" | "none";
+  reason: string | null;
+  tokenVerified: boolean;
+} {
+  const headerUserId = String(req?.headers?.get?.("x-kristo-user-id") || "").trim();
+  const token = String(req?.headers?.get?.("x-kristo-session-token") || "").trim();
+  if (token) {
+    const verify = verifySessionToken(token);
+    if (verify.ok && verify.userId) {
+      return {
+        userId: verify.userId,
+        via: "verified-token",
+        reason: null,
+        tokenVerified: true,
+      };
+    }
+    return {
+      userId: "",
+      via: "none",
+      reason: verify.reason || "invalid-token",
+      tokenVerified: false,
+    };
+  }
+  if (headerUserId && shouldTrustRawHeaderIdentity()) {
+    return {
+      userId: headerUserId,
+      via: "dev-header",
+      reason: null,
+      tokenVerified: false,
+    };
+  }
+  return {
+    userId: "",
+    via: "none",
+    reason: headerUserId ? "missing_token" : "no-header",
+    tokenVerified: false,
+  };
 }
 
 export type CheckoutAuthDiag = {
@@ -335,6 +484,8 @@ export type CheckoutAuthDiag = {
   verifiedVia: "current" | "legacy" | null;
   headerUidHash: string | null;
   tokenUidHash: string | null;
+  tokenVersion: number | null;
+  tokenIssuer: string;
   resolveVia: string;
   resolveOk: boolean;
 };
@@ -498,17 +649,21 @@ export function describeCheckoutAuthDiag(req: HeaderBag | undefined): CheckoutAu
   const verify = token
     ? verifySessionToken(token, headerUserId || undefined)
     : ({ ok: false, reason: "missing" } as SessionTokenVerification);
+  const peeked = peekSessionTokenMeta(token);
+  const secrets = describeSessionSecretConfig();
 
   return {
     hasHeaderUserId: Boolean(headerUserId),
     hasSessionToken: Boolean(token),
     sessionTokenLen: token.length,
-    hasSessionSecret: getVerificationSecrets().length > 0,
+    hasSessionSecret: secrets.hasKristoSessionSecret || secrets.verifierCount > 0,
     verifyOk: verify.ok,
     verifyReason: verify.reason || (verify.ok ? null : "invalid"),
     verifiedVia: verify.verifiedVia || null,
     headerUidHash: shortAuthHash(headerUserId),
-    tokenUidHash: shortAuthHash(peekSessionTokenUid(token)),
+    tokenUidHash: shortAuthHash(peeked.uid),
+    tokenVersion: peeked.version,
+    tokenIssuer: peeked.issuer,
     resolveVia: resolved.via,
     resolveOk: Boolean(resolved.userId),
   };

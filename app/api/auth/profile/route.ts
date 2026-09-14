@@ -8,6 +8,10 @@ import {
   touchSession,
 } from "@/app/api/auth/_lib/session";
 import {
+  logDeprecatedHeaderSession,
+  verifySessionToken,
+} from "@/app/api/auth/_lib/sessionToken";
+import {
   computeProfileStatus,
   ensureProfileDraft,
   getProfile,
@@ -152,6 +156,34 @@ function isKristoUserCode(x: any) {
 
 async function resolveAuthedUser(req: Request) {
   const headerUserId = String(req.headers.get("x-kristo-user-id") || "").trim();
+  const token = String(req.headers.get("x-kristo-session-token") || "").trim();
+  if (token) {
+    const verified = verifySessionToken(token);
+    if (verified.ok && verified.userId) {
+      const u = await getUserById(verified.userId);
+      if (u) return { user: u, sessionId: null as string | null };
+      return {
+        user: { id: verified.userId, password: "" } as any,
+        sessionId: null as string | null,
+      };
+    }
+    logDeprecatedHeaderSession({
+      source: "profile-resolveAuthedUser",
+      hasToken: true,
+      tokenVerified: false,
+      reason: verified.reason || "unverified-token",
+      via: "header-uid",
+    });
+  } else if (headerUserId) {
+    logDeprecatedHeaderSession({
+      source: "profile-resolveAuthedUser",
+      hasToken: false,
+      tokenVerified: false,
+      reason: "missing_token",
+      via: "header-uid",
+    });
+  }
+
   if (!headerUserId) return null;
 
   const u = await getUserById(headerUserId);

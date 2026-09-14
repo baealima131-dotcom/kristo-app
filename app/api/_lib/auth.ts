@@ -101,7 +101,8 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
     };
   }
 
-  // Cookie session fallback (web).
+  // Cookie session fallback (web), or Stage-1 legacy header-session for
+  // existing profile/church mobile clients. Checkout must not use this path.
   const sess = await readSession(req);
   if (!sess) {
     return { userId: "", name: undefined, role: "Member", churchId: "" };
