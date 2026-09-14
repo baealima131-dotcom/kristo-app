@@ -305,6 +305,64 @@ export function resolveRequestUserId(req: HeaderBag | undefined): {
   return { userId: "", via: "none", reason: "no-header" };
 }
 
+export function shortAuthHash(value: string) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  return crypto.createHash("sha256").update(text).digest("hex").slice(0, 12);
+}
+
+function peekSessionTokenUid(token: string) {
+  const raw = String(token || "").trim();
+  const dot = raw.indexOf(".");
+  if (dot <= 0 || dot >= raw.length - 1) return "";
+  try {
+    const payload = JSON.parse(base64urlDecode(raw.slice(0, dot))) as {
+      uid?: string;
+    };
+    return String(payload?.uid || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export type CheckoutAuthDiag = {
+  hasHeaderUserId: boolean;
+  hasSessionToken: boolean;
+  sessionTokenLen: number;
+  hasSessionSecret: boolean;
+  verifyOk: boolean;
+  verifyReason: string | null;
+  verifiedVia: "current" | "legacy" | null;
+  headerUidHash: string | null;
+  tokenUidHash: string | null;
+  resolveVia: string;
+  resolveOk: boolean;
+};
+
+/** Presence/hash-safe checkout auth diagnostics. Never includes token or secret values. */
+export function describeCheckoutAuthDiag(req: HeaderBag | undefined): CheckoutAuthDiag {
+  const headerUserId = String(req?.headers?.get?.("x-kristo-user-id") || "").trim();
+  const token = String(req?.headers?.get?.("x-kristo-session-token") || "").trim();
+  const resolved = resolveRequestUserId(req);
+  const verify = token
+    ? verifySessionToken(token, headerUserId || undefined)
+    : ({ ok: false, reason: "missing" } as SessionTokenVerification);
+
+  return {
+    hasHeaderUserId: Boolean(headerUserId),
+    hasSessionToken: Boolean(token),
+    sessionTokenLen: token.length,
+    hasSessionSecret: getVerificationSecrets().length > 0,
+    verifyOk: verify.ok,
+    verifyReason: verify.reason || (verify.ok ? null : "invalid"),
+    verifiedVia: verify.verifiedVia || null,
+    headerUidHash: shortAuthHash(headerUserId),
+    tokenUidHash: shortAuthHash(peekSessionTokenUid(token)),
+    resolveVia: resolved.via,
+    resolveOk: Boolean(resolved.userId),
+  };
+}
+
 /** Structured auth diagnostics for mobile/server mismatch tracing. */
 export function logAuthRequestDiag(
   req: HeaderBag | undefined,

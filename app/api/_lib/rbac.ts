@@ -11,6 +11,7 @@ import {
 import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
 
 import { getCheckoutViewer, getViewer } from "@/app/api/_lib/auth";
+import { describeCheckoutAuthDiag } from "@/app/api/auth/_lib/sessionToken";
 import {
   getActiveMembership,
   requestMembership,
@@ -421,11 +422,31 @@ export async function guardCheckoutAuth(
 ): Promise<AuthOnlyContext | NextResponse> {
   const timer = sokoCheckoutTimer("checkout-auth");
   const viewer = await getCheckoutViewer(req);
-  timer.stage("token_verify", {
+  const diag = describeCheckoutAuthDiag(req);
+  console.log("KRISTO_SOKO_CHECKOUT_AUTH_DIAG", {
     via: viewer.via,
-    tokenVerified: viewer.tokenVerified,
+    verified: viewer.tokenVerified,
     profileHydrated: viewer.profileHydrated,
     hasUserId: Boolean(viewer.userId),
+    hasHeaderUserId: diag.hasHeaderUserId,
+    hasSessionToken: diag.hasSessionToken,
+    sessionTokenLen: diag.sessionTokenLen,
+    hasSessionSecret: diag.hasSessionSecret,
+    verifyOk: diag.verifyOk,
+    verifyReason: diag.verifyReason,
+    verifiedVia: diag.verifiedVia,
+    headerUidHash: diag.headerUidHash,
+    tokenUidHash: diag.tokenUidHash,
+    resolveVia: diag.resolveVia,
+    resolveOk: diag.resolveOk,
+  });
+  timer.stage("token_verify", {
+    via: viewer.via,
+    verified: viewer.tokenVerified,
+    profileHydrated: viewer.profileHydrated,
+    hasUserId: Boolean(viewer.userId),
+    verifyOk: diag.verifyOk,
+    resolveOk: diag.resolveOk,
   });
 
   if (!viewer.userId) {
