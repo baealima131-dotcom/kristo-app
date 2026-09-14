@@ -65,6 +65,22 @@ export async function assertSokoPublisher(userId: string, kristoId: string, prod
   const state = await dbGetSokoEnforcementStatus({ sellerUserIds: [userId], productIds: productId ? [productId] : [] });
   if ((state.sellerStatus[userId] || "active") !== "active" || (productId && state.hiddenProductIds.includes(productId))) throw new Error("This seller or product is restricted.");
 }
+function listingStripeCardAvailable(
+  row: Row,
+  payload: Record<string, any>,
+  stockAvailable: number
+) {
+  return sokoStripeCardAvailableOnListing({
+    serverConfigured: sokoStripeServerConfigured(),
+    sellerUserId: row.seller_user_id,
+    productStatus: row.status,
+    stockAvailable,
+    currency: String(payload.currency || ""),
+    allowedSellerUserId: configuredSokoStripeSellerUserId(),
+    category: String(payload.category || ""),
+  });
+}
+
 function publicProduct(row: Row) {
   const { imageKeys, ...payload } = row.payload || {};
   const photos = resolveSokoCatalogPhotos(imageKeys);
@@ -84,14 +100,11 @@ function publicProduct(row: Row) {
       ? { ...payload.paymentOptions }
       : {};
 
-  paymentOptions.stripeCardAvailable = sokoStripeCardAvailableOnListing({
-    serverConfigured: sokoStripeServerConfigured(),
-    sellerUserId: row.seller_user_id,
-    productStatus: row.status,
-    stockAvailable,
-    currency: String(payload.currency || ""),
-    allowedSellerUserId: configuredSokoStripeSellerUserId(),
-  });
+  paymentOptions.stripeCardAvailable = listingStripeCardAvailable(
+    row,
+    payload,
+    stockAvailable
+  );
 
   return {
     ...payload,
@@ -119,8 +132,13 @@ function publicProductWithoutImages(row: Row) {
   const stockAvailable = Math.max(0, Number(row.stock_available || 0));
   const paymentOptions =
     payload.paymentOptions && typeof payload.paymentOptions === "object"
-      ? { ...payload.paymentOptions, stripeCardAvailable: false }
-      : { stripeCardAvailable: false };
+      ? { ...payload.paymentOptions }
+      : {};
+  paymentOptions.stripeCardAvailable = listingStripeCardAvailable(
+    row,
+    payload,
+    stockAvailable
+  );
   return {
     ...payload,
     paymentOptions,

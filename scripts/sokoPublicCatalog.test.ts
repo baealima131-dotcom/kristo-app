@@ -77,6 +77,11 @@ test("GET products is public; writes stay behind guardAuth", () => {
   assert.match(route, /export async function PATCH/);
   assert.match(productsDb, /resolveSokoCatalogPhotos/);
   assert.match(productsDb, /isolateSokoCatalogProducts/);
+  assert.match(productsDb, /listingStripeCardAvailable/);
+  assert.doesNotMatch(
+    productsDb.slice(productsDb.indexOf("function publicProductWithoutImages")),
+    /stripeCardAvailable: false/
+  );
   assert.doesNotMatch(productsDb, /\.map\(sokoImageUrl\)/);
 });
 

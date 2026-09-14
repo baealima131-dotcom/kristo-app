@@ -45,7 +45,17 @@ export function cleanStripeText(value: unknown, max = 180) {
 export function configuredSokoStripeSellerUserId(
   env: NodeJS.ProcessEnv = process.env
 ) {
-  return cleanStripeText(env.SOKO_STRIPE_SELLER_USER_ID, 180);
+  return cleanStripeText(env["SOKO_STRIPE_SELLER_USER_ID"], 180);
+}
+
+export function stripePublishableConflictsWithSecret(
+  publishableKey: string,
+  secretKey: string
+) {
+  return Boolean(
+    stripeModeFromPublishableKey(publishableKey) &&
+      !stripeModesMatch(publishableKey, secretKey)
+  );
 }
 
 export function stripeModeFromSecretKey(secretKey: string): StripeKeyMode | null {
@@ -193,7 +203,12 @@ export function sokoStripeCardAvailableOnListing(input: {
   stockAvailable?: number;
   currency: string;
   allowedSellerUserId: string;
+  category?: string;
 }) {
+  if (cleanStripeText(input.category, 50) === "Vehicles") {
+    return false;
+  }
+
   if (!input.serverConfigured) {
     return false;
   }

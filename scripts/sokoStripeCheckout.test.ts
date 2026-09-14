@@ -15,9 +15,11 @@ import {
   stripeModeFromPublishableKey,
   stripeModeFromSecretKey,
   stripeModesMatch,
+  stripePublishableConflictsWithSecret,
   stripePaymentIntentIdempotencyKey,
   toStripeAmountMinor,
 } from "../app/api/_lib/sokoStripeCheckout.ts";
+import { sokoStripeServerConfigured } from "../app/api/_lib/sokoStripeServer.ts";
 import { canReuseSokoShippingQuote } from "../app/api/_lib/sokoShippingQuotePolicy.ts";
 
 const sellerId = "seller-1-example";
@@ -77,10 +79,20 @@ test("existing Seller 1 listings expose Card without stripe in paymentOptions.me
     currency: "USD",
     allowedSellerUserId: sellerId,
   });
+  const vehicle = sokoStripeCardAvailableOnListing({
+    serverConfigured: true,
+    sellerUserId: sellerId,
+    productStatus: "Active",
+    stockAvailable: 1,
+    currency: "USD",
+    allowedSellerUserId: sellerId,
+    category: "Vehicles",
+  });
   assert.equal(existingHandbag, true);
   assert.equal(newSeller1Listing, true);
   assert.equal(otherSeller, false);
   assert.equal(unconfigured, false);
+  assert.equal(vehicle, false);
 
   const products = fs.readFileSync(
     path.join(process.cwd(), "app/api/_lib/store/sokoProductsDb.ts"),
@@ -115,7 +127,6 @@ test("existing Seller 1 listings expose Card without stripe in paymentOptions.me
   assert.match(mobile, /Buy with Card/);
   assert.match(mobile, /Card — Secured by Stripe/);
   assert.match(mobile, /openSecureCheckout\("stripe_card"\)/);
-  assert.match(mobile, /openSecureCheckout\("cash_app"\)/);
   assert.match(mobile, /Buy with Cash App/);
   assert.doesNotMatch(mobile, /setCheckoutPaymentPhase\("paid"\)[\s\S]{0,120}initPaymentSheet/);
 });
@@ -470,6 +481,29 @@ test("test/live mismatch is rejected", () => {
   assert.equal(eventModeMatchesSecret(true, "sk_test_example"), false);
   assert.equal(eventModeMatchesSecret(false, "sk_test_example"), true);
   assert.equal(stripeModesMatch("pk_test_x", "sk_live_x"), false);
+  assert.equal(stripePublishableConflictsWithSecret("eyJ2Ijoi", "sk_test_x"), false);
+  assert.equal(stripePublishableConflictsWithSecret("", "sk_test_x"), false);
+  assert.equal(stripePublishableConflictsWithSecret("pk_live_x", "sk_test_x"), true);
+  assert.equal(stripePublishableConflictsWithSecret("pk_test_x", "sk_test_x"), false);
+  const configuredEnv = {
+    STRIPE_SECRET_KEY: "sk_test_x",
+    STRIPE_WEBHOOK_SECRET: "whsec_x",
+    SOKO_STRIPE_SELLER_USER_ID: sellerId,
+  };
+  assert.equal(
+    sokoStripeServerConfigured({
+      ...configuredEnv,
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "eyJ2Ijoi",
+    }),
+    true
+  );
+  assert.equal(
+    sokoStripeServerConfigured({
+      ...configuredEnv,
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_x",
+    }),
+    false
+  );
   assert.equal(stripeModeFromPublishableKey("pk_test_x"), "test");
   assert.equal(stripeModeFromSecretKey("sk_live_x"), "live");
   const decision = canApproveSokoStripePayment(

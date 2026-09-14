@@ -3,7 +3,7 @@ import Stripe from "stripe";
 import {
   cleanStripeText,
   stripeModeFromSecretKey,
-  stripeModesMatch,
+  stripePublishableConflictsWithSecret,
 } from "./sokoStripeCheckout";
 
 let stripeClient: Stripe | null = null;
@@ -12,21 +12,21 @@ let stripeClientKey = "";
 export function getStripeSecretKey(
   env: NodeJS.ProcessEnv = process.env
 ) {
-  return cleanStripeText(env.STRIPE_SECRET_KEY, 256);
+  return cleanStripeText(env["STRIPE_SECRET_KEY"], 256);
 }
 
 export function getStripeWebhookSecret(
   env: NodeJS.ProcessEnv = process.env
 ) {
-  return cleanStripeText(env.STRIPE_WEBHOOK_SECRET, 256);
+  return cleanStripeText(env["STRIPE_WEBHOOK_SECRET"], 256);
 }
 
 export function getStripePublishableKeyFromServerEnv(
   env: NodeJS.ProcessEnv = process.env
 ) {
   return cleanStripeText(
-    env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ||
-      env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
+    env["EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY"] ||
+      env["NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY"],
     256
   );
 }
@@ -37,7 +37,7 @@ export function sokoStripeServerConfigured(
   const secret = getStripeSecretKey(env);
   const webhook = getStripeWebhookSecret(env);
   const publishable = getStripePublishableKeyFromServerEnv(env);
-  const seller = cleanStripeText(env.SOKO_STRIPE_SELLER_USER_ID, 180);
+  const seller = cleanStripeText(env["SOKO_STRIPE_SELLER_USER_ID"], 180);
 
   if (
     !stripeModeFromSecretKey(secret) ||
@@ -47,7 +47,7 @@ export function sokoStripeServerConfigured(
     return false;
   }
 
-  if (publishable && !stripeModesMatch(publishable, secret)) {
+  if (stripePublishableConflictsWithSecret(publishable, secret)) {
     return false;
   }
 

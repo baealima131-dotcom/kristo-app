@@ -15,7 +15,7 @@ import {
   isTerminalFailedStripePaymentIntentStatus,
   opaqueBuyerReference,
   stripeModeFromSecretKey,
-  stripeModesMatch,
+  stripePublishableConflictsWithSecret,
   stripePaymentIntentIdempotencyKey,
 } from "@/app/api/_lib/sokoStripeCheckout";
 import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
 
     const secret = getStripeSecretKey();
     const publishable = getStripePublishableKeyFromServerEnv();
-    if (publishable && !stripeModesMatch(publishable, secret)) {
+    if (stripePublishableConflictsWithSecret(publishable, secret)) {
       return reply(
         {
           ok: false,
