@@ -5,7 +5,12 @@ import {
   readSession,
   seedUserIfMissing,
 } from "@/app/api/auth/_lib/session";
-import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
+import {
+  applyCheckoutIssuedCookieSession,
+  logCheckoutAuthResolution,
+  resolveCheckoutMobileIdentity,
+  resolveRequestUserId,
+} from "@/app/api/auth/_lib/sessionToken";
 
 /**
  * Roles used across API RBAC.
@@ -113,31 +118,23 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
 }
 
 /**
- * Checkout identity: verify the signed session token (or cookie sid)
- * without hydrating profile, church membership, or demo-user seed.
- * Unsigned x-kristo-user-id is never accepted in production.
+ * Checkout identity for Kristo Home / SOKO buyers.
+ * HMAC-verified mobile token first. Cookie-sid lookup in the server
+ * session store is the only fallback. Never use readSession(): that path
+ * synthesizes identity from x-kristo-user-id without validating a session.
  */
 export async function getCheckoutViewer(req: NextRequest): Promise<{
   userId: string;
   via: string;
   tokenVerified: boolean;
   profileHydrated: false;
+  kind:
+    | "ok"
+    | "unauthenticated"
+    | "expired_session"
+    | "valid_session_token_unverified";
+  reason?: string | null;
 }> {
-  if (process.env.KRISTO_DEV_HEADER_AUTH === "1") {
-    const headerUid = String(req.headers.get("x-kristo-user-id") || "").trim();
-    if (headerUid) {
-      const resolved = resolveRequestUserId(req);
-      if (resolved.userId) {
-        return {
-          userId: resolved.userId,
-          via: resolved.via,
-          tokenVerified: resolved.via === "token" || resolved.via === "token-only",
-          profileHydrated: false,
-        };
-      }
-    }
-  }
-
   if (
     process.env.NODE_ENV === "development" &&
     process.env.KRISTO_DEV_AUTO_LOGIN === "1"
@@ -147,43 +144,50 @@ export async function getCheckoutViewer(req: NextRequest): Promise<{
       via: "dev-auto",
       tokenVerified: false,
       profileHydrated: false,
+      kind: "ok",
     };
   }
 
-  const resolved = resolveRequestUserId(req);
-  if (resolved.userId) {
+  const identity = resolveCheckoutMobileIdentity(req);
+  if (identity.userId && identity.tokenVerified) {
+    logCheckoutAuthResolution(identity);
     return {
-      userId: resolved.userId,
-      via: resolved.via,
-      tokenVerified: resolved.via === "token" || resolved.via === "token-only",
+      userId: identity.userId,
+      via: identity.via,
+      tokenVerified: true,
       profileHydrated: false,
-    };
-  }
-
-  const headerUid = String(req.headers.get("x-kristo-user-id") || "").trim();
-  if (headerUid) {
-    return {
-      userId: "",
-      via: "none",
-      tokenVerified: false,
-      profileHydrated: false,
+      kind: identity.kind,
+      reason: identity.reason,
     };
   }
 
   const cookieUserId = await readCookieSessionUserId();
-  if (cookieUserId) {
+  const withCookie = applyCheckoutIssuedCookieSession(identity, {
+    id: cookieUserId ? "cookie-sid" : "",
+    userId: cookieUserId,
+  });
+  if (withCookie.userId) {
+    logCheckoutAuthResolution({
+      ...withCookie,
+      fallbackUser: true,
+    });
     return {
-      userId: cookieUserId,
-      via: "cookie",
+      userId: withCookie.userId,
+      via: withCookie.via,
       tokenVerified: false,
       profileHydrated: false,
+      kind: withCookie.kind,
+      reason: withCookie.reason,
     };
   }
 
+  logCheckoutAuthResolution(identity);
   return {
     userId: "",
-    via: resolved.via || "none",
+    via: identity.via || "none",
     tokenVerified: false,
     profileHydrated: false,
+    kind: identity.kind,
+    reason: identity.reason,
   };
 }

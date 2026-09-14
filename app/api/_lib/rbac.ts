@@ -428,6 +428,8 @@ export async function guardCheckoutAuth(
     verified: viewer.tokenVerified,
     profileHydrated: viewer.profileHydrated,
     hasUserId: Boolean(viewer.userId),
+    kind: viewer.kind,
+    reason: viewer.reason || diag.verifyReason,
     hasHeaderUserId: diag.hasHeaderUserId,
     hasSessionToken: diag.hasSessionToken,
     sessionTokenLen: diag.sessionTokenLen,
@@ -450,11 +452,19 @@ export async function guardCheckoutAuth(
   });
 
   if (!viewer.userId) {
+    const code =
+      viewer.kind === "expired_session"
+        ? "CHECKOUT_SESSION_EXPIRED"
+        : "CHECKOUT_UNAUTHENTICATED";
     return json(
       {
         ok: false,
         error: "Unauthorized",
-        details: { hint: "You must be signed in." },
+        details: {
+          hint: "You must be signed in.",
+          code,
+          reason: viewer.reason || null,
+        },
       } satisfies ApiErr,
       { status: 401 }
     );

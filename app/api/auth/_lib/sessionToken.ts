@@ -340,6 +340,157 @@ export type CheckoutAuthDiag = {
 };
 
 /** Presence/hash-safe checkout auth diagnostics. Never includes token or secret values. */
+export function looksLikeKristoSessionToken(token: string) {
+  const raw = String(token || "").trim();
+  const dot = raw.indexOf(".");
+  return raw.length >= 40 && dot > 0 && dot < raw.length - 8;
+}
+
+export type CheckoutMobileIdentity = {
+  userId: string;
+  via: string;
+  tokenPresent: boolean;
+  tokenVerified: boolean;
+  resolvedUser: boolean;
+  idMatch: boolean;
+  reason: string | null;
+  kind:
+    | "ok"
+    | "unauthenticated"
+    | "expired_session"
+    | "valid_session_token_unverified";
+  validator:
+    | "verifySessionToken"
+    | "resolveRequestUserId"
+    | "cookie-session-store"
+    | "none";
+};
+
+/**
+ * Canonical checkout identity: derive the user from the signed mobile
+ * session token when it verifies. Never accepts x-kristo-user-id alone.
+ */
+export function resolveCheckoutMobileIdentity(
+  req: HeaderBag | undefined
+): CheckoutMobileIdentity {
+  const headerUserId = String(req?.headers?.get?.("x-kristo-user-id") || "").trim();
+  const token = String(req?.headers?.get?.("x-kristo-session-token") || "").trim();
+  const verify = token
+    ? verifySessionToken(token)
+    : ({ ok: false, reason: "missing" } as SessionTokenVerification);
+  const tokenUid = String(verify.userId || peekSessionTokenUid(token) || "").trim();
+  const idMatch = !headerUserId || !tokenUid || headerUserId === tokenUid;
+  const resolved = resolveRequestUserId(req);
+  const tokenPresent = Boolean(token);
+
+  if (verify.ok && verify.userId) {
+    return {
+      userId: verify.userId,
+      via: "token",
+      tokenPresent,
+      tokenVerified: true,
+      resolvedUser: true,
+      idMatch,
+      reason: null,
+      kind: "ok",
+      validator: "verifySessionToken",
+    };
+  }
+
+  if (
+    resolved.userId &&
+    (resolved.via === "token" || resolved.via === "token-only")
+  ) {
+    return {
+      userId: resolved.userId,
+      via: resolved.via,
+      tokenPresent,
+      tokenVerified: true,
+      resolvedUser: true,
+      idMatch,
+      reason: null,
+      kind: "ok",
+      validator: "resolveRequestUserId",
+    };
+  }
+
+  if (!tokenPresent || !looksLikeKristoSessionToken(token)) {
+    return {
+      userId: "",
+      via: "none",
+      tokenPresent,
+      tokenVerified: false,
+      resolvedUser: false,
+      idMatch,
+      reason: tokenPresent
+        ? verify.reason || resolved.reason || "invalid-token"
+        : "missing_token",
+      kind: "unauthenticated",
+      validator: "none",
+    };
+  }
+
+  return {
+    userId: "",
+    via: resolved.via || "none",
+    tokenPresent: true,
+    tokenVerified: false,
+    resolvedUser: false,
+    idMatch,
+    reason: verify.reason || resolved.reason || "invalid-token",
+    kind:
+      verify.reason === "expired" ? "expired_session" : "valid_session_token_unverified",
+    validator: "verifySessionToken",
+  };
+}
+
+/**
+ * Cookie-sid lookup is the only non-HMAC checkout fallback.
+ * `readSession()` synthesizes `header-session-${uid}` from x-kristo-user-id
+ * and must never be treated as a server-issued session.
+ */
+export function isIssuedServerCookieSession(
+  session: { id?: string; userId?: string } | null | undefined
+) {
+  const id = String(session?.id || "").trim();
+  const userId = String(session?.userId || "").trim();
+  return Boolean(id) && Boolean(userId) && !id.startsWith("header-session-");
+}
+
+export function applyCheckoutIssuedCookieSession(
+  identity: CheckoutMobileIdentity,
+  session: { id?: string; userId?: string } | null | undefined
+): CheckoutMobileIdentity {
+  if (identity.userId && identity.tokenVerified) return identity;
+  if (!isIssuedServerCookieSession(session)) return identity;
+  return {
+    ...identity,
+    userId: String(session?.userId || "").trim(),
+    via: "cookie",
+    resolvedUser: true,
+    tokenVerified: false,
+    kind: "ok",
+    reason: null,
+    validator: "cookie-session-store",
+  };
+}
+
+export function logCheckoutAuthResolution(
+  identity: CheckoutMobileIdentity & { fallbackUser?: boolean }
+) {
+  console.log("SOKO_CHECKOUT_AUTH_RESOLUTION", {
+    validator: identity.validator,
+    tokenPresent: identity.tokenPresent === true,
+    tokenVerified: identity.tokenVerified === true,
+    resolvedUser: identity.resolvedUser === true || Boolean(identity.userId),
+    idMatch: identity.idMatch === true,
+    reason: identity.reason || null,
+    kind: identity.kind,
+    via: identity.via,
+    fallbackUser: identity.fallbackUser === true,
+  });
+}
+
 export function describeCheckoutAuthDiag(req: HeaderBag | undefined): CheckoutAuthDiag {
   const headerUserId = String(req?.headers?.get?.("x-kristo-user-id") || "").trim();
   const token = String(req?.headers?.get?.("x-kristo-session-token") || "").trim();

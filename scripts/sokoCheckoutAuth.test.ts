@@ -4,8 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
+  applyCheckoutIssuedCookieSession,
   describeCheckoutAuthDiag,
+  isIssuedServerCookieSession,
   issueSessionToken,
+  logCheckoutAuthResolution,
+  looksLikeKristoSessionToken,
+  resolveCheckoutMobileIdentity,
   resolveRequestUserId,
   shortAuthHash,
   verifySessionToken,
@@ -210,6 +215,176 @@ test("checkout auth diagnostics cover valid token and failure reasons", () => {
   }, "");
 });
 
+test("checkout identity prefers a verified mobile token and never trusts user-id alone", () => {
+  const uid = "u_996c19a3aad35819e9614ead1";
+  withProductionAuth(() => {
+    const token = issueSessionToken(uid);
+    assert.equal(looksLikeKristoSessionToken(token), true);
+
+    const verified = resolveCheckoutMobileIdentity(
+      headerReq({
+        "x-kristo-user-id": uid,
+        "x-kristo-session-token": token,
+        "x-kristo-role": "Pastor",
+        "x-kristo-church-id": "CH7-57M90Y",
+      })
+    );
+    assert.equal(verified.userId, uid);
+    assert.equal(verified.tokenVerified, true);
+    assert.equal(verified.validator, "verifySessionToken");
+    assert.equal(verified.kind, "ok");
+    assert.equal(verified.idMatch, true);
+
+    const spoofed = resolveCheckoutMobileIdentity(
+      headerReq({
+        "x-kristo-user-id": "u_spoofed_buyer",
+        "x-kristo-session-token": token,
+      })
+    );
+    assert.equal(spoofed.userId, uid);
+    assert.equal(spoofed.tokenVerified, true);
+    assert.equal(spoofed.idMatch, false);
+    assert.equal(
+      applyCheckoutIssuedCookieSession(spoofed, {
+        id: "header-session-u_spoofed_buyer",
+        userId: "u_spoofed_buyer",
+      }).userId,
+      uid
+    );
+
+    const uidOnly = resolveCheckoutMobileIdentity(
+      headerReq({ "x-kristo-user-id": uid })
+    );
+    assert.equal(uidOnly.userId, "");
+    assert.equal(uidOnly.tokenPresent, false);
+    assert.equal(uidOnly.kind, "unauthenticated");
+    assert.equal(uidOnly.reason, "missing_token");
+    assert.equal(
+      applyCheckoutIssuedCookieSession(uidOnly, {
+        id: `header-session-${uid}`,
+        userId: uid,
+      }).userId,
+      ""
+    );
+
+    const expired = resolveCheckoutMobileIdentity(
+      headerReq({
+        "x-kristo-user-id": uid,
+        "x-kristo-session-token": issueSessionToken(uid, -1),
+      })
+    );
+    assert.equal(expired.userId, "");
+    assert.equal(expired.kind, "expired_session");
+    assert.equal(expired.reason, "expired");
+    assert.equal(
+      applyCheckoutIssuedCookieSession(expired, {
+        id: `header-session-${uid}`,
+        userId: uid,
+      }).userId,
+      ""
+    );
+    assert.equal(
+      applyCheckoutIssuedCookieSession(expired, {
+        id: "sess_server_issued",
+        userId: uid,
+      }).userId,
+      uid
+    );
+  });
+
+  let forged = "";
+  withProductionAuth(() => {
+    forged = issueSessionToken(uid);
+  });
+  withProductionAuth(() => {
+    const unverified = resolveCheckoutMobileIdentity(
+      headerReq({
+        "x-kristo-user-id": uid,
+        "x-kristo-session-token": forged,
+      })
+    );
+    assert.equal(unverified.userId, "");
+    assert.equal(unverified.tokenPresent, true);
+    assert.equal(unverified.tokenVerified, false);
+    assert.equal(unverified.kind, "valid_session_token_unverified");
+    assert.equal(unverified.reason, "bad-signature");
+    assert.equal(
+      applyCheckoutIssuedCookieSession(unverified, {
+        id: `header-session-${uid}`,
+        userId: uid,
+      }).userId,
+      ""
+    );
+    const issued = applyCheckoutIssuedCookieSession(unverified, {
+      id: "sess_server_issued",
+      userId: uid,
+    });
+    assert.equal(issued.userId, uid);
+    assert.equal(issued.via, "cookie");
+    assert.equal(issued.validator, "cookie-session-store");
+    assert.equal(issued.tokenVerified, false);
+    assert.equal(
+      isIssuedServerCookieSession({
+        id: `header-session-${uid}`,
+        userId: uid,
+      }),
+      false
+    );
+    assert.equal(
+      isIssuedServerCookieSession({ id: "sess_server_issued", userId: uid }),
+      true
+    );
+
+    const mismatched = resolveCheckoutMobileIdentity(
+      headerReq({
+        "x-kristo-user-id": "u_spoofed_buyer",
+        "x-kristo-session-token": forged,
+      })
+    );
+    assert.equal(mismatched.idMatch, false);
+    assert.equal(mismatched.userId, "");
+    assert.equal(
+      applyCheckoutIssuedCookieSession(mismatched, {
+        id: "header-session-u_spoofed_buyer",
+        userId: "u_spoofed_buyer",
+      }).userId,
+      ""
+    );
+  }, "soko-checkout-auth-other-secret-32");
+});
+
+test("checkout auth-resolution logs stay token-free", () => {
+  const logs: unknown[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  try {
+    logCheckoutAuthResolution({
+      userId: "u_996c19a3aad35819e9614ead1",
+      via: "cookie",
+      tokenPresent: true,
+      tokenVerified: false,
+      resolvedUser: true,
+      idMatch: true,
+      reason: null,
+      kind: "ok",
+      validator: "cookie-session-store",
+      fallbackUser: true,
+    });
+  } finally {
+    console.log = original;
+  }
+  const serialized = JSON.stringify(logs);
+  assert.match(serialized, /SOKO_CHECKOUT_AUTH_RESOLUTION/);
+  assert.match(serialized, /"validator":"cookie-session-store"/);
+  assert.match(serialized, /"tokenPresent":true/);
+  assert.match(serialized, /"resolvedUser":true/);
+  assert.match(serialized, /"idMatch":true/);
+  assert.doesNotMatch(serialized, /u_996c19a3aad35819e9614ead1/);
+  assert.doesNotMatch(serialized, /sessionToken/);
+});
+
 test("checkout auth path skips profile hydrate and still enforces safety", () => {
   const auth = fs.readFileSync(
     path.join(process.cwd(), "app/api/_lib/auth.ts"),
@@ -217,6 +392,16 @@ test("checkout auth path skips profile hydrate and still enforces safety", () =>
   );
   assert.match(auth, /export async function getCheckoutViewer/);
   assert.match(auth, /profileHydrated: false/);
+  assert.match(auth, /applyCheckoutIssuedCookieSession/);
+  assert.match(auth, /readCookieSessionUserId/);
+  assert.doesNotMatch(
+    auth.slice(auth.indexOf("export async function getCheckoutViewer")),
+    /await readSession\(/
+  );
+  assert.doesNotMatch(
+    auth.slice(auth.indexOf("export async function getCheckoutViewer")),
+    /mobile-header-session/
+  );
   assert.doesNotMatch(
     auth.slice(auth.indexOf("getCheckoutViewer")),
     /seedUserIfMissing|getUserById/
@@ -247,7 +432,14 @@ test("checkout auth path skips profile hydrate and still enforces safety", () =>
     rbac.slice(rbac.indexOf("export async function guardCheckoutAuth")),
     /sessionToken:/
   );
+  assert.match(rbac, /CHECKOUT_SESSION_EXPIRED/);
+  assert.match(rbac, /CHECKOUT_UNAUTHENTICATED/);
   assert.match(sessionToken, /export function describeCheckoutAuthDiag/);
+  assert.match(sessionToken, /export function resolveCheckoutMobileIdentity/);
+  assert.match(sessionToken, /export function applyCheckoutIssuedCookieSession/);
+  assert.match(sessionToken, /export function isIssuedServerCookieSession/);
+  assert.match(sessionToken, /SOKO_CHECKOUT_AUTH_RESOLUTION/);
+  assert.match(sessionToken, /header-session-/);
   assert.match(sessionToken, /verifySessionToken\(token, headerUserId \|\| undefined\)/);
 });
 
@@ -302,7 +494,8 @@ test("mobile checkout uses kristoApi auth headers and does not retry 401", () =>
   assert.match(helper, /application\/json/);
   assert.match(helper, /blockedToken/);
   assert.match(helper, /SOKO_SESSION_EXPIRED_MESSAGE/);
-  assert.match(helper, /Sign in again to continue checkout/);
+  assert.match(helper, /evaluateSessionRenewal/);
+  assert.match(helper, /setCheckoutReconnecting/);
   assert.match(helper, /hasUserId: Boolean\(headers\["x-kristo-user-id"\]\)/);
   assert.match(helper, /sokoListBuyerSellerConversations/);
   assert.match(helper, /sokoOpenBuyerSellerConversation/);
@@ -325,6 +518,11 @@ test("mobile checkout uses kristoApi auth headers and does not retry 401", () =>
   assert.match(home, /\/api\/soko\/payments\/stripe\/payment-intent/);
   assert.match(home, /openSokoProductConversation/);
   assert.match(home, /SokoBuyerSellerChat/);
+  assert.match(home, /setKristoCheckoutReauth\(true\)/);
+  assert.match(home, /Sign in again to continue checkout/);
+  assert.doesNotMatch(home, /Reconnect Kristo Account/);
+  assert.doesNotMatch(home, /setMorePage\("access"\)/);
+  assert.doesNotMatch(home, /Seller Access/);
   assert.doesNotMatch(home, /openDirectMessageThread/);
   assert.doesNotMatch(home, /fetch\(\s*\n\s*base\s*\+\s*path/);
   assert.doesNotMatch(home, /apiJson=async\(path:string,init:RequestInit\)=>\{/);
