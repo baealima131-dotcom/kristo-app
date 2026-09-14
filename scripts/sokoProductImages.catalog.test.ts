@@ -174,6 +174,102 @@ test("MIME magic bytes, extension, and size rejection", () => {
   );
 });
 
+test("listing uploads keep magic-byte checks and store the verified extension", () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 1]);
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 1]);
+  const webp = Buffer.concat([
+    Buffer.from("RIFF"),
+    Buffer.alloc(4),
+    Buffer.from("WEBP"),
+  ]);
+  const heic = Buffer.concat([
+    Buffer.from([0, 0, 0, 24]),
+    Buffer.from("ftypheic"),
+    Buffer.alloc(4),
+    Buffer.from("mif1"),
+  ]);
+
+  const jpegOk = inspectSokoProductImageUpload({
+    bytes: jpeg,
+    filename: "listing.JPEG",
+    declaredMime: "image/jpeg",
+  });
+  assert.equal(jpegOk.ok, true);
+  if (!jpegOk.ok) return;
+  assert.equal(
+    buildSokoProductImageObjectKey({
+      prefix: "uploads",
+      ownerHex: owner,
+      fileId,
+      extension: jpegOk.format.extension,
+    }),
+    `uploads/soko-products/${owner}/${fileId}.jpg`
+  );
+
+  const pngOk = inspectSokoProductImageUpload({
+    bytes: png,
+    filename: "photo.png",
+    declaredMime: "image/png",
+  });
+  assert.equal(pngOk.ok, true);
+  if (pngOk.ok) assert.equal(pngOk.format.extension, "png");
+
+  const webpOk = inspectSokoProductImageUpload({
+    bytes: webp,
+    filename: "photo.webp",
+    declaredMime: "image/webp",
+  });
+  assert.equal(webpOk.ok, true);
+  if (webpOk.ok) assert.equal(webpOk.format.extension, "webp");
+
+  const jpegWrongExt = inspectSokoProductImageUpload({
+    bytes: jpeg,
+    filename: "photo.png",
+    declaredMime: "image/jpeg",
+  });
+  assert.equal(jpegWrongExt.ok, false);
+  if (!jpegWrongExt.ok) {
+    assert.match(jpegWrongExt.error, /extension does not match/);
+  }
+
+  const heicRejected = inspectSokoProductImageUpload({
+    bytes: heic,
+    filename: "photo.jpg",
+    declaredMime: "image/jpeg",
+  });
+  assert.equal(heicRejected.ok, false);
+  if (!heicRejected.ok) {
+    assert.match(heicRejected.error, /Convert HEIC/);
+  }
+
+  const spoofed = inspectSokoProductImageUpload({
+    bytes: Buffer.from("GIF89a"),
+    filename: "photo.jpg",
+    declaredMime: "image/jpeg",
+  });
+  assert.equal(spoofed.ok, false);
+  if (!spoofed.ok) {
+    assert.match(spoofed.error, /JPEG, PNG or WebP/);
+  }
+});
+
+test("object key extension is derived from verified bytes", () => {
+  const verified = inspectSokoProductImageUpload({
+    bytes: Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+    filename: "photo.jpg",
+    declaredMime: "image/jpeg",
+  });
+  assert.equal(verified.ok, true);
+  if (!verified.ok) return;
+  const key = buildSokoProductImageObjectKey({
+    prefix: "uploads",
+    ownerHex: owner,
+    fileId,
+    extension: verified.format.extension,
+  });
+  assert.equal(key, `uploads/soko-products/${owner}/${fileId}.jpg`);
+});
+
 test("durable uploads/ HTTPS URL output and Vercel never uses local disk", () => {
   assert.equal(
     selectSokoProductImageWriteTarget({
@@ -253,6 +349,8 @@ test("seller product-images route uses auth, MIME, size, R2, and no Vercel local
   assert.match(route, /headStorageObject/);
   assert.match(route, /assertDurableSokoUploadResult/);
   assert.match(route, /assertStoredSokoProductImageHead/);
+  assert.match(route, /extension: format\.extension/);
+  assert.match(route, /contentType: format\.mime/);
   assert.match(route, /selectSokoProductImageWriteTarget/);
   assert.match(route, /vercel: Boolean\(process\.env\.VERCEL\)/);
   assert.match(route, /writeTarget === "local"/);
