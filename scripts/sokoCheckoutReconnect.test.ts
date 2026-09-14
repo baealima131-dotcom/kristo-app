@@ -20,12 +20,19 @@ import {
   isLiveCheckoutUnauthorized,
   isUnverifiableCheckoutToken,
   logCheckoutAuthEvent,
+  logCheckoutReauthSubmitEvent,
   restoreCheckoutDraft,
   sellerAccessAllowedFor,
   shouldProbeCheckoutProfileSession,
   snapshotCheckoutDraft,
   SOKO_SESSION_EXPIRED_MESSAGE,
 } from "../apps/mobile/src/lib/sokoCheckoutReconnect.ts";
+import {
+  getKristoLoginValidationError,
+  getLoginIdentifierValidationError,
+  INCOMPLETE_EMAIL_MESSAGE,
+  supportedKristoLoginIdentifierType,
+} from "../apps/mobile/src/lib/kristoLoginValidation.ts";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -230,7 +237,12 @@ test("home checkout reauthenticates through Kristo member sign-in and keeps Retr
   assert.match(home, /sessionExpiredRef\.current=true/);
   assert.match(home, /setCheckoutOpen\(true\)/);
   assert.match(home, /\/api\/auth\/signin|renewKristoCheckoutSession/);
+  assert.match(home, /Sign in with your Kristo email or phone/);
+  assert.doesNotMatch(home, /phone or Kristo ID/);
   assert.match(login, /apiPost\("\/api\/auth\/signin"/);
+  assert.match(login, /getLoginIdentifierValidationError/);
+  assert.match(login, /kristoLoginValidation/);
+  assert.doesNotMatch(login, /password\.length >= 8/);
   assert.doesNotMatch(home, /Reconnect Kristo Account/);
   assert.doesNotMatch(home, /setForceKristoSessionRenew/);
   assert.doesNotMatch(home, /setMorePage\("access"\)/);
@@ -260,6 +272,13 @@ test("home checkout reauthenticates through Kristo member sign-in and keeps Retr
   assert.match(helper, /shouldProbeCheckoutProfileSession/);
   assert.match(helper, /isUnverifiableCheckoutToken/);
   assert.match(helper, /you must be signed in/);
+  assert.match(api, /getKristoLoginValidationError/);
+  assert.match(api, /REAUTH_SUBMIT_STARTED/);
+  assert.match(api, /REAUTH_SIGNIN_RESPONSE/);
+  assert.match(api, /REAUTH_SUBMIT_FAILED/);
+  assert.doesNotMatch(api, /password\.length < 8/);
+  assert.doesNotMatch(api, /Kristo ID and password/);
+  assert.match(helper, /logCheckoutReauthSubmitEvent/);
   assert.doesNotMatch(
     api,
     /console\.(log|warn)\([^)]*sessionToken:/
@@ -298,6 +317,23 @@ test("reauth logs never include token values and use Kristo checkout names", () 
       status: 401,
       reason: "expired_session",
     });
+    logCheckoutReauthSubmitEvent("REAUTH_SUBMIT_STARTED", {
+      hasIdentifier: true,
+      hasPassword: true,
+    });
+    logCheckoutReauthSubmitEvent("REAUTH_SIGNIN_RESPONSE", {
+      status: 200,
+      ok: true,
+      hasUserId: true,
+      hasSessionTokenKey: true,
+      hasRole: true,
+      hasChurchId: true,
+    });
+    logCheckoutReauthSubmitEvent("REAUTH_SUBMIT_FAILED", {
+      reason: "validation",
+      hasIdentifier: true,
+      hasPassword: true,
+    });
   } finally {
     console.log = original;
   }
@@ -309,6 +345,9 @@ test("reauth logs never include token values and use Kristo checkout names", () 
       "REAUTH_SUCCEEDED",
       "DELIVERY_RATES_RESUMED",
       "CHECKOUT_RECONNECT_REQUIRED",
+      "REAUTH_SUBMIT_STARTED",
+      "REAUTH_SIGNIN_RESPONSE",
+      "REAUTH_SUBMIT_FAILED",
     ]
   );
   assert.equal(
@@ -320,12 +359,19 @@ test("reauth logs never include token values and use Kristo checkout names", () 
     "RECONNECT_STARTED"
   );
   const serialized = JSON.stringify(logs);
-  assert.doesNotMatch(serialized, /stale-token|fresh-token|sessionToken":"/);
+  assert.doesNotMatch(
+    serialized,
+    /stale-token|fresh-token|sessionToken":"|password":"|identifier":"|email":"|phone":"/
+  );
   assert.equal(logs[0].payload.status, 401);
   assert.equal(logs[0].payload.hasSessionToken, true);
   assert.equal(logs[0].payload.source, "home-checkout");
   assert.equal(logs[3].payload.once, true);
   assert.equal(logs[4].payload.source, "soko-standalone");
+  assert.equal(logs[5].payload.hasPassword, true);
+  assert.equal(logs[6].payload.ok, true);
+  assert.equal(logs[6].payload.hasSessionTokenKey, true);
+  assert.equal(logs[7].payload.reason, "validation");
 });
 
 test("known bad-signature checkout 401 requires reauth even if profile legacy fallback succeeds", () => {
@@ -389,3 +435,54 @@ test("known bad-signature checkout 401 requires reauth even if profile legacy fa
   assert.equal(mismatch.reauthRequired, false);
   assert.equal(mismatch.event, "CHECKOUT_AUTH_MISMATCH");
 });
+
+test("checkout reauth accepts existing short passwords and only email or phone identifiers", () => {
+  const shortPassword = "pass7";
+  assert.equal(shortPassword.length < 8, true);
+  assert.equal(
+    getKristoLoginValidationError("pastor@gmail.com", shortPassword),
+    null
+  );
+  assert.equal(
+    getKristoLoginValidationError("2145550101", shortPassword),
+    null
+  );
+  assert.equal(
+    supportedKristoLoginIdentifierType("pastor@gmail.com"),
+    "email"
+  );
+  assert.equal(supportedKristoLoginIdentifierType("2145550101"), "phone");
+  assert.equal(
+    supportedKristoLoginIdentifierType("+1 (214) 555-0101"),
+    "phone"
+  );
+  assert.equal(
+    getLoginIdentifierValidationError("baealima131.com"),
+    INCOMPLETE_EMAIL_MESSAGE
+  );
+  assert.equal(
+    getKristoLoginValidationError("baealima131.com", shortPassword),
+    INCOMPLETE_EMAIL_MESSAGE
+  );
+  assert.equal(
+    supportedKristoLoginIdentifierType("KR7-DEMO1"),
+    "invalid"
+  );
+  assert.equal(
+    getKristoLoginValidationError("", shortPassword),
+    "Enter your email or phone number."
+  );
+  assert.equal(
+    getKristoLoginValidationError("pastor@gmail.com", ""),
+    "Enter your password."
+  );
+
+  const api = read("apps/mobile/src/lib/sokoCheckoutApi.ts");
+  const startedAt = api.indexOf('logCheckoutReauthSubmitEvent("REAUTH_SUBMIT_STARTED"');
+  const fetchAt = api.indexOf('fetch(`${resolveApiBase()}/api/auth/signin`');
+  assert.equal(startedAt > 0, true);
+  assert.equal(fetchAt > startedAt, true);
+  assert.doesNotMatch(api, /password\.length < 8/);
+  assert.match(api, /getKristoLoginValidationError\(identifier, password\)/);
+});
+

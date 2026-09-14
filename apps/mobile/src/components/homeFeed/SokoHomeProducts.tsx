@@ -3929,7 +3929,7 @@ Ukikubali, malipo yatafunguliwa.`
         <Text style={styles.reconnectEyebrow}>KRISTO CHECKOUT</Text>
         <Text style={styles.reconnectTitle}>Sign in again to continue checkout</Text>
         <Text style={styles.reconnectCopy}>
-          Sign in with your Kristo email, phone or Kristo ID. Your delivery details stay saved.
+          Sign in with your Kristo email or phone. Your delivery details stay saved.
         </Text>
         <TextInput
           value={reconnectIdentifier}

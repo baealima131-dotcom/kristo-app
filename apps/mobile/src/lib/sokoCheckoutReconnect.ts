@@ -337,6 +337,42 @@ export function logCheckoutAuthEvent(
   });
 }
 
+export type CheckoutReauthSubmitEvent =
+  | "REAUTH_SUBMIT_STARTED"
+  | "REAUTH_SIGNIN_RESPONSE"
+  | "REAUTH_SUBMIT_FAILED";
+
+export function logCheckoutReauthSubmitEvent(
+  event: CheckoutReauthSubmitEvent,
+  input: {
+    status?: number;
+    ok?: boolean;
+    reason?: string;
+    hasIdentifier?: boolean;
+    hasPassword?: boolean;
+    hasUserId?: boolean;
+    hasSessionTokenKey?: boolean;
+    hasRole?: boolean;
+    hasChurchId?: boolean;
+  } = {}
+) {
+  console.log(event, {
+    status:
+      input.status === undefined || input.status === null
+        ? undefined
+        : Number(input.status),
+    ok: input.ok === true,
+    reason: String(input.reason || "").trim() || undefined,
+    hasIdentifier: input.hasIdentifier === true,
+    hasPassword: input.hasPassword === true,
+    hasUserId: input.hasUserId === true,
+    hasSessionTokenKey: input.hasSessionTokenKey === true,
+    hasRole: input.hasRole === true,
+    hasChurchId: input.hasChurchId === true,
+    source: "home-checkout",
+  });
+}
+
 export function sellerAccessAllowedFor(
   reason: "seller-orders" | "buyer-checkout"
 ) {

@@ -11,36 +11,12 @@ import { resolveActiveChurchFromProfileResponse } from "@/src/lib/churchMembersh
 import { resolvePlatformRoleFromAuthPayload } from "@/src/lib/platformRole";
 import { recoverChurchIdFromMembership } from "@/src/lib/churchLockedRecovery";
 import { KRISTO_SUPPORT_URL } from "@/src/lib/kristoLinks";
+import { getLoginIdentifierValidationError } from "@/src/lib/kristoLoginValidation";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
 const MUTED = "rgba(255,255,255,0.65)";
 const BORDER = "rgba(255,255,255,0.10)";
-const INCOMPLETE_EMAIL_MESSAGE =
-  "Please enter the full email address, including @gmail.com.";
-
-function looksLikePhoneInput(value: string) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) return false;
-  const digits = trimmed.replace(/\D/g, "");
-  if (digits.length < 7) return false;
-  const compact = trimmed.replace(/\s/g, "");
-  return digits.length / Math.max(compact.length, 1) >= 0.7;
-}
-
-function getLoginIdentifierValidationError(value: string): string | null {
-  const trimmed = String(value || "").trim();
-  if (!trimmed || trimmed.includes("@") || looksLikePhoneInput(trimmed)) {
-    return null;
-  }
-
-  // Values like "baealima131.com" are treated as phone server-side and fail lookup.
-  if (trimmed.includes(".") || /[a-zA-Z]/.test(trimmed)) {
-    return INCOMPLETE_EMAIL_MESSAGE;
-  }
-
-  return null;
-}
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -80,7 +56,7 @@ export default function LoginScreen() {
   const can = useMemo(() => {
     return (
       userId.trim().length >= 3 &&
-      password.length >= 8 &&
+      password.length > 0 &&
       !saving &&
       !locked
     );

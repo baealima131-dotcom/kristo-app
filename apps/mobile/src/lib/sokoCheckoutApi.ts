@@ -5,6 +5,7 @@ import {
   getKristoHeaders,
   logKristoAuthHeadersDiag,
 } from "@/src/lib/kristoHeaders";
+import { getKristoLoginValidationError } from "@/src/lib/kristoLoginValidation";
 import { getSessionSync, loadSession, saveSession } from "@/src/lib/kristoSession";
 import {
   CHECKOUT_AUTH_MISMATCH_MESSAGE,
@@ -15,6 +16,7 @@ import {
   KRISTO_SESSION_REISSUE_MESSAGE,
   shouldProbeCheckoutProfileSession,
   logCheckoutAuthEvent,
+  logCheckoutReauthSubmitEvent,
   SOKO_SESSION_EXPIRED_MESSAGE,
   SOKO_SESSION_NOT_RENEWED_MESSAGE,
 } from "@/src/lib/sokoCheckoutReconnect";
@@ -346,27 +348,62 @@ export async function renewKristoCheckoutSession(input: {
   quarantineRejectedCheckoutToken(previousKey);
   const identifier = String(input.identifier || "").trim();
   const password = String(input.password || "");
-  if (!identifier || password.length < 8) {
-    throw new Error("Enter your Kristo email, phone or Kristo ID and password.");
+  const validationError = getKristoLoginValidationError(identifier, password);
+  if (validationError) {
+    logCheckoutReauthSubmitEvent("REAUTH_SUBMIT_FAILED", {
+      reason: "validation",
+      hasIdentifier: Boolean(identifier),
+      hasPassword: Boolean(password),
+    });
+    throw new Error(validationError);
   }
 
-  const response = await fetch(`${resolveApiBase()}/api/auth/signin`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      email: identifier,
-      password,
-    }),
+  logCheckoutReauthSubmitEvent("REAUTH_SUBMIT_STARTED", {
+    hasIdentifier: true,
+    hasPassword: true,
   });
+
+  let response: Response;
+  try {
+    response = await fetch(`${resolveApiBase()}/api/auth/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: identifier,
+        password,
+      }),
+    });
+  } catch {
+    logCheckoutReauthSubmitEvent("REAUTH_SUBMIT_FAILED", {
+      reason: "network_error",
+    });
+    throw new Error("We could not reach the server. Check your connection and try again.");
+  }
   let data: any = null;
   try {
     data = await response.json();
   } catch {
     data = null;
   }
+  logCheckoutReauthSubmitEvent("REAUTH_SIGNIN_RESPONSE", {
+    status: response.status,
+    ok: Boolean(data?.ok),
+    reason: String(data?.reason || "").trim() || undefined,
+    hasUserId: Boolean(data?.userId),
+    hasSessionTokenKey: Boolean(
+      data && typeof data === "object" && "sessionToken" in data
+    ),
+    hasRole: Boolean(data?.role),
+    hasChurchId: Boolean(data?.churchId),
+  });
   if (!response.ok || !data?.ok) {
+    logCheckoutReauthSubmitEvent("REAUTH_SUBMIT_FAILED", {
+      status: response.status,
+      ok: false,
+      reason: String(data?.reason || "signin_failed").trim() || "signin_failed",
+    });
     throw new Error(
-      String(data?.error || "Wrong email, phone or password.")
+      String(data?.error || "Wrong email or phone or password.")
     );
   }
 
@@ -376,6 +413,13 @@ export async function renewKristoCheckoutSession(input: {
   const churchId = String(data?.churchId || "").trim();
   const churchRole = String(data?.churchRole || data?.role || "Member").trim();
   if (!userId || !sessionToken) {
+    logCheckoutReauthSubmitEvent("REAUTH_SUBMIT_FAILED", {
+      status: response.status,
+      ok: true,
+      reason: "missing_session_credentials",
+      hasUserId: Boolean(userId),
+      hasSessionTokenKey: Boolean(sessionToken),
+    });
     throw new Error("Kristo login did not return valid session credentials.");
   }
 
