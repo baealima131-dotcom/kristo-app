@@ -280,7 +280,7 @@ export default function SokoHomeProducts({focused,onProductsChange}:{focused:boo
 
 export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;height?:number}){
   const router=useRouter();const {initPaymentSheet,presentPaymentSheet}=useStripe();const {width}=useWindowDimensions();const insets=useSafeAreaInsets();const cardWidth=Math.max(280,width-10);const imageHeight=Math.min(300,Math.round(cardWidth*0.54));const detailHeroHeight=Math.min(390,Math.max(320,Math.round(width*0.86)));
-  const [selected,setSelected]=useState(false),[saved,setSaved]=useState(false),[contacting,setContacting]=useState(false),[paymentOpen,setPaymentOpen]=useState(false),[paymentBusy,setPaymentBusy]=useState(false),[order,setOrder]=useState<any>(null),[proofImages,setProofImages]=useState<Array<{uri:string;mimeType:string;fileName:string}>>([]),[reference,setReference]=useState(""),[buyerNote,setBuyerNote]=useState(""),[paymentSent,setPaymentSent]=useState(false),[storeOpen,setStoreOpen]=useState(false),[storeLoading,setStoreLoading]=useState(false),[storeProducts,setStoreProducts]=useState<SokoHomeProduct[]>([]),[storeError,setStoreError]=useState(""),[checkoutOpen,setCheckoutOpen]=useState(false),[delivery,setDelivery]=useState({fullName:"",phone:"",country:"United States",state:"",city:"",streetAddress:"",postalCode:"",instructions:""}),[deliveryRates,setDeliveryRates]=useState<any[]>([]),[selectedDelivery,setSelectedDelivery]=useState<any>(null),[deliveryMode,setDeliveryMode]=useState(""),[deliveryReason,setDeliveryReason]=useState(""),[deliveryLoading,setDeliveryLoading]=useState(false),[deliveryError,setDeliveryError]=useState(""),[deliveryNotice,setDeliveryNotice]=useState(""),[buyerOrdersOpen,setBuyerOrdersOpen]=useState(false),[buyerOrdersLoading,setBuyerOrdersLoading]=useState(false),[buyerOrdersBusy,setBuyerOrdersBusy]=useState(""),[buyerOrders,setBuyerOrders]=useState<any[]>([]),[buyerOrdersError,setBuyerOrdersError]=useState("");const [receiptScan,setReceiptScan]=useState<{recipient:string;cashTag:string;amounts:string[];status:string;dateTime:string;fees:string;scannedCount:number;}>({recipient:"",cashTag:"",amounts:[],status:"",dateTime:"",fees:"",scannedCount:0});;const [cashConfirmation,setCashConfirmation]=useState<null|{
+  const [selected,setSelected]=useState(false),[saved,setSaved]=useState(false),[contacting,setContacting]=useState(false),[paymentOpen,setPaymentOpen]=useState(false),[paymentBusy,setPaymentBusy]=useState(false),[order,setOrder]=useState<any>(null),[proofImages,setProofImages]=useState<Array<{uri:string;mimeType:string;fileName:string}>>([]),[reference,setReference]=useState(""),[buyerNote,setBuyerNote]=useState(""),[paymentSent,setPaymentSent]=useState(false),[storeOpen,setStoreOpen]=useState(false),[storeLoading,setStoreLoading]=useState(false),[storeProducts,setStoreProducts]=useState<SokoHomeProduct[]>([]),[storeError,setStoreError]=useState(""),[checkoutOpen,setCheckoutOpen]=useState(false),[delivery,setDelivery]=useState({fullName:"",phone:"",country:"United States",state:"",city:"",streetAddress:"",apartment:"",postalCode:"",instructions:""}),[deliveryRates,setDeliveryRates]=useState<any[]>([]),[selectedDelivery,setSelectedDelivery]=useState<any>(null),[deliveryMode,setDeliveryMode]=useState(""),[deliveryReason,setDeliveryReason]=useState(""),[deliveryLoading,setDeliveryLoading]=useState(false),[deliveryError,setDeliveryError]=useState(""),[deliveryNotice,setDeliveryNotice]=useState(""),[buyerOrdersOpen,setBuyerOrdersOpen]=useState(false),[buyerOrdersLoading,setBuyerOrdersLoading]=useState(false),[buyerOrdersBusy,setBuyerOrdersBusy]=useState(""),[buyerOrders,setBuyerOrders]=useState<any[]>([]),[buyerOrdersError,setBuyerOrdersError]=useState("");const [receiptScan,setReceiptScan]=useState<{recipient:string;cashTag:string;amounts:string[];status:string;dateTime:string;fees:string;scannedCount:number;}>({recipient:"",cashTag:"",amounts:[],status:"",dateTime:"",fees:"",scannedCount:0});;const [cashConfirmation,setCashConfirmation]=useState<null|{
     sellerName:string;
     cashTag:string;
     amountText:string;
@@ -523,6 +523,11 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
             parsed.streetAddress||
             current.streetAddress
           ).slice(0,240),
+          apartment:String(
+            parsed.apartment||
+            current.apartment||
+            ""
+          ).slice(0,80),
           postalCode:String(
             parsed.postalCode||
             current.postalCode
@@ -571,6 +576,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
               state:delivery.state.trim(),
               city:delivery.city.trim(),
               streetAddress:delivery.streetAddress.trim(),
+              apartment:String(delivery.apartment||"").trim(),
               postalCode:delivery.postalCode.trim()
             }
           })
@@ -630,6 +636,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
                 state:delivery.state.trim(),
                 city:delivery.city.trim(),
                 streetAddress:delivery.streetAddress.trim(),
+                apartment:String(delivery.apartment||"").trim(),
                 postalCode:delivery.postalCode.trim(),
                 instructions:delivery.instructions.trim()
               },
@@ -725,6 +732,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
             city:delivery.city.trim(),
             streetAddress:
               delivery.streetAddress.trim(),
+            apartment:String(delivery.apartment||"").trim(),
             postalCode:
               delivery.postalCode.trim(),
             instructions:
@@ -865,6 +873,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
             state:delivery.state.trim(),
             city:delivery.city.trim(),
             streetAddress:delivery.streetAddress.trim(),
+            apartment:String(delivery.apartment||"").trim(),
             postalCode:delivery.postalCode.trim(),
             instructions:delivery.instructions.trim()
           },
@@ -1037,6 +1046,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
                 city:delivery.city.trim(),
                 streetAddress:
                   delivery.streetAddress.trim(),
+                apartment:String(delivery.apartment||"").trim(),
                 postalCode:
                   delivery.postalCode.trim(),
                 instructions:
@@ -3354,6 +3364,19 @@ Ukikubali, malipo yatafunguliwa.`
               placeholderTextColor="#929A95"
               autoCapitalize="words"
               maxLength={240}
+              style={styles.checkoutField}
+            />
+          </View>
+
+          <View style={styles.checkoutFieldGroup}>
+            <Text style={styles.checkoutLabel}>Apartment / unit (optional)</Text>
+            <TextInput
+              value={delivery.apartment}
+              onChangeText={value=>setDelivery(current=>({...current,apartment:value}))}
+              placeholder="Apt, suite, or unit"
+              placeholderTextColor="#929A95"
+              autoCapitalize="words"
+              maxLength={80}
               style={styles.checkoutField}
             />
           </View>

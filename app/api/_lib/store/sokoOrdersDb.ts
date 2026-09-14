@@ -21,6 +21,12 @@ import {
   sokoShippingOriginFingerprint,
   verifyShippoParcelRate,
 } from "@/app/api/_lib/sokoShippingQuotes";
+import { getSokoProductById } from "./sokoProductsDb";
+import {
+  mergeSokoOrderCatalogImages,
+  resolveSokoOrderCatalogImages,
+  sokoOrderSnapshotImageUnusable,
+} from "@/app/api/_lib/sokoOrderSnapshotMedia";
 
 export type SokoOrderStatus =
   | "awaiting_delivery_quote"
@@ -379,6 +385,12 @@ export async function createSokoOrder(args: {
     state: clean(deliveryInput.state, 100),
     city: clean(deliveryInput.city, 100),
     streetAddress: clean(deliveryInput.streetAddress, 240),
+    apartment: clean(
+      deliveryInput.apartment ||
+        deliveryInput.unit ||
+        deliveryInput.address2,
+      80
+    ),
     postalCode: clean(deliveryInput.postalCode, 30),
     instructions: clean(deliveryInput.instructions, 500),
   };
@@ -507,6 +519,7 @@ export async function createSokoOrder(args: {
     amount: 0,
     currency: clean(product.payload?.currency, 10),
     estimatedDays: null as number | null,
+    durationTerms: "",
     type: fulfillmentType,
   };
 
@@ -718,6 +731,7 @@ export async function createSokoOrder(args: {
         amount: reused.quote.amount,
         currency: reused.quote.currency,
         estimatedDays: reused.quote.estimatedDays,
+        durationTerms: "",
         type: "parcel",
       };
     } else {
@@ -735,6 +749,7 @@ export async function createSokoOrder(args: {
         amount: rate.amount,
         currency: rate.currency,
         estimatedDays: rate.estimatedDays,
+        durationTerms: rate.durationTerms || "",
         type: "parcel",
       };
     }
@@ -751,11 +766,15 @@ export async function createSokoOrder(args: {
     amountMinor: Math.round(finalTotal * 100),
   });
 
+  const catalogImages = resolveSokoOrderCatalogImages(product.payload);
   const snapshot = {
     title: clean(product.payload?.title, 120),
     price: Number(product.payload?.price || 0),
     currency: clean(product.payload?.currency, 10),
-    image: clean(product.payload?.image, 1000),
+    image: catalogImages.image,
+    photos: catalogImages.photos,
+    imageSource: catalogImages.photos.length ? "checkout_snapshot" : "",
+    imageSnapshotKind: catalogImages.photos.length ? "checkout_snapshot" : "",
     location: clean(product.payload?.location, 160),
     condition: clean(product.payload?.condition, 30),
     inventory: {
@@ -765,8 +784,11 @@ export async function createSokoOrder(args: {
     buyerName,
     deliveryDetails,
     delivery: verifiedDelivery,
+    acceptedQuote: verifiedDelivery,
     fulfillment: {
       type: fulfillmentType,
+      handlingDays: 2,
+      shipByRule: "payment_clock_plus_2_calendar_days",
       addressFrom:
         fulfillment.addressFrom &&
         typeof fulfillment.addressFrom === "object"
@@ -957,7 +979,37 @@ export async function listSokoOrders(userId: string, mode: string) {
           LIMIT 100
         ` as OrderRow[];
 
-  return rows.map(publicOrder);
+  return publishSokoOrders(rows);
+}
+
+async function publishSokoOrders(rows: OrderRow[]) {
+  const missingIds = [
+    ...new Set(
+      rows
+        .filter((row) => sokoOrderSnapshotImageUnusable(row.snapshot))
+        .map((row) => row.product_id)
+    ),
+  ];
+  const catalog = new Map<string, { image: string; photos: string[] }>();
+  await Promise.all(
+    missingIds.map(async (productId) => {
+      const product = await getSokoProductById(productId);
+      if (!product) return;
+      catalog.set(productId, {
+        image: String(product.image || ""),
+        photos: Array.isArray(product.photos) ? product.photos.map(String) : [],
+      });
+    })
+  );
+  return rows.map((row) =>
+    publicOrder({
+      ...row,
+      snapshot: mergeSokoOrderCatalogImages(
+        row.snapshot,
+        catalog.get(row.product_id)
+      ),
+    })
+  );
 }
 
 export async function updateSokoOrder(args: {
@@ -1408,6 +1460,54 @@ export async function updateSokoOrder(args: {
         deliveryPrice: deliveryAmount,
         finalTotal,
         currency,
+      },
+    };
+  }
+
+  if (next === "payment_approved") {
+    const fulfillment =
+      nextSnapshot?.fulfillment && typeof nextSnapshot.fulfillment === "object"
+        ? nextSnapshot.fulfillment
+        : {};
+    const existingClock = String(fulfillment.clockStartedAt || "").trim();
+    const clockStartedAt =
+      existingClock && !Number.isNaN(Date.parse(existingClock))
+        ? existingClock
+        : new Date().toISOString();
+    const existingApproved = String(fulfillment.paymentApprovedAt || "").trim();
+    nextSnapshot = {
+      ...nextSnapshot,
+      fulfillment: {
+        ...fulfillment,
+        handlingDays:
+          Number(fulfillment.handlingDays) > 0
+            ? Number(fulfillment.handlingDays)
+            : 2,
+        shipByRule: "payment_clock_plus_2_calendar_days",
+        clockStartedAt,
+        paymentApprovedAt:
+          existingApproved && !Number.isNaN(Date.parse(existingApproved))
+            ? existingApproved
+            : clockStartedAt,
+      },
+    };
+  }
+
+  if (next === "shipped") {
+    const fulfillment =
+      nextSnapshot?.fulfillment && typeof nextSnapshot.fulfillment === "object"
+        ? nextSnapshot.fulfillment
+        : {};
+    const existingShippedAt = clean(fulfillment.shippedAt, 80);
+    nextSnapshot = {
+      ...nextSnapshot,
+      fulfillment: {
+        ...fulfillment,
+        shippedAt:
+          existingShippedAt &&
+          !Number.isNaN(Date.parse(existingShippedAt))
+            ? existingShippedAt
+            : new Date().toISOString(),
       },
     };
   }
@@ -2828,6 +2928,7 @@ export async function applyCashAppCapturedPaymentToOrder(args: {
     eventType: "payment.status.updated",
     paymentStatus: "CAPTURED",
   });
+  const fulfillmentClockStartedAt = new Date().toISOString();
 
   /*
    * Atomic status transition.
@@ -2847,9 +2948,47 @@ export async function applyCashAppCapturedPaymentToOrder(args: {
         ELSE provider_payment_id
       END,
       snapshot = jsonb_set(
-        COALESCE(snapshot, '{}'::jsonb),
+        jsonb_set(
+          jsonb_set(
+            COALESCE(snapshot, '{}'::jsonb),
+            '{fulfillment,clockStartedAt}',
+            to_jsonb(
+              COALESCE(
+                NULLIF(
+                  BTRIM(
+                    COALESCE(
+                      snapshot #>> '{fulfillment,clockStartedAt}',
+                      ''
+                    )
+                  ),
+                  ''
+                ),
+                ${fulfillmentClockStartedAt}::text
+              )
+            ),
+            true
+          ),
+          '{fulfillment,paymentApprovedAt}',
+          to_jsonb(
+            COALESCE(
+              NULLIF(
+                BTRIM(
+                  COALESCE(
+                    snapshot #>> '{fulfillment,paymentApprovedAt}',
+                    snapshot #>> '{fulfillment,clockStartedAt}',
+                    ''
+                  )
+                ),
+                ''
+              ),
+              ${fulfillmentClockStartedAt}::text
+            )
+          ),
+          true
+        ),
         '{payment,captureAudit}',
-        ${JSON.stringify(captureAudit)}::jsonb
+        ${JSON.stringify(captureAudit)}::jsonb,
+        true
       ),
       updated_at = NOW()
     WHERE id = ${orderId}
@@ -3264,6 +3403,7 @@ export async function applySokoStripeCapturedPaymentToOrder(args: {
     livemode: args.livemode === true,
     capturedAt: new Date().toISOString(),
   };
+  const fulfillmentClockStartedAt = new Date().toISOString();
 
   const approvedRows = await sql`
     UPDATE soko_orders
@@ -3273,9 +3413,47 @@ export async function applySokoStripeCapturedPaymentToOrder(args: {
       payment_provider = ${SOKO_STRIPE_PROVIDER},
       provider_payment_id = ${paymentIntentId},
       snapshot = jsonb_set(
-        COALESCE(snapshot, '{}'::jsonb),
+        jsonb_set(
+          jsonb_set(
+            COALESCE(snapshot, '{}'::jsonb),
+            '{fulfillment,clockStartedAt}',
+            to_jsonb(
+              COALESCE(
+                NULLIF(
+                  BTRIM(
+                    COALESCE(
+                      snapshot #>> '{fulfillment,clockStartedAt}',
+                      ''
+                    )
+                  ),
+                  ''
+                ),
+                ${fulfillmentClockStartedAt}::text
+              )
+            ),
+            true
+          ),
+          '{fulfillment,paymentApprovedAt}',
+          to_jsonb(
+            COALESCE(
+              NULLIF(
+                BTRIM(
+                  COALESCE(
+                    snapshot #>> '{fulfillment,paymentApprovedAt}',
+                    snapshot #>> '{fulfillment,clockStartedAt}',
+                    ''
+                  )
+                ),
+                ''
+              ),
+              ${fulfillmentClockStartedAt}::text
+            )
+          ),
+          true
+        ),
         '{payment,stripeCaptureAudit}',
-        ${JSON.stringify(captureAudit)}::jsonb
+        ${JSON.stringify(captureAudit)}::jsonb,
+        true
       ),
       updated_at = NOW()
     WHERE id = ${orderId}

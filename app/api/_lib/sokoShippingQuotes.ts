@@ -342,5 +342,6 @@ export async function verifyShippoParcelRate(input: {
     currency: rateCurrency,
     estimatedDays:
       Number(rate.estimated_days) > 0 ? Number(rate.estimated_days) : null,
+    durationTerms: clean(rate.duration_terms, 240),
   };
 }
