@@ -50,6 +50,33 @@ function text(value: unknown) {
   return String(value || "").trim();
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+const DEFINITIVE_CHECKOUT_TOKEN_REASONS = new Set([
+  "bad-signature",
+  "expired",
+  "malformed",
+  "malformed-token",
+  "wrong-issuer",
+  "bad-issuer",
+  "unsupported-version",
+  "no-secret",
+  "bad-payload",
+]);
+
+function firstMeaningfulReason(...values: unknown[]) {
+  for (const value of values) {
+    const reason = text(value);
+    if (!reason || reason === "http_error") continue;
+    return reason;
+  }
+  return "";
+}
+
 export function evaluateSessionRenewal(input: {
   blockedToken: string;
   nextToken: string;
@@ -87,34 +114,114 @@ export function isLiveCheckoutUnauthorized(input: {
 
 export function checkoutAuthFailureReason(input: {
   details?: { reason?: unknown } | null;
+  debug?: { reason?: unknown } | null;
+  body?: { details?: { reason?: unknown } | null; reason?: unknown } | null;
   reason?: unknown;
-}) {
-  return text(input?.details?.reason || input?.reason || "");
+} | null | undefined) {
+  const row = asRecord(input);
+  const details = asRecord(row?.details);
+  const debug = asRecord(row?.debug);
+  const body = asRecord(row?.body);
+  const bodyDetails = asRecord(body?.details);
+  return firstMeaningfulReason(
+    details?.reason,
+    debug?.reason,
+    bodyDetails?.reason,
+    body?.reason,
+    row?.reason
+  );
 }
 
 export function checkoutAuthFailureCode(input: {
   details?: { code?: unknown } | null;
   code?: unknown;
   debug?: { code?: unknown } | null;
-}) {
+  body?: { details?: { code?: unknown } | null; code?: unknown } | null;
+} | null | undefined) {
+  const row = asRecord(input);
+  const details = asRecord(row?.details);
+  const debug = asRecord(row?.debug);
+  const body = asRecord(row?.body);
+  const bodyDetails = asRecord(body?.details);
   return text(
-    input?.details?.code || input?.code || input?.debug?.code || ""
+    details?.code ||
+      debug?.code ||
+      bodyDetails?.code ||
+      body?.code ||
+      row?.code ||
+      ""
   );
 }
 
 export function isUnverifiableCheckoutToken(input: {
   details?: { reason?: unknown; code?: unknown } | null;
+  debug?: { reason?: unknown; code?: unknown } | null;
+  body?: {
+    details?: { reason?: unknown; code?: unknown } | null;
+    reason?: unknown;
+  } | null;
   reason?: unknown;
+} | null | undefined) {
+  return DEFINITIVE_CHECKOUT_TOKEN_REASONS.has(checkoutAuthFailureReason(input));
+}
+
+export function shouldProbeCheckoutProfileSession(input: {
+  details?: { reason?: unknown; code?: unknown } | null;
+  debug?: { reason?: unknown; code?: unknown } | null;
+  body?: {
+    details?: { reason?: unknown; code?: unknown } | null;
+    reason?: unknown;
+    code?: unknown;
+  } | null;
+  reason?: unknown;
+  code?: unknown;
+} | null | undefined) {
+  if (isUnverifiableCheckoutToken(input)) return false;
+  const code = checkoutAuthFailureCode(input).toUpperCase();
+  if (code === "CHECKOUT_SESSION_EXPIRED") return false;
+  return true;
+}
+
+export function homeCheckoutUnauthorizedOutcome(input: {
+  checkoutResult: unknown;
+  profileFallbackOk?: boolean;
 }) {
-  const reason = checkoutAuthFailureReason(input);
-  return (
-    reason === "bad-signature" ||
-    reason === "malformed" ||
-    reason === "no-secret" ||
-    reason === "bad-payload" ||
-    reason === "bad-issuer" ||
-    reason === "unsupported-version"
-  );
+  const checkoutResult = input.checkoutResult;
+  const reason =
+    checkoutAuthFailureReason(checkoutResult as object) ||
+    "unverifiable_session_token";
+  if (!shouldProbeCheckoutProfileSession(checkoutResult as object)) {
+    return {
+      reauthRequired: true,
+      probeProfile: false,
+      mismatch: false,
+      quarantined: true,
+      event: "CHECKOUT_REAUTH_REQUIRED" as const,
+      throwMessage: KRISTO_SESSION_REISSUE_MESSAGE,
+      reason,
+    };
+  }
+  if (input.profileFallbackOk === true) {
+    return {
+      reauthRequired: false,
+      probeProfile: true,
+      mismatch: true,
+      quarantined: false,
+      event: "CHECKOUT_AUTH_MISMATCH" as const,
+      throwMessage: CHECKOUT_AUTH_MISMATCH_MESSAGE,
+      reason: checkoutAuthFailureCode(checkoutResult as object) ||
+        "delivery_route_auth_mismatch",
+    };
+  }
+  return {
+    reauthRequired: true,
+    probeProfile: true,
+    mismatch: false,
+    quarantined: true,
+    event: "CHECKOUT_REAUTH_REQUIRED" as const,
+    throwMessage: SOKO_SESSION_EXPIRED_MESSAGE,
+    reason: "expired_session",
+  };
 }
 
 export function isCheckoutPermissionFailure(error: unknown) {

@@ -10,9 +10,10 @@ import {
   CHECKOUT_AUTH_MISMATCH_MESSAGE,
   checkoutRequestAllowedWhileReconnecting,
   evaluateSessionRenewal,
+  homeCheckoutUnauthorizedOutcome,
   isLiveCheckoutUnauthorized,
-  isUnverifiableCheckoutToken,
   KRISTO_SESSION_REISSUE_MESSAGE,
+  shouldProbeCheckoutProfileSession,
   logCheckoutAuthEvent,
   SOKO_SESSION_EXPIRED_MESSAGE,
   SOKO_SESSION_NOT_RENEWED_MESSAGE,
@@ -256,15 +257,24 @@ async function send(
   });
 
   if (unauthorized(result)) {
-    const authCode = String(result?.details?.code || "").trim();
     const failedPath = String(path || "").split("?")[0];
-    if (isUnverifiableCheckoutToken(result)) {
-      quarantineRejectedCheckoutToken(tokenKey);
-      logCheckoutAuthEvent("home-checkout", "required", {
+    const canProbeProfile =
+      failedPath !== "/api/auth/profile" &&
+      shouldProbeCheckoutProfileSession(result);
+    const profileOk = canProbeProfile
+      ? await checkoutProfileSessionStillValid()
+      : false;
+    const outcome = homeCheckoutUnauthorizedOutcome({
+      checkoutResult: result,
+      profileFallbackOk: canProbeProfile ? profileOk : false,
+    });
+    if (outcome.mismatch) {
+      console.log("CHECKOUT_AUTH_MISMATCH", {
         path: failedPath,
         status: 401,
-        reason: "unverifiable_session_token",
-        quarantined: true,
+        reason: outcome.reason,
+        quarantined: false,
+        source: "home-checkout",
         hasUserId: Boolean(userId),
         hasSessionToken: Boolean(sessionToken),
       });
@@ -277,40 +287,13 @@ async function send(
         hasChurchId: Boolean(headers["x-kristo-church-id"]),
         message: "Unauthorized",
       });
-      throw new Error(KRISTO_SESSION_REISSUE_MESSAGE);
-    }
-    if (
-      failedPath !== "/api/auth/profile" &&
-      authCode !== "CHECKOUT_SESSION_EXPIRED"
-    ) {
-      const profileOk = await checkoutProfileSessionStillValid();
-      if (profileOk) {
-        console.log("CHECKOUT_AUTH_MISMATCH", {
-          path: failedPath,
-          status: 401,
-          reason: authCode || "delivery_route_auth_mismatch",
-          quarantined: false,
-          source: "home-checkout",
-          hasUserId: Boolean(userId),
-          hasSessionToken: Boolean(sessionToken),
-        });
-        console.warn("SOKO_API_REQUEST_FAILED", {
-          path: failedPath,
-          status: 401,
-          hasUserId: Boolean(headers["x-kristo-user-id"]),
-          hasSessionToken: Boolean(headers["x-kristo-session-token"]),
-          hasRole: Boolean(headers["x-kristo-role"]),
-          hasChurchId: Boolean(headers["x-kristo-church-id"]),
-          message: "Unauthorized",
-        });
-        throw new Error(CHECKOUT_AUTH_MISMATCH_MESSAGE);
-      }
+      throw new Error(outcome.throwMessage);
     }
     quarantineRejectedCheckoutToken(tokenKey);
     logCheckoutAuthEvent("home-checkout", "required", {
       path: failedPath,
       status: 401,
-      reason: "expired_session",
+      reason: outcome.reason,
       quarantined: true,
       hasUserId: Boolean(userId),
       hasSessionToken: Boolean(sessionToken),
@@ -324,6 +307,9 @@ async function send(
       hasChurchId: Boolean(headers["x-kristo-church-id"]),
       message: "Unauthorized",
     });
+    if (outcome.throwMessage === KRISTO_SESSION_REISSUE_MESSAGE) {
+      throw new Error(KRISTO_SESSION_REISSUE_MESSAGE);
+    }
     if (!options?.silentRetried) {
       const silent = await trySilentCheckoutSessionRestore();
       if (silent.restored) {
@@ -442,7 +428,11 @@ export async function sokoCheckoutRaw(path: string, init?: RequestInit) {
       data: result && typeof result === "object" ? result : {},
     };
   } catch (error) {
-    if (String((error as Error)?.message || "") === SOKO_SESSION_EXPIRED_MESSAGE) {
+    const message = String((error as Error)?.message || "");
+    if (
+      message === SOKO_SESSION_EXPIRED_MESSAGE ||
+      message === KRISTO_SESSION_REISSUE_MESSAGE
+    ) {
       throw error;
     }
     return {

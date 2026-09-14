@@ -16,10 +16,13 @@ import {
   CHECKOUT_REAUTH_CANCELLED_MESSAGE,
   KRISTO_SESSION_REISSUE_MESSAGE,
   evaluateSessionRenewal,
+  homeCheckoutUnauthorizedOutcome,
   isLiveCheckoutUnauthorized,
+  isUnverifiableCheckoutToken,
   logCheckoutAuthEvent,
   restoreCheckoutDraft,
   sellerAccessAllowedFor,
+  shouldProbeCheckoutProfileSession,
   snapshotCheckoutDraft,
   SOKO_SESSION_EXPIRED_MESSAGE,
 } from "../apps/mobile/src/lib/sokoCheckoutReconnect.ts";
@@ -209,6 +212,8 @@ test("home checkout reauthenticates through Kristo member sign-in and keeps Retr
   const api = read("apps/mobile/src/lib/sokoCheckoutApi.ts");
   const helper = read("apps/mobile/src/lib/sokoCheckoutReconnect.ts");
   const login = read("apps/mobile/app/(auth)/login.tsx");
+  assert.match(home, /beginCheckoutKristoReauthRef/);
+  assert.match(home, /KRISTO_SESSION_REISSUE_MESSAGE/);
   assert.match(home, /setKristoCheckoutReauth\(true\)/);
   assert.match(home, /Sign in again to continue checkout/);
   assert.match(home, /beginCheckoutKristoReauth/);
@@ -247,10 +252,13 @@ test("home checkout reauthenticates through Kristo member sign-in and keeps Retr
   assert.match(api, /checkoutProfileSessionStillValid/);
   assert.match(api, /\/api\/auth\/profile/);
   assert.match(api, /KRISTO_SESSION_REISSUE_MESSAGE/);
-  assert.match(api, /isUnverifiableCheckoutToken/);
-  assert.match(api, /unverifiable_session_token/);
+  assert.match(api, /homeCheckoutUnauthorizedOutcome/);
+  assert.match(api, /shouldProbeCheckoutProfileSession/);
   assert.match(helper, /CHECKOUT_AUTH_MISMATCH_MESSAGE/);
   assert.match(helper, /CHECKOUT_REAUTH_REQUIRED/);
+  assert.match(helper, /homeCheckoutUnauthorizedOutcome/);
+  assert.match(helper, /shouldProbeCheckoutProfileSession/);
+  assert.match(helper, /isUnverifiableCheckoutToken/);
   assert.match(helper, /you must be signed in/);
   assert.doesNotMatch(
     api,
@@ -318,4 +326,66 @@ test("reauth logs never include token values and use Kristo checkout names", () 
   assert.equal(logs[0].payload.source, "home-checkout");
   assert.equal(logs[3].payload.once, true);
   assert.equal(logs[4].payload.source, "soko-standalone");
+});
+
+test("known bad-signature checkout 401 requires reauth even if profile legacy fallback succeeds", () => {
+  const productionRates = {
+    ok: false,
+    error: "Unauthorized",
+    details: {
+      code: "CHECKOUT_UNAUTHENTICATED",
+      hint: "You must be signed in.",
+      reason: "bad-signature",
+    },
+  };
+  const kristoApiShaped = {
+    ok: false,
+    error: "Unauthorized",
+    code: "CHECKOUT_UNAUTHENTICATED",
+    reason: "http_error",
+    status: 401,
+    debug: {
+      code: "CHECKOUT_UNAUTHENTICATED",
+      hint: "You must be signed in.",
+      reason: "bad-signature",
+    },
+  };
+  const profileLegacyFallbackOk = true;
+
+  for (const checkoutResult of [productionRates, kristoApiShaped]) {
+    assert.equal(isUnverifiableCheckoutToken(checkoutResult), true);
+    assert.equal(shouldProbeCheckoutProfileSession(checkoutResult), false);
+    const outcome = homeCheckoutUnauthorizedOutcome({
+      checkoutResult,
+      profileFallbackOk: profileLegacyFallbackOk,
+    });
+    assert.equal(outcome.reauthRequired, true);
+    assert.equal(outcome.probeProfile, false);
+    assert.equal(outcome.mismatch, false);
+    assert.equal(outcome.quarantined, true);
+    assert.equal(outcome.event, "CHECKOUT_REAUTH_REQUIRED");
+    assert.equal(outcome.throwMessage, KRISTO_SESSION_REISSUE_MESSAGE);
+    assert.equal(outcome.reason, "bad-signature");
+    assert.equal(
+      classifyCheckoutDeliveryFailure(new Error(outcome.throwMessage)),
+      "session_expired"
+    );
+  }
+
+  const genericUnauthorized = {
+    ok: false,
+    error: "Unauthorized",
+    status: 401,
+    details: { hint: "You must be signed in." },
+    reason: "http_error",
+  };
+  assert.equal(isUnverifiableCheckoutToken(genericUnauthorized), false);
+  assert.equal(shouldProbeCheckoutProfileSession(genericUnauthorized), true);
+  const mismatch = homeCheckoutUnauthorizedOutcome({
+    checkoutResult: genericUnauthorized,
+    profileFallbackOk: true,
+  });
+  assert.equal(mismatch.mismatch, true);
+  assert.equal(mismatch.reauthRequired, false);
+  assert.equal(mismatch.event, "CHECKOUT_AUTH_MISMATCH");
 });

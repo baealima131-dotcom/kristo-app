@@ -22,6 +22,7 @@ import {
   checkoutDeliveryRecoveryActions,
   checkoutRequestAllowedWhileReconnecting,
   classifyCheckoutDeliveryFailure,
+  KRISTO_SESSION_REISSUE_MESSAGE,
   logCheckoutAuthEvent,
   snapshotCheckoutDraft,
   SOKO_SESSION_EXPIRED_MESSAGE,
@@ -334,6 +335,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
   const sessionExpiredRef=useRef(false);
   const resumeDeliveryRatesOnceRef=useRef(false);
   const loadDeliveryRatesRef=useRef<()=>Promise<void>>(async()=>{});
+  const beginCheckoutKristoReauthRef=useRef<()=>void>(()=>{});
   useEffect(()=>{setAvatarFailed(false);},[sellerAvatarUri]);
   useEffect(()=>{
     if(!selected)return;
@@ -780,7 +782,14 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
         sessionExpiredRef.current=true;
         resumeDeliveryRatesOnceRef.current=false;
         setCheckoutOpen(true);
-        setDeliveryError(SOKO_SESSION_EXPIRED_MESSAGE);
+        setDeliveryError(
+          String((error as Error)?.message||error)===KRISTO_SESSION_REISSUE_MESSAGE
+            ?KRISTO_SESSION_REISSUE_MESSAGE
+            :SOKO_SESSION_EXPIRED_MESSAGE
+        );
+        if(String((error as Error)?.message||error)===KRISTO_SESSION_REISSUE_MESSAGE){
+          beginCheckoutKristoReauthRef.current();
+        }
       }else{
         setDeliveryError(
           String(
@@ -807,6 +816,7 @@ export function SokoHomeProductCard({product,height}:{product:SokoHomeProduct;he
     setKristoCheckoutReauth(true);
     setCheckoutOpen(true);
   };
+  beginCheckoutKristoReauthRef.current=beginCheckoutKristoReauth;
 
   const cancelCheckoutKristoReauth=()=>{
     const draft=checkoutDraftRef.current||captureCheckoutDraft();
