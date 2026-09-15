@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getSokoNeonSql } from "./sokoNeon";
 import {
   cleanSokoBuyerSellerText,
+  conversationIdentityKey,
   validateSokoBuyerSellerMessageText,
 } from "@/app/api/_lib/sokoBuyerSellerChatPolicy";
 
@@ -23,8 +24,13 @@ export type SokoBuyerSellerConversation = {
   sellerUserId: string;
   productId: string;
   productTitle: string;
+  productImage: string;
+  productPrice: string;
+  productCurrency: string;
+  productQuantity: string;
   lastMessagePreview: string;
   lastMessageAt: string;
+  unreadCount: number;
   createdAt: string;
 };
 
@@ -72,8 +78,13 @@ function conversationFromRow(
     sellerUserId: String(row.seller_user_id || ""),
     productId: String(row.product_id || ""),
     productTitle: String(row.product_title || ""),
+    productImage: String(row.product_image || ""),
+    productPrice: String(row.product_price || ""),
+    productCurrency: String(row.product_currency || ""),
+    productQuantity: String(row.product_quantity || ""),
     lastMessagePreview: String(row.last_message_preview || ""),
     lastMessageAt: dateText(row.last_message_at || row.created_at),
+    unreadCount: Math.max(0, Number(row.unread_count || 0) || 0),
     createdAt: dateText(row.created_at),
   };
 }
@@ -125,6 +136,30 @@ async function ensureSchema() {
         CREATE INDEX IF NOT EXISTS soko_buyer_seller_messages_idx
         ON soko_buyer_seller_messages (conversation_id, created_at ASC)
       `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_conversations
+          ADD COLUMN IF NOT EXISTS product_image TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_conversations
+          ADD COLUMN IF NOT EXISTS product_price TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_conversations
+          ADD COLUMN IF NOT EXISTS product_currency TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_conversations
+          ADD COLUMN IF NOT EXISTS product_quantity TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        CREATE TABLE IF NOT EXISTS soko_buyer_seller_reads (
+          conversation_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          last_read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (conversation_id, user_id)
+        )
+      `;
     })().catch((error) => {
       gate.promise = null;
       throw error;
@@ -152,12 +187,20 @@ export async function dbOpenSokoBuyerSellerConversation(input: {
   sellerUserId: string;
   productId: string;
   productTitle: string;
+  productImage?: string;
+  productPrice?: string;
+  productCurrency?: string;
+  productQuantity?: string;
 }) {
   await ensureSchema();
   const buyerUserId = cleanSokoBuyerSellerText(input.buyerUserId, 180);
   const sellerUserId = cleanSokoBuyerSellerText(input.sellerUserId, 180);
   const productId = cleanSokoBuyerSellerText(input.productId, 100);
   const productTitle = cleanSokoBuyerSellerText(input.productTitle, 120);
+  const productImage = cleanSokoBuyerSellerText(input.productImage, 500);
+  const productPrice = cleanSokoBuyerSellerText(input.productPrice, 40);
+  const productCurrency = cleanSokoBuyerSellerText(input.productCurrency, 8);
+  const productQuantity = cleanSokoBuyerSellerText(input.productQuantity, 40);
   if (!buyerUserId || !sellerUserId || !productId) {
     throw new Error("Conversation identity is incomplete.");
   }
@@ -170,20 +213,45 @@ export async function dbOpenSokoBuyerSellerConversation(input: {
       buyer_user_id,
       seller_user_id,
       product_id,
-      product_title
+      product_title,
+      product_image,
+      product_price,
+      product_currency,
+      product_quantity
     )
     VALUES (
       ${id},
       ${buyerUserId},
       ${sellerUserId},
       ${productId},
-      ${productTitle}
+      ${productTitle},
+      ${productImage},
+      ${productPrice},
+      ${productCurrency},
+      ${productQuantity}
     )
     ON CONFLICT (buyer_user_id, seller_user_id, product_id)
-    DO UPDATE SET product_title = COALESCE(
-      NULLIF(soko_buyer_seller_conversations.product_title, ''),
-      EXCLUDED.product_title
-    )
+    DO UPDATE SET
+      product_title = COALESCE(
+        NULLIF(EXCLUDED.product_title, ''),
+        soko_buyer_seller_conversations.product_title
+      ),
+      product_image = COALESCE(
+        NULLIF(EXCLUDED.product_image, ''),
+        soko_buyer_seller_conversations.product_image
+      ),
+      product_price = COALESCE(
+        NULLIF(EXCLUDED.product_price, ''),
+        soko_buyer_seller_conversations.product_price
+      ),
+      product_currency = COALESCE(
+        NULLIF(EXCLUDED.product_currency, ''),
+        soko_buyer_seller_conversations.product_currency
+      ),
+      product_quantity = COALESCE(
+        NULLIF(EXCLUDED.product_quantity, ''),
+        soko_buyer_seller_conversations.product_quantity
+      )
     RETURNING *
   `) as Array<Record<string, any>>;
 
@@ -193,16 +261,21 @@ export async function dbOpenSokoBuyerSellerConversation(input: {
   return conversationFromRow(rows[0]);
 }
 
-export async function dbListSokoBuyerSellerConversations(viewerUserId: string) {
+export async function dbListSokoBuyerSellerConversations(
+  viewerUserId: string,
+  input?: { limit?: number }
+) {
   await ensureSchema();
   const userId = cleanSokoBuyerSellerText(viewerUserId, 180);
   if (!userId) return [];
+  const limit = Math.max(1, Math.min(100, Number(input?.limit || 40) || 40));
   const sql = sqlClient();
   const rows = (await sql`
     SELECT
       c.*,
       COALESCE(m.text, '') AS last_message_preview,
-      COALESCE(m.created_at, c.created_at) AS last_message_at
+      COALESCE(m.created_at, c.created_at) AS last_message_at,
+      COALESCE(u.unread_count, 0)::int AS unread_count
     FROM soko_buyer_seller_conversations c
     LEFT JOIN LATERAL (
       SELECT text, created_at
@@ -211,10 +284,20 @@ export async function dbListSokoBuyerSellerConversations(viewerUserId: string) {
       ORDER BY created_at DESC
       LIMIT 1
     ) m ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int AS unread_count
+      FROM soko_buyer_seller_messages msg
+      LEFT JOIN soko_buyer_seller_reads r
+        ON r.conversation_id = c.id
+       AND r.user_id = ${userId}
+      WHERE msg.conversation_id = c.id
+        AND msg.sender_user_id <> ${userId}
+        AND msg.created_at > COALESCE(r.last_read_at, TIMESTAMPTZ '1970-01-01')
+    ) u ON TRUE
     WHERE c.buyer_user_id = ${userId}
        OR c.seller_user_id = ${userId}
     ORDER BY last_message_at DESC, c.id DESC
-    LIMIT 100
+    LIMIT ${limit}
   `) as Array<Record<string, any>>;
   return rows.map(conversationFromRow);
 }
@@ -222,19 +305,30 @@ export async function dbListSokoBuyerSellerConversations(viewerUserId: string) {
 export async function dbListSokoBuyerSellerMessages(input: {
   conversationId: string;
   limit?: number;
+  before?: string;
 }) {
   await ensureSchema();
   const conversationId = cleanSokoBuyerSellerText(input.conversationId, 80);
-  const limit = Math.max(1, Math.min(200, Number(input.limit || 80)));
+  const limit = Math.max(1, Math.min(200, Number(input.limit || 40)));
+  const before = cleanSokoBuyerSellerText(input.before, 40);
   if (!conversationId) return [];
   const sql = sqlClient();
-  const rows = (await sql`
-    SELECT *
-    FROM soko_buyer_seller_messages
-    WHERE conversation_id = ${conversationId}
-    ORDER BY created_at DESC
-    LIMIT ${limit}
-  `) as Array<Record<string, any>>;
+  const rows = before
+    ? ((await sql`
+        SELECT *
+        FROM soko_buyer_seller_messages
+        WHERE conversation_id = ${conversationId}
+          AND created_at < ${before}
+        ORDER BY created_at DESC
+        LIMIT ${limit}
+      `) as Array<Record<string, any>>)
+    : ((await sql`
+        SELECT *
+        FROM soko_buyer_seller_messages
+        WHERE conversation_id = ${conversationId}
+        ORDER BY created_at DESC
+        LIMIT ${limit}
+      `) as Array<Record<string, any>>);
   return rows.map(messageFromRow).reverse();
 }
 
@@ -277,3 +371,86 @@ export async function dbCreateSokoBuyerSellerMessage(input: {
   }
   return messageFromRow(rows[0]);
 }
+
+export async function dbMarkSokoBuyerSellerRead(input: {
+  conversationId: string;
+  userId: string;
+}) {
+  await ensureSchema();
+  const conversationId = cleanSokoBuyerSellerText(input.conversationId, 80);
+  const userId = cleanSokoBuyerSellerText(input.userId, 180);
+  if (!conversationId || !userId) return;
+  const sql = sqlClient();
+  await sql`
+    INSERT INTO soko_buyer_seller_reads (
+      conversation_id,
+      user_id,
+      last_read_at
+    )
+    VALUES (
+      ${conversationId},
+      ${userId},
+      NOW()
+    )
+    ON CONFLICT (conversation_id, user_id)
+    DO UPDATE SET last_read_at = NOW()
+  `;
+}
+
+export async function dbLatestOrderStatusForConversations(
+  conversations: Array<{
+    buyerUserId: string;
+    sellerUserId: string;
+    productId: string;
+  }>
+) {
+  if (!conversations.length) return new Map<string, string>();
+  const keys = conversations.map((row) =>
+    conversationIdentityKey(row.buyerUserId, row.sellerUserId, row.productId)
+  );
+  const buyers = [
+    ...new Set(conversations.map((row) => row.buyerUserId).filter(Boolean)),
+  ];
+  const sellers = [
+    ...new Set(conversations.map((row) => row.sellerUserId).filter(Boolean)),
+  ];
+  const products = [
+    ...new Set(conversations.map((row) => row.productId).filter(Boolean)),
+  ];
+  if (!buyers.length || !sellers.length || !products.length) {
+    return new Map<string, string>();
+  }
+
+  const sql = sqlClient();
+  let rows: Array<Record<string, any>> = [];
+  try {
+    rows = (await sql`
+      SELECT DISTINCT ON (buyer_user_id, seller_user_id, product_id)
+        buyer_user_id,
+        seller_user_id,
+        product_id,
+        status
+      FROM soko_orders
+      WHERE buyer_user_id = ANY(${buyers})
+        AND seller_user_id = ANY(${sellers})
+        AND product_id = ANY(${products})
+      ORDER BY buyer_user_id, seller_user_id, product_id, updated_at DESC
+    `) as Array<Record<string, any>>;
+  } catch {
+    return new Map<string, string>();
+  }
+
+  const next = new Map<string, string>();
+  for (const row of rows) {
+    const key = conversationIdentityKey(
+      String(row.buyer_user_id || ""),
+      String(row.seller_user_id || ""),
+      String(row.product_id || "")
+    );
+    if (keys.includes(key)) {
+      next.set(key, String(row.status || ""));
+    }
+  }
+  return next;
+}
+

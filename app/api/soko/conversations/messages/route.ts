@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { guardCheckoutAuth } from "@/app/api/_lib/rbac";
+import { parseMessagePageQuery } from "@/app/api/_lib/sokoBuyerSellerChatPolicy";
 import {
   authorizeSokoConversationAccess,
   dbCreateSokoBuyerSellerMessage,
@@ -23,15 +24,15 @@ export async function GET(req: NextRequest) {
   const auth = await guardCheckoutAuth(req);
   if (auth instanceof NextResponse) return auth;
 
-  const conversationId = String(
-    req.nextUrl.searchParams.get("conversationId") || ""
-  ).trim();
-  if (!conversationId) {
+  const page = parseMessagePageQuery(req.nextUrl.searchParams);
+  if (!page.conversationId) {
     return reply({ ok: false, error: "conversationId is required." }, 400);
   }
 
   try {
-    const conversation = await dbGetSokoBuyerSellerConversation(conversationId);
+    const conversation = await dbGetSokoBuyerSellerConversation(
+      page.conversationId
+    );
     const access = authorizeSokoConversationAccess(
       conversation,
       auth.viewer.userId
@@ -41,14 +42,19 @@ export async function GET(req: NextRequest) {
     }
 
     const messages = await dbListSokoBuyerSellerMessages({
-      conversationId,
-      limit: Number(req.nextUrl.searchParams.get("limit") || 80),
+      conversationId: page.conversationId,
+      limit: page.limit + 1,
+      before: page.before,
     });
+    const hasMore = messages.length > page.limit;
+    const pageRows = hasMore ? messages.slice(1) : messages;
 
     return reply({
       ok: true,
-      conversationId,
-      messages: messages.map((message) => ({
+      conversationId: page.conversationId,
+      hasMore,
+      nextBefore: pageRows[0]?.createdAt || "",
+      messages: pageRows.map((message) => ({
         ...message,
         mine: message.senderUserId === auth.viewer.userId,
       })),

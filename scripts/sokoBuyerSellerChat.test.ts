@@ -6,9 +6,12 @@ import test from "node:test";
 import {
   authorizeSokoConversationAccess,
   conversationIdentityKey,
+  countUnreadMessages,
   evaluateOpenSokoBuyerSellerConversation,
+  listingAvailabilityLabel,
   openConversationIdempotently,
   parseOpenSokoConversationBody,
+  partitionBuyerSellerInbox,
   SOKO_BUYER_SELLER_MESSAGE_MAX,
   validateSokoBuyerSellerMessageText,
 } from "../app/api/_lib/sokoBuyerSellerChatPolicy.ts";
@@ -128,15 +131,65 @@ test("duplicate open is unique per buyer, seller, and product", () => {
     },
     () => "conv-3"
   );
+  const otherBuyer = openConversationIdempotently(
+    store,
+    {
+      buyerUserId: "buyer-2",
+      sellerUserId: "seller-1",
+      productId: "soko-1",
+    },
+    () => "conv-4"
+  );
   assert.equal(first.created, true);
   assert.equal(duplicate.created, false);
   assert.equal(duplicate.id, "conv-1");
   assert.equal(otherProduct.id, "conv-3");
+  assert.equal(otherBuyer.created, true);
+  assert.equal(otherBuyer.id, "conv-4");
   assert.equal(
     conversationIdentityKey("buyer-1", "seller-1", "soko-1"),
     conversationIdentityKey("buyer-1", "seller-1", "soko-1")
   );
 });
+
+test("inbox splits buying vs selling and keeps unread on the other party only", () => {
+  const split = partitionBuyerSellerInbox(
+    [
+      { buyerUserId: "buyer-1", sellerUserId: "seller-1" },
+      { buyerUserId: "buyer-2", sellerUserId: "seller-1" },
+      { buyerUserId: "buyer-1", sellerUserId: "seller-2" },
+    ],
+    "seller-1"
+  );
+  assert.equal(split.selling.length, 2);
+  assert.equal(split.buying.length, 0);
+  assert.equal(
+    countUnreadMessages({
+      viewerUserId: "seller-1",
+      lastReadAt: "2026-02-01T00:00:00.000Z",
+      messages: [
+        { senderUserId: "buyer-1", createdAt: "2026-01-01T00:00:00.000Z" },
+        { senderUserId: "buyer-1", createdAt: "2026-03-01T00:00:00.000Z" },
+        { senderUserId: "seller-1", createdAt: "2026-04-01T00:00:00.000Z" },
+      ],
+    }),
+    1
+  );
+  assert.equal(
+    listingAvailabilityLabel({ found: false, status: "Deleted" }),
+    "Listing unavailable"
+  );
+  assert.equal(
+    evaluateOpenSokoBuyerSellerConversation({
+      buyerUserId: "buyer-1",
+      sellerUserId: "seller-1",
+      productFound: true,
+      productStatus: "Deleted",
+    }).code,
+    "listing_unavailable"
+  );
+});
+
 
 test("routes enforce checkout auth, product-row seller, and no Church DM", () => {
   const conversations = read("app/api/soko/conversations/route.ts");
@@ -156,6 +209,10 @@ test("routes enforce checkout auth, product-row seller, and no Church DM", () =>
   assert.match(messages, /authorizeSokoConversationAccess/);
   assert.match(chatDb, /UNIQUE \(buyer_user_id, seller_user_id, product_id\)/);
   assert.match(chatDb, /ON CONFLICT \(buyer_user_id, seller_user_id, product_id\)/);
+  assert.match(chatDb, /soko_buyer_seller_reads/);
+  assert.match(messages, /hasMore/);
+  assert.match(read("app/api/soko/conversations/read/route.ts"), /dbMarkSokoBuyerSellerRead/);
+  assert.match(conversations, /inboxRoleForViewer/);
   assert.match(productsDb, /export async function getSokoProductById/);
   assert.match(productsDb, /sellerUserId: String\(row\.seller_user_id/);
 
