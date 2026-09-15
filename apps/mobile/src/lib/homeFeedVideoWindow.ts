@@ -10,6 +10,7 @@ export function resolveHomeFeedRowPlaybackUrl(row: any): string {
 export type HomeFeedVideoWarmMode = "active" | "preload" | "warm" | "cache" | "off";
 
 function isVideoFeedRow(item: any) {
+  if (!item || item.type === "soko" || item._homeFeedKind === "soko-product") return false;
   const videoUrl = String(item?.videoUrl || item?.mediaUri || "").trim();
   if (!videoUrl) return false;
   return item?.mediaType === "video" || item?.type === "video";
@@ -131,7 +132,15 @@ export function resolveHomeFeedVideoWarmMode(
 ): HomeFeedVideoWarmMode {
   if (isHomeFeedYouTubeStyleVideo()) return "off";
   if (mountedIndexes && !mountedIndexes.includes(index)) return "off";
-  if (index === activeIndex) return "active";
+  const row = rows?.[index];
+  if (row && (row.type === "soko" || row._homeFeedKind === "soko-product")) return "off";
+  const activeId = String(rows?.[activeIndex]?.id || "").trim();
+  const rowId = String(row?.id || "").trim();
+  if (activeId && rowId) {
+    if (rowId === activeId) return "active";
+  } else if (index === activeIndex) {
+    return "active";
+  }
 
   const delta =
     rows && rows.length ? videoRankDelta(rows, index, activeIndex) : index - activeIndex;

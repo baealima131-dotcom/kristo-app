@@ -24,6 +24,10 @@ import { FeedYouTubeCard } from "./FeedYouTubeCard";
 import { FeedYouTubeSkeletonCard } from "./FeedYouTubeSkeletonCard";
 import { isSokoHomeProductRow, SokoHomeProductCard } from "./SokoHomeProducts";
 import {
+  estimateSokoHomeFeedCardHeight,
+  isSokoHomeFeedRow,
+} from "@/src/lib/sokoHomeFeedLayout";
+import {
   feedRenderKey,
   isVideoPost,
 } from "./homeFeedUtils";
@@ -39,6 +43,12 @@ import {
   resolveActiveVideoRank,
   resolveHomeFeedVideoWarmMode,
 } from "@/src/lib/homeFeedVideoWindow";
+import {
+  homeFeedVideoId,
+  isHomeFeedActiveVideoRow,
+  isSokoFeedRow,
+  pickYouTubeActiveVideoFromViewable,
+} from "@/src/lib/homeFeedActiveVideo";
 import { resolveYouTubeFeedItemLayout, type YouTubeFeedItemLayoutCache } from "@/src/lib/homeFeedYouTubeLayout";
 import { enforceHomeFeedVideoAudioOwnership } from "@/src/lib/homeFeedVideoOwner";
 import {
@@ -191,6 +201,11 @@ export const FeedList = memo(
     (row: any, index: number) => feedRenderKey(row) || String(row?.id || `row-${index}`),
     []
   );
+  const youtubeLayoutMetricsHeldRef = useRef<{
+    heights: number[];
+    offsets: number[];
+    cache: YouTubeFeedItemLayoutCache;
+  } | null>(null);
   const youtubeLayoutMetrics = useMemo(() => {
     const resolved = resolveYouTubeFeedItemLayout(
       rows,
@@ -199,6 +214,15 @@ export const FeedList = memo(
       youtubeRowKey
     );
     youtubeLayoutCacheRef.current = resolved.cache;
+    const previous = youtubeLayoutMetricsHeldRef.current;
+    if (
+      previous &&
+      previous.heights === resolved.heights &&
+      previous.offsets === resolved.offsets
+    ) {
+      return previous;
+    }
+    youtubeLayoutMetricsHeldRef.current = resolved;
     return resolved;
   }, [rows, windowWidth, youtubeRowKey]);
 
@@ -234,6 +258,8 @@ export const FeedList = memo(
   );
 
   const activeIndexRef = useRef(activeIndex);
+  const activeVideoIdRef = useRef(homeFeedVideoId(rows[activeIndex]));
+  const rowsRef = useRef(rows);
   const onActiveIndexChangeRef = useRef(onActiveIndexChange);
   const onUserScrollActivityRef = useRef(onUserScrollActivity);
   const pendingActiveIndexRef = useRef<number | null>(null);
@@ -251,6 +277,35 @@ export const FeedList = memo(
   });
   const listScrollAnimatingRef = useRef(false);
   const youtubeScrollRestoredRef = useRef(false);
+  const lastContentHeightRef = useRef(0);
+  const lastContentHeightRowCountRef = useRef(0);
+
+  const handleYoutubeContentSizeChange = useCallback(
+    (_width: number, height: number) => {
+      const next = Number(height) || 0;
+      const previous = lastContentHeightRef.current;
+      const rowCount = rows.length;
+      if (previous > 0 && Math.abs(next - previous) < 0.5 && rowCount === lastContentHeightRowCountRef.current) {
+        console.log("KRISTO_HOME_FEED_CONTENT_HEIGHT_STABLE", {
+          contentHeight: next,
+          previous,
+          rowCount,
+          unchanged: true,
+        });
+        return;
+      }
+      if (previous > 0 && rowCount === lastContentHeightRowCountRef.current && Math.abs(next - previous) >= 0.5) {
+        console.log("KRISTO_HOME_FEED_CONTENT_HEIGHT_CHANGED", {
+          previous,
+          next,
+          rowCount,
+        });
+      }
+      lastContentHeightRef.current = next;
+      lastContentHeightRowCountRef.current = rowCount;
+    },
+    [rows.length]
+  );
   const handlersRef = useRef({
     onLike,
     onComment,
@@ -261,6 +316,9 @@ export const FeedList = memo(
   });
 
   activeIndexRef.current = activeIndex;
+  rowsRef.current = rows;
+  const resolvedActiveVideoId = homeFeedVideoId(rows[activeIndex]);
+  if (resolvedActiveVideoId) activeVideoIdRef.current = resolvedActiveVideoId;
   onActiveIndexChangeRef.current = onActiveIndexChange;
   onUserScrollActivityRef.current = onUserScrollActivity;
   onYoutubeUserScrollRef.current = onYoutubeUserScroll;
@@ -288,6 +346,17 @@ export const FeedList = memo(
 
   const handleYouTubeScrollToIndexFailed = useCallback(
     (info: { index: number; averageItemLength: number; highestMeasuredFrameIndex: number }) => {
+      const target = rows[info.index];
+      if (isSokoHomeFeedRow(target) || isSokoHomeProductRow(target)) {
+        console.log("SOKO_CAROUSEL_SCROLL_COMMAND", {
+          reason: "vertical-scrollToIndex-blocked",
+          index: info.index,
+          highestMeasuredFrameIndex: info.highestMeasuredFrameIndex,
+          averageItemLength: Math.round(Number(info.averageItemLength) || 0),
+          offset: youtubeLayoutMetrics.offsets[info.index] ?? null,
+        });
+        return;
+      }
       const offset =
         youtubeLayoutMetrics.offsets[info.index] ??
         info.index * Math.max(1, info.averageItemLength);
@@ -296,7 +365,7 @@ export const FeedList = memo(
         scrollYouTubeToIndex(info.index, false);
       });
     },
-    [scrollYouTubeToIndex, youtubeLayoutMetrics.offsets]
+    [rows, scrollYouTubeToIndex, youtubeLayoutMetrics.offsets]
   );
   const viewabilityConfig = useRef(VIEWABILITY_CONFIG).current;
   const youtubeViewabilityConfig = useRef(YOUTUBE_VIEWABILITY_CONFIG).current;
@@ -316,6 +385,7 @@ export const FeedList = memo(
         if (!token.isViewable) continue;
 
         const item = token.item as any;
+        if (isSokoFeedRow(item)) continue;
         const id = String(item?.id || "").trim();
         if (!id) continue;
 
@@ -382,11 +452,17 @@ export const FeedList = memo(
   const publishActiveIndex = useCallback(
     (nextIndex: number, source: "viewability" | "momentum-fallback" | "youtube-viewability") => {
       if (nextIndex < 0 || nextIndex === activeIndexRef.current) return;
+      const row = rowsRef.current[nextIndex];
+      if (isSokoFeedRow(row) || row?.type === "soko") return;
+      const videoId = homeFeedVideoId(row);
+      if (!videoId) return;
       console.log("KRISTO_FEED_ACTIVE_INDEX", {
         from: activeIndexRef.current,
         to: nextIndex,
         source,
+        videoId,
       });
+      activeVideoIdRef.current = videoId;
       onActiveIndexChangeRef.current(nextIndex);
     },
     []
@@ -519,27 +595,21 @@ export const FeedList = memo(
     ({ viewableItems }: { viewableItems: ViewToken[]; changed: ViewToken[] }) => {
       markViewablePosts(viewableItems);
 
-      const viewable = viewableItems.filter(
-        (token) => token.isViewable && token.index != null && token.index >= 0
-      );
-      if (!viewable.length) return;
-
-      let nextIndex = viewable[0].index as number;
-      if (viewable.length > 1) {
-        nextIndex = viewable.reduce((best, token) => {
-          const idx = token.index as number;
-          const bestIdx = best.index as number;
-          return idx > bestIdx ? token : best;
-        }).index as number;
-      }
-
-      if (nextIndex < 0 || nextIndex === activeIndexRef.current) return;
+      const picked = pickYouTubeActiveVideoFromViewable({
+        viewableItems,
+        rows: rowsRef.current,
+        previousVideoId: activeVideoIdRef.current,
+      });
+      if (!picked) return;
+      if (picked.index === activeIndexRef.current) return;
       console.log("KRISTO_FEED_ACTIVE_INDEX", {
         from: activeIndexRef.current,
-        to: nextIndex,
+        to: picked.index,
         source: "viewability",
+        videoId: picked.videoId,
       });
-      onActiveIndexChangeRef.current(nextIndex);
+      activeVideoIdRef.current = picked.videoId;
+      onActiveIndexChangeRef.current(picked.index);
     }
   ).current;
 
@@ -547,21 +617,17 @@ export const FeedList = memo(
     ({ viewableItems }: { viewableItems: ViewToken[]; changed: ViewToken[] }) => {
       markViewablePosts(viewableItems);
 
-      const viewable = viewableItems.filter(
-        (token) => token.isViewable && token.index != null && token.index >= 0
-      );
-      if (!viewable.length) return;
-
-      const nextIndex = viewable.reduce((best, token) => {
-        const idx = token.index as number;
-        const bestIdx = best.index as number;
-        return idx < bestIdx ? token : best;
-      }).index as number;
-
-      if (nextIndex < 0 || nextIndex === activeIndexRef.current) return;
-      pendingActiveIndexRef.current = nextIndex;
+      const picked = pickYouTubeActiveVideoFromViewable({
+        viewableItems,
+        rows: rowsRef.current,
+        previousVideoId: activeVideoIdRef.current,
+      });
+      if (!picked) return;
+      if (picked.index === activeIndexRef.current) return;
+      pendingActiveIndexRef.current = picked.index;
+      activeVideoIdRef.current = picked.videoId;
       if (listScrollAnimatingRef.current) return;
-      scheduleDebouncedActiveIndex(nextIndex, "youtube-viewability");
+      scheduleDebouncedActiveIndex(picked.index, "youtube-viewability");
     }
   ).current;
 
@@ -630,7 +696,13 @@ export const FeedList = memo(
   const renderItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
       if (isSokoHomeProductRow(item)) {
-        return <SokoHomeProductCard product={item} height={contentHeight} />;
+        return (
+          <SokoHomeProductCard
+            product={item}
+            height={contentHeight}
+            layoutWidth={windowWidth}
+          />
+        );
       }
       const videoWarmMode = isVideoPost(item)
         ? resolveHomeFeedVideoWarmMode(index, activeIndex, mountedVideoIndexes, rows)
@@ -653,14 +725,20 @@ export const FeedList = memo(
       if (isKristoVerboseFeedDebug() && isVideoPost(item) && index <= 2) {
         const rowId = String(item?.id || "");
         const mountsPlayer = videoWarmMode !== "off";
-        const diagKey = `${index}:${index === activeIndex ? 1 : 0}:${videoWarmMode}:${mountsPlayer ? 1 : 0}`;
+        const isActiveVideo = isHomeFeedActiveVideoRow(
+          item,
+          index,
+          activeIndex,
+          activeVideoIdRef.current
+        );
+        const diagKey = `${index}:${isActiveVideo ? 1 : 0}:${videoWarmMode}:${mountsPlayer ? 1 : 0}`;
         if (lastFeedVideoIndexDiag.get(rowId) !== diagKey) {
           lastFeedVideoIndexDiag.set(rowId, diagKey);
           console.log("KRISTO_VIDEO_FEED_INDEX_DIAG", {
             id: rowId || null,
             index,
             activeIndex,
-            isActive: index === activeIndex,
+            isActive: isActiveVideo,
             warmMode: videoWarmMode,
             mountsPlayer,
             screenFocused: effectiveScreenFocused,
@@ -672,7 +750,12 @@ export const FeedList = memo(
         <FeedRow
           item={item}
           height={contentHeight}
-          isActive={index === activeIndex}
+          isActive={isHomeFeedActiveVideoRow(
+            item,
+            index,
+            activeIndex,
+            activeVideoIdRef.current
+          )}
           videoWarmMode={videoWarmMode}
           screenFocused={effectiveScreenFocused}
           feedIndex={index}
@@ -695,6 +778,7 @@ export const FeedList = memo(
       firstVideoIndex,
       effectiveScreenFocused,
       inlineVideoAutoplay,
+      windowWidth,
     ]
   );
 
@@ -706,7 +790,14 @@ export const FeedList = memo(
   const renderYouTubeItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
       if (isSokoHomeProductRow(item)) {
-        return <SokoHomeProductCard product={item} />;
+        const sokoHeight = estimateSokoHomeFeedCardHeight(windowWidth, item);
+        return (
+          <SokoHomeProductCard
+            product={item}
+            height={sokoHeight}
+            layoutWidth={windowWidth}
+          />
+        );
       }
       if (isHomeFeedSkeletonRow(item)) {
         return <FeedYouTubeSkeletonCard />;
@@ -733,7 +824,7 @@ export const FeedList = memo(
         />
       );
     },
-    [rows.length]
+    [rows.length, windowWidth]
   );
 
   const viewportStyle = youtubeLayout ? styles.youtubeList : { height: contentHeight };
@@ -817,6 +908,7 @@ export const FeedList = memo(
         onMomentumScrollEnd={handleListMomentumScrollEnd}
         getItemLayout={youtubeGetItemLayout}
         onScrollToIndexFailed={handleYouTubeScrollToIndexFailed}
+        onContentSizeChange={handleYoutubeContentSizeChange}
         ListFooterComponent={listFooter}
         style={[styles.list, viewportStyle]}
         contentContainerStyle={styles.youtubeContent}

@@ -7,6 +7,10 @@ import {
 } from "@/src/components/homeFeed/homeFeedUtils";
 import type { HomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import {
+  estimateSokoHomeFeedCardHeight,
+  isSokoHomeFeedRow,
+} from "@/src/lib/sokoHomeFeedLayout";
 
 export const YOUTUBE_CARD_H_PADDING = 12;
 export const YOUTUBE_THUMB_ASPECT = 16 / 9;
@@ -99,6 +103,9 @@ export function estimateYouTubeFeedCardHeightForItem(
   windowWidth: number,
   item: any
 ): number {
+  if (isSokoHomeFeedRow(item)) {
+    return estimateSokoHomeFeedCardHeight(windowWidth, item);
+  }
   const displayType = resolveHomeFeedVideoDisplayType(item);
   const thumb = isVideoPost(item)
     ? homeFeedVideoThumbnailHeight(windowWidth, displayType)

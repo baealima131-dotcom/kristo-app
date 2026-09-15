@@ -4,7 +4,12 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { markHomeFeedStartupTiming } from "@/src/lib/homeFeedStartupTiming";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
-import { homeFeedRowKey, stableMergeHomeFeedRows, HOME_FEED_INITIAL_LIMIT } from "./homeFeedPagination";
+import {
+  homeFeedRowKey,
+  shouldSkipHomeFeedRowsStateUpdate,
+  stableMergeHomeFeedRows,
+  HOME_FEED_INITIAL_LIMIT,
+} from "./homeFeedPagination";
 import { filterPhase1FeedRows, filterHomeFeedYoutubeStreamRows, isHomeFeedExpandedScheduleSlotRow, normalizeHomeFeedApiRow } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
@@ -38,6 +43,8 @@ import {
 } from "@/src/lib/homeFeedPersonalOrder";
 import {
   startYoutubeHomeFeedVisiblePosterPrewarm,
+  captureHomeFeedPosterWorkToken,
+  shouldSkipStaleHomeFeedPosterWork,
 } from "@/src/lib/homeFeedPosterPrewarm";
 import {
   clearHomeFeedPageCache,
@@ -52,7 +59,6 @@ import {
   saveHomeFeedStreamPage,
   saveHomeFeedPageCachePaging,
 } from "./homeFeedPageCache";
-import { prefetchHomeFeedPosterMetadata } from "@/src/lib/homeFeedPosterPrewarm";
 import {
   getHomeFeedFetchGeneration,
   getHomeFeedFetchInflight,
@@ -71,13 +77,17 @@ import {
 } from "@/src/lib/homeFeedYoutubeStreamSession";
 import {
   classifyFeedApiResponse,
+  clearHomeFeedYoutubeFinalPageCursors,
   decideHomeFeedPagingState,
+  homeFeedPagingEquals,
   isAuthoritativeFeedPageResponse,
   logHomeFeedPagingStateDecision,
   readFeedResponseHasMore,
   readFeedResponseNextCursor,
   readFeedResponseTotal,
+  rememberHomeFeedYoutubeFinalPageCursor,
   shouldRevalidateStaleHomeFeedExhaustion,
+  wasHomeFeedYoutubeFinalPageCursorConsumed,
   type HomeFeedPagingDecision,
   type HomeFeedRequestDisposition,
 } from "@/src/lib/homeFeedPagingAuthority";
@@ -175,6 +185,7 @@ let youtubeSilentNextPagePrepInflight: Promise<void> | null = null;
 export function clearHomeFeedYoutubeSilentNextPagePrep() {
   youtubeSilentNextPagePrep = null;
   youtubeSilentNextPagePrepInflight = null;
+  clearHomeFeedYoutubeFinalPageCursors();
 }
 
 export function isHomeFeedYoutubeSilentNextPagePrepInflight(): boolean {
@@ -183,8 +194,11 @@ export function isHomeFeedYoutubeSilentNextPagePrepInflight(): boolean {
 
 export function isHomeFeedYoutubeSilentNextPagePrepReady(pageIndex?: number): boolean {
   const targetIndex = pageIndex ?? getHomeFeedLoadedPageCount();
+  if (youtubeSilentNextPagePrep?.pageIndex !== targetIndex) return false;
+  if (youtubeSilentNextPagePrep.paging && youtubeSilentNextPagePrep.paging.hasMore === false) {
+    return true;
+  }
   return (
-    youtubeSilentNextPagePrep?.pageIndex === targetIndex &&
     youtubeSilentNextPagePrep.coversReady === true &&
     (youtubeSilentNextPagePrep.rows?.length ?? 0) > 0
   );
@@ -203,6 +217,16 @@ export async function ensureHomeFeedYoutubeSilentNextPagePrepared(): Promise<boo
   return isHomeFeedYoutubeSilentNextPagePrepReady(nextPageIndex);
 }
 
+function rememberYoutubeFinalPageIfExhausted(
+  requestedCursor: string,
+  paging: HomeFeedPagingState,
+  pagingApplied: boolean
+) {
+  if (pagingApplied && paging.hasMore === false) {
+    rememberHomeFeedYoutubeFinalPageCursor(requestedCursor);
+  }
+}
+
 async function fetchHomeFeedYoutubeNextPageRowsOnly(
   cursor: string | null,
   limit: number
@@ -212,6 +236,20 @@ async function fetchHomeFeedYoutubeNextPageRowsOnly(
   const pageLimit = Math.max(1, Math.floor(limit) || HOME_FEED_YOUTUBE_STREAM_PAGE_SIZE);
   const offset = String(cursor ?? "").trim();
   const prior = peekPriorYoutubePaging();
+
+  if (wasHomeFeedYoutubeFinalPageCursorConsumed(offset || "0")) {
+    const exhausted = { hasMore: false, nextCursor: null as string | null };
+    console.log("KRISTO_HOME_FEED_SKIP_DUPLICATE_PAGE", {
+      requestedCursor: offset || "0",
+      reason: "final-page-already-consumed",
+      rowCount: getHomeFeedStreamRowsInMemory().length,
+    });
+    return {
+      rows: [],
+      paging: homeFeedPagingEquals(prior, exhausted) ? prior : exhausted,
+      pagingApplied: !homeFeedPagingEquals(prior, exhausted),
+    };
+  }
 
   const params = new URLSearchParams({
     scope: "global",
@@ -249,9 +287,30 @@ async function fetchHomeFeedYoutubeNextPageRowsOnly(
     requestedCursor: offset || "0",
     persist: false,
   });
+  rememberYoutubeFinalPageIfExhausted(offset || "0", resolved.paging, resolved.pagingApplied);
+
+  const existing = getHomeFeedStreamRowsInMemory();
+  const existingIds = new Set(existing.map((row) => homeFeedRowKey(row)).filter(Boolean));
+  const newRows = rows.filter((row) => {
+    const id = homeFeedRowKey(row);
+    return Boolean(id && !existingIds.has(id));
+  });
+  if (rows.length > 0 && newRows.length === 0) {
+    console.log("KRISTO_HOME_FEED_SKIP_DUPLICATE_PAGE", {
+      requestedCursor: offset || "0",
+      reason: "incoming-ids-already-loaded",
+      incoming: rows.length,
+      rowCount: existing.length,
+    });
+    return {
+      rows: [],
+      paging: resolved.paging,
+      pagingApplied: resolved.pagingApplied,
+    };
+  }
 
   return {
-    rows,
+    rows: newRows.length ? newRows : rows,
     paging: resolved.paging,
     pagingApplied: resolved.pagingApplied,
   };
@@ -297,7 +356,17 @@ export async function prepareHomeFeedYoutubeNextPageSilently(): Promise<void> {
         homeFeedYoutubeStreamLimitForPage(nextPageIndex)
       );
       const rows = fetched.rows;
-      if (!rows.length) return;
+      if (!rows.length) {
+        if (fetched.pagingApplied && fetched.paging) {
+          youtubeSilentNextPagePrep = {
+            pageIndex: nextPageIndex,
+            rows: [],
+            paging: fetched.paging,
+            coversReady: true,
+          };
+        }
+        return;
+      }
 
       const { awaitYoutubeBatchCoverGate } = require("@/src/components/homeFeed/homeFeedYoutubeStreamUi") as {
         awaitYoutubeBatchCoverGate: (
@@ -550,7 +619,7 @@ function pagingFromApiResponse(
     responseTotal: readFeedResponseTotal(res),
     rawRowCount: Array.isArray(res?.data) ? res.data.length : loadedCount,
     mappedRowCount: loadedCount,
-    loadedRows: loadedCount,
+    loadedRows: 0,
   });
   if (decision.action === "preserve") {
     return { ...prior };
@@ -777,6 +846,7 @@ async function collectYoutubeHomeFeedMediaRows(args: {
     rows: any[],
     meta: YoutubeProgressiveRevealMeta
   ) => void | Promise<void>;
+  posterWorkToken?: number;
 }): Promise<{
   rows: any[];
   paging: HomeFeedPagingState;
@@ -797,6 +867,7 @@ async function collectYoutubeHomeFeedMediaRows(args: {
     progressiveRevealMinCount,
     progressiveRevealCount,
     onProgressiveReveal,
+    posterWorkToken,
   } = args;
 
   const collectLimit = Math.max(targetCount, rankPoolSize ?? targetCount);
@@ -819,6 +890,9 @@ async function collectYoutubeHomeFeedMediaRows(args: {
       apiPasses < 1 ||
       collected.length < progressiveRevealMinCount
     ) {
+      return;
+    }
+    if (shouldSkipStaleHomeFeedPosterWork(posterWorkToken, "progressive-reveal-posters")) {
       return;
     }
     progressiveRevealFired = true;
@@ -855,6 +929,15 @@ async function collectYoutubeHomeFeedMediaRows(args: {
       session,
       passThrottleMs
     );
+    if (
+      posterWorkToken != null &&
+      shouldSkipStaleHomeFeedPosterWork(
+        posterWorkToken,
+        "youtube-media-collect-pass"
+      )
+    ) {
+      // Keep collecting feed rows; skip poster scheduling from this stale pass.
+    }
     lastRes = res;
     lastApiRowCount = rawRows.length;
     const passAuthoritative = isAuthoritativeFeedPageResponse(res) && passThrottleMs === 0;
@@ -928,7 +1011,7 @@ async function collectYoutubeHomeFeedMediaRows(args: {
       responseTotal: readFeedResponseTotal(lastRes),
       rawRowCount: Array.isArray(lastRes?.data) ? lastRes.data.length : collected.length,
       mappedRowCount: collected.length,
-      loadedRows: collected.length,
+      loadedRows: 0,
     });
     pagingApplied = decision.action !== "preserve";
     paging = pagingApplied ? decision.paging : { ...prior };
@@ -1012,6 +1095,7 @@ export async function fetchHomeFeedFromApi(
 
   const fetchPromise = (async () => {
     logHomeFeedNetworkTrace({ event: "api-request", reason, refreshMode });
+    const posterWorkToken = captureHomeFeedPosterWorkToken();
 
     if (hardRefresh && isHomeFeedYouTubeStyleVideo()) {
       clearHomeFeedYoutubeSilentNextPagePrep();
@@ -1040,6 +1124,7 @@ export async function fetchHomeFeedFromApi(
         reason,
         // Authoritative page-0 paging must not use throttled replay bodies.
         throttleMs: 0,
+        posterWorkToken,
         progressiveRevealMinCount: androidProgressiveColdLoad
           ? HOME_FEED_ANDROID_PROGRESSIVE_REVEAL_MIN
           : undefined,
@@ -1099,6 +1184,19 @@ export async function fetchHomeFeedFromApi(
       lastFetchedHomeFeedRows = rows;
       const { markHomeFeedPosterApiRowsReceived } =
         await import("@/src/lib/homeFeedPosterPipelineTrace");
+      if (
+        shouldSkipStaleHomeFeedPosterWork(
+          posterWorkToken,
+          "youtube-page0-poster-schedule"
+        )
+      ) {
+        markHomeFeedStartupTiming("FEED_API_RESPONSE_TS", {
+          reason,
+          rowCount: rows.length,
+          source: "youtube-collect",
+        });
+        return rows;
+      }
       markHomeFeedPosterApiRowsReceived(rows);
       startYoutubeHomeFeedVisiblePosterPrewarm(rows);
       markHomeFeedStartupTiming("FEED_API_RESPONSE_TS", {
@@ -1229,14 +1327,24 @@ async function appendHomeFeedBackendRows(
 ) {
   const active = filterActiveHomeFeedRows(pageRows);
   const existing = getCachedHomeFeedBackendRows();
-  const before = existing.length;
   const existingIds = new Set(existing.map((row) => homeFeedRowKey(row)).filter(Boolean));
   const newRows = active.filter((row) => {
     const id = homeFeedRowKey(row);
     return Boolean(id && !existingIds.has(id));
   });
-  const { merged } = stableMergeHomeFeedRows(existing, active);
-  const appended = Math.max(0, merged.length - before);
+  const { merged, appended } = stableMergeHomeFeedRows(existing, active);
+  if (appended <= 0 && shouldSkipHomeFeedRowsStateUpdate(existing, merged)) {
+    console.log("KRISTO_HOME_FEED_SKIP_IDENTICAL_ROWS", {
+      reason: "append-page",
+      rowCount: existing.length,
+      incoming: active.length,
+    });
+    if (paging) {
+      await saveHomeFeedRowsCache(existing, undefined, getBackendSnapshotRowIds(), paging);
+    }
+    lastFetchedHomeFeedRows = existing;
+    return { merged: existing, appended: 0, newRows };
+  }
 
   const prevSnapshot = Array.from(getBackendSnapshotRowIds() || []);
   const snapshotIds = Array.from(
@@ -1296,6 +1404,7 @@ export async function fetchHomeFeedNextPage(
   const rawRows = disposition === "network" ? parseFeedRows(res) : [];
   const incoming = rawRows.length;
   const rows = filterPhase1FeedRows(rawRows);
+  const loadedRows = getCachedHomeFeedBackendCount();
   const decision = decideHomeFeedPagingState({
     disposition,
     prior,
@@ -1304,12 +1413,13 @@ export async function fetchHomeFeedNextPage(
     responseTotal: readFeedResponseTotal(res),
     rawRowCount: incoming,
     mappedRowCount: rows.length,
-    loadedRows: getCachedHomeFeedBackendCount(),
+    loadedRows,
   });
   logHomeFeedPagingStateDecision(decision, {
     requestedCursor: offset || "0",
     rawRowCount: incoming,
     mappedRowCount: rows.length,
+    loadedRows,
   });
   const paging =
     decision.action === "preserve" ? { ...prior } : decision.paging;
@@ -1362,26 +1472,37 @@ async function fetchHomeFeedYoutubeStreamPage(
   const prior = peekPriorYoutubePaging();
 
   const prepared = consumeYoutubeSilentNextPagePrep(nextPageIndex);
-  if (prepared?.rows?.length) {
+  if (prepared) {
     const paging = prepared.paging || prior;
     const existing = getHomeFeedStreamRowsInMemory();
     const existingIds = new Set(existing.map((row) => homeFeedRowKey(row)).filter(Boolean));
-    const newRows = prepared.rows.filter((row) => {
+    const newRows = (prepared.rows || []).filter((row) => {
       const id = homeFeedRowKey(row);
       return Boolean(id && !existingIds.has(id));
     });
 
     if (newRows.length) {
       await saveHomeFeedStreamPage(nextPageIndex, prepared.rows, paging, viewerUserId);
+    } else if (paging) {
+      if (prepared.rows?.length) {
+        console.log("KRISTO_HOME_FEED_SKIP_DUPLICATE_PAGE", {
+          requestedCursor: String(cursor ?? ""),
+          reason: "prepared-ids-already-loaded",
+          incoming: prepared.rows.length,
+          rowCount: existing.length,
+        });
+      }
+      await saveHomeFeedPageCachePaging(paging, viewerUserId);
     }
 
     const stream = getHomeFeedStreamRowsInMemory();
     lastFetchedHomeFeedRows = stream;
+    rememberYoutubeFinalPageIfExhausted(String(cursor ?? prior.nextCursor ?? "0"), paging, true);
     return {
       rows: stream,
       newRows,
       appended: newRows.length,
-      incoming: prepared.rows.length,
+      incoming: prepared.rows?.length ?? 0,
       hasMore: paging.hasMore,
       nextCursor: paging.nextCursor,
       pagingApplied: true,
@@ -1390,6 +1511,31 @@ async function fetchHomeFeedYoutubeStreamPage(
   }
 
   const offset = String(cursor ?? "").trim() || "0";
+  if (wasHomeFeedYoutubeFinalPageCursorConsumed(offset)) {
+    const exhausted = { hasMore: false, nextCursor: null as string | null };
+    const pagingApplied = !homeFeedPagingEquals(prior, exhausted);
+    if (pagingApplied) {
+      await saveHomeFeedPageCachePaging(exhausted, viewerUserId);
+    }
+    console.log("KRISTO_HOME_FEED_SKIP_DUPLICATE_PAGE", {
+      requestedCursor: offset,
+      reason: "final-page-already-consumed",
+      rowCount: getHomeFeedStreamRowsInMemory().length,
+    });
+    const stream = getHomeFeedStreamRowsInMemory();
+    lastFetchedHomeFeedRows = stream;
+    return {
+      rows: stream,
+      newRows: [],
+      appended: 0,
+      incoming: 0,
+      hasMore: false,
+      nextCursor: null,
+      pagingApplied,
+      disposition: "skipped",
+    };
+  }
+
   const pageLimit = Math.max(
     1,
     Math.floor(limit) || homeFeedYoutubeStreamLimitForPage(nextPageIndex)
@@ -1433,6 +1579,7 @@ async function fetchHomeFeedYoutubeStreamPage(
     viewerUserId,
   });
   const paging = resolved.paging;
+  rememberYoutubeFinalPageIfExhausted(offset, paging, resolved.pagingApplied);
 
   if (!rows.length) {
     // Persist exhaustion only when authoritative decision accepts it.
@@ -1460,11 +1607,34 @@ async function fetchHomeFeedYoutubeStreamPage(
     return Boolean(id && !existingIds.has(id));
   });
 
+  if (newRows.length === 0) {
+    console.log("KRISTO_HOME_FEED_SKIP_DUPLICATE_PAGE", {
+      requestedCursor: offset,
+      reason: "incoming-ids-already-loaded",
+      incoming: rows.length,
+      rowCount: existing.length,
+    });
+    if (resolved.pagingApplied) {
+      await saveHomeFeedPageCachePaging(paging, viewerUserId);
+    }
+    lastFetchedHomeFeedRows = existing;
+    return {
+      rows: existing,
+      newRows: [],
+      appended: 0,
+      incoming,
+      hasMore: paging.hasMore,
+      nextCursor: paging.nextCursor,
+      pagingApplied: resolved.pagingApplied,
+      disposition,
+    };
+  }
+
   if (resolved.pagingApplied) {
-    await saveHomeFeedStreamPage(nextPageIndex, rows, paging, viewerUserId);
-  } else if (newRows.length) {
+    await saveHomeFeedStreamPage(nextPageIndex, newRows, paging, viewerUserId);
+  } else {
     // Keep rows but do not overwrite paging with a non-authoritative decision.
-    await saveHomeFeedStreamPage(nextPageIndex, rows, prior, viewerUserId);
+    await saveHomeFeedStreamPage(nextPageIndex, newRows, prior, viewerUserId);
   }
   const stream = getHomeFeedStreamRowsInMemory();
   lastFetchedHomeFeedRows = stream;
@@ -1778,6 +1948,14 @@ export async function refreshHomeFeedYoutubeBackgroundCache(
     }
 
     const visibleRows = peekHomeFeedYoutubeStreamSessionRows();
+    if (shouldSkipHomeFeedRowsStateUpdate(visibleRows, freshRows)) {
+      console.log("KRISTO_HOME_FEED_SKIP_IDENTICAL_ROWS", {
+        reason: `session-background-probe:${reason}`,
+        rowCount: visibleRows.length,
+      });
+      return { refreshAvailable: false };
+    }
+
     const currentTopId = homeFeedRowKey(visibleRows[0]);
     const freshTopId = homeFeedRowKey(freshRows[0]);
     const refreshAvailable = Boolean(currentTopId && freshTopId && currentTopId !== freshTopId);

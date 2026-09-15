@@ -1,5 +1,9 @@
-import { homeFeedRowKey } from "@/src/components/homeFeed/homeFeedPagination";
-import { stableMergeHomeFeedRows, dedupeHomeFeedRowsByKey } from "@/src/components/homeFeed/homeFeedPagination";
+import {
+  homeFeedRowKey,
+  stableMergeHomeFeedRows,
+  dedupeHomeFeedRowsByKey,
+  shouldSkipHomeFeedRowsStateUpdate,
+} from "@/src/components/homeFeed/homeFeedPagination";
 import { HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE } from "@/src/components/homeFeed/homeFeedPageCache";
 import { shouldHardRefreshHomeFeed } from "@/src/lib/homeFeedRefreshReason";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
@@ -112,6 +116,28 @@ export function saveHomeFeedYoutubeStreamSession(
 
   if (patch.rows !== undefined) {
     const dedupedRows = dedupeHomeFeedRowsByKey(patch.rows);
+    if (shouldSkipHomeFeedRowsStateUpdate(session.rows, dedupedRows)) {
+      console.log("KRISTO_HOME_FEED_SKIP_IDENTICAL_ROWS", {
+        reason: "youtube-session-save",
+        rowCount: session.rows.length,
+      });
+      const rowlessPatch = { ...patch };
+      delete rowlessPatch.rows;
+      if (Object.keys(rowlessPatch).length === 0) return;
+      session = {
+        ...session,
+        ...rowlessPatch,
+        rows: session.rows,
+        scrollY: nextScrollY !== undefined ? nextScrollY : session.scrollY,
+        refreshAvailable: nextRefreshAvailable,
+        pendingPage0Rows:
+          patch.pendingPage0Rows !== undefined ? patch.pendingPage0Rows : session.pendingPage0Rows,
+      };
+      if (patch.refreshAvailable !== undefined) {
+        notifyRefreshListeners();
+      }
+      return;
+    }
     if (isPartialHomeFeedYoutubeStreamSession({ rows: dedupedRows, hasMore: nextHasMore })) {
       console.log("KRISTO_HOME_FEED_SESSION_PARTIAL_IGNORED", {
         rowCount: dedupedRows.length,
@@ -164,6 +190,13 @@ export function saveHomeFeedYoutubeStreamSession(
 
 export function replaceHomeFeedYoutubeStreamRows(rows: any[]): void {
   const deduped = dedupeHomeFeedRowsByKey(rows);
+  if (shouldSkipHomeFeedRowsStateUpdate(session.rows, deduped)) {
+    console.log("KRISTO_HOME_FEED_SKIP_IDENTICAL_ROWS", {
+      reason: "youtube-session-replace",
+      rowCount: session.rows.length,
+    });
+    return;
+  }
   saveHomeFeedYoutubeStreamSession({
     rows: deduped,
     loadedPageCount: deduped.length > 0 ? Math.max(session.loadedPageCount, 1) : 0,

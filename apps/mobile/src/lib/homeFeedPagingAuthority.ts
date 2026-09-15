@@ -100,6 +100,41 @@ export function shouldRevalidateStaleHomeFeedExhaustion(args: {
   );
 }
 
+/** Rows the client will hold after applying this page (existing + this response). */
+export function accountedHomeFeedRowsAfterPage(
+  loadedRows: number,
+  mappedRowCount: number
+): number {
+  return Math.max(0, loadedRows) + Math.max(0, mappedRowCount);
+}
+
+export function homeFeedPagingEquals(
+  a: HomeFeedPagingState,
+  b: HomeFeedPagingState
+): boolean {
+  const cursorA = a.nextCursor == null ? "" : String(a.nextCursor);
+  const cursorB = b.nextCursor == null ? "" : String(b.nextCursor);
+  return a.hasMore === b.hasMore && cursorA === cursorB;
+}
+
+const youtubeFinalPageCursors = new Set<string>();
+
+export function rememberHomeFeedYoutubeFinalPageCursor(cursor: string | null): void {
+  youtubeFinalPageCursors.add(String(cursor || "0"));
+}
+
+export function wasHomeFeedYoutubeFinalPageCursorConsumed(cursor: string | null): boolean {
+  return youtubeFinalPageCursors.has(String(cursor || "0"));
+}
+
+export function clearHomeFeedYoutubeFinalPageCursors(): void {
+  youtubeFinalPageCursors.clear();
+}
+
+export function homeFeedYoutubeFinalPageCursorCount(): number {
+  return youtubeFinalPageCursors.size;
+}
+
 /**
  * Decide whether to accept, repair, or preserve pagination after a feed page response.
  */
@@ -157,6 +192,8 @@ export function decideHomeFeedPagingState(args: {
     };
   }
 
+  const accountedRows = accountedHomeFeedRowsAfterPage(loadedRows, mappedRowCount);
+
   if (responseHasMore == null) {
     return {
       ...base,
@@ -166,16 +203,17 @@ export function decideHomeFeedPagingState(args: {
     };
   }
 
-  // Authoritative total wins over a false hasMore.
+  // Authoritative total wins over a false hasMore only when more rows remain
+  // AFTER applying this page (20 existing + 2 mapped = 22 of 22 → exhaust).
   if (
     responseTotal != null &&
-    responseTotal > loadedRows &&
+    responseTotal > accountedRows &&
     responseHasMore === false
   ) {
     const repairedCursor =
       responseNextCursor != null && String(responseNextCursor).trim()
         ? String(responseNextCursor)
-        : String(loadedRows);
+        : String(accountedRows);
     return {
       ...base,
       action: "repair",
@@ -188,7 +226,7 @@ export function decideHomeFeedPagingState(args: {
     const nextCursor =
       responseNextCursor != null && String(responseNextCursor).trim()
         ? String(responseNextCursor)
-        : String(Math.max(loadedRows, mappedRowCount, rawRowCount));
+        : String(Math.max(accountedRows, loadedRows, mappedRowCount, rawRowCount));
     return {
       ...base,
       action: "accept",
@@ -213,6 +251,12 @@ export function logHomeFeedPagingStateDecision(
   decision: HomeFeedPagingDecision,
   extra?: Record<string, unknown>
 ): void {
+  const loadedRows = Number(extra?.loadedRows);
+  const mappedRowCount = Number(extra?.mappedRowCount);
+  const accountedRows = Number.isFinite(loadedRows) && Number.isFinite(mappedRowCount)
+    ? accountedHomeFeedRowsAfterPage(loadedRows, mappedRowCount)
+    : extra?.accountedRows ?? null;
+
   console.log("KRISTO_HOME_FEED_PAGING_STATE_DECISION", {
     action: decision.action,
     reason: decision.reason,
@@ -220,6 +264,7 @@ export function logHomeFeedPagingStateDecision(
     requestedCursor: extra?.requestedCursor ?? null,
     rawRowCount: extra?.rawRowCount ?? null,
     mappedRowCount: extra?.mappedRowCount ?? null,
+    accountedRows,
     responseHasMore: decision.responseHasMore,
     responseNextCursor: decision.responseNextCursor,
     responseTotal: decision.responseTotal,
@@ -229,4 +274,20 @@ export function logHomeFeedPagingStateDecision(
     resultNextCursor: decision.paging.nextCursor,
     ...extra,
   });
+
+  if (
+    decision.action === "accept" &&
+    decision.paging.hasMore === false &&
+    (Number(extra?.mappedRowCount) > 0 || Number(extra?.rawRowCount) > 0)
+  ) {
+    console.log("KRISTO_HOME_FEED_FINAL_PAGE", {
+      requestedCursor: extra?.requestedCursor ?? null,
+      loadedRows: extra?.loadedRows ?? null,
+      mappedRowCount: extra?.mappedRowCount ?? null,
+      accountedRows,
+      responseTotal: decision.responseTotal,
+      hasMore: false,
+      nextCursor: null,
+    });
+  }
 }

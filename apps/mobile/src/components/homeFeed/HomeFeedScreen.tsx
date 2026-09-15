@@ -30,6 +30,15 @@ import {
 import { CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS } from "@/src/lib/churchLiveControlSchedule";
 import { FeedList, type FeedListHandle } from "./FeedList";
 import SokoHomeProducts, { distributeSokoProducts, type SokoHomeProduct } from "./SokoHomeProducts";
+import {
+  areSokoProductListsVisuallyEqual,
+  sokoDistributedRowsUnchanged,
+} from "@/src/lib/sokoHomeFeedLayout";
+import {
+  homeFeedVideoId,
+  isSokoFeedRow,
+  resolveActiveVideoIndexById,
+} from "@/src/lib/homeFeedActiveVideo";
 import { FeedReportSheet } from "./FeedReportSheet";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
 import { HomeFeedShareSheet } from "./HomeFeedShareSheet";
@@ -110,6 +119,7 @@ import {
   shouldRevalidateStaleHomeFeedExhaustion,
   syncHomeFeedLike,
 } from "./homeFeedApi";
+import { homeFeedPagingEquals } from "@/src/lib/homeFeedPagingAuthority";
 import { hydrateHomeFeedRowsCacheFromStorage } from "./homeFeedRowsCache";
 import {
   buildHomeFeedSkeletonRows,
@@ -145,12 +155,12 @@ import {
   HOME_FEED_INITIAL_LIMIT,
   HOME_FEED_PAGE_SIZE,
   HOME_FEED_YOUTUBE_INITIAL_VISIBLE,
-  homeFeedBackendRowsDigest,
   homeFeedLocalRowsDigest,
   homeFeedRowKey,
   initialHomeFeedVisibleWindowSize,
   isHomeFeedNearEnd,
   nextHomeFeedVisibleWindowSize,
+  shouldSkipHomeFeedRowsStateUpdate,
   stableMergeHomeFeedRows,
   dedupeHomeFeedRowsByKey,
 } from "./homeFeedPagination";
@@ -262,6 +272,7 @@ import {
   resetHomeFeedPosterPrewarmForFeedRefresh,
   startInitialHomeFeedPosterPrewarm,
   startYoutubeHomeFeedVisiblePosterPrewarm,
+  isHomeFeedPosterWorkPaused,
   VISIBLE_PRIORITY_COUNT,
 } from "@/src/lib/homeFeedPosterPrewarm";
 import {
@@ -325,6 +336,7 @@ export default function HomeFeedScreen() {
   const [activeIndex, setActiveIndex] = useState(() =>
     isHomeFeedYouTubeStyleVideo() ? youtubeSessionOnMount.activeIndex : 0
   );
+  const [activeVideoId, setActiveVideoId] = useState("");
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
   const [reportTargetPostId, setReportTargetPostId] = useState("");
@@ -370,6 +382,7 @@ export default function HomeFeedScreen() {
   const lastNearEndLoadAtMsRef = useRef(0);
   const appendMoreInflightRef = useRef(false);
   const activeIndexRef = useRef(0);
+  const activeVideoIdRef = useRef("");
   const userScrollGenerationRef = useRef(0);
   const scrollGenerationAtLastAppendRef = useRef(0);
   const appendCooldownUntilMsRef = useRef(0);
@@ -436,6 +449,7 @@ export default function HomeFeedScreen() {
     () => youtubeSessionOnMount.pageVisualReady
   );
   activeIndexRef.current = activeIndex;
+  if (activeVideoId) activeVideoIdRef.current = activeVideoId;
   const lastVisibleRowsRef = useRef<any[]>([]);
   const visibleRowCountRef = useRef(0);
   const pageReadyLoggedRef = useRef(
@@ -496,6 +510,13 @@ export default function HomeFeedScreen() {
 
   const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
   const [sokoProducts, setSokoProducts] = useState<SokoHomeProduct[]>([]);
+  const sokoProductsRef = useRef<SokoHomeProduct[]>([]);
+  sokoProductsRef.current = sokoProducts;
+  const handleSokoProductsChange = useCallback((next: SokoHomeProduct[]) => {
+    if (areSokoProductListsVisuallyEqual(sokoProductsRef.current, next)) return;
+    sokoProductsRef.current = next;
+    setSokoProducts(next);
+  }, []);
   const feedViewportHeight = Math.max(280, contentHeight - topBarHeight);
   youtubeScrollMetricsRef.current = {
     ...youtubeScrollMetricsRef.current,
@@ -528,7 +549,11 @@ export default function HomeFeedScreen() {
   const applyBackendRowsIfChanged = useCallback((next: any[]) => {
     setBackendRows((prev) => {
       if (!next.length) return prev;
-      if (homeFeedBackendRowsDigest(prev) === homeFeedBackendRowsDigest(next)) {
+      if (shouldSkipHomeFeedRowsStateUpdate(prev, next)) {
+        console.log("KRISTO_HOME_FEED_SKIP_IDENTICAL_ROWS", {
+          reason: "backend-rows",
+          rowCount: prev.length,
+        });
         return prev;
       }
       return next;
@@ -757,6 +782,25 @@ export default function HomeFeedScreen() {
           priorNextCursor: feedNextCursorRef.current,
           resultHasMore: feedHasMoreRef.current,
           resultNextCursor: feedNextCursorRef.current,
+        });
+        return;
+      }
+      const nextPaging = {
+        hasMore: paging.hasMore,
+        nextCursor: paging.hasMore ? paging.nextCursor : null,
+      };
+      const priorPaging = {
+        hasMore: feedHasMoreRef.current,
+        nextCursor: feedNextCursorRef.current,
+      };
+      if (homeFeedPagingEquals(priorPaging, nextPaging)) {
+        console.log("KRISTO_HOME_FEED_PAGING_STATE_DECISION", {
+          action: "preserve",
+          reason: "identical-paging",
+          priorHasMore: priorPaging.hasMore,
+          priorNextCursor: priorPaging.nextCursor,
+          resultHasMore: nextPaging.hasMore,
+          resultNextCursor: nextPaging.nextCursor,
         });
         return;
       }
@@ -1062,6 +1106,17 @@ export default function HomeFeedScreen() {
 
       if (opts?.coldStart && videoRows.length > 1) {
         videoRows = rankHomeFeedYoutubeStreamRows(videoRows, homeFeedRowKey);
+      }
+
+      if (
+        !opts?.coldStart &&
+        shouldSkipHomeFeedRowsStateUpdate(youtubeStreamRowsRef.current, videoRows)
+      ) {
+        console.log("KRISTO_HOME_FEED_SKIP_IDENTICAL_ROWS", {
+          reason: "restore-youtube-stream",
+          rowCount: youtubeStreamRowsRef.current.length,
+        });
+        return;
       }
 
       if (
@@ -1784,6 +1839,13 @@ export default function HomeFeedScreen() {
         return incoming;
       }
       const result = stableMergeHomeFeedRows(base, incoming);
+      if (result.appended === 0 && shouldSkipHomeFeedRowsStateUpdate(base, result.merged)) {
+        console.log("KRISTO_HOME_FEED_SKIP_IDENTICAL_ROWS", {
+          reason: "stable-display-merge",
+          rowCount: base.length,
+        });
+        return base;
+      }
       if (result.appended > 0 || result.before !== result.after) {
         console.log("KRISTO_HOME_FEED_STABLE_MERGE", {
           before: result.before,
@@ -1816,10 +1878,7 @@ export default function HomeFeedScreen() {
 
     stableDisplayRowsRef.current = merged;
     setStableDisplayRows((prev) => {
-      if (
-        homeFeedBackendRowsDigest(prev) === homeFeedBackendRowsDigest(merged) &&
-        prev.length === merged.length
-      ) {
+      if (shouldSkipHomeFeedRowsStateUpdate(prev, merged)) {
         return prev;
       }
       return merged;
@@ -2041,6 +2100,12 @@ export default function HomeFeedScreen() {
         setYoutubeFeedPaginationLocked(false);
         void prepareHomeFeedYoutubeNextPageSilently();
       } else {
+        console.log("KRISTO_HOME_FEED_ROW_IDENTITY_STABLE", {
+          rowCount: youtubeStreamRowsRef.current.length,
+          incoming: page.incoming,
+          appended: 0,
+          contentHeight: youtubeScrollMetricsRef.current.contentHeight,
+        });
         setYoutubeFeedPaginationLocked(false);
       }
 
@@ -2350,10 +2415,14 @@ export default function HomeFeedScreen() {
   }, [youtubeShowSkeleton, moderatedYoutubeStreamRows, feedHasMore, youtubePageVisualReady]);
 
   const baseFeedListRows = youtubeLayout ? youtubeFeedRows : filteredVisibleData;
-  const feedListRows = useMemo(
-    () => distributeSokoProducts(baseFeedListRows, sokoProducts),
-    [baseFeedListRows, sokoProducts]
-  );
+  const feedListRowsRef = useRef<any[]>([]);
+  const feedListRows = useMemo(() => {
+    const next = distributeSokoProducts(baseFeedListRows, sokoProducts);
+    if (sokoDistributedRowsUnchanged(feedListRowsRef.current, next)) {
+      return feedListRowsRef.current;
+    }
+    return next;
+  }, [baseFeedListRows, sokoProducts]);
   const feedCaughtUp =
     youtubeLayout &&
     !youtubeShowSkeleton &&
@@ -2365,10 +2434,29 @@ export default function HomeFeedScreen() {
     !youtubeShowSkeleton &&
     !feedCaughtUp &&
     youtubePageVisualReady;
-  const feedListRowsRef = useRef(feedListRows);
   const displayFeedRowsRef = useRef(displayFeedRows);
   feedListRowsRef.current = feedListRows;
   displayFeedRowsRef.current = displayFeedRows;
+
+  const commitActiveVideoIndex = useCallback((index: number) => {
+    const rows = feedListRowsRef.current;
+    const row = rows[index];
+    if (!row || isSokoFeedRow(row) || row?.type === "soko") return;
+    const videoId = homeFeedVideoId(row);
+    if (!videoId) return;
+    activeVideoIdRef.current = videoId;
+    setActiveVideoId(videoId);
+    if (index !== activeIndexRef.current) setActiveIndex(index);
+  }, []);
+
+  useLayoutEffect(() => {
+    const videoId = activeVideoIdRef.current;
+    if (!videoId || !feedListRows.length) return;
+    const next = resolveActiveVideoIndexById(feedListRows, videoId);
+    if (next < 0) return;
+    if (isSokoFeedRow(feedListRows[next])) return;
+    if (next !== activeIndexRef.current) setActiveIndex(next);
+  }, [feedListRows]);
 
   const youtubeFirst20Rows = useMemo(
     () =>
@@ -2404,6 +2492,7 @@ export default function HomeFeedScreen() {
   // Poster prewarm: YouTube uses metadata-only for visible page; inline TikTok uses full prewarm.
   useEffect(() => {
     if (backgroundMediaPaused || videoModalPayload) return;
+    if (!feedFocused || isHomeFeedPosterWorkPaused()) return;
     if (youtubeLayout) {
       if (!youtubeStreamRows.length) return;
       const run = () => startInitialHomeFeedPosterPrewarm(youtubeStreamRows);
@@ -2436,7 +2525,7 @@ export default function HomeFeedScreen() {
       lastPosterInitialSignatureRef.current = initialSignature;
     }
     startInitialHomeFeedPosterPrewarm(rows);
-  }, [stableDisplayRows, displayFeedRows, backgroundMediaPaused, videoModalPayload, youtubeLayout, youtubeStreamRows]);
+  }, [stableDisplayRows, displayFeedRows, backgroundMediaPaused, videoModalPayload, youtubeLayout, youtubeStreamRows, feedFocused]);
 
   // Prewarm the next videos when the user nears the end of loaded content.
   useEffect(() => {
@@ -3476,11 +3565,19 @@ export default function HomeFeedScreen() {
 
   useEffect(() => {
     if (activeIndex >= visibleData.length && visibleData.length > 0) {
-      const next = Math.max(0, visibleData.length - 1);
-      setActiveIndex(next);
-      feedListRef.current?.scrollToIndex(next, false);
+      const rows = feedListRowsRef.current.length ? feedListRowsRef.current : visibleData;
+      const videoId = activeVideoIdRef.current;
+      const byId = resolveActiveVideoIndexById(rows, videoId);
+      if (byId >= 0) {
+        if (byId !== activeIndex) setActiveIndex(byId);
+        return;
+      }
+      let next = Math.max(0, visibleData.length - 1);
+      while (next >= 0 && isSokoFeedRow(visibleData[next])) next -= 1;
+      if (next < 0) return;
+      commitActiveVideoIndex(next);
     }
-  }, [activeIndex, visibleData.length]);
+  }, [activeIndex, visibleData, commitActiveVideoIndex]);
 
   const handleLike = useCallback((item: any) => {
     const postId = homeFeedScheduleEngagementId(item);
@@ -3669,7 +3766,7 @@ export default function HomeFeedScreen() {
           youtubeLayout ? styles.feedBodyYoutube : { height: feedViewportHeight },
         ]}
       >
-        <SokoHomeProducts focused={feedFocused} onProductsChange={setSokoProducts} />
+        <SokoHomeProducts focused={feedFocused} onProductsChange={handleSokoProductsChange} />
         <FeedList
           ref={feedListRef}
           rows={feedListRows}
@@ -3683,7 +3780,7 @@ export default function HomeFeedScreen() {
           onEndReached={handleFeedEndReached}
           onYoutubeUserScroll={handleYoutubeUserScroll}
           onYoutubePrefetchCheck={tryYoutubeStreamPrefetch}
-          onActiveIndexChange={setActiveIndex}
+          onActiveIndexChange={commitActiveVideoIndex}
           onUserScrollActivity={notifyHomeFeedUserScrollActivity}
           onLike={handleLike}
           onComment={handleComment}

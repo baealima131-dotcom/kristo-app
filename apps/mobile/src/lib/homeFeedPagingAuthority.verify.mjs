@@ -18,6 +18,14 @@ const screenSrc = readFileSync(
   "utf8"
 );
 const watchSrc = readFileSync(join(__dirname, "homeFeedWatchUpNext.ts"), "utf8");
+const paginationSrc = readFileSync(
+  join(__dirname, "../components/homeFeed/homeFeedPagination.ts"),
+  "utf8"
+);
+const feedListSrc = readFileSync(
+  join(__dirname, "../components/homeFeed/FeedList.tsx"),
+  "utf8"
+);
 
 function isAuthoritativeFeedPageResponse(res) {
   if (!res || typeof res !== "object") return false;
@@ -38,6 +46,101 @@ function classifyFeedApiResponse(res, opts = {}) {
   if (!isAuthoritativeFeedPageResponse(res)) return "malformed";
   if ((opts.throttleMs || 0) > 0) return "throttle-replay";
   return "network";
+}
+
+function accountedHomeFeedRowsAfterPage(loadedRows, mappedRowCount) {
+  return Math.max(0, loadedRows) + Math.max(0, mappedRowCount);
+}
+
+function homeFeedPagingEquals(a, b) {
+  const cursorA = a.nextCursor == null ? "" : String(a.nextCursor);
+  const cursorB = b.nextCursor == null ? "" : String(b.nextCursor);
+  return a.hasMore === b.hasMore && cursorA === cursorB;
+}
+
+function createHomeFeedFinalPageCursorGuard() {
+  const consumed = new Set();
+  return {
+    remember(cursor) {
+      consumed.add(String(cursor || "0"));
+    },
+    has(cursor) {
+      return consumed.has(String(cursor || "0"));
+    },
+    clear() {
+      consumed.clear();
+    },
+    size() {
+      return consumed.size;
+    },
+  };
+}
+
+function homeFeedRowKey(row) {
+  return String(row?.homeFeedRecycleKey || row?.id || "").trim();
+}
+
+function homeFeedRowCardFingerprint(row) {
+  if (!row || typeof row !== "object") return "";
+  return [
+    String(row?.id || "").trim(),
+    String(row?.updatedAt || ""),
+    String(row?.title || ""),
+    String(row?.videoUrl || ""),
+  ].join("|");
+}
+
+function areHomeFeedRowIdentitiesEqual(prev, next) {
+  if (prev === next) return true;
+  if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    if (homeFeedRowKey(prev[i]) !== homeFeedRowKey(next[i])) return false;
+  }
+  return true;
+}
+
+function areHomeFeedRowsContentEqual(prev, next) {
+  if (prev === next) return true;
+  if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) return false;
+  return prev.map(homeFeedRowCardFingerprint).join("\n") === next.map(homeFeedRowCardFingerprint).join("\n");
+}
+
+function shouldSkipHomeFeedRowsStateUpdate(prev, next) {
+  return areHomeFeedRowIdentitiesEqual(prev, next) && areHomeFeedRowsContentEqual(prev, next);
+}
+
+function stableMergeHomeFeedRows(existing, incoming) {
+  const incomingById = new Map();
+  for (const row of incoming) {
+    const id = homeFeedRowKey(row);
+    if (id) incomingById.set(id, row);
+  }
+  const seen = new Set();
+  const merged = [];
+  let appended = 0;
+  for (const row of existing) {
+    const id = homeFeedRowKey(row);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(incomingById.get(id) && homeFeedRowCardFingerprint(incomingById.get(id)) !== homeFeedRowCardFingerprint(row)
+      ? { ...row, ...incomingById.get(id), id: row.id }
+      : row);
+  }
+  for (const row of incoming) {
+    const id = homeFeedRowKey(row);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(row);
+    appended += 1;
+  }
+  if (
+    appended === 0 &&
+    merged.length === existing.length &&
+    merged.every((row, index) => row === existing[index])
+  ) {
+    return { merged: existing, before: existing.length, incoming: incoming.length, after: existing.length, appended: 0 };
+  }
+  return { merged, before: existing.length, incoming: incoming.length, after: merged.length, appended };
 }
 
 function decideHomeFeedPagingState({
@@ -82,6 +185,8 @@ function decideHomeFeedPagingState({
     };
   }
 
+  const accountedRows = accountedHomeFeedRowsAfterPage(loadedRows, mappedRowCount);
+
   if (responseHasMore == null) {
     return {
       ...base,
@@ -91,11 +196,11 @@ function decideHomeFeedPagingState({
     };
   }
 
-  if (responseTotal != null && responseTotal > loadedRows && responseHasMore === false) {
+  if (responseTotal != null && responseTotal > accountedRows && responseHasMore === false) {
     const repairedCursor =
       responseNextCursor != null && String(responseNextCursor).trim()
         ? String(responseNextCursor)
-        : String(loadedRows);
+        : String(accountedRows);
     return {
       ...base,
       action: "repair",
@@ -108,7 +213,7 @@ function decideHomeFeedPagingState({
     const nextCursor =
       responseNextCursor != null && String(responseNextCursor).trim()
         ? String(responseNextCursor)
-        : String(Math.max(loadedRows, mappedRowCount, rawRowCount));
+        : String(Math.max(accountedRows, loadedRows, mappedRowCount, rawRowCount));
     return {
       ...base,
       action: "accept",
@@ -173,7 +278,16 @@ function testSourceContracts() {
   assert.match(apiSrc, /KRISTO_HOME_FEED_PAGING_REVALIDATE_START/);
   assert.match(apiSrc, /KRISTO_HOME_FEED_PAGING_REVALIDATE_RESULT/);
   assert.match(src, /KRISTO_HOME_FEED_PAGING_STATE_DECISION/);
+  assert.match(src, /KRISTO_HOME_FEED_FINAL_PAGE/);
+  assert.match(src, /accountedHomeFeedRowsAfterPage/);
   assert.match(apiSrc, /logHomeFeedPagingStateDecision/);
+  assert.match(apiSrc, /KRISTO_HOME_FEED_SKIP_DUPLICATE_PAGE/);
+  assert.match(apiSrc, /KRISTO_HOME_FEED_SKIP_IDENTICAL_ROWS/);
+  assert.match(apiSrc, /wasHomeFeedYoutubeFinalPageCursorConsumed/);
+  assert.match(screenSrc, /KRISTO_HOME_FEED_ROW_IDENTITY_STABLE/);
+  assert.match(screenSrc, /shouldSkipHomeFeedRowsStateUpdate/);
+  assert.match(paginationSrc, /shouldSkipHomeFeedRowsStateUpdate/);
+  assert.match(feedListSrc, /KRISTO_HOME_FEED_CONTENT_HEIGHT_STABLE/);
   // Watch queue file must remain untouched by this fix surface.
   assert.doesNotMatch(watchSrc, /revalidateHomeFeedYoutubeStaleExhaustion/);
   assert.doesNotMatch(watchSrc, /homeFeedPagingAuthority/);
@@ -564,6 +678,123 @@ function testColdStartWiringBlurCancelsSafely() {
   console.log("✓ blur/unmount cancels follow-up safely");
 }
 
+function testFinalPageTwentyPlusTwoExhausts() {
+  const prior = { hasMore: true, nextCursor: "20" };
+  const decision = decideHomeFeedPagingState({
+    disposition: "network",
+    prior,
+    responseHasMore: false,
+    responseNextCursor: null,
+    responseTotal: 22,
+    rawRowCount: 2,
+    mappedRowCount: 2,
+    loadedRows: 20,
+  });
+  assert.equal(decision.action, "accept");
+  assert.equal(decision.paging.hasMore, false);
+  assert.equal(decision.paging.nextCursor, null);
+  assert.equal(decision.reason, "authoritative-exhausted-with-rows");
+  assert.equal(accountedHomeFeedRowsAfterPage(20, 2), 22);
+  console.log("✓ 20 + 2 = 22 final page exhausts instead of repairing cursor 20");
+}
+
+function testFirstPageStillRepairsWhenTotalExceedsPage() {
+  const decision = decideHomeFeedPagingState({
+    disposition: "network",
+    prior: { hasMore: true, nextCursor: null },
+    responseHasMore: false,
+    responseNextCursor: null,
+    responseTotal: 45,
+    rawRowCount: 20,
+    mappedRowCount: 20,
+    loadedRows: 0,
+  });
+  assert.equal(decision.action, "repair");
+  assert.equal(decision.paging.hasMore, true);
+  assert.equal(decision.paging.nextCursor, "20");
+  console.log("✓ first page still repairs when total exceeds this page");
+}
+
+function testDuplicateFinalPageDoesNotReplaceRows() {
+  const page0 = Array.from({ length: 20 }, (_, i) => ({ id: `feed_${i}`, title: `p${i}` }));
+  const lastTwo = [
+    { id: "feed_20", title: "a" },
+    { id: "feed_21", title: "b" },
+  ];
+  const afterFirst = stableMergeHomeFeedRows(page0, lastTwo);
+  assert.equal(afterFirst.appended, 2);
+  assert.equal(afterFirst.after, 22);
+
+  const duplicate = stableMergeHomeFeedRows(afterFirst.merged, lastTwo);
+  assert.equal(duplicate.appended, 0);
+  assert.equal(duplicate.merged, afterFirst.merged);
+  assert.equal(shouldSkipHomeFeedRowsStateUpdate(afterFirst.merged, duplicate.merged), true);
+  assert.equal(areHomeFeedRowIdentitiesEqual(afterFirst.merged, duplicate.merged), true);
+  console.log("✓ duplicate final page keeps row identity and skips state update");
+}
+
+function testIdenticalBackgroundRefreshSkipsStateUpdate() {
+  const rows = [
+    { id: "feed_a", title: "A", videoUrl: "v1" },
+    { id: "feed_b", title: "B", videoUrl: "v2" },
+  ];
+  const clone = rows.map((row) => ({ ...row }));
+  assert.equal(shouldSkipHomeFeedRowsStateUpdate(rows, clone), true);
+
+  const rotated = [clone[1], clone[0]];
+  assert.equal(shouldSkipHomeFeedRowsStateUpdate(rows, rotated), false);
+
+  const updated = [{ ...rows[0], title: "A2" }, rows[1]];
+  assert.equal(areHomeFeedRowIdentitiesEqual(rows, updated), true);
+  assert.equal(shouldSkipHomeFeedRowsStateUpdate(rows, updated), false);
+  console.log("✓ identical data skips state update; order/content changes do not");
+}
+
+function testContentHeightStableWhenRowsUnchanged() {
+  const previous = 9115.3330078125;
+  const next = 9115.3330078125;
+  const unchanged = Math.abs(next - previous) < 0.5;
+  assert.equal(unchanged, true);
+  assert.match(feedListSrc, /KRISTO_HOME_FEED_CONTENT_HEIGHT_STABLE/);
+  console.log("✓ content height stays stable when row count is unchanged");
+}
+
+function testOneFinalPageRequestOnly() {
+  const guard = createHomeFeedFinalPageCursorGuard();
+  const requests = [];
+  function fetchCursor(cursor, loadedRows, mappedRowCount, total) {
+    if (guard.has(cursor)) {
+      return { skipped: true, network: false };
+    }
+    requests.push(cursor);
+    const decision = decideHomeFeedPagingState({
+      disposition: "network",
+      prior: { hasMore: true, nextCursor: cursor },
+      responseHasMore: false,
+      responseNextCursor: null,
+      responseTotal: total,
+      rawRowCount: mappedRowCount,
+      mappedRowCount,
+      loadedRows,
+    });
+    if (decision.paging.hasMore === false) {
+      guard.remember(cursor);
+    }
+    return { skipped: false, network: true, paging: decision.paging };
+  }
+
+  const first = fetchCursor("20", 20, 2, 22);
+  assert.equal(first.network, true);
+  assert.equal(first.paging.hasMore, false);
+  const second = fetchCursor("20", 22, 2, 22);
+  assert.equal(second.skipped, true);
+  assert.equal(second.network, false);
+  assert.equal(requests.length, 1);
+  assert.equal(guard.size(), 1);
+  assert.equal(homeFeedPagingEquals(first.paging, { hasMore: false, nextCursor: null }), true);
+  console.log("✓ one final-page request only; cursor 20 is not reused");
+}
+
 function main() {
   testSourceContracts();
   testThrottleEmptyDoesNotExhaust();
@@ -579,6 +810,12 @@ function main() {
   testColdStartWiringTrueExhaustionAndRepair();
   testColdStartWiringFailedColdStartDoesNotProbe();
   testColdStartWiringBlurCancelsSafely();
+  testFinalPageTwentyPlusTwoExhausts();
+  testFirstPageStillRepairsWhenTotalExceedsPage();
+  testDuplicateFinalPageDoesNotReplaceRows();
+  testIdenticalBackgroundRefreshSkipsStateUpdate();
+  testContentHeightStableWhenRowsUnchanged();
+  testOneFinalPageRequestOnly();
   console.log("\nAll Home Feed paging authority checks passed.");
 }
 

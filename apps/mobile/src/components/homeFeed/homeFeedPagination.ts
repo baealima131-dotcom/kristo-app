@@ -6,6 +6,34 @@ export function homeFeedBackendRowsDigest(rows: any[]): string {
   return rows.map((row) => homeFeedRowCardFingerprint(row)).join("\n");
 }
 
+export function homeFeedRowIdentityDigest(rows: any[]): string {
+  return rows.map((row) => homeFeedRowKey(row)).join("|");
+}
+
+export function areHomeFeedRowIdentitiesEqual(prev: any[], next: any[]): boolean {
+  if (prev === next) return true;
+  if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) {
+    return false;
+  }
+  for (let i = 0; i < prev.length; i += 1) {
+    if (homeFeedRowKey(prev[i]) !== homeFeedRowKey(next[i])) return false;
+  }
+  return true;
+}
+
+export function areHomeFeedRowsContentEqual(prev: any[], next: any[]): boolean {
+  if (prev === next) return true;
+  if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) {
+    return false;
+  }
+  return homeFeedBackendRowsDigest(prev) === homeFeedBackendRowsDigest(next);
+}
+
+/** Skip setState / session row replacement when IDs and card content are unchanged. */
+export function shouldSkipHomeFeedRowsStateUpdate(prev: any[], next: any[]): boolean {
+  return areHomeFeedRowIdentitiesEqual(prev, next) && areHomeFeedRowsContentEqual(prev, next);
+}
+
 export function homeFeedLocalRowsDigest(rows: any[]): string {
   return rows.map((row) => homeFeedRowKey(row)).join("|");
 }
@@ -68,6 +96,7 @@ export function dedupeHomeFeedRowsByKey(rows: any[]): any[] {
       after: deduped.length,
     });
   }
+  if (skipped === 0 && deduped.length === rows.length) return rows;
   return deduped;
 }
 
@@ -142,6 +171,20 @@ export function stableMergeHomeFeedRows(
     seen.add(id);
     merged.push(row);
     appended += 1;
+  }
+
+  if (
+    appended === 0 &&
+    merged.length === existing.length &&
+    merged.every((row, index) => row === existing[index])
+  ) {
+    return {
+      merged: existing,
+      before: existing.length,
+      incoming: incoming.length,
+      after: existing.length,
+      appended: 0,
+    };
   }
 
   return {
