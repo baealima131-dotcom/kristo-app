@@ -428,7 +428,8 @@ export function productShareAvailabilityLabel(input: {
   return "Available";
 }
 
-export function snapshotFromTrustedProduct(product: {
+type TrustedProductFields = {
+  productId?: unknown;
   id?: unknown;
   title?: unknown;
   image?: unknown;
@@ -438,13 +439,25 @@ export function snapshotFromTrustedProduct(product: {
   quantity?: unknown;
   stockAvailable?: unknown;
   soldOut?: unknown;
-}) {
+};
+
+export function trustedProductId(product: {
+  productId?: unknown;
+  id?: unknown;
+} | null | undefined) {
+  return (
+    cleanSokoBuyerSellerText(product?.productId, 100) ||
+    cleanSokoBuyerSellerText(product?.id, 100)
+  );
+}
+
+export function snapshotFromTrustedProduct(product: TrustedProductFields) {
   const quantity = cleanSokoBuyerSellerText(
     product.quantity ?? product.stockAvailable,
     40
   );
   return {
-    productId: cleanSokoBuyerSellerText(product.id, 100),
+    productId: trustedProductId(product),
     title: cleanSokoBuyerSellerText(product.title, 120),
     image: cleanSokoBuyerSellerText(product.image, 500),
     price: cleanSokoBuyerSellerText(product.price, 40),
@@ -455,17 +468,18 @@ export function snapshotFromTrustedProduct(product: {
   };
 }
 
+export function snapshotFromLiveCatalogProduct(product: TrustedProductFields) {
+  const catalogId = cleanSokoBuyerSellerText(product.id, 100);
+  return snapshotFromTrustedProduct({
+    ...product,
+    id: catalogId,
+    productId: catalogId,
+  });
+}
+
 export function refreshProductShareCard(
   snapshot: {
     productId?: unknown;
-    title?: unknown;
-    image?: unknown;
-    price?: unknown;
-    currency?: unknown;
-    status?: unknown;
-    quantity?: unknown;
-  },
-  live?: {
     id?: unknown;
     title?: unknown;
     image?: unknown;
@@ -473,24 +487,33 @@ export function refreshProductShareCard(
     currency?: unknown;
     status?: unknown;
     quantity?: unknown;
-    stockAvailable?: unknown;
-    soldOut?: unknown;
-  } | null
+  },
+  live?: TrustedProductFields | null
 ) {
-  const stored = snapshotFromTrustedProduct(snapshot);
+  const storedId = trustedProductId(snapshot);
+  const stored = snapshotFromTrustedProduct({
+    ...snapshot,
+    productId: storedId,
+    id: storedId,
+  });
   const found =
     live != null &&
     !isUnavailableSokoListingStatus(
       String((live as { status?: unknown }).status || "")
     );
-  const current = found ? snapshotFromTrustedProduct({ ...live, id: live.id || stored.productId }) : stored;
+  const liveId = found
+    ? cleanSokoBuyerSellerText(live?.id, 100) || storedId
+    : "";
+  const current = found
+    ? snapshotFromLiveCatalogProduct({ ...live, id: liveId })
+    : stored;
   const availabilityLabel = productShareAvailabilityLabel({
     found,
     status: found ? current.status : live == null ? "Deleted" : current.status,
     soldOut: Boolean(live?.soldOut) || current.status === "Sold",
   });
   return {
-    productId: stored.productId,
+    productId: storedId || current.productId,
     title: current.title || stored.title,
     image: current.image || stored.image,
     price: current.price || stored.price,
@@ -500,6 +523,34 @@ export function refreshProductShareCard(
     availabilityLabel,
     available: availabilityLabel === "Available",
     viewable: availabilityLabel !== "Product unavailable",
+  };
+}
+
+export function toPublicBuyerSellerMessage<
+  T extends {
+    type?: string | null;
+    senderUserId?: string | null;
+    product?: {
+      productId?: unknown;
+      id?: unknown;
+      title?: unknown;
+      image?: unknown;
+      price?: unknown;
+      currency?: unknown;
+      status?: unknown;
+      quantity?: unknown;
+    } | null;
+  },
+>(message: T, viewerUserId: string, live?: TrustedProductFields | null) {
+  const isShare = message.type === SOKO_PRODUCT_SHARE_MESSAGE_TYPE;
+  const product =
+    isShare && message.product
+      ? refreshProductShareCard(message.product, live)
+      : null;
+  return {
+    ...message,
+    mine: String(message.senderUserId || "") === viewerUserId,
+    product: isShare ? product : null,
   };
 }
 

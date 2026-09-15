@@ -7,8 +7,8 @@ import {
   parseMessagePageQuery,
   parseSendSokoConversationMessageBody,
   productSharePreviewText,
-  refreshProductShareCard,
-  snapshotFromTrustedProduct,
+  snapshotFromLiveCatalogProduct,
+  toPublicBuyerSellerMessage,
 } from "@/app/api/_lib/sokoBuyerSellerChatPolicy";
 import {
   dbCreateSokoBuyerSellerMessage,
@@ -46,15 +46,7 @@ function publicMessage(
   viewerUserId: string,
   live: Awaited<ReturnType<typeof getSokoProductById>> | null | undefined
 ) {
-  const product =
-    message.type === "product_share" && message.product
-      ? refreshProductShareCard(message.product, live)
-      : null;
-  return {
-    ...message,
-    mine: message.senderUserId === viewerUserId,
-    product,
-  };
+  return toPublicBuyerSellerMessage(message, viewerUserId, live);
 }
 
 export async function GET(req: NextRequest) {
@@ -148,7 +140,7 @@ export async function POST(req: NextRequest) {
           shared.ok ? 404 : shared.status
         );
       }
-      const snapshot = snapshotFromTrustedProduct(product);
+      const snapshot = snapshotFromLiveCatalogProduct(product);
       const message = await dbCreateSokoBuyerSellerMessage({
         conversationId: parsed.conversationId,
         senderUserId: auth.viewer.userId,

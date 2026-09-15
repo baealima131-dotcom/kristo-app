@@ -17,7 +17,11 @@ import {
   partitionBuyerSellerInbox,
   productSharePreviewText,
   refreshProductShareCard,
+  snapshotFromLiveCatalogProduct,
+  snapshotFromTrustedProduct,
   SOKO_BUYER_SELLER_MESSAGE_MAX,
+  toPublicBuyerSellerMessage,
+  trustedProductId,
   validateSokoBuyerSellerMessageText,
 } from "../app/api/_lib/sokoBuyerSellerChatPolicy.ts";
 
@@ -277,6 +281,7 @@ test("product share is seller-owned, structured, and does not switch conversatio
   assert.equal(liveGone.availabilityLabel, "Product unavailable");
   assert.equal(liveGone.viewable, false);
   assert.equal(liveGone.title, "Watch for man");
+  assert.equal(liveGone.productId, "soko-2");
   const sold = refreshProductShareCard(
     {
       productId: "soko-2",
@@ -297,6 +302,7 @@ test("product share is seller-owned, structured, and does not switch conversatio
   );
   assert.equal(sold.availabilityLabel, "Sold out");
   assert.equal(sold.viewable, true);
+  assert.equal(sold.productId, "soko-2");
 
   const filtered = filterShareableProducts(
     [
@@ -307,6 +313,102 @@ test("product share is seller-owned, structured, and does not switch conversatio
   );
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0].title, "Watch for man");
+});
+
+test("product-share snapshots keep productId through POST, GET, and refresh", () => {
+  const listingId = "soko-nice-watch-2026";
+  const dbSnapshot = {
+    productId: listingId,
+    title: "Nice watch for man 2026",
+    image: "https://cdn.example/nice-watch.jpg",
+    price: "120",
+    currency: "USD",
+    status: "Active",
+    quantity: "12",
+  };
+  assert.equal(trustedProductId(dbSnapshot), listingId);
+  assert.equal(snapshotFromTrustedProduct(dbSnapshot).productId, listingId);
+
+  const catalog = {
+    id: listingId,
+    productId: "spoofed-client-id",
+    title: "Nice watch for man 2026",
+    image: "https://cdn.example/nice-watch.jpg",
+    price: 120,
+    currency: "USD",
+    status: "Active",
+    stockAvailable: 12,
+    soldOut: false,
+  };
+  const postSnapshot = snapshotFromLiveCatalogProduct(catalog);
+  assert.equal(postSnapshot.productId, listingId);
+  assert.notEqual(postSnapshot.productId, "spoofed-client-id");
+
+  const posted = toPublicBuyerSellerMessage(
+    {
+      id: "sokobsm_post",
+      type: "product_share",
+      text: productSharePreviewText(postSnapshot.title),
+      senderUserId: "seller-1",
+      product: postSnapshot,
+    },
+    "seller-1",
+    catalog
+  );
+  assert.equal(posted.mine, true);
+  assert.equal(posted.type, "product_share");
+  assert.equal(posted.product?.productId, listingId);
+  assert.equal(posted.product?.title, "Nice watch for man 2026");
+  assert.equal(posted.product?.availabilityLabel, "Available");
+  assert.equal(posted.text, "Sent a product: Nice watch for man 2026");
+
+  const read = toPublicBuyerSellerMessage(
+    {
+      id: "sokobsm_post",
+      type: "product_share",
+      text: "Sent a product: Nice watch for man 2026",
+      senderUserId: "seller-1",
+      product: dbSnapshot,
+    },
+    "buyer-1",
+    catalog
+  );
+  assert.equal(read.mine, false);
+  assert.equal(read.product?.productId, listingId);
+  assert.equal(read.product?.title, "Nice watch for man 2026");
+  assert.equal(read.product?.availabilityLabel, "Available");
+
+  const refreshedEmptyLiveId = refreshProductShareCard(dbSnapshot, {
+    id: "",
+    productId: "spoofed-client-id",
+    title: "Nice watch for man 2026",
+    status: "Active",
+    price: 99,
+    currency: "USD",
+  });
+  assert.equal(refreshedEmptyLiveId.productId, listingId);
+
+  const deleted = refreshProductShareCard(dbSnapshot, null);
+  assert.equal(deleted.productId, listingId);
+  assert.equal(deleted.availabilityLabel, "Product unavailable");
+  assert.equal(deleted.viewable, false);
+  assert.equal(deleted.title, "Nice watch for man 2026");
+
+  const text = toPublicBuyerSellerMessage(
+    {
+      id: "sokobsm_text",
+      type: "text",
+      text: "Is the watch still in Dallas?",
+      senderUserId: "buyer-1",
+      product: null,
+    },
+    "buyer-1",
+    catalog
+  );
+  assert.equal(text.type, "text");
+  assert.equal(text.text, "Is the watch still in Dallas?");
+  assert.equal(text.product, null);
+  assert.equal(text.mine, true);
 });
 
 test("routes enforce checkout auth, product-row seller, and no Church DM", () => {
@@ -332,6 +434,10 @@ test("routes enforce checkout auth, product-row seller, and no Church DM", () =>
   assert.match(conversations, /parseOpenSokoConversationBody/);
   assert.match(messages, /parseSendSokoConversationMessageBody/);
   assert.match(messages, /evaluateShareSokoProduct/);
+  assert.match(messages, /snapshotFromLiveCatalogProduct/);
+  assert.match(messages, /toPublicBuyerSellerMessage/);
+  assert.match(policy, /trustedProductId/);
+  assert.match(policy, /productId: storedId \|\| current.productId/);
   assert.match(messages, /authorizeSokoConversationAccess/);
   assert.match(chatDb, /UNIQUE \(buyer_user_id, seller_user_id, product_id\)/);
   assert.match(chatDb, /ON CONFLICT \(buyer_user_id, seller_user_id, product_id\)/);
