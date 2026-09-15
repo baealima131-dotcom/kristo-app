@@ -582,6 +582,39 @@ export async function changeSokoProduct(userId: string, kristoId: string, id: st
   if (!rows.length) throw new Error("Listing not found or already deleted.");
 }
 
+export async function listShareableSokoProductsForOwner(userId: string) {
+  await schema();
+  const sellerUserId = String(userId || "").trim();
+  if (!sellerUserId) return [];
+  const sql = sqlClient();
+  const rows = (await sql`
+    SELECT *
+    FROM soko_products
+    WHERE seller_user_id = ${sellerUserId}
+      AND status IN ('Active', 'Sold')
+    ORDER BY created_at DESC, id DESC
+    LIMIT 80
+  `) as Row[];
+  return rows.map((row) => {
+    const product = publicProduct(row);
+    return {
+      id: String(product.id || ""),
+      title: String((product as { title?: unknown }).title || ""),
+      image: String(product.image || ""),
+      price: (product as { price?: unknown }).price,
+      currency: String((product as { currency?: unknown }).currency || ""),
+      quantity: String(
+        (product as { quantity?: unknown }).quantity ??
+          product.stockAvailable ??
+          ""
+      ),
+      status: String(product.status || ""),
+      soldOut: Boolean(product.soldOut),
+      stockAvailable: product.stockAvailable,
+    };
+  });
+}
+
 export async function getSokoProductById(id: string) {
   await schema();
   const productId = String(id || "").trim();

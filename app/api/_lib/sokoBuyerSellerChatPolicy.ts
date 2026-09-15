@@ -278,3 +278,276 @@ export function validateSokoBuyerSellerMessageText(value: unknown) {
   }
   return { ok: true as const, text };
 }
+
+export const SOKO_TEXT_MESSAGE_TYPE = "text";
+export const SOKO_PRODUCT_SHARE_MESSAGE_TYPE = "product_share";
+
+export type SokoShareableProductFilter = "available" | "sold_out" | "all";
+
+export function productSharePreviewText(title: unknown) {
+  const name = cleanSokoBuyerSellerText(title, 120) || "Listing";
+  return `Sent a product: ${name}`.slice(0, SOKO_BUYER_SELLER_MESSAGE_MAX);
+}
+
+export function parseClientMessageId(value: unknown) {
+  const id = cleanSokoBuyerSellerText(value, 80);
+  if (!id) return "";
+  if (!/^[A-Za-z0-9_-]{8,80}$/.test(id)) {
+    return {
+      ok: false as const,
+      status: 400,
+      error: "Invalid clientMessageId.",
+    };
+  }
+  return id;
+}
+
+export function parseSendSokoConversationMessageBody(body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return {
+      ok: false as const,
+      status: 400,
+      error: "Invalid request.",
+    };
+  }
+  const source = body as {
+    conversationId?: unknown;
+    text?: unknown;
+    type?: unknown;
+    productId?: unknown;
+    clientMessageId?: unknown;
+    title?: unknown;
+    image?: unknown;
+    price?: unknown;
+    sellerUserId?: unknown;
+  };
+  const conversationId = cleanSokoBuyerSellerText(source.conversationId, 80);
+  if (!conversationId) {
+    return {
+      ok: false as const,
+      status: 400,
+      error: "conversationId is required.",
+    };
+  }
+  const clientMessageId = parseClientMessageId(source.clientMessageId);
+  if (typeof clientMessageId === "object") return clientMessageId;
+
+  const typeRaw = cleanSokoBuyerSellerText(source.type, 32).toLowerCase();
+  if (typeRaw === SOKO_PRODUCT_SHARE_MESSAGE_TYPE) {
+    const productId = cleanSokoBuyerSellerText(source.productId, 100);
+    if (!productId) {
+      return {
+        ok: false as const,
+        status: 400,
+        error: "productId is required.",
+      };
+    }
+    return {
+      ok: true as const,
+      kind: "product_share" as const,
+      conversationId,
+      productId,
+      clientMessageId,
+    };
+  }
+
+  const validated = validateSokoBuyerSellerMessageText(source.text);
+  if (!validated.ok) return validated;
+  return {
+    ok: true as const,
+    kind: "text" as const,
+    conversationId,
+    text: validated.text,
+    clientMessageId,
+  };
+}
+
+export function evaluateShareSokoProduct(input: {
+  senderUserId: string;
+  conversation:
+    | { buyerUserId: string; sellerUserId: string }
+    | null
+    | undefined;
+  productFound: boolean;
+  productSellerUserId?: string | null;
+  productStatus?: string | null;
+}) {
+  const access = authorizeSokoConversationAccess(
+    input.conversation,
+    input.senderUserId
+  );
+  if (!access.ok) {
+    return { ...access, code: "access" as const };
+  }
+  if (input.conversation!.sellerUserId !== input.senderUserId) {
+    return {
+      ok: false as const,
+      status: 403,
+      error: "Only the seller can send a product.",
+      code: "buyer_cannot_share" as const,
+    };
+  }
+  if (!input.productFound) {
+    return {
+      ok: false as const,
+      status: 404,
+      error: "Product not found.",
+      code: "product_missing" as const,
+    };
+  }
+  if (
+    String(input.productSellerUserId || "").trim() !== input.senderUserId
+  ) {
+    return {
+      ok: false as const,
+      status: 403,
+      error: "You can only send your own products.",
+      code: "not_owner" as const,
+    };
+  }
+  if (isUnavailableSokoListingStatus(input.productStatus)) {
+    return {
+      ok: false as const,
+      status: 409,
+      error: "Product unavailable.",
+      code: "product_unavailable" as const,
+    };
+  }
+  return { ok: true as const };
+}
+
+export function productShareAvailabilityLabel(input: {
+  found?: boolean;
+  status?: string | null;
+  soldOut?: boolean;
+}) {
+  if (input.found === false || isUnavailableSokoListingStatus(input.status)) {
+    return "Product unavailable";
+  }
+  if (input.status === "Sold" || input.soldOut) return "Sold out";
+  return "Available";
+}
+
+export function snapshotFromTrustedProduct(product: {
+  id?: unknown;
+  title?: unknown;
+  image?: unknown;
+  price?: unknown;
+  currency?: unknown;
+  status?: unknown;
+  quantity?: unknown;
+  stockAvailable?: unknown;
+  soldOut?: unknown;
+}) {
+  const quantity = cleanSokoBuyerSellerText(
+    product.quantity ?? product.stockAvailable,
+    40
+  );
+  return {
+    productId: cleanSokoBuyerSellerText(product.id, 100),
+    title: cleanSokoBuyerSellerText(product.title, 120),
+    image: cleanSokoBuyerSellerText(product.image, 500),
+    price: cleanSokoBuyerSellerText(product.price, 40),
+    currency: cleanSokoBuyerSellerText(product.currency, 8),
+    status: cleanSokoBuyerSellerText(product.status, 32),
+    quantity,
+    soldOut: Boolean(product.soldOut),
+  };
+}
+
+export function refreshProductShareCard(
+  snapshot: {
+    productId?: unknown;
+    title?: unknown;
+    image?: unknown;
+    price?: unknown;
+    currency?: unknown;
+    status?: unknown;
+    quantity?: unknown;
+  },
+  live?: {
+    id?: unknown;
+    title?: unknown;
+    image?: unknown;
+    price?: unknown;
+    currency?: unknown;
+    status?: unknown;
+    quantity?: unknown;
+    stockAvailable?: unknown;
+    soldOut?: unknown;
+  } | null
+) {
+  const stored = snapshotFromTrustedProduct(snapshot);
+  const found =
+    live != null &&
+    !isUnavailableSokoListingStatus(
+      String((live as { status?: unknown }).status || "")
+    );
+  const current = found ? snapshotFromTrustedProduct({ ...live, id: live.id || stored.productId }) : stored;
+  const availabilityLabel = productShareAvailabilityLabel({
+    found,
+    status: found ? current.status : live == null ? "Deleted" : current.status,
+    soldOut: Boolean(live?.soldOut) || current.status === "Sold",
+  });
+  return {
+    productId: stored.productId,
+    title: current.title || stored.title,
+    image: current.image || stored.image,
+    price: current.price || stored.price,
+    currency: current.currency || stored.currency,
+    status: current.status || stored.status,
+    quantity: current.quantity || stored.quantity,
+    availabilityLabel,
+    available: availabilityLabel === "Available",
+    viewable: availabilityLabel !== "Product unavailable",
+  };
+}
+
+export function parseShareableProductsQuery(search: {
+  get(name: string): string | null;
+}) {
+  const query = cleanSokoBuyerSellerText(search.get("q") || search.get("query"), 80);
+  const filterRaw = cleanSokoBuyerSellerText(search.get("filter"), 20).toLowerCase();
+  const filter: SokoShareableProductFilter =
+    filterRaw === "available" || filterRaw === "sold_out"
+      ? filterRaw
+      : "all";
+  return { query, filter };
+}
+
+export function isShareableSoldOut(product: {
+  status?: string | null;
+  soldOut?: boolean;
+  stockAvailable?: unknown;
+}) {
+  const stock = Number(product.stockAvailable);
+  return (
+    product.status === "Sold" ||
+    product.soldOut === true ||
+    (Number.isFinite(stock) && stock <= 0)
+  );
+}
+
+export function filterShareableProducts<
+  T extends {
+    title?: string;
+    status?: string | null;
+    soldOut?: boolean;
+    stockAvailable?: unknown;
+  },
+>(
+  products: T[],
+  input: { query?: string; filter?: SokoShareableProductFilter }
+) {
+  const needle = String(input.query || "").trim().toLowerCase();
+  const filter = input.filter || "all";
+  return products.filter((product) => {
+    if (needle && !String(product.title || "").toLowerCase().includes(needle)) {
+      return false;
+    }
+    const soldOut = isShareableSoldOut(product);
+    if (filter === "available") return !soldOut;
+    if (filter === "sold_out") return soldOut;
+    return true;
+  });
+}

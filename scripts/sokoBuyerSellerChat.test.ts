@@ -8,10 +8,15 @@ import {
   conversationIdentityKey,
   countUnreadMessages,
   evaluateOpenSokoBuyerSellerConversation,
+  evaluateShareSokoProduct,
+  filterShareableProducts,
   listingAvailabilityLabel,
   openConversationIdempotently,
   parseOpenSokoConversationBody,
+  parseSendSokoConversationMessageBody,
   partitionBuyerSellerInbox,
+  productSharePreviewText,
+  refreshProductShareCard,
   SOKO_BUYER_SELLER_MESSAGE_MAX,
   validateSokoBuyerSellerMessageText,
 } from "../app/api/_lib/sokoBuyerSellerChatPolicy.ts";
@@ -191,30 +196,157 @@ test("inbox splits buying vs selling and keeps unread on the other party only", 
 });
 
 
+test("product share is seller-owned, structured, and does not switch conversations", () => {
+  const own = evaluateShareSokoProduct({
+    senderUserId: "seller-1",
+    conversation: { buyerUserId: "buyer-1", sellerUserId: "seller-1" },
+    productFound: true,
+    productSellerUserId: "seller-1",
+    productStatus: "Active",
+  });
+  assert.equal(own.ok, true);
+  assert.equal(
+    evaluateShareSokoProduct({
+      senderUserId: "buyer-1",
+      conversation: { buyerUserId: "buyer-1", sellerUserId: "seller-1" },
+      productFound: true,
+      productSellerUserId: "seller-1",
+      productStatus: "Active",
+    }).code,
+    "buyer_cannot_share"
+  );
+  assert.equal(
+    evaluateShareSokoProduct({
+      senderUserId: "seller-1",
+      conversation: { buyerUserId: "buyer-1", sellerUserId: "seller-1" },
+      productFound: true,
+      productSellerUserId: "other-seller",
+      productStatus: "Active",
+    }).code,
+    "not_owner"
+  );
+  assert.equal(
+    evaluateShareSokoProduct({
+      senderUserId: "seller-1",
+      conversation: { buyerUserId: "buyer-1", sellerUserId: "seller-1" },
+      productFound: true,
+      productSellerUserId: "seller-1",
+      productStatus: "Deleted",
+    }).code,
+    "product_unavailable"
+  );
+
+  const parsedShare = parseSendSokoConversationMessageBody({
+    conversationId: "conv-1",
+    type: "product_share",
+    productId: "soko-2",
+    title: "spoofed title",
+    image: "https://evil.example/x.png",
+    price: "9",
+    sellerUserId: "other-seller",
+    clientMessageId: "cmsg_retry_01",
+  });
+  assert.equal(parsedShare.ok, true);
+  if (parsedShare.ok && parsedShare.kind === "product_share") {
+    assert.equal(parsedShare.productId, "soko-2");
+    assert.equal(parsedShare.clientMessageId, "cmsg_retry_01");
+    assert.equal("title" in parsedShare, false);
+  }
+  const parsedText = parseSendSokoConversationMessageBody({
+    conversationId: "conv-1",
+    text: "Habari",
+    productId: "ignored",
+    type: "text",
+  });
+  assert.equal(parsedText.ok, true);
+  if (parsedText.ok) assert.equal(parsedText.kind, "text");
+
+  assert.equal(productSharePreviewText("Watch for man"), "Sent a product: Watch for man");
+  const liveGone = refreshProductShareCard(
+    {
+      productId: "soko-2",
+      title: "Watch for man",
+      image: "https://cdn.example/watch.jpg",
+      price: "150",
+      currency: "TZS",
+      status: "Active",
+      quantity: "1",
+    },
+    null
+  );
+  assert.equal(liveGone.availabilityLabel, "Product unavailable");
+  assert.equal(liveGone.viewable, false);
+  assert.equal(liveGone.title, "Watch for man");
+  const sold = refreshProductShareCard(
+    {
+      productId: "soko-2",
+      title: "Watch for man",
+      price: "150",
+      currency: "TZS",
+      status: "Active",
+      quantity: "1",
+    },
+    {
+      id: "soko-2",
+      title: "Watch for man",
+      status: "Sold",
+      soldOut: true,
+      price: 150,
+      currency: "TZS",
+    }
+  );
+  assert.equal(sold.availabilityLabel, "Sold out");
+  assert.equal(sold.viewable, true);
+
+  const filtered = filterShareableProducts(
+    [
+      { title: "Watch for man", status: "Active", soldOut: false, stockAvailable: 1 },
+      { title: "Bag", status: "Sold", soldOut: true, stockAvailable: 0 },
+    ],
+    { query: "watch", filter: "available" }
+  );
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].title, "Watch for man");
+});
+
 test("routes enforce checkout auth, product-row seller, and no Church DM", () => {
   const conversations = read("app/api/soko/conversations/route.ts");
   const messages = read("app/api/soko/conversations/messages/route.ts");
   const productsDb = read("app/api/_lib/store/sokoProductsDb.ts");
   const chatDb = read("app/api/_lib/store/sokoBuyerSellerChatDb.ts");
   const policy = read("app/api/_lib/sokoBuyerSellerChatPolicy.ts");
+  const shareable = read("app/api/soko/conversations/shareable-products/route.ts");
+  const sharedProduct = read("app/api/soko/conversations/product/route.ts");
   assert.match(policy, /productId is required/);
   assert.match(policy, /self_chat/);
+  assert.match(policy, /product_share/);
+  assert.match(policy, /buyer_cannot_share/);
 
   assert.match(conversations, /guardCheckoutAuth/);
   assert.match(messages, /guardCheckoutAuth/);
+  assert.match(shareable, /guardCheckoutAuth/);
+  assert.match(sharedProduct, /guardCheckoutAuth/);
   assert.match(conversations, /getSokoProductById/);
   assert.match(conversations, /product\?\.sellerUserId/);
   assert.doesNotMatch(conversations, /body\?\.sellerUserId|body\?\.buyerUserId|targetUserId/);
   assert.match(conversations, /parseOpenSokoConversationBody/);
+  assert.match(messages, /parseSendSokoConversationMessageBody/);
+  assert.match(messages, /evaluateShareSokoProduct/);
   assert.match(messages, /authorizeSokoConversationAccess/);
   assert.match(chatDb, /UNIQUE \(buyer_user_id, seller_user_id, product_id\)/);
   assert.match(chatDb, /ON CONFLICT \(buyer_user_id, seller_user_id, product_id\)/);
   assert.match(chatDb, /soko_buyer_seller_reads/);
+  assert.match(chatDb, /soko_buyer_seller_messages_idempotency_idx/);
+  assert.match(chatDb, /message_type/);
   assert.match(messages, /hasMore/);
   assert.match(read("app/api/soko/conversations/read/route.ts"), /dbMarkSokoBuyerSellerRead/);
   assert.match(conversations, /inboxRoleForViewer/);
   assert.match(productsDb, /export async function getSokoProductById/);
+  assert.match(productsDb, /listShareableSokoProductsForOwner/);
   assert.match(productsDb, /sellerUserId: String\(row\.seller_user_id/);
+  assert.match(shareable, /listShareableSokoProductsForOwner\(auth\.viewer\.userId\)/);
+  assert.doesNotMatch(shareable, /searchParams\.get\("sellerId"\)/);
+  assert.match(sharedProduct, /Product unavailable/);
 
   assert.doesNotMatch(conversations, /\/api\/church\/direct-messages/);
   assert.doesNotMatch(messages, /\/api\/church\/room-messages/);

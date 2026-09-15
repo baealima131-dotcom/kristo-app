@@ -34,12 +34,25 @@ export type SokoBuyerSellerConversation = {
   createdAt: string;
 };
 
+export type SokoBuyerSellerProductShare = {
+  productId: string;
+  title: string;
+  image: string;
+  price: string;
+  currency: string;
+  status: string;
+  quantity: string;
+};
+
 export type SokoBuyerSellerMessage = {
   id: string;
   conversationId: string;
   senderUserId: string;
   text: string;
   createdAt: string;
+  type: "text" | "product_share";
+  clientMessageId: string;
+  product: SokoBuyerSellerProductShare | null;
 };
 
 type SchemaGate = {
@@ -90,12 +103,31 @@ function conversationFromRow(
 }
 
 function messageFromRow(row: Record<string, any>): SokoBuyerSellerMessage {
+  const type =
+    String(row.message_type || "").trim() === "product_share"
+      ? "product_share"
+      : "text";
+  const productId = String(row.share_product_id || "").trim();
   return {
     id: String(row.id || ""),
     conversationId: String(row.conversation_id || ""),
     senderUserId: String(row.sender_user_id || ""),
     text: String(row.text || ""),
     createdAt: dateText(row.created_at),
+    type,
+    clientMessageId: String(row.client_message_id || "").trim(),
+    product:
+      type === "product_share" && productId
+        ? {
+            productId,
+            title: String(row.share_product_title || ""),
+            image: String(row.share_product_image || ""),
+            price: String(row.share_product_price || ""),
+            currency: String(row.share_product_currency || ""),
+            status: String(row.share_product_status || ""),
+            quantity: String(row.share_product_quantity || ""),
+          }
+        : null,
   };
 }
 
@@ -159,6 +191,47 @@ async function ensureSchema() {
           last_read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           PRIMARY KEY (conversation_id, user_id)
         )
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS message_type TEXT NOT NULL DEFAULT 'text'
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS client_message_id TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS share_product_id TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS share_product_title TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS share_product_image TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS share_product_price TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS share_product_currency TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS share_product_status TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        ALTER TABLE soko_buyer_seller_messages
+          ADD COLUMN IF NOT EXISTS share_product_quantity TEXT NOT NULL DEFAULT ''
+      `;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS soko_buyer_seller_messages_idempotency_idx
+        ON soko_buyer_seller_messages (conversation_id, sender_user_id, client_message_id)
+        WHERE client_message_id <> ''
       `;
     })().catch((error) => {
       gate.promise = null;
@@ -332,14 +405,43 @@ export async function dbListSokoBuyerSellerMessages(input: {
   return rows.map(messageFromRow).reverse();
 }
 
-export async function dbCreateSokoBuyerSellerMessage(input: {
+export async function dbGetSokoBuyerSellerMessageByClientId(input: {
   conversationId: string;
   senderUserId: string;
-  text: string;
+  clientMessageId: string;
 }) {
   await ensureSchema();
   const conversationId = cleanSokoBuyerSellerText(input.conversationId, 80);
   const senderUserId = cleanSokoBuyerSellerText(input.senderUserId, 180);
+  const clientMessageId = cleanSokoBuyerSellerText(input.clientMessageId, 80);
+  if (!conversationId || !senderUserId || !clientMessageId) return null;
+  const sql = sqlClient();
+  const rows = (await sql`
+    SELECT *
+    FROM soko_buyer_seller_messages
+    WHERE conversation_id = ${conversationId}
+      AND sender_user_id = ${senderUserId}
+      AND client_message_id = ${clientMessageId}
+    LIMIT 1
+  `) as Array<Record<string, any>>;
+  return rows[0] ? messageFromRow(rows[0]) : null;
+}
+
+export async function dbCreateSokoBuyerSellerMessage(input: {
+  conversationId: string;
+  senderUserId: string;
+  text: string;
+  type?: "text" | "product_share";
+  clientMessageId?: string;
+  product?: SokoBuyerSellerProductShare | null;
+}) {
+  await ensureSchema();
+  const conversationId = cleanSokoBuyerSellerText(input.conversationId, 80);
+  const senderUserId = cleanSokoBuyerSellerText(input.senderUserId, 180);
+  const type =
+    input.type === "product_share" ? "product_share" : "text";
+  const clientMessageId = cleanSokoBuyerSellerText(input.clientMessageId, 80);
+  const product = input.product;
   const validated = validateSokoBuyerSellerMessageText(input.text);
   if (!validated.ok) {
     throw new Error(validated.error);
@@ -348,28 +450,67 @@ export async function dbCreateSokoBuyerSellerMessage(input: {
     throw new Error("Message identity is incomplete.");
   }
 
+  if (clientMessageId) {
+    const existing = await dbGetSokoBuyerSellerMessageByClientId({
+      conversationId,
+      senderUserId,
+      clientMessageId,
+    });
+    if (existing) return existing;
+  }
+
   const sql = sqlClient();
   const id = `sokobsm_${randomUUID()}`;
-  const rows = (await sql`
-    INSERT INTO soko_buyer_seller_messages (
-      id,
-      conversation_id,
-      sender_user_id,
-      text
-    )
-    VALUES (
-      ${id},
-      ${conversationId},
-      ${senderUserId},
-      ${validated.text}
-    )
-    RETURNING *
-  `) as Array<Record<string, any>>;
+  try {
+    const rows = (await sql`
+      INSERT INTO soko_buyer_seller_messages (
+        id,
+        conversation_id,
+        sender_user_id,
+        text,
+        message_type,
+        client_message_id,
+        share_product_id,
+        share_product_title,
+        share_product_image,
+        share_product_price,
+        share_product_currency,
+        share_product_status,
+        share_product_quantity
+      )
+      VALUES (
+        ${id},
+        ${conversationId},
+        ${senderUserId},
+        ${validated.text},
+        ${type},
+        ${clientMessageId},
+        ${cleanSokoBuyerSellerText(product?.productId, 100)},
+        ${cleanSokoBuyerSellerText(product?.title, 120)},
+        ${cleanSokoBuyerSellerText(product?.image, 500)},
+        ${cleanSokoBuyerSellerText(product?.price, 40)},
+        ${cleanSokoBuyerSellerText(product?.currency, 8)},
+        ${cleanSokoBuyerSellerText(product?.status, 32)},
+        ${cleanSokoBuyerSellerText(product?.quantity, 40)}
+      )
+      RETURNING *
+    `) as Array<Record<string, any>>;
 
-  if (!rows[0]) {
-    throw new Error("Message could not be saved.");
+    if (!rows[0]) {
+      throw new Error("Message could not be saved.");
+    }
+    return messageFromRow(rows[0]);
+  } catch (error) {
+    if (clientMessageId) {
+      const existing = await dbGetSokoBuyerSellerMessageByClientId({
+        conversationId,
+        senderUserId,
+        clientMessageId,
+      });
+      if (existing) return existing;
+    }
+    throw error;
   }
-  return messageFromRow(rows[0]);
 }
 
 export async function dbMarkSokoBuyerSellerRead(input: {
