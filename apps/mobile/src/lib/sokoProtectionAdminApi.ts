@@ -6,6 +6,14 @@ import type {
   SokoProtectionResolutionCode,
 } from "@/src/lib/sokoProtectionAdminLabels";
 
+export type SokoProtectionAdminParty = {
+  userId: string;
+  displayName: string | null;
+  kristoId: string | null;
+  avatarUrl: string | null;
+  profileStatus: string | null;
+};
+
 export type SokoProtectionAdminCase = {
   id: string;
   orderId: string;
@@ -38,6 +46,10 @@ export type SokoProtectionAdminCase = {
   evidence?: SokoProtectionAdminEvidence[];
   liveOrderStatus?: string | null;
   liveTrackingNumber?: string | null;
+  parties?: {
+    buyer?: SokoProtectionAdminParty | null;
+    seller?: SokoProtectionAdminParty | null;
+  } | null;
   enforcement?: {
     mode?: string;
     blocksOrderFulfillment?: boolean;
@@ -144,6 +156,8 @@ function mapCase(row: any): SokoProtectionAdminCase {
       row?.liveOrderStatus != null ? String(row.liveOrderStatus) : null,
     liveTrackingNumber:
       row?.liveTrackingNumber != null ? String(row.liveTrackingNumber) : null,
+    parties:
+      row?.parties && typeof row.parties === "object" ? row.parties : null,
     enforcement: row?.enforcement,
   };
 }

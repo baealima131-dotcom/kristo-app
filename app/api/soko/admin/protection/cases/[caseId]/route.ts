@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
+import { loadAdminPartiesForCases } from "@/app/api/_lib/sokoProtectionAdminParty";
 import { dbGetAdminSokoProtectionCase } from "@/app/api/_lib/store/sokoProtectionDb";
 
 export const runtime = "nodejs";
@@ -33,7 +34,8 @@ export async function GET(
   try {
     const { caseId } = await context.params;
     const detail = await dbGetAdminSokoProtectionCase(caseId);
-    return reply({ ok: true, case: detail });
+    const [parties] = await loadAdminPartiesForCases([detail]);
+    return reply({ ok: true, case: { ...detail, parties } });
   } catch (error) {
     return reply(
       {

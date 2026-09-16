@@ -9,14 +9,22 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  adminActionEffect,
   adminActionsForState,
   canConfirmAdminNote,
+  conciseOrderStatusPair,
+  deliveryMethodLabel,
   CURRENT_ORDER_STATUS_UNAVAILABLE,
   currentOrderStatusDisplay,
   evidenceBelongsToCase,
   filterAdminQueueRows,
   filterToApiState,
+  frozenProductImageUrl,
   frozenProductTitle,
+  humanOrderStatusLabel,
+  matchesProtectionSearch,
+  trustedHttpsImage,
+  trustedParty,
   isSellerResponseOverdue,
   ORDER_AT_CASE_OPENING_LABEL,
   orderAtCaseOpeningDisplay,
@@ -48,6 +56,39 @@ test("System Admin nav includes Buyer Protection route", () => {
   assert.match(index, /buyer_protection/);
   assert.match(index, /Buyer Protection/);
   assert.match(index, /\/more\/system-admin\/buyer-protection/);
+  assert.match(index, /V1_REPORT_CENTER_ONLY/);
+  assert.match(
+    index,
+    /router\.replace\(\s*"\/\(tabs\)\/more\/system-admin\/report-center"/
+  );
+});
+
+test("Report Center exposes Buyer Protection only to verified System_Admin", () => {
+  const reportCenter = read(
+    "apps/mobile/app/(tabs)/more/system-admin/report-center/index.tsx"
+  );
+  assert.match(reportCenter, /hasOfflineActivationRole/);
+  assert.match(reportCenter, /"System_Admin"/);
+  assert.match(reportCenter, /Open Buyer Protection/);
+  assert.match(reportCenter, />\s*Buyer Protection\s*</);
+  assert.match(reportCenter, /Review SOKO order cases and evidence\./);
+  assert.match(
+    reportCenter,
+    /"\/\(tabs\)\/more\/system-admin\/buyer-protection"/
+  );
+
+  const restricted = reportCenter.split("{!allowed ? (")[1]?.split(") : (")[0] ?? "";
+  assert.ok(restricted.length > 0, "expected an !allowed branch");
+  assert.doesNotMatch(restricted, /Open Buyer Protection/);
+  assert.doesNotMatch(restricted, /buyer-protection/);
+
+  const entry = reportCenter.match(
+    /accessibilityLabel="Open Buyer Protection"[\s\S]*?accessibilityLabel="Add Safety Supervisor"/
+  )?.[0] ?? "";
+  assert.match(entry, /"\/\(tabs\)\/more\/system-admin\/buyer-protection"/);
+  assert.doesNotMatch(entry, /subscription-codes|activation-codes|Church Activation/);
+  assert.doesNotMatch(reportCenter, /subscription-codes/);
+  assert.doesNotMatch(reportCenter, /\/more\/system-admin\/supervisors(?!\/)/);
 });
 
 test("non-admin cannot render queue or case detail without System_Admin gate", () => {
@@ -215,6 +256,33 @@ test("queue filters map to API state and overdue client filter", () => {
   );
 });
 
+test("queue filter strip is height-bounded and cannot stretch vertically", () => {
+  const queue = read(
+    "apps/mobile/app/(tabs)/more/system-admin/buyer-protection/index.tsx"
+  );
+  assert.match(queue, /style=\{styles\.filtersScroll\}/);
+  assert.match(queue, /filtersScroll:\s*\{[\s\S]*?flexGrow:\s*0/);
+  assert.match(queue, /filtersScroll:\s*\{[\s\S]*?height:\s*50/);
+  assert.match(queue, /filtersScroll:\s*\{[\s\S]*?maxHeight:\s*50/);
+  assert.match(queue, /chip:\s*\{[\s\S]*?flexGrow:\s*0/);
+  assert.match(queue, /chip:\s*\{[\s\S]*?height:\s*38/);
+  assert.doesNotMatch(queue, /chip:\s*\{[^}]*flex:\s*1/);
+});
+
+test("queue defaults to all and offers a useful empty-state reset", () => {
+  const queue = read(
+    "apps/mobile/app/(tabs)/more/system-admin/buyer-protection/index.tsx"
+  );
+  assert.match(
+    queue,
+    /React\.useState<SokoProtectionAdminFilter>\("all"\)/
+  );
+  assert.match(queue, /No cases match this view/);
+  assert.match(queue, /Show all cases/);
+  assert.match(queue, /setFilter\("all"\)/);
+  assert.match(queue, /setQuery\(""\)/);
+});
+
 test("frozen product title helper reads snapshot product fields", () => {
   assert.equal(
     frozenProductTitle({
@@ -314,6 +382,128 @@ test("Confirm is disabled and submit rejects empty or whitespace notes", () => {
   assert.match(detail, /requireAdminActionNote\(note\)/);
   assert.match(detail, /actionLock\.current \|\| actionPending/);
   assert.match(detail, /An admin note is required/);
+});
+
+test("trusted product image falls back and parties cannot be swapped", () => {
+  assert.equal(
+    frozenProductImageUrl({
+      product: { image: "https://cdn.example.com/product.jpg" },
+    }),
+    "https://cdn.example.com/product.jpg"
+  );
+  assert.equal(frozenProductImageUrl({ product: { image: "data:image/png;base64,abc" } }), null);
+  assert.equal(
+    frozenProductImageUrl({
+      product: {
+        image: "https://cdn.example/uploads/soko-products/owner/file.png",
+        photos: ["https://cdn.example/uploads/soko-products/owner/file.png"],
+        imageSource: "checkout_snapshot",
+        imageSnapshotKind: "checkout_snapshot",
+        seller: { avatarUrl: "https://unrelated.example/seller.jpg" },
+        imageUrl: "https://unrelated.example/live.jpg",
+      },
+    }),
+    "https://cdn.example/uploads/soko-products/owner/file.png"
+  );
+  assert.equal(
+    frozenProductImageUrl({
+      product: {
+        image: "",
+        photos: [],
+        seller: { avatarUrl: "https://unrelated.example/seller.jpg" },
+      },
+    }),
+    null
+  );
+  assert.equal(trustedHttpsImage("javascript:alert(1)"), null);
+  const swapped = trustedParty({
+    side: "buyer",
+    buyerUserId: "buyer-1",
+    sellerUserId: "seller-1",
+    parties: {
+      buyer: {
+        userId: "seller-1",
+        displayName: "Spoofed seller as buyer",
+        avatarUrl: "https://evil.example/a.jpg",
+      },
+    },
+  });
+  assert.equal(swapped.userId, "buyer-1");
+  assert.equal(swapped.displayName, null);
+  assert.equal(swapped.avatarUrl, null);
+  assert.equal(humanOrderStatusLabel("awaiting_payment"), "Awaiting payment");
+  assert.equal(
+    humanOrderStatusLabel(orderAtCaseOpeningDisplay({ orderStatusAtOpen: "awaiting_payment" })),
+    "Awaiting payment"
+  );
+  assert.equal(
+    adminActionEffect("request_evidence"),
+    "The case remains open and no refund is initiated."
+  );
+  assert.equal(
+    matchesProtectionSearch(
+      {
+        id: "sokoprot_a",
+        orderId: "order-1",
+        buyerUserId: "buyer-1",
+        sellerUserId: "seller-1",
+        parties: {
+          buyer: { userId: "buyer-1", displayName: "Ada Buyer", kristoId: "KR7-AAA" },
+        },
+      },
+      "ada"
+    ),
+    true
+  );
+  assert.equal(
+    matchesProtectionSearch(
+      {
+        id: "sokoprot_a",
+        orderId: "order-1",
+        buyerUserId: "buyer-1",
+        sellerUserId: "seller-1",
+      },
+      "unrelated-person"
+    ),
+    false
+  );
+});
+
+test("command center hides blank images, duplicate facts, and stacked tabs", () => {
+  const queue = read(
+    "apps/mobile/app/(tabs)/more/system-admin/buyer-protection/index.tsx"
+  );
+  const detail = read(
+    "apps/mobile/app/(tabs)/more/system-admin/buyer-protection/[caseId].tsx"
+  );
+  assert.match(queue, /Product image unavailable/);
+  assert.match(queue, /cube-outline/);
+  assert.match(detail, /Product image unavailable/);
+  assert.match(detail, /cube-outline/);
+  assert.match(queue, /numberOfLines=\{2\}/);
+  assert.match(detail, /tab === "summary"/);
+  assert.match(detail, /tab === "evidence"/);
+  assert.match(detail, /tab === "history"/);
+  assert.match(detail, /Review resolution/);
+  assert.match(detail, /position: "absolute"/);
+  assert.doesNotMatch(queue, /SOKO_PROTECTION_ADMIN_HONEST_DISCLAIMER/);
+  assert.doesNotMatch(detail, /SOKO_PROTECTION_ADMIN_HONEST_DISCLAIMER/);
+  assert.doesNotMatch(queue, /Kristo ID unavailable/);
+  assert.doesNotMatch(detail, /Kristo ID unavailable/);
+  assert.equal(
+    conciseOrderStatusPair("Awaiting payment", "Awaiting payment").same,
+    true
+  );
+  assert.match(detail, /statusPair\.same/);
+  assert.equal(
+    deliveryMethodLabel({
+      product: { delivery: { type: "pickup", service: "Local pickup" } },
+    }),
+    "Local pickup"
+  );
+  assert.match(detail, /bottom: resolutionOffset/);
+  assert.match(detail, /maxHeight: 150/);
+  assert.match(detail, /TAB_BAR_HEIGHT = 70/);
 });
 
 test("stale responses are discarded via load sequence tokens", () => {

@@ -1094,6 +1094,59 @@ export default function ReportCenterScreen() {
 
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel="Open Buyer Protection"
+              onPress={() =>
+                router.push(
+                  "/(tabs)/more/system-admin/buyer-protection" as any
+                )
+              }
+              style={({ pressed }) => ({
+                marginTop: 18,
+                opacity: pressed ? 0.78 : 1,
+              })}
+            >
+              <GlassCard
+                style={styles.addSupervisorCard}
+                borderColor="rgba(244,208,111,0.36)"
+              >
+                <View
+                  style={[
+                    styles.addSupervisorIcon,
+                    {
+                      backgroundColor: "rgba(244,208,111,0.12)",
+                      borderColor: "rgba(167,139,250,0.35)",
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name="umbrella-outline"
+                    size={25}
+                    color={GOLD}
+                  />
+                </View>
+
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.addSupervisorTitle}>
+                    Buyer Protection
+                  </Text>
+
+                  <Text style={styles.addSupervisorSubtitle}>
+                    Review SOKO order cases and evidence.
+                  </Text>
+                </View>
+
+                <View style={styles.addSupervisorAction}>
+                  <Ionicons
+                    name="arrow-forward"
+                    size={23}
+                    color={PURPLE}
+                  />
+                </View>
+              </GlassCard>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
               accessibilityLabel="Add Safety Supervisor"
               onPress={() =>
                 router.push(

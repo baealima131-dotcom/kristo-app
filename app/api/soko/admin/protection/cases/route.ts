@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
+import { loadAdminPartiesForCases } from "@/app/api/_lib/sokoProtectionAdminParty";
 import {
   dbListAdminSokoProtectionCases,
   publicProtectionCaseView,
@@ -29,9 +30,14 @@ export async function GET(req: NextRequest) {
       state,
       paymentVerificationKind,
     });
+    const views = cases.map((row) => publicProtectionCaseView(row));
+    const parties = await loadAdminPartiesForCases(views);
     return reply({
       ok: true,
-      cases: cases.map((row) => publicProtectionCaseView(row)),
+      cases: views.map((row, index) => ({
+        ...row,
+        parties: parties[index],
+      })),
     });
   } catch (error) {
     return reply(

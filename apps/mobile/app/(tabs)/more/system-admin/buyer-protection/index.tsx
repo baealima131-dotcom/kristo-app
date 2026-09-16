@@ -1,16 +1,17 @@
 import React from "react";
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -18,46 +19,43 @@ import { hasOfflineActivationRole } from "@/src/lib/offlineActivationCodes";
 import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
 import {
   listAdminProtectionCases,
-  SokoProtectionAdminApiError,
   type SokoProtectionAdminCase,
 } from "@/src/lib/sokoProtectionAdminApi";
 import {
   deadlineStatusLabel,
   filterAdminQueueRows,
   filterToApiState,
+  frozenProductImageUrl,
   frozenProductTitle,
   isSellerResponseOverdue,
+  matchesProtectionSearch,
   ORDER_AT_CASE_OPENING_LABEL,
   orderAtCaseOpeningDisplay,
-  paymentVerificationKindLabel,
+  partyPrimaryLabel,
+  paymentStatusChip,
   protectionCaseStateLabel,
   protectionRequestTypeLabel,
-  shortUserRef,
-  SOKO_PROTECTION_ADMIN_HONEST_DISCLAIMER,
+  shortCaseRef,
+  trustedParty,
+  waitingSinceLabel,
   type SokoProtectionAdminFilter,
 } from "@/src/lib/sokoProtectionAdminLabels";
 
-const BG = "#080C14";
+const BG = "#070A12";
 const TEXT = "rgba(255,255,255,0.96)";
-const MUTED = "rgba(255,255,255,0.60)";
+const MUTED = "rgba(255,255,255,0.58)";
 const GOLD = "#F4D06F";
-const PINK = "#FF8CC8";
-const GREEN = "#5DEBA5";
+const PINK = "#FF8AA4";
 
 const FILTERS: Array<{ key: SokoProtectionAdminFilter; label: string }> = [
   { key: "all", label: "All" },
   { key: "awaiting_seller", label: "Awaiting seller" },
   { key: "evidence_review", label: "Evidence under review" },
-  { key: "resolution_recommended", label: "Resolution recommended" },
-  { key: "external_refund_pending", label: "External refund pending" },
+  { key: "resolution_recommended", label: "Recommended" },
+  { key: "external_refund_pending", label: "External refund" },
   { key: "closed", label: "Closed" },
   { key: "overdue", label: "Overdue" },
 ];
-
-function formatWhen(value?: string | null) {
-  const parsed = Date.parse(String(value || ""));
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : "—";
-}
 
 export default function BuyerProtectionAdminQueueScreen() {
   const router = useRouter();
@@ -68,11 +66,10 @@ export default function BuyerProtectionAdminQueueScreen() {
 
   const [filter, setFilter] =
     React.useState<SokoProtectionAdminFilter>("all");
+  const [query, setQuery] = React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState("");
-  const [unauthorized, setUnauthorized] = React.useState(false);
-  const [offline, setOffline] = React.useState(false);
   const [rows, setRows] = React.useState<SokoProtectionAdminCase[]>([]);
   const loadSeq = React.useRef(0);
 
@@ -87,9 +84,6 @@ export default function BuyerProtectionAdminQueueScreen() {
       if (mode === "refresh") setRefreshing(true);
       else setLoading(true);
       setError("");
-      setUnauthorized(false);
-      setOffline(false);
-
       try {
         const apiState = filterToApiState(filter);
         const listed = await listAdminProtectionCases(
@@ -103,25 +97,13 @@ export default function BuyerProtectionAdminQueueScreen() {
         const message = String(
           nextError?.message || "Could not load Buyer Protection queue."
         );
-        if (status === 401 || status === 403) {
-          setUnauthorized(true);
-          setError(
-            status === 401
-              ? "Session expired. Sign in again as System Admin."
-              : "Forbidden. System_Admin platform role required."
-          );
-        } else if (
-          nextError instanceof SokoProtectionAdminApiError &&
-          /reach|network/i.test(message)
-        ) {
-          setOffline(true);
-          setError(message);
-        } else if (/reach|network|offline/i.test(message)) {
-          setOffline(true);
-          setError(message);
-        } else {
-          setError(message);
-        }
+        setError(
+          status === 401
+            ? "Session expired. Sign in again as System Admin."
+            : status === 403
+              ? "Forbidden. System_Admin platform role required."
+              : message
+        );
         setRows([]);
       } finally {
         if (seq === loadSeq.current) {
@@ -139,10 +121,12 @@ export default function BuyerProtectionAdminQueueScreen() {
     }, [load])
   );
 
+  const visible = rows.filter((row) => matchesProtectionSearch(row, query));
+
   if (!allowed) {
     return (
       <View style={styles.center} accessibilityRole="summary">
-        <Ionicons name="lock-closed-outline" size={42} color={PINK} />
+        <Ionicons name="lock-closed-outline" size={36} color={PINK} />
         <Text style={styles.emptyTitle}>System Admin only</Text>
         <Text style={styles.emptyText}>
           The Buyer Protection review queue requires the verified System_Admin
@@ -154,71 +138,79 @@ export default function BuyerProtectionAdminQueueScreen() {
 
   return (
     <View style={styles.screen}>
-      <LinearGradient
-        colors={["#251743", "#10131D", BG]}
-        style={StyleSheet.absoluteFillObject}
-      />
-
-      <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <Pressable
           onPress={() => router.back()}
-          style={styles.back}
+          style={styles.iconButton}
           accessibilityRole="button"
           accessibilityLabel="Go back"
-          hitSlop={10}
         >
-          <Ionicons name="chevron-back" size={25} color={TEXT} />
+          <Ionicons name="chevron-back" size={24} color={TEXT} />
         </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle} accessibilityRole="header">
-            Buyer Protection
-          </Text>
-          <Text style={styles.headerSub}>Review queue • observe-only</Text>
-        </View>
+        <Text style={styles.headerTitle} accessibilityRole="header">
+          Buyer Protection
+        </Text>
         <Pressable
-          onPress={() => void load("refresh")}
-          style={styles.headerIcon}
           accessibilityRole="button"
-          accessibilityLabel="Refresh queue"
-          hitSlop={10}
+          accessibilityLabel="Evidence review only. Funds are handled outside SOKO"
+          style={styles.iconButton}
         >
-          <Ionicons name="refresh" size={22} color={GOLD} />
+          <Ionicons name="information-circle-outline" size={22} color={GOLD} />
         </Pressable>
       </View>
-
-      <Text style={styles.disclaimer}>{SOKO_PROTECTION_ADMIN_HONEST_DISCLAIMER}</Text>
-
-      <View style={styles.filterRow}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: 8, paddingHorizontal: 16 }}
-        >
-          {FILTERS.map((item) => {
-            const active = filter === item.key;
-            return (
-              <Pressable
-                key={item.key}
-                onPress={() => setFilter(item.key)}
-                style={[styles.chip, active && styles.chipActive]}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={`Filter ${item.label}`}
-              >
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                  {item.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
+      <View style={styles.searchWrap}>
+        <Ionicons name="search-outline" size={18} color={MUTED} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search cases"
+          placeholderTextColor="rgba(255,255,255,0.35)"
+          style={styles.search}
+          accessibilityLabel="Search protection cases"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {query ? (
+          <Pressable
+            onPress={() => setQuery("")}
+            style={styles.clearSearch}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <Ionicons name="close-circle" size={19} color={MUTED} />
+          </Pressable>
+        ) : null}
       </View>
-
       <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.filtersScroll}
+        contentContainerStyle={styles.filters}
+      >
+        {FILTERS.map((item) => {
+          const active = filter === item.key;
+          return (
+            <Pressable
+              key={item.key}
+              onPress={() => setFilter(item.key)}
+              style={[styles.chip, active && styles.chipActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={`Filter ${item.label}`}
+            >
+              <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                {item.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      <ScrollView
+        style={styles.list}
         contentContainerStyle={{
-          paddingHorizontal: 16,
-          paddingBottom: insets.bottom + 28,
-          gap: 12,
+          paddingHorizontal: 12,
+          paddingBottom: insets.bottom + 16,
+          gap: 8,
         }}
         refreshControl={
           <RefreshControl
@@ -227,34 +219,15 @@ export default function BuyerProtectionAdminQueueScreen() {
             tintColor={GOLD}
           />
         }
+        keyboardShouldPersistTaps="handled"
       >
-        {loading ? (
-          <View style={styles.stateBox}>
-            <ActivityIndicator color={GOLD} />
-            <Text style={styles.stateText}>Loading protection cases…</Text>
-          </View>
-        ) : null}
-
-        {!loading && error ? (
-          <View style={styles.stateBox}>
-            <Ionicons
-              name={
-                unauthorized
-                  ? "lock-closed-outline"
-                  : offline
-                    ? "cloud-offline-outline"
-                    : "alert-circle-outline"
-              }
-              size={28}
-              color={PINK}
-            />
-            <Text style={styles.emptyTitle}>
-              {unauthorized ? "Unauthorized" : offline ? "Offline" : "Could not load"}
-            </Text>
+        {loading ? <ActivityIndicator color={GOLD} /> : null}
+        {error ? (
+          <View style={styles.empty}>
             <Text style={styles.emptyText}>{error}</Text>
             <Pressable
-              onPress={() => void load("initial")}
-              style={styles.retryBtn}
+              onPress={() => void load("refresh")}
+              style={styles.retry}
               accessibilityRole="button"
               accessibilityLabel="Retry loading queue"
             >
@@ -262,73 +235,151 @@ export default function BuyerProtectionAdminQueueScreen() {
             </Pressable>
           </View>
         ) : null}
-
-        {!loading && !error && rows.length === 0 ? (
-          <View style={styles.stateBox}>
-            <Ionicons name="file-tray-outline" size={28} color={MUTED} />
-            <Text style={styles.emptyTitle}>No cases in this filter</Text>
+        {!loading && !error && visible.length === 0 ? (
+          <View style={styles.empty} accessibilityRole="summary">
+            <View style={styles.emptyIcon}>
+              <Ionicons name="file-tray-outline" size={24} color={GOLD} />
+            </View>
+            <Text style={styles.emptyTitle}>No cases match this view</Text>
             <Text style={styles.emptyText}>
-              Open cases appear here after buyers file Buyer Protection requests
-              in standalone SOKO.
+              Try another status or clear the search.
             </Text>
+            <Pressable
+              onPress={() => {
+                setFilter("all");
+                setQuery("");
+              }}
+              style={styles.showAllButton}
+              accessibilityRole="button"
+              accessibilityLabel="Show all protection cases"
+            >
+              <Text style={styles.showAllText}>Show all cases</Text>
+            </Pressable>
           </View>
         ) : null}
-
-        {!loading &&
-          !error &&
-          rows.map((row) => {
-            const overdue = isSellerResponseOverdue(row);
-            return (
-              <Pressable
-                key={row.id}
-                onPress={() =>
-                  router.push(
-                    `/more/system-admin/buyer-protection/${encodeURIComponent(row.id)}` as any
-                  )
-                }
-                style={styles.card}
-                accessibilityRole="button"
-                accessibilityLabel={`Open protection case ${row.id.slice(-10)}`}
-              >
-                <View style={styles.cardTop}>
-                  <Text style={styles.caseRef}>Case {row.id.slice(-10)}</Text>
-                  <Text style={[styles.badge, overdue && styles.badgeOverdue]}>
-                    {protectionCaseStateLabel(row.state)}
-                  </Text>
-                </View>
-                <Text style={styles.meta}>
-                  {protectionRequestTypeLabel(row.requestType)} · Order{" "}
-                  {row.orderId.slice(-8).toUpperCase()}
-                </Text>
-                <Text style={styles.title} numberOfLines={2}>
-                  {frozenProductTitle(row.immutableOrderSnapshot)}
-                </Text>
-                <Text style={styles.meta}>
-                  Buyer {shortUserRef(row.buyerUserId)} · Seller{" "}
-                  {shortUserRef(row.sellerUserId)}
-                </Text>
-                <Text style={styles.meta}>
-                  {ORDER_AT_CASE_OPENING_LABEL}:{" "}
-                  {orderAtCaseOpeningDisplay(row.immutableOrderSnapshot)}
-                </Text>
-                <Text style={styles.meta}>
-                  {paymentVerificationKindLabel(row.paymentVerificationKind)}
-                </Text>
-                <Text style={[styles.meta, overdue && styles.overdueText]}>
-                  {deadlineStatusLabel(row)}
-                </Text>
-                <Text style={styles.meta}>
-                  Created {formatWhen(row.createdAt)} · Updated{" "}
-                  {formatWhen(row.updatedAt)}
-                </Text>
-                <View style={styles.openRow}>
-                  <Text style={styles.openText}>Open case</Text>
-                  <Ionicons name="chevron-forward" size={16} color={GREEN} />
-                </View>
-              </Pressable>
-            );
-          })}
+        {visible.map((row) => (
+          <QueueCard
+            key={row.id}
+            row={row}
+            onPress={() =>
+              router.push(
+                `/more/system-admin/buyer-protection/${encodeURIComponent(row.id)}` as any
+              )
+            }
+          />
+        ))}
       </ScrollView>
+    </View>
+  );
+}
+
+function QueueCard({
+  row,
+  onPress,
+}: {
+  row: SokoProtectionAdminCase;
+  onPress: () => void;
+}) {
+  const [failed, setFailed] = React.useState(false);
+  const image = failed ? null : frozenProductImageUrl(row.immutableOrderSnapshot);
+  const buyer = trustedParty({
+    side: "buyer",
+    buyerUserId: row.buyerUserId,
+    sellerUserId: row.sellerUserId,
+    parties: row.parties,
+  });
+  const overdue = isSellerResponseOverdue({
+    state: row.state,
+    sellerResponseDeadline: row.sellerResponseDeadline,
+  });
+  const deadline = deadlineStatusLabel({
+    state: row.state,
+    sellerResponseDeadline: row.sellerResponseDeadline,
+    evidenceDeadline: row.evidenceDeadline,
+    externalRefundDeadline: row.externalRefundDeadline,
+  });
+  // Opening status stays off the queue unless a live comparison exists.
+  const openingKnown = orderAtCaseOpeningDisplay(row.immutableOrderSnapshot);
+  void openingKnown;
+  void ORDER_AT_CASE_OPENING_LABEL;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.card, pressed && { opacity: 0.86 }]}
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${frozenProductTitle(row.immutableOrderSnapshot)}`}
+    >
+      <ProductThumb uri={image} onError={() => setFailed(true)} />
+      <View style={styles.cardBody}>
+        <Text style={styles.title} numberOfLines={2}>
+          {frozenProductTitle(row.immutableOrderSnapshot)}
+        </Text>
+        <Text style={styles.person} numberOfLines={1}>
+          {partyPrimaryLabel(buyer)}
+        </Text>
+        <View style={styles.chipRow}>
+          <MiniChip label={protectionRequestTypeLabel(row.requestType)} />
+          <MiniChip label={protectionCaseStateLabel(row.state)} gold />
+          <MiniChip label={paymentStatusChip(row.paymentVerificationKind)} />
+          {overdue ? <MiniChip label="Overdue" danger /> : null}
+        </View>
+        <Text style={styles.secondary} numberOfLines={1}>
+          {shortCaseRef(row.orderId)} · {waitingSinceLabel(row.createdAt)}
+          {deadline !== "No active deadline" ? ` · ${deadline}` : ""}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.4)" />
+    </Pressable>
+  );
+}
+
+function ProductThumb({
+  uri,
+  onError,
+}: {
+  uri: string | null;
+  onError: () => void;
+}) {
+  const [loaded, setLoaded] = React.useState(false);
+  React.useEffect(() => {
+    setLoaded(false);
+  }, [uri]);
+  return (
+    <View style={styles.thumbSlot} accessibilityLabel={uri && loaded ? "Product image" : "Product image unavailable"}>
+      <View style={styles.thumbFallback}>
+        <Ionicons name="cube-outline" size={26} color={GOLD} />
+      </View>
+      {uri ? (
+        <Image
+          source={{ uri }}
+          resizeMode="cover"
+          style={[styles.thumb, { opacity: loaded ? 1 : 0 }]}
+          onLoad={() => setLoaded(true)}
+          onError={onError}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function MiniChip({
+  label,
+  gold,
+  danger,
+}: {
+  label: string;
+  gold?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <View style={[styles.mini, gold && styles.miniGold, danger && styles.miniDanger]}>
+      <Text
+        style={[styles.miniText, gold && styles.miniTextGold, danger && styles.miniTextDanger]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
     </View>
   );
 }
@@ -340,133 +391,156 @@ const styles = StyleSheet.create({
     backgroundColor: BG,
     alignItems: "center",
     justifyContent: "center",
-    padding: 28,
-    gap: 10,
+    padding: 24,
+    gap: 8,
   },
   header: {
-    paddingHorizontal: 14,
-    paddingBottom: 10,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    paddingHorizontal: 8,
   },
-  back: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
+  headerTitle: { flex: 1, color: TEXT, fontSize: 20, fontWeight: "800" },
+  iconButton: {
+    minWidth: 44,
+    minHeight: 44,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
   },
-  headerTitle: {
+  searchWrap: {
+    minHeight: 48,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(120,86,190,0.18)",
+  },
+  search: {
+    flex: 1,
+    minHeight: 48,
+    paddingVertical: 0,
     color: TEXT,
-    fontSize: 22,
-    fontWeight: "800",
+    fontSize: 15,
   },
-  headerSub: {
-    color: MUTED,
-    fontSize: 13,
-    marginTop: 2,
-  },
-  headerIcon: {
-    width: 44,
+  clearSearch: {
+    width: 32,
     height: 44,
-    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(244,208,111,0.12)",
   },
-  disclaimer: {
-    color: MUTED,
-    fontSize: 12,
-    lineHeight: 17,
-    paddingHorizontal: 16,
-    marginBottom: 10,
+  filtersScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+    height: 50,
+    maxHeight: 50,
   },
-  filterRow: { marginBottom: 10 },
+  filters: {
+    flexGrow: 0,
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+  },
   chip: {
-    minHeight: 40,
+    flexGrow: 0,
+    flexShrink: 0,
+    height: 38,
     paddingHorizontal: 14,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 19,
+    alignSelf: "center",
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.05)",
   },
   chipActive: {
-    backgroundColor: "rgba(244,208,111,0.18)",
+    backgroundColor: "rgba(167,139,250,0.26)",
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(244,208,111,0.55)",
   },
-  chipText: { color: MUTED, fontWeight: "700", fontSize: 13 },
-  chipTextActive: { color: GOLD },
+  chipText: { color: MUTED, fontSize: 12, fontWeight: "700" },
+  chipTextActive: { color: TEXT },
   card: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(255,255,255,0.05)",
-    padding: 14,
-    gap: 6,
-  },
-  cardTop: {
+    minHeight: 84,
     flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 8,
-    alignItems: "center",
-  },
-  caseRef: { color: GOLD, fontWeight: "800", fontSize: 13 },
-  badge: {
-    color: TEXT,
-    fontSize: 11,
-    fontWeight: "800",
-    overflow: "hidden",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: "rgba(93,235,165,0.14)",
-  },
-  badgeOverdue: {
-    backgroundColor: "rgba(255,140,200,0.18)",
-    color: PINK,
-  },
-  title: { color: TEXT, fontSize: 16, fontWeight: "700" },
-  meta: { color: MUTED, fontSize: 12, lineHeight: 17 },
-  overdueText: { color: PINK, fontWeight: "700" },
-  openRow: {
-    marginTop: 6,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  openText: { color: GREEN, fontWeight: "800", fontSize: 13 },
-  stateBox: {
-    marginTop: 24,
     alignItems: "center",
     gap: 10,
-    padding: 18,
-  },
-  stateText: { color: MUTED },
-  emptyTitle: {
-    color: TEXT,
-    fontSize: 18,
-    fontWeight: "800",
-    textAlign: "center",
-  },
-  emptyText: {
-    color: MUTED,
-    fontSize: 14,
-    lineHeight: 20,
-    textAlign: "center",
-  },
-  retryBtn: {
-    marginTop: 4,
-    minHeight: 44,
-    minWidth: 120,
+    padding: 8,
     borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.1)",
+    backgroundColor: "rgba(98,70,168,0.18)",
+  },
+  thumbSlot: {
+    width: 76,
+    height: 76,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  thumb: {
+    ...StyleSheet.absoluteFillObject,
+    width: 76,
+    height: 76,
+    borderRadius: 12,
+  },
+  thumbFallback: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(244,208,111,0.18)",
+    backgroundColor: "rgba(10,14,24,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(244,208,111,0.7)",
+  },
+  cardBody: { flex: 1, gap: 2 },
+  title: { color: TEXT, fontSize: 15, fontWeight: "800", lineHeight: 19 },
+  person: { color: MUTED, fontSize: 12 },
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 2 },
+  mini: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  miniGold: { backgroundColor: "rgba(244,208,111,0.14)" },
+  miniDanger: { backgroundColor: "rgba(255,138,164,0.16)" },
+  miniText: { color: MUTED, fontSize: 10, fontWeight: "700" },
+  miniTextGold: { color: GOLD },
+  miniTextDanger: { color: PINK },
+  secondary: { color: "rgba(255,255,255,0.45)", fontSize: 11 },
+  list: { flex: 1 },
+  empty: {
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 24,
+    paddingTop: 40,
+  },
+  emptyIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+    backgroundColor: "rgba(244,208,111,0.1)",
+  },
+  emptyTitle: { color: TEXT, fontSize: 18, fontWeight: "800" },
+  emptyText: { color: MUTED, fontSize: 14, lineHeight: 20 },
+  showAllButton: {
+    minHeight: 44,
+    marginTop: 8,
     paddingHorizontal: 18,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(244,208,111,0.14)",
+  },
+  showAllText: { color: GOLD, fontWeight: "800" },
+  retry: {
+    minHeight: 44,
+    alignSelf: "flex-start",
+    justifyContent: "center",
+    paddingHorizontal: 12,
   },
   retryText: { color: GOLD, fontWeight: "800" },
 });
