@@ -9,6 +9,7 @@ import {
   updateSokoProductInventory,
 } from "@/app/api/_lib/store/sokoProductsDb";
 import { sanitizeSokoCatalogProduct } from "@/app/api/_lib/sokoPublicCatalog";
+import { dbEngagementForProducts } from "@/app/api/_lib/store/sokoEngagementDb";
 import { dbGetMySokoSellerApplication } from "@/app/api/_lib/store/sokoSellerAccessDb";
 import { getMembershipsForUser } from "@/app/api/_lib/memberships";
 import { getChurchById } from "@/app/api/_lib/churches";
@@ -135,10 +136,24 @@ export async function GET(req: NextRequest) {
       })
     );
 
+    let withEngagement = products;
+    try {
+      const engagement = await dbEngagementForProducts(
+        products.map((product: { id?: string }) => String(product?.id || "")),
+        signedInUserId
+      );
+      withEngagement = products.map((product: { id?: string }) => ({
+        ...product,
+        engagement: engagement.get(String(product?.id || "")) || null,
+      }));
+    } catch (error) {
+      console.error("KRISTO_SOKO_ENGAGEMENT_ENRICH_ERROR", error);
+    }
+
     return reply({
       ok: true,
       ...result,
-      products,
+      products: withEngagement,
     }, 200, "private, no-store");
   } catch (error) {
     console.error("KRISTO_SOKO_PRODUCTS_ENRICH_ERROR", error);

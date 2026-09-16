@@ -30,6 +30,7 @@ import {
 import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
+import { SokoProductReportQueue } from "@/src/components/SokoProductReportQueue";
 
 import {
   getSessionSync,
@@ -943,6 +944,8 @@ export default function ReportCenterScreen() {
                 );
               })}
             </View>
+
+            {reportSourceFilter === "soko" ? <SokoProductReportQueue /> : null}
 
             <View style={styles.metricsGrid}>
               {metrics.map((metric) => (

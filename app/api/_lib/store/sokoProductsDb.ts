@@ -615,7 +615,24 @@ export async function listShareableSokoProductsForOwner(userId: string) {
   });
 }
 
-export async function getSokoProductById(id: string) {
+export type SokoTrustedProduct = {
+  id: string;
+  title: string;
+  price: number;
+  currency: string;
+  image: string;
+  sellerUserId: string;
+  status: string;
+  photos: string[];
+  serverId: string;
+  stockTotal: number;
+  stockAvailable: number;
+  soldOut: boolean;
+  createdAt: string | Date;
+  paymentOptions: Record<string, unknown>;
+};
+
+export async function getSokoProductById(id: string): Promise<SokoTrustedProduct | null> {
   await schema();
   const productId = String(id || "").trim();
   if (!productId || productId.length > 100) return null;
@@ -623,8 +640,22 @@ export async function getSokoProductById(id: string) {
   const rows = await sql`SELECT * FROM soko_products WHERE id=${productId} LIMIT 1` as Row[];
   const row = rows[0];
   if (!row) return null;
+  const product = publicProduct(row);
+  const payload = row.payload || {};
   return {
-    ...publicProduct(row),
+    id: row.id,
+    title: String(payload.title || ""),
+    price: Number(payload.price ?? 0),
+    currency: String(payload.currency || ""),
+    image: product.image,
     sellerUserId: String(row.seller_user_id || "").trim(),
+    status: row.status,
+    photos: product.photos,
+    serverId: product.serverId,
+    stockTotal: product.stockTotal,
+    stockAvailable: product.stockAvailable,
+    soldOut: product.soldOut,
+    createdAt: product.createdAt,
+    paymentOptions: product.paymentOptions,
   };
 }

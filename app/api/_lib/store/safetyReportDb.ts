@@ -1221,6 +1221,7 @@ export async function dbCreateSafetyReport(
     reportedKristoId?: string;
 
     churchId: string;
+    id?: string;
 
     sourceType?: SafetyReportSourceType;
     sourceId?: string;
@@ -1295,7 +1296,7 @@ export async function dbCreateSafetyReport(
   await ensureSafetyReportSchema();
 
   const sql = getSql();
-  const id = createSafetyReportId();
+  const id = String(input.id || "").trim() || createSafetyReportId();
   const now = nowIso();
 
   let reportCode =
