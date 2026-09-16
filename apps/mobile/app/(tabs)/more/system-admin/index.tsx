@@ -360,6 +360,14 @@ export default function SystemAdminScreen() {
       icon: "shield-checkmark-outline",
       href: "/more/system-admin/report-center",
     },
+    {
+      key: "buyer_protection",
+      title: "Buyer Protection",
+      subtitle: "SOKO case review queue • evidence and recommendations",
+      badge: "REVIEW",
+      icon: "umbrella-outline",
+      href: "/more/system-admin/buyer-protection",
+    },
   ];
 
   const toggleChurchExpanded = React.useCallback((churchId: string) => {
