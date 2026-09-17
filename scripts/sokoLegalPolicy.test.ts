@@ -57,6 +57,39 @@ test("public policy bundle is versioned, localization-ready, and not attorney-re
   assert.match(bundle.documents[3].body, /Safety Center/i);
 });
 
+test("public SOKO web policy pages use the canonical policy source", () => {
+  const hub = read("app/soko/legal/page.tsx");
+  const shared = read("app/soko/_components/SokoLegalPage.tsx");
+  const policy = read("app/soko/_components/policy.ts");
+  const css = read("app/soko/_components/SokoLegalPage.module.css");
+  const routes = [
+    "app/soko/terms/page.tsx",
+    "app/soko/privacy/page.tsx",
+    "app/soko/marketplace-rules/page.tsx",
+    "app/soko/safety/page.tsx",
+    "app/soko/buyer-protection/page.tsx",
+    "app/soko/support/page.tsx",
+    "app/soko/delete-account/page.tsx",
+  ];
+
+  assert.match(hub, /sokoPolicyDocuments/);
+  assert.match(policy, /sokoPolicyDocuments/);
+  assert.match(policy, /SokoPolicyDocumentId/);
+  assert.match(shared, /public pages can be read without signing in/i);
+  assert.match(shared, /className=\{styles\.buttonLabel\}>Contact support/);
+  assert.match(css, /\.buttonLabel \{[^}]*-webkit-text-fill-color: #102118/);
+  assert.match(read("app/soko/buyer-protection/page.tsx"), /styles\.buttonLabel}>Get help/);
+  assert.match(read("app/soko/support/page.tsx"), /styles\.buttonLabel}>Buyer Protection/);
+  assert.match(read("app/soko/delete-account/page.tsx"), /styles\.buttonLabel}>Contact support/);
+  for (const route of routes) assert.equal(fs.existsSync(path.join(root, route)), true, route);
+  assert.match(read("app/soko/terms/page.tsx"), /getSokoPolicy\("terms"\)/);
+  assert.match(read("app/soko/privacy/page.tsx"), /getSokoPolicy\("privacy"\)/);
+  assert.match(read("app/soko/marketplace-rules/page.tsx"), /getSokoPolicy\("marketplace_rules"\)/);
+  assert.match(read("app/soko/safety/page.tsx"), /getSokoPolicy\("safety"\)/);
+  assert.match(read("app/soko/buyer-protection/page.tsx"), /SOKO_PROTECTION_DEFAULT_ELIGIBILITY/);
+  assert.doesNotMatch(hub, /guardCheckoutAuth|guardAuth|x-kristo-session/i);
+});
+
 test("POST consent ignores client-supplied policy versions", () => {
   const parsed = parseSokoConsentClientContext({
     appVersion: "0.2.0",
