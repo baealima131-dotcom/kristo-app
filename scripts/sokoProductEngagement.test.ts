@@ -15,6 +15,7 @@ import {
   parseShareKind,
   productReportCopy,
   productReportReasonCode,
+  publicProductComment,
   publicShareLabel,
 } from "../app/api/_lib/sokoEngagementPolicy.ts";
 
@@ -139,6 +140,56 @@ test("like, save, and report rate limits deny without a successful consume", () 
   assert.equal(RATE_LIMITS.reportUserHour.limit, 3);
   assert.equal(RATE_LIMITS.commentMinute.limit, 6);
   assert.equal(RATE_LIMITS.shareMinute.limit, 8);
+});
+
+test("public comments hide author ids and derive moderation flags from the viewer", () => {
+  const author = {
+    id: "sokocmt_1",
+    body: "Hello",
+    createdAt: "2026-09-16T00:00:00.000Z",
+    authorUserId: "author-1",
+    displayName: "Bob M",
+    kristoId: "KR7-13777DT",
+    avatarUrl: "https://cdn.example/a.png",
+  };
+  const anonymous = publicProductComment(author);
+  assert.equal("userId" in anonymous.author, false);
+  assert.equal("userId" in anonymous, false);
+  assert.equal(anonymous.viewerCanDelete, false);
+  assert.equal(anonymous.viewerCanHide, false);
+  assert.deepEqual(Object.keys(anonymous.author), ["displayName", "kristoId", "avatarUrl"]);
+
+  const otherBuyer = publicProductComment({ ...author, viewerUserId: "buyer-2", viewerCanModerate: false });
+  assert.equal(otherBuyer.viewerCanDelete, false);
+  assert.equal(otherBuyer.viewerCanHide, false);
+
+  const authorView = publicProductComment({ ...author, viewerUserId: "author-1", viewerCanModerate: true });
+  assert.equal(authorView.viewerCanDelete, true);
+  assert.equal(authorView.viewerCanHide, false);
+
+  const seller = publicProductComment({ ...author, viewerUserId: "seller-1", viewerCanModerate: true });
+  assert.equal(seller.viewerCanDelete, false);
+  assert.equal(seller.viewerCanHide, true);
+
+  const spoofedRoleOnly = publicProductComment({ ...author, viewerUserId: "", viewerCanModerate: true });
+  assert.equal(spoofedRoleOnly.viewerCanDelete, false);
+  assert.equal(spoofedRoleOnly.viewerCanHide, false);
+
+  const comments = read("app/api/soko/products/[id]/comments/route.ts");
+  const hide = read("app/api/soko/products/[id]/comments/[commentId]/route.ts");
+  const page = read("app/soko/p/[productId]/page.tsx");
+  const store = read("app/api/_lib/store/sokoEngagementDb.ts");
+  assert.match(comments, /getCheckoutViewer/);
+  assert.match(comments, /getPlatformRole/);
+  assert.match(comments, /product\.sellerUserId/);
+  assert.doesNotMatch(comments, /x-kristo-role|body\?\.role|body\?\.userId/);
+  assert.match(hide, /guardPlatformOfflineActivation\(req, \["System_Admin"\]\)/);
+  assert.match(hide, /product\.sellerUserId !== auth\.viewer\.userId/);
+  assert.doesNotMatch(hide, /x-kristo-role|body\?\.userId|body\?\.role/);
+  assert.match(store, /publicProductComment/);
+  assert.doesNotMatch(page, /author\.userId|sellerUserId/);
+  const list = store.slice(store.indexOf("export async function dbListProductComments"));
+  assert.doesNotMatch(list.slice(0, list.indexOf("export async function dbDeleteOwnComment")), /moderation_reason|moderated_by_user_id|author:\s*\{[^}]*userId/);
 });
 
 test("moderation records actor identity and note without public exposure", () => {

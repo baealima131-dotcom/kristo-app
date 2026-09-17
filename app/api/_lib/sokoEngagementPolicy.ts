@@ -155,6 +155,42 @@ export function publicShareLabel(completedShares: number) {
   return String(completedShares);
 }
 
+export type PublicCommentAuthor = {
+  displayName: string | null;
+  kristoId: string | null;
+  avatarUrl: string | null;
+};
+
+/** Public comment shape. Flags are server comparisons; never echo author.userId or a client role. */
+export function publicProductComment(input: {
+  id: string;
+  body: string;
+  createdAt: string;
+  authorUserId: string;
+  displayName: string | null;
+  kristoId: string | null;
+  avatarUrl: string | null;
+  viewerUserId?: string;
+  viewerCanModerate?: boolean;
+}) {
+  const viewerUserId = String(input.viewerUserId || "").trim();
+  const authorUserId = String(input.authorUserId || "").trim();
+  const own = Boolean(viewerUserId) && viewerUserId === authorUserId;
+  const author: PublicCommentAuthor = {
+    displayName: input.displayName,
+    kristoId: input.kristoId,
+    avatarUrl: input.avatarUrl,
+  };
+  return {
+    id: input.id,
+    body: input.body,
+    createdAt: input.createdAt,
+    author,
+    viewerCanDelete: own,
+    viewerCanHide: Boolean(input.viewerCanModerate) && Boolean(viewerUserId) && !own,
+  };
+}
+
 export function reportPriority(reason: ProductReportReason) {
   if (reason === "Prohibited or unsafe product") return "critical" as const;
   if (

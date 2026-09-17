@@ -5,6 +5,7 @@ import { getSokoProductById } from "./sokoProductsDb";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import {
   cleanCommentBody,
+  publicProductComment,
   RATE_LIMITS,
   type ShareKind,
 } from "@/app/api/_lib/sokoEngagementPolicy";
@@ -151,21 +152,38 @@ function trustedHttps(value: unknown) {
   return /^https:\/\/[^\s]{8,480}$/i.test(text) ? text : null;
 }
 
-async function party(userId: string) {
+async function publicAuthor(userId: string) {
   try {
     const profile = await getProfile(userId);
     if (!profile || String(profile.userId || "") !== userId) {
-      return { userId, displayName: null, kristoId: null, avatarUrl: null };
+      return { displayName: null, kristoId: null, avatarUrl: null };
     }
     return {
-      userId,
       displayName: String(profile.fullName || "").trim() || null,
       kristoId: String(profile.userCode || "").trim() || null,
       avatarUrl: trustedHttps(profile.avatarUrl),
     };
   } catch {
-    return { userId, displayName: null, kristoId: null, avatarUrl: null };
+    return { displayName: null, kristoId: null, avatarUrl: null };
   }
+}
+
+function presentComment(
+  row: { id: string; user_id: string; body: string; created_at: string | Date },
+  author: { displayName: string | null; kristoId: string | null; avatarUrl: string | null },
+  viewer?: { userId: string; canHide: boolean }
+) {
+  return publicProductComment({
+    id: row.id,
+    body: row.body,
+    createdAt: new Date(row.created_at).toISOString(),
+    authorUserId: row.user_id,
+    displayName: author.displayName,
+    kristoId: author.kristoId,
+    avatarUrl: author.avatarUrl,
+    viewerUserId: viewer?.userId,
+    viewerCanModerate: viewer?.canHide,
+  });
 }
 
 export async function dbLoadWritableProduct(productId: string) {
@@ -267,15 +285,14 @@ export async function dbCreateProductComment(productId: string, userId: string, 
   const id = `sokocmt_${randomUUID()}`;
   await sql`INSERT INTO soko_product_comments (id, product_id, user_id, body)
     VALUES (${id}, ${productId}, ${userId}, ${clean})`;
-  const author = await party(userId);
+  const author = await publicAuthor(userId);
   const count = await visibleCommentCount(sql, productId);
   return {
-    comment: {
-      id,
-      body: clean,
-      createdAt: new Date().toISOString(),
+    comment: presentComment(
+      { id, user_id: userId, body: clean, created_at: new Date().toISOString() },
       author,
-    },
+      { userId, canHide: false }
+    ),
     commentCount: count,
   };
 }
@@ -286,7 +303,11 @@ async function visibleCommentCount(sql: Sql, productId: string) {
   return Number(rows[0]?.count || 0);
 }
 
-export async function dbListProductComments(productId: string, cursor: string) {
+export async function dbListProductComments(
+  productId: string,
+  cursor: string,
+  viewer?: { userId: string; canHide: boolean }
+) {
   await ensureSokoEngagementSchema();
   const sql = sqlClient();
   const before = String(cursor || "").trim();
@@ -309,12 +330,7 @@ export async function dbListProductComments(productId: string, cursor: string) {
   }>;
   const page = rows.slice(0, 20);
   const comments = await Promise.all(
-    page.map(async (row) => ({
-      id: row.id,
-      body: row.body,
-      createdAt: new Date(row.created_at).toISOString(),
-      author: await party(row.user_id),
-    }))
+    page.map(async (row) => presentComment(row, await publicAuthor(row.user_id), viewer))
   );
   return {
     comments,
