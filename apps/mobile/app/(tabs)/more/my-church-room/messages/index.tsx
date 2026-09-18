@@ -27,6 +27,7 @@ import type { DirectMessageThread } from "@/src/lib/directMessagesApi";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { clearLegacyMessageLockPrefs } from "@/src/lib/clearLegacyMessageLockPrefs";
+import SokoSystemMessages from "@/src/components/messages/SokoSystemMessages";
 
 const BG = "#0A1220";
 const TEXT = "rgba(255,255,255,0.94)";
@@ -433,6 +434,7 @@ export default function MessagesScreen() {
           keyExtractor={(item) => item.id}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ paddingBottom: insets.bottom + 24, flexGrow: data.length ? 0 : 1 }}
+          ListHeaderComponent={<SokoSystemMessages />}
           renderItem={({ item }) => (
             <ConversationRow item={item} onPress={() => openConversation(item)} />
           )}
