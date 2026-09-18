@@ -73,7 +73,6 @@ function LuxuryPressable({
     <Pressable
       disabled={disabled}
       onPress={onPress}
-      style={style}
       onPressIn={() => {
         if (disabled) return;
         Animated.spring(scale, { toValue: 0.978, useNativeDriver: true, speed: 52, bounciness: 2 }).start();
@@ -82,7 +81,7 @@ function LuxuryPressable({
         Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 52, bounciness: 2 }).start();
       }}
     >
-      <Animated.View style={{ transform: [{ scale }] }}>{children}</Animated.View>
+      <Animated.View style={[style, { transform: [{ scale }] }]}>{children}</Animated.View>
     </Pressable>
   );
 }
