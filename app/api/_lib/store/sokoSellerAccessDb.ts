@@ -276,6 +276,23 @@ export async function ensureSokoSellerAccessSchema() {
         kristo_id
       )
     `;
+
+    // Official notices are private records, not messages in a church-wide room.
+    await sql`
+      CREATE TABLE IF NOT EXISTS soko_seller_system_messages (
+        id TEXT PRIMARY KEY,
+        application_id TEXT NOT NULL,
+        recipient_user_id TEXT NOT NULL,
+        actor_user_id TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        code_id TEXT UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS soko_seller_system_messages_recipient_idx
+      ON soko_seller_system_messages (recipient_user_id, created_at DESC)
+    `;
   })().catch((error) => {
     schemaReady = null;
     throw error;
@@ -534,27 +551,10 @@ export async function dbReviewSokoSellerApplication(
   const newCodeId = commandCode
     ? codeId()
     : "";
+  const noticeId = newCodeId || codeId();
 
   const rows = (await sql`
-    WITH target AS (
-      SELECT
-        id,
-        user_id,
-        kristo_id
-      FROM soko_seller_applications
-      WHERE id = ${id}
-      LIMIT 1
-    ),
-    revoke_codes AS (
-      UPDATE soko_seller_command_codes
-      SET
-        status = 'revoked',
-        updated_at = NOW()
-      WHERE application_id = ${id}
-        AND status = 'active'
-      RETURNING id
-    ),
-    update_application AS (
+    WITH update_application AS (
       UPDATE soko_seller_applications
       SET
         status = ${newStatus},
@@ -563,8 +563,20 @@ export async function dbReviewSokoSellerApplication(
         reviewed_at = NOW(),
         updated_at = NOW()
       WHERE id = ${id}
-        AND EXISTS (SELECT 1 FROM target)
+        AND (
+          (${decision} IN ('approve', 'reject') AND status = 'pending')
+          OR (${decision} = 'revoke' AND status = 'approved')
+          OR (${decision} = 'regenerate_code' AND status = 'approved'
+            AND (reviewed_at IS NULL OR reviewed_at < NOW() - INTERVAL '10 seconds'))
+        )
       RETURNING *
+    ),
+    revoke_codes AS (
+      UPDATE soko_seller_command_codes
+      SET status = 'revoked', updated_at = NOW()
+      WHERE application_id IN (SELECT id FROM update_application)
+        AND status = 'active'
+      RETURNING id
     ),
     revoke_account AS (
       UPDATE soko_seller_accounts
@@ -573,6 +585,7 @@ export async function dbReviewSokoSellerApplication(
         updated_at = NOW()
       WHERE application_id = ${id}
         AND ${decision === "revoke"}::boolean
+        AND EXISTS (SELECT 1 FROM update_application)
       RETURNING user_id
     ),
     insert_code AS (
@@ -590,18 +603,28 @@ export async function dbReviewSokoSellerApplication(
       )
       SELECT
         ${newCodeId || null},
-        target.id,
-        target.user_id,
-        target.kristo_id,
+        application.id,
+        application.user_id,
+        application.kristo_id,
         ${normalizedCode || null},
         'active',
         NOW() + INTERVAL '7 days',
         ${actorUserId},
         NOW(),
         NOW()
-      FROM target
+      FROM update_application application
       WHERE ${Boolean(commandCode)}::boolean
-      RETURNING code_value, expires_at
+      RETURNING id, code_value, expires_at
+    ),
+    insert_notice AS (
+      INSERT INTO soko_seller_system_messages (
+        id, application_id, recipient_user_id, actor_user_id, decision, code_id
+      )
+      SELECT ${noticeId}, application.id, application.user_id,
+        ${actorUserId}, ${decision}, code.id
+      FROM update_application application
+      LEFT JOIN insert_code code ON TRUE
+      RETURNING id
     )
     SELECT
       update_application.*,
@@ -613,11 +636,60 @@ export async function dbReviewSokoSellerApplication(
 
   if (!rows[0]) {
     throw new Error(
-      "Seller application was not found."
+      "Application was not found or its status changed. Refresh the list. Approve/Reject require Pending; regenerate requires Approved and a 10-second wait."
     );
   }
 
   return rowToApplication(rows[0]);
+}
+
+/** Caller must supply only the user ID established by server authentication. */
+export async function dbGetMySokoSystemMessages(userId: string) {
+  const recipient = String(userId || "").trim();
+  if (!recipient) throw new Error("Sign in first.");
+  await ensureSokoSellerAccessSchema();
+  const sql = getSql();
+  const rows = await sql`
+    SELECT message.id, message.decision, message.created_at,
+      application.business_name,
+      CASE WHEN code.status = 'active' AND code.expires_at > NOW()
+        AND application.status = 'approved'
+        THEN code.code_value ELSE NULL END AS command_code,
+      code.expires_at,
+      CASE WHEN code.id IS NULL THEN NULL
+        WHEN code.status <> 'active' THEN code.status
+        WHEN application.status <> 'approved' THEN 'revoked'
+        WHEN code.expires_at <= NOW() THEN 'expired'
+        ELSE 'active' END AS code_status
+    FROM soko_seller_system_messages message
+    JOIN soko_seller_applications application
+      ON application.id = message.application_id
+      AND application.user_id = message.recipient_user_id
+    LEFT JOIN soko_seller_command_codes code
+      ON code.id = message.code_id
+      AND code.user_id = message.recipient_user_id
+    WHERE message.recipient_user_id = ${recipient}
+    ORDER BY message.created_at DESC, message.id DESC
+    LIMIT 100
+  `;
+  if (!Array.isArray(rows)) {
+    throw new Error("Unexpected SOKO system messages query result.");
+  }
+  return rows.map((row) => {
+    if (Array.isArray(row)) {
+      throw new Error("Expected a SOKO message object, not an array.");
+    }
+    return ({
+    id: String(row.id),
+    sender: "System Admin",
+    decision: String(row.decision),
+    businessName: String(row.business_name || ""),
+    createdAt: dateText(row.created_at),
+    commandCode: row.command_code ? String(row.command_code) : null,
+    codeStatus: row.code_status ? String(row.code_status) : null,
+    codeExpiresAt: dateText(row.expires_at),
+    });
+  });
 }
 
 export async function dbGetSokoSellerAccess(
