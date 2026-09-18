@@ -26,6 +26,7 @@ import {
   clearChurchMediaProfileCache,
 } from "@/src/lib/churchMediaProfileStore";
 import { MAX_CHURCH_MEDIA_HOSTS } from "@/src/lib/churchMediaAccess";
+import { eligibleTrustedHostMembers, reconcileTrustedHostSlots, serializeTrustedHosts, type TrustedHostMember } from "@/src/lib/trustedHostMembers";
 
 type HostDraft = {
   userId: string;
@@ -36,19 +37,7 @@ type HostDraft = {
   kristoId?: string;
 };
 
-type Member = {
-  id?: string;
-  membershipId?: string;
-  userId: string;
-  name?: string;
-  displayName?: string;
-  role?: string;
-  roleLabel?: string;
-  avatarUrl?: string;
-  avatarUri?: string;
-  kristoId?: string;
-  userCode?: string;
-};
+type Member = TrustedHostMember;
 
 const API_BASE = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/$/, "");
 const GOLD = "#D9B35F";
@@ -104,14 +93,6 @@ function imgUrl(u?: string) {
   return API_BASE ? `${API_BASE}${u.startsWith("/") ? "" : "/"}${u}` : u;
 }
 
-function normalizeMembersResponse(res: any): Member[] {
-  if (Array.isArray(res)) return res;
-  if (Array.isArray(res?.data)) return res.data;
-  if (Array.isArray(res?.items)) return res.items;
-  if (Array.isArray(res?.members)) return res.members;
-  return [];
-}
-
 function slotsFromHosts(savedHosts: HostDraft[]) {
   return [
     savedHosts[0] || null,
@@ -120,27 +101,17 @@ function slotsFromHosts(savedHosts: HostDraft[]) {
   ] as Array<HostDraft | null>;
 }
 
-function serializeHostsForSave(hosts: Array<HostDraft | null>) {
-  return hosts
-    .filter(Boolean)
-    .slice(0, MAX_CHURCH_MEDIA_HOSTS)
-    .map((host) => ({
-      userId: String(host!.userId || "").trim(),
-      name: String(host!.name || "Church member").trim(),
-      role: String(host!.role || "Member").trim(),
-      avatarUri: String(host!.avatarUri || host!.avatarUrl || "").trim(),
-      avatarUrl: String(host!.avatarUrl || host!.avatarUri || "").trim(),
-      kristoId: String(host!.kristoId || "").trim(),
-    }))
-    .filter((host) => host.userId);
-}
-
 export default function SelectHosts() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
   const [hosts, setHosts] = useState<Array<HostDraft | null>>([null, null, null]);
   const [members, setMembers] = useState<Member[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [membersError, setMembersError] = useState("");
+  const [membershipVerified, setMembershipVerified] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [staleHostNames, setStaleHostNames] = useState<string[]>([]);
   const [session, setLocalSession] = useState<any>(null);
   const [media, setMedia] = useState<any>(null);
   const [activeSlot, setActiveSlot] = useState<number | null>(null);
@@ -203,6 +174,8 @@ export default function SelectHosts() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     setSaveError("");
+    setLoadError("");
+    setMembershipVerified(false);
 
     try {
       const sess: any = await loadSession();
@@ -221,14 +194,17 @@ export default function SelectHosts() {
 
       const cachedMedia = await loadChurchMediaProfileCache(String(sess.churchId || ""));
 
-      const [membersRes, mediaRes, hostsRes]: any[] = await Promise.all([
-        apiGet("/api/church/members?all=1", { headers }),
+      const [mediaRes, hostsRes, membersRes]: any[] = await Promise.all([
         apiGet("/api/church/media", { headers }),
         apiGet("/api/church/media-hosts", { headers }),
+        apiGet("/api/church/members", { headers }, { dedupe: false }),
       ]);
 
-      setMembers(normalizeMembersResponse(membersRes));
-      setCanManageHosts(Boolean(hostsRes?.canManageMediaHosts));
+      if (hostsRes?.ok !== true || !Array.isArray(hostsRes.hosts)) {
+        throw new Error(String(hostsRes?.error || "Could not load trusted hosts."));
+      }
+
+      setCanManageHosts(hostsRes?.ok === true && hostsRes?.canManageMediaHosts === true);
 
       if (cachedMedia?.mediaName && mediaRes?.profileMissing) {
         console.warn("[SelectHosts] stale media cache invalidated", {
@@ -242,22 +218,24 @@ export default function SelectHosts() {
         mediaRes?.ok && mediaRes?.media?.mediaName ? mediaRes.media : null;
       setMedia(resolvedMedia);
 
-      const savedHosts = Array.isArray(hostsRes?.hosts) ? hostsRes.hosts : [];
-
-      applySavedHosts(
-        savedHosts.map((host: any) => ({
+      const savedHosts = hostsRes.hosts.map((host: any) => ({
           userId: String(host?.userId || host?.id || "").trim(),
           name: String(host?.name || host?.displayName || "Church member").trim(),
           role: String(host?.role || host?.roleLabel || "Member").trim(),
           avatarUrl: String(host?.avatarUrl || host?.avatarUri || "").trim(),
           avatarUri: String(host?.avatarUri || host?.avatarUrl || "").trim(),
           kristoId: String(host?.kristoId || host?.userCode || "").trim(),
-        }))
-      );
+        }));
+      const reconciled = reconcileTrustedHostSlots(slotsFromHosts(savedHosts), membersRes, String(sess.churchId));
+      setHosts(reconciled.hosts);
+      setStaleHostNames(reconciled.staleHosts.map((host) => host.name));
+      setMembershipVerified(true);
+    } catch (error: any) {
+      setLoadError(String(error?.message || "Could not verify church members. Please retry."));
     } finally {
       setLoading(false);
     }
-  }, [applySavedHosts]);
+  }, []);
 
   useEffect(() => {
     void loadAll();
@@ -296,6 +274,27 @@ export default function SelectHosts() {
     setSaveError("");
   }
 
+  async function openMemberPicker(index: number) {
+    if (!canEditHosts || !session?.userId || !churchId) return;
+    setActiveSlot(index);
+    setMembers([]);
+    setMembersError("");
+    setMembersLoading(true);
+    const headers = getKristoHeaders({
+      userId: session.userId,
+      role: session.role || "Member",
+      churchId,
+    });
+    try {
+      const response = await apiGet("/api/church/members", { headers }, { dedupe: false });
+      setMembers(eligibleTrustedHostMembers(response, churchId, selectedIds));
+    } catch (error: any) {
+      setMembersError(String(error?.message || "Could not load church members. Please try again."));
+    } finally {
+      setMembersLoading(false);
+    }
+  }
+
   function removeHost(index: number) {
     if (!canEditHosts) return;
     setHosts((prev) => {
@@ -310,13 +309,17 @@ export default function SelectHosts() {
   async function saveHosts() {
     if (!canManageHosts) {
       Alert.alert(
-        "Pastor access required",
-        "Only the actual church Pastor can add or remove trusted media hosts."
+        "Pastor or admin access required",
+        "Only the church Pastor or church admin can add or remove trusted media hosts."
       );
       return;
     }
     if (!session?.userId || !session?.churchId) {
       Alert.alert("Session missing", "Please sign in again and retry.");
+      return;
+    }
+    if (!membershipVerified) {
+      setSaveError("Church member eligibility has not been verified. Retry loading before saving.");
       return;
     }
 
@@ -326,7 +329,6 @@ export default function SelectHosts() {
       churchId: session.churchId || "",
     });
 
-    const payload = serializeHostsForSave(hosts);
     const needsAutoCreate = !String(media?.mediaName || "").trim();
 
     setSaving(true);
@@ -335,6 +337,16 @@ export default function SelectHosts() {
     setSaveSuccess("");
 
     try {
+      const membersRes = await apiGet("/api/church/members", { headers }, { dedupe: false });
+      const reconciled = reconcileTrustedHostSlots(hosts, membersRes, churchId);
+      if (reconciled.staleHosts.length > 0) {
+        setHosts(reconciled.hosts);
+        setStaleHostNames(reconciled.staleHosts.map((host) => host.name));
+        const message = "A host is no longer an active member. Reassign the available slot, then save again.";
+        setSaveError(message);
+        return;
+      }
+      const payload = serializeTrustedHosts(reconciled.hosts);
       const res: any = await apiPost("/api/church/media-hosts", { hosts: payload }, { headers });
 
       if (!res?.ok) {
@@ -411,6 +423,7 @@ export default function SelectHosts() {
           ? "Church Media created and trusted hosts saved."
           : "Trusted hosts saved successfully."
       );
+      setStaleHostNames([]);
       setTimeout(() => setSaveSuccess(""), 2800);
     } catch (error: any) {
       const message = String(error?.message || error || "Could not save trusted hosts.");
@@ -490,6 +503,21 @@ export default function SelectHosts() {
           scrollIndicatorInsets={{ bottom: bottomContentClearance * 0.35 }}
         >
           <Text style={s.sectionEyebrow}>Broadcast control</Text>
+          {loadError ? (
+            <View style={s.memberRow}>
+              <Text style={s.memberRole}>{loadError} Host eligibility could not be verified.</Text>
+              <Pressable onPress={() => void loadAll()}>
+                <Text style={s.memberName}>Retry loading</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {staleHostNames.length > 0 ? (
+            <View style={s.memberRow}>
+              <Text style={s.memberRole}>
+                {staleHostNames.join(", ")} {staleHostNames.length === 1 ? "is" : "are"} no longer an active member of this church. {staleHostNames.length === 1 ? "That host was" : "Those hosts were"} removed from the draft. Reassign the available {staleHostNames.length === 1 ? "slot" : "slots"} and save.
+              </Text>
+            </View>
+          ) : null}
 
           {hosts.map((host, index) => {
             const filled = Boolean(host);
@@ -583,7 +611,7 @@ export default function SelectHosts() {
                 ) : (
                   <LuxuryPressable
                     disabled={!canEditHosts || saving || selectedCount >= MAX_CHURCH_MEDIA_HOSTS}
-                    onPress={() => setActiveSlot(index)}
+                    onPress={() => void openMemberPicker(index)}
                     style={s.emptySlotPressable}
                   >
                     <View style={s.emptyAvatarStage}>
@@ -597,7 +625,7 @@ export default function SelectHosts() {
                       <Text style={s.emptyTitle}>Available slot</Text>
                       <Text style={s.emptyMicro}>
                         {!canManageHosts
-                          ? "Pastor access required"
+                          ? "Pastor or admin access required"
                           : "Tap to assign"}
                       </Text>
                     </View>
@@ -654,11 +682,11 @@ export default function SelectHosts() {
           ) : null}
 
           <Pressable
-            disabled={!canEditHosts || saving || loading}
+            disabled={!canEditHosts || saving || loading || !membershipVerified}
             onPress={saveHosts}
             style={({ pressed }) => [
               s.saveBtn,
-              !canEditHosts ? s.saveBtnDisabled : null,
+              !canEditHosts || !membershipVerified ? s.saveBtnDisabled : null,
               saving ? s.saveBtnSaving : null,
               pressed && canEditHosts && !saving ? s.saveBtnPressed : null,
             ]}
@@ -696,7 +724,9 @@ export default function SelectHosts() {
                   />
                   <Text style={[s.saveBtnTextDark, !canEditHosts && s.saveBtnTextMuted]}>
                     {!canManageHosts
-                      ? "Pastor access required"
+                      ? "Pastor or admin access required"
+                      : !membershipVerified
+                        ? "Verify members to save"
                       : "Save Trusted Hosts"}
                   </Text>
                 </>
@@ -715,6 +745,20 @@ export default function SelectHosts() {
             <Text style={s.modalSub}>Only active members of your church can be added.</Text>
 
             <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+              {membersLoading ? (
+                <ActivityIndicator size="small" color={GOLD} />
+              ) : membersError ? (
+                <View style={s.memberRow}>
+                  <Text style={s.memberRole}>{membersError}</Text>
+                  <Pressable onPress={() => activeSlot !== null && void openMemberPicker(activeSlot)}>
+                    <Text style={s.memberName}>Retry</Text>
+                  </Pressable>
+                </View>
+              ) : members.length === 0 ? (
+                <View style={s.memberRow}>
+                  <Text style={s.memberRole}>No eligible active members are available. Invite or approve a church member, then try again.</Text>
+                </View>
+              ) : null}
               {members.map((member) => {
                 const id = String(member.userId || "");
                 const used = selectedIds.includes(id);

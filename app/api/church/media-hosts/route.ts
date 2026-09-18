@@ -32,6 +32,7 @@ async function saveHosts(args: {
   churchId: string;
   actualPastorUserId: string;
   requesterUserId: string;
+  requesterChurchRole?: string;
   hosts: MediaHostRecord[];
   autoCreateProfile?: boolean;
 }) {
@@ -46,6 +47,7 @@ async function saveHosts(args: {
       churchId: args.churchId,
       actualPastorUserId: args.actualPastorUserId,
       requesterUserId: args.requesterUserId,
+      requesterChurchRole: args.requesterChurchRole,
     });
   }
 
@@ -134,7 +136,7 @@ export async function POST(req: NextRequest) {
       return json(
         {
           ok: false,
-          error: "Only the current church Pastor can manage media hosts",
+          error: "Only the current church Pastor or church admin can manage media hosts",
           reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
         },
         { status: 403 }
@@ -167,6 +169,7 @@ export async function POST(req: NextRequest) {
         churchId: ctxOrRes.churchId,
         actualPastorUserId: access.actualPastorUserId,
         requesterUserId: ctxOrRes.viewer.userId,
+        requesterChurchRole: access.requesterChurchRole,
         hosts: nextHosts,
         autoCreateProfile: true,
       });
@@ -245,6 +248,7 @@ export async function POST(req: NextRequest) {
       churchId: ctxOrRes.churchId,
       actualPastorUserId: access.actualPastorUserId,
       requesterUserId: ctxOrRes.viewer.userId,
+      requesterChurchRole: access.requesterChurchRole,
       hosts: nextHosts,
       autoCreateProfile: true,
     });
@@ -306,7 +310,7 @@ export async function DELETE(req: NextRequest) {
       return json(
         {
           ok: false,
-          error: "Only the current church Pastor can manage media hosts",
+          error: "Only the current church Pastor or church admin can manage media hosts",
           reason: access.hasPastorRole ? "not-canonical-pastor" : "not-pastor",
         },
         { status: 403 }

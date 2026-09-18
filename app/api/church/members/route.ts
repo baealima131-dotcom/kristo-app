@@ -13,8 +13,12 @@ type ChurchMember = {
 
   churchId: string;
   userId: string;
+  status: "Active";
 
   name: string;
+  userCode?: string;
+  kristoId?: string;
+  avatarUrl?: string;
   roleLabel?: string; // churchRole label
 
   role: ChurchRole; // actual churchRole
@@ -55,6 +59,7 @@ function membershipToMemberRow(m: {
   id: string;
   churchId: string;
   userId: string;
+  status?: string;
   churchRole?: ChurchRole;
   name?: string;
   decidedAt?: string;
@@ -76,6 +81,7 @@ function membershipToMemberRow(m: {
     membershipId,
     churchId: m.churchId,
     userId: m.userId,
+    status: "Active",
     name,
     userCode: profile?.userCode || "",
     kristoId: profile?.userCode || "",

@@ -2,6 +2,7 @@ import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { getChurchMediaByChurchId, upsertChurchMedia, type ChurchMediaProfile } from "@/app/api/_lib/store/mediaDb";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getChurchById } from "@/app/api/_lib/churches";
+import { canManageTrustedHosts } from "@/app/api/_lib/mediaHostAuthority";
 
 export const MAX_CHURCH_MEDIA_HOSTS = 3;
 
@@ -122,14 +123,10 @@ export async function evaluateChurchMediaAccess(args: {
 
   const mediaHostUserIds = hosts.map((host) => host.userId);
 
-  const isActualChurchPastor = Boolean(
-    userId &&
-      actualPastorUserId &&
-      userIdsMatch(userId, actualPastorUserId)
-  );
+  const isActualChurchPastor = userIdsMatch(userId, actualPastorUserId);
 
-  // Only the canonical/current Pastor manages Media Hosts and Church Media.
-  const canManageMediaHosts = isActualChurchPastor;
+  // Host editing also allows an active church admin; other Media settings remain Pastor managed.
+  const canManageMediaHosts = canManageTrustedHosts(userId, actualPastorUserId, requesterMembership?.churchRole);
   const canManageChurchMedia = isActualChurchPastor;
 
   const isMediaHost =
@@ -140,7 +137,7 @@ export async function evaluateChurchMediaAccess(args: {
   // Church Media access is role/authority based.
   // There is NO subscription/payment gate here.
   const canOpenMediaScreen =
-    isActualChurchPastor || hasPastorRole || isMediaHost;
+    isActualChurchPastor || hasPastorRole || isMediaHost || canManageMediaHosts;
 
   const canUseMediaTools = canOpenMediaScreen;
 
@@ -158,6 +155,7 @@ export async function evaluateChurchMediaAccess(args: {
     canAccessChurchMedia: canOpenMediaScreen,
 
     canManageMediaHosts,
+    requesterChurchRole: requesterMembership?.churchRole || "",
     canManageChurchMedia,
 
     monetizationPolicy: "free_all_platforms" as const,
@@ -216,7 +214,7 @@ export async function buildMediaHostRecord(
 
 export class ChurchMediaAutoCreateForbiddenError extends Error {
   constructor() {
-    super("Only the church Pastor can create Church Media");
+    super("Only the church Pastor or church admin can create Church Media");
     this.name = "ChurchMediaAutoCreateForbiddenError";
   }
 }
@@ -225,6 +223,7 @@ export async function ensureChurchMediaProfileForPastor(args: {
   churchId: string;
   actualPastorUserId: string;
   requesterUserId: string;
+  requesterChurchRole?: string;
 }): Promise<ChurchMediaProfile> {
   const churchId = String(args.churchId || "").trim();
   const requesterUserId = String(args.requesterUserId || "").trim();
@@ -237,8 +236,8 @@ export async function ensureChurchMediaProfileForPastor(args: {
     pastorUserId = await resolveActualChurchPastorUserId(churchId);
   }
 
-  // Only the canonical actual Pastor may auto-create the media profile.
-  if (!pastorUserId || !userIdsMatch(requesterUserId, pastorUserId)) {
+  // Host setup may auto-create the profile for the canonical Pastor or an active church admin.
+  if (!pastorUserId || !canManageTrustedHosts(requesterUserId, pastorUserId, args.requesterChurchRole)) {
     throw new ChurchMediaAutoCreateForbiddenError();
   }
 
