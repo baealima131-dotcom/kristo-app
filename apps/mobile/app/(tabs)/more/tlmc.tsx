@@ -27,6 +27,11 @@ import {
   resolveMyWayCommand,
 } from "@/src/lib/myWayCommands";
 import { startMyWayPastorPrivateCall } from "@/src/lib/privateCallService";
+import { fetchSokoSellerAccess } from "@/src/lib/sokoSellerAccessApi";
+import {
+  fetchSokoWorkforceMe,
+  hasAcceptedLevel01SupplyAssignment,
+} from "@/src/lib/sokoWorkforceApi";
 import {
   getSnapshot as getMessagesSnapshot,
   subscribe as subscribeMessages,
@@ -940,6 +945,82 @@ Vibration.vibrate(120);
         userId: currentUserId,
       });
 
+      if (code === "SL0") {
+        if (!currentUserId) {
+          setErr("Sign in with your Kristo account first.");
+          Vibration.vibrate(120);
+          return;
+        }
+
+        await fetchSokoSellerAccess();
+
+        setShowPad(false);
+        setCmd("");
+        setErr(null);
+        setUnlockStep(0);
+        Vibration.vibrate(120);
+
+        console.log("KRISTO_MY_WAY_NAVIGATION", {
+          code,
+          route: resolved.route,
+          title: resolved.title,
+          userId: currentUserId,
+        });
+
+        router.push(resolved.route as any);
+        return;
+      }
+
+      if (code === "SL1") {
+        if (!currentUserId) {
+          setErr(
+            "You do not have an active Level 01 SOKO Work assignment."
+          );
+          Vibration.vibrate(120);
+          return;
+        }
+
+        const workforce =
+          await fetchSokoWorkforceMe({
+            userId: currentUserId,
+            source: "my-way-sl1",
+          });
+
+        const liveUserId = String(
+          session?.userId || ""
+        ).trim();
+
+        if (
+          liveUserId !== currentUserId ||
+          !hasAcceptedLevel01SupplyAssignment(
+            workforce,
+            liveUserId
+          )
+        ) {
+          setErr(
+            "You do not have an active Level 01 SOKO Work assignment."
+          );
+          Vibration.vibrate(120);
+          return;
+        }
+
+        setShowPad(false);
+        setCmd("");
+        setErr(null);
+        setUnlockStep(0);
+        Vibration.vibrate(120);
+
+        console.log("KRISTO_MY_WAY_NAVIGATION", {
+          code,
+          route: resolved.route,
+          title: resolved.title,
+          userId: currentUserId,
+        });
+
+        router.push(resolved.route as any);
+        return;
+      }
+
       setShowPad(false);
       setCmd("");
       setErr(null);
@@ -955,7 +1036,15 @@ Vibration.vibrate(120);
 
       router.push(resolved.route as any);
     } catch (error) {
-      setErr("Command not found. Check the code and try again.");
+      if (code === "SL1") {
+        setErr(
+          "You do not have an active Level 01 SOKO Work assignment."
+        );
+      } else if (code === "SL0") {
+        setErr("Could not verify seller access. Try again.");
+      } else {
+        setErr("Command not found. Check the code and try again.");
+      }
       Vibration.vibrate(120);
       console.log("KRISTO_MY_WAY_COMMAND_NOT_FOUND", {
         code,
@@ -1079,6 +1168,9 @@ Vibration.vibrate(120);
               </View>
 
               {err ? <Text style={t.err}>{err}</Text> : null}
+              {runningCommand ? (
+                <Text style={t.padHint}>Checking access…</Text>
+              ) : null}
 
               <View style={s.padGrid}>
                 {visibleKeyRows.map((row, rowIndex) => (

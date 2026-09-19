@@ -57,8 +57,103 @@ function canRunHomeFeedMetadataPosterPrewarm(): boolean {
   return isHomeFeedYoutubePosterMetadataEnabled();
 }
 
+function posterWorkPauseReasonMap(): Record<string, true> {
+  const g = globalThis as any;
+  const current = g.__KRISTO_HOME_POSTER_WORK_PAUSE_REASONS__;
+  if (current && typeof current === "object" && !Array.isArray(current) && typeof current.add !== "function") {
+    return current as Record<string, true>;
+  }
+  const next: Record<string, true> = Object.create(null);
+  if (current && typeof current.forEach === "function") {
+    current.forEach((reason: string) => {
+      const key = String(reason || "").trim();
+      if (key) next[key] = true;
+    });
+  }
+  g.__KRISTO_HOME_POSTER_WORK_PAUSE_REASONS__ = next;
+  return next;
+}
+
+function listPosterPauseReasons() {
+  return Object.keys(posterWorkPauseReasonMap());
+}
+
+function syncHomePosterPausedFlag() {
+  const g = globalThis as any;
+  g.__KRISTO_HOME_POSTER_WORK_PAUSED__ =
+    listPosterPauseReasons().length > 0 ||
+    Boolean(g.__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__);
+}
+
+function bumpPosterWorkEpoch() {
+  const g = globalThis as any;
+  g.__KRISTO_HOME_POSTER_WORK_EPOCH__ =
+    Number(g.__KRISTO_HOME_POSTER_WORK_EPOCH__ || 0) + 1;
+}
+
+function canonicalizePosterPauseReason(reason: string) {
+  return String(reason || "").trim() === "home-blur"
+    ? "home-blur"
+    : "live-navigation";
+}
+
+function logHomePosterWork(
+  event: string,
+  extra?: Record<string, unknown>
+) {
+  if (typeof __DEV__ === "undefined" || !__DEV__) return;
+  console.log(event, extra || {});
+}
+
+export function captureHomeFeedPosterWorkToken() {
+  return Number((globalThis as any).__KRISTO_HOME_POSTER_WORK_EPOCH__ || 0);
+}
+
+export function isHomeFeedPosterWorkTokenCurrent(token: number) {
+  return captureHomeFeedPosterWorkToken() === Number(token);
+}
+
+export function isHomeFeedPosterWorkPaused() {
+  const g = globalThis as any;
+  if (g.__KRISTO_HOME_POSTER_WORK_PAUSED__ === true) return true;
+  return (
+    listPosterPauseReasons().length > 0 ||
+    Boolean(g.__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__)
+  );
+}
+
+export function logHomeFeedPosterStaleSkip(
+  stage: string,
+  extra?: Record<string, unknown>
+) {
+  logHomePosterWork("KRISTO_HOME_POSTER_WORK_STALE_COMPLETION_SKIPPED", {
+    stage,
+    reason: listPosterPauseReasons(),
+    ...extra,
+  });
+}
+
+export function shouldSkipStaleHomeFeedPosterWork(
+  token?: number,
+  stage?: string
+) {
+  const paused = isHomeFeedPosterWorkPaused();
+  const tokenStale =
+    token != null && !isHomeFeedPosterWorkTokenCurrent(token);
+  if (!paused && !tokenStale) return false;
+  if (stage) {
+    logHomeFeedPosterStaleSkip(stage, {
+      token: token ?? null,
+      epoch: captureHomeFeedPosterWorkToken(),
+      paused,
+      tokenStale,
+    });
+  }
+  return true;
+}
+
 function isLiveNavBackgroundPaused() {
-  return Boolean((globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__);
+  return isHomeFeedPosterWorkPaused();
 }
 
 const INITIAL_VIDEO_COUNT = 8;
@@ -355,9 +450,10 @@ async function runWithConcurrency<T>(
 }
 
 function pumpVisibleGenQueue() {
+  if (isHomeFeedPosterWorkPaused()) return;
   while (visibleGenActive < VISIBLE_FRAME_GEN_CONCURRENCY && visibleGenPending.length > 0) {
     const job = visibleGenPending.shift()!;
-    if (job.runId !== visibleRunId) {
+    if (job.runId !== visibleRunId || isHomeFeedPosterWorkPaused()) {
       job.resolve(false);
       continue;
     }
@@ -371,6 +467,21 @@ function pumpVisibleGenQueue() {
         const key = prewarmKey(postId, videoUrl);
         if (key) visibleGenQueuedKeys.delete(key);
         visibleGenActive = Math.max(0, visibleGenActive - 1);
+        if (
+          job.runId !== visibleRunId ||
+          isHomeFeedPosterWorkPaused()
+        ) {
+          logHomePosterWork(
+            "KRISTO_HOME_POSTER_WORK_STALE_COMPLETION_SKIPPED",
+            {
+              lane: "visible",
+              reason: listPosterPauseReasons(),
+              runId: job.runId,
+              currentRunId: visibleRunId,
+            }
+          );
+          return;
+        }
         pumpVisibleGenQueue();
         maybeStartBackgroundDrain();
       });
@@ -378,6 +489,7 @@ function pumpVisibleGenQueue() {
 }
 
 function enqueueVisibleFrameGen(item: any, runId: number, urgent = false): Promise<boolean> {
+  if (isHomeFeedPosterWorkPaused()) return Promise.resolve(false);
   const postId = String(item?.id || "").trim();
   const videoUrl = posterVideoUrl(item);
   const key = prewarmKey(postId, videoUrl);
@@ -427,10 +539,11 @@ function pauseBackgroundFrameGenForVisible(reason: string) {
 }
 
 function pumpBackgroundGenQueue() {
+  if (isHomeFeedPosterWorkPaused()) return;
   if (visibleGenActive > 0 || visibleGenPending.length > 0) return;
   while (backgroundGenActive < BACKGROUND_FRAME_GEN_CONCURRENCY && backgroundGenPending.length > 0) {
     const job = backgroundGenPending.shift()!;
-    if (job.runId !== backgroundRunId) {
+    if (job.runId !== backgroundRunId || isHomeFeedPosterWorkPaused()) {
       job.resolve(false);
       continue;
     }
@@ -440,12 +553,28 @@ function pumpBackgroundGenQueue() {
       .catch(() => job.resolve(false))
       .finally(() => {
         backgroundGenActive = Math.max(0, backgroundGenActive - 1);
+        if (
+          job.runId !== backgroundRunId ||
+          isHomeFeedPosterWorkPaused()
+        ) {
+          logHomePosterWork(
+            "KRISTO_HOME_POSTER_WORK_STALE_COMPLETION_SKIPPED",
+            {
+              lane: "background",
+              reason: listPosterPauseReasons(),
+              runId: job.runId,
+              currentRunId: backgroundRunId,
+            }
+          );
+          return;
+        }
         pumpBackgroundGenQueue();
       });
   }
 }
 
 function enqueueBackgroundFrameGen(item: any, runId: number): Promise<boolean> {
+  if (isHomeFeedPosterWorkPaused()) return Promise.resolve(false);
   return new Promise((resolve) => {
     backgroundGenPending.push({ item, runId, resolve });
     pumpBackgroundGenQueue();
@@ -485,7 +614,7 @@ function startVisiblePosterRecheck(rows: any[], startIndex: number, count: numbe
 
   visibleRecheckTimer = setInterval(() => {
     const ctx = visibleRecheckContext;
-    if (!ctx || ctx.runId !== visibleRunId) {
+    if (!ctx || ctx.runId !== visibleRunId || isHomeFeedPosterWorkPaused()) {
       stopVisiblePosterRecheck();
       return;
     }
@@ -561,6 +690,7 @@ function enqueueBackgroundItems(items: any[]): number {
 }
 
 function maybeStartBackgroundDrain() {
+  if (isHomeFeedPosterWorkPaused()) return;
   if (!visibleGenerationComplete) return;
   if (visibleGenActive > 0 || visibleGenPending.length > 0) return;
   void drainBackgroundPosterGeneration(visibleRunId);
@@ -607,6 +737,7 @@ function partitionPosterCandidates(candidates: string[], videoUrl: string) {
 
 /** Fire-and-forget Image.prefetch for metadata/cache candidates (skip inferred guesses). */
 export function prefetchHomeFeedPosterMetadata(item: any): void {
+  if (shouldSkipStaleHomeFeedPosterWork(undefined, "metadata-prefetch")) return;
   if (!canRunHomeFeedMetadataPosterPrewarm()) return;
   const postId = String(item?.id || "").trim();
   const videoUrl = posterVideoUrl(item);
@@ -731,7 +862,7 @@ async function executeVisibleFrameGen(item: any, runId: number): Promise<boolean
   const postId = String(item?.id || "").trim();
   const videoUrl = posterVideoUrl(item);
   const key = prewarmKey(postId, videoUrl);
-  if (!key || runId !== visibleRunId) return false;
+  if (!key || runId !== visibleRunId || isHomeFeedPosterWorkPaused()) return false;
 
   if (itemHasHomeFeedPoster(item)) {
     return true;
@@ -773,10 +904,20 @@ async function executeVisibleFrameGen(item: any, runId: number): Promise<boolean
     generated = "";
   }
 
-  if (runId !== visibleRunId) {
+  if (runId !== visibleRunId || isHomeFeedPosterWorkPaused()) {
     if (generated) {
       markPosterSatisfied(postId, videoUrl, "stale-run-generated", { runId, posterUri: generated });
     }
+    logHomePosterWork(
+      "KRISTO_HOME_POSTER_WORK_STALE_COMPLETION_SKIPPED",
+      {
+        lane: "visible-generate",
+        reason: listPosterPauseReasons(),
+        runId,
+        currentRunId: visibleRunId,
+        hadGenerated: Boolean(generated),
+      }
+    );
     return Boolean(generated);
   }
 
@@ -808,7 +949,7 @@ async function executeBackgroundFrameGen(item: any, runId: number): Promise<bool
   const postId = String(item?.id || "").trim();
   const videoUrl = posterVideoUrl(item);
   const key = prewarmKey(postId, videoUrl);
-  if (!key || runId !== backgroundRunId) return false;
+  if (!key || runId !== backgroundRunId || isHomeFeedPosterWorkPaused()) return false;
 
   if (itemHasHomeFeedPoster(item)) {
     return true;
@@ -825,6 +966,26 @@ async function executeBackgroundFrameGen(item: any, runId: number): Promise<bool
       })) || "";
   } catch {
     generated = "";
+  }
+
+  if (runId !== backgroundRunId || isHomeFeedPosterWorkPaused()) {
+    if (generated) {
+      markPosterSatisfied(postId, videoUrl, "stale-run-generated", {
+        runId,
+        posterUri: generated,
+      });
+    }
+    logHomePosterWork(
+      "KRISTO_HOME_POSTER_WORK_STALE_COMPLETION_SKIPPED",
+      {
+        lane: "background-generate",
+        reason: listPosterPauseReasons(),
+        runId,
+        currentRunId: backgroundRunId,
+        hadGenerated: Boolean(generated),
+      }
+    );
+    return Boolean(generated);
   }
 
   attemptedKeys.add(key);
@@ -855,6 +1016,7 @@ async function prewarmOneHomeFeedVideoPoster(
 }
 
 async function runVisiblePosterGeneration(items: any[], runId: number) {
+  if (isHomeFeedPosterWorkPaused()) return;
   visibleGenerationComplete = false;
 
   const videos = items.filter((item) => isVideoPost(item) && !isVideoProcessing(item));
@@ -876,12 +1038,12 @@ async function runVisiblePosterGeneration(items: any[], runId: number) {
 
   await Promise.all(
     videos.map(async (item) => {
-      if (runId !== visibleRunId) return;
+      if (runId !== visibleRunId || isHomeFeedPosterWorkPaused()) return;
       await prewarmOneHomeFeedVideoPosterFastPath(item);
     })
   );
 
-  if (runId !== visibleRunId) return;
+  if (runId !== visibleRunId || isHomeFeedPosterWorkPaused()) return;
 
   const missing = videos.filter((item) => itemNeedsVisiblePosterGeneration(item));
   for (const item of missing) {
@@ -889,11 +1051,11 @@ async function runVisiblePosterGeneration(items: any[], runId: number) {
   }
 
   await runWithConcurrency(missing, VISIBLE_FRAME_GEN_CONCURRENCY, async (item) => {
-    if (runId !== visibleRunId) return;
+    if (runId !== visibleRunId || isHomeFeedPosterWorkPaused()) return;
     await enqueueVisibleFrameGen(item, runId);
   });
 
-  if (runId !== visibleRunId) return;
+  if (runId !== visibleRunId || isHomeFeedPosterWorkPaused()) return;
 
   visibleGenerationComplete = true;
 
@@ -907,6 +1069,7 @@ async function runVisiblePosterGeneration(items: any[], runId: number) {
 }
 
 async function drainBackgroundPosterGeneration(afterVisibleRunId: number) {
+  if (isHomeFeedPosterWorkPaused()) return;
   if (afterVisibleRunId !== visibleRunId) return;
   if (!visibleGenerationComplete) return;
   if (visibleGenActive > 0 || visibleGenPending.length > 0) return;
@@ -930,6 +1093,7 @@ async function drainBackgroundPosterGeneration(afterVisibleRunId: number) {
 
     while (backgroundQueue.length > 0) {
       if (
+        isHomeFeedPosterWorkPaused() ||
         runId !== backgroundRunId ||
         afterVisibleRunId !== visibleRunId ||
         visibleGenActive > 0 ||
@@ -964,6 +1128,7 @@ async function drainBackgroundPosterGeneration(afterVisibleRunId: number) {
 }
 
 async function maybeDrainBackgroundQueue() {
+  if (isHomeFeedPosterWorkPaused()) return;
   if (backgroundDrainPromise) return backgroundDrainPromise;
   if (!backgroundQueue.length) return;
   if (!visibleGenerationComplete) return;
@@ -976,7 +1141,7 @@ export function queueHomeFeedPosterPrewarm(
   item: any,
   opts?: { priority?: PrewarmPriority }
 ): Promise<boolean> {
-  if (isLiveNavBackgroundPaused()) return Promise.resolve(false);
+  if (shouldSkipStaleHomeFeedPosterWork(undefined, "queue-prewarm")) return Promise.resolve(false);
   if (!canRunHomeFeedMetadataPosterPrewarm()) return Promise.resolve(false);
 
   const priority = opts?.priority || "background";
@@ -1004,10 +1169,13 @@ export function queueHomeFeedPosterPrewarm(
 
   const promise = (async () => {
     try {
+      if (isHomeFeedPosterWorkPaused()) return false;
       await hydrateMediaPosterCache();
+      if (isHomeFeedPosterWorkPaused()) return false;
       if (itemHasHomeFeedPoster(item)) return true;
       const fast = await prewarmOneHomeFeedVideoPosterFastPath(item);
       if (fast) return true;
+      if (isHomeFeedPosterWorkPaused()) return false;
       if (youtubeMetadataOnly) {
         return false;
       }
@@ -1049,6 +1217,7 @@ export function queueHomeFeedPosterPrewarm(
 
 /** Enqueue background poster work — does not start until visible queue finishes. */
 export async function prewarmHomeFeedVideoPosters(items: any[]) {
+  if (isHomeFeedPosterWorkPaused()) return;
   const videos = items.filter((item) => isVideoPost(item) && !isVideoProcessing(item));
   if (!videos.length) return;
 
@@ -1152,7 +1321,7 @@ export function startYoutubeHomeFeedVisiblePosterPrewarm(
   maxCount = YOUTUBE_VISIBLE_POSTER_PREWARM_COUNT
 ) {
   if (!isHomeFeedYoutubePosterMetadataEnabled()) return;
-  if (isLiveNavBackgroundPaused()) return;
+  if (shouldSkipStaleHomeFeedPosterWork(undefined, "youtube-visible-prewarm-start")) return;
   if (!rows.length) return;
 
   const batch = sliceHomeFeedVideoPosts(rows, 0, maxCount);
@@ -1179,10 +1348,17 @@ export function startYoutubeHomeFeedVisiblePosterPrewarm(
       void hydrateMediaPosterCache();
     } catch {}
 
+    if (shouldSkipStaleHomeFeedPosterWork(undefined, "youtube-visible-prewarm")) {
+      return;
+    }
+
     await Promise.all(
-      batch.map((item) =>
-        queueHomeFeedPosterPrewarm(item, { priority: "visible" }).catch(() => false)
-      )
+      batch.map((item) => {
+        if (shouldSkipStaleHomeFeedPosterWork(undefined, "youtube-visible-prewarm-item")) {
+          return Promise.resolve(false);
+        }
+        return queueHomeFeedPosterPrewarm(item, { priority: "visible" }).catch(() => false);
+      })
     );
   })();
 }
@@ -1315,6 +1491,7 @@ export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
   });
 
   void visibleDrainPromise?.then(() => {
+    if (isHomeFeedPosterWorkPaused()) return;
     if (feedKey) initialPrewarmCompletedFeedKey = feedKey;
   });
 }
@@ -1325,6 +1502,7 @@ export function prewarmHomeFeedPostersOnNearEnd(
   activeIndex: number,
   visibleCount: number
 ) {
+  if (isHomeFeedPosterWorkPaused()) return;
   if (isHomeFeedPosterPrewarmDisabled()) return;
   if (!rows.length || !isHomeFeedNearEnd(activeIndex, visibleCount)) return;
 
@@ -1462,8 +1640,24 @@ export function notifyVisibleHomeFeedPosterFocus(
   prewarmVisibleHomeFeedVideoPosters(rows, startIndex, count);
 }
 
-/** Stop visible/background poster generation when Live Room navigation starts. */
-export function pauseHomeFeedPosterWorkForLiveNavigation(reason = "live-navigation") {
+/** Stop visible/background poster generation without clearing cached JPEG results. */
+export function pauseHomeFeedPosterWork(reason = "live-navigation") {
+  const token = canonicalizePosterPauseReason(reason);
+  const reasons = posterWorkPauseReasonMap();
+  const alreadyHadReason = Boolean(reasons[token]);
+  reasons[token] = true;
+  bumpPosterWorkEpoch();
+  syncHomePosterPausedFlag();
+
+  const cancelledVisiblePending = visibleGenPending.length;
+  const cancelledBackgroundPending = backgroundGenPending.length;
+  const cancelledBackgroundQueue = backgroundQueue.length;
+  const cancelledVisibleActive = visibleGenActive;
+  const cancelledBackgroundActive = backgroundGenActive;
+
+  for (const job of visibleGenPending) job.resolve(false);
+  for (const job of backgroundGenPending) job.resolve(false);
+
   visibleRunId += 1;
   backgroundRunId += 1;
   visibleGenPending.length = 0;
@@ -1473,6 +1667,43 @@ export function pauseHomeFeedPosterWorkForLiveNavigation(reason = "live-navigati
   backgroundKeySet.clear();
   visibleGenerationComplete = true;
   lastVisibleWarmSignature = "";
+  lastYoutubeVisiblePosterPrewarmSignature = "";
   stopVisiblePosterRecheck();
-  cancelBackgroundPosterGeneration(reason);
+  backgroundDrainPromise = null;
+
+  logHomePosterWork("KRISTO_HOME_POSTER_WORK_PAUSE", {
+    reason: token,
+    detail: reason,
+    alreadyHadReason,
+    reasons: listPosterPauseReasons(),
+    epoch: captureHomeFeedPosterWorkToken(),
+    cancelledVisiblePending,
+    cancelledBackgroundPending,
+    cancelledBackgroundQueue,
+    inProgressVisible: cancelledVisibleActive,
+    inProgressBackground: cancelledBackgroundActive,
+    visibleRunId,
+    backgroundRunId,
+  });
+}
+
+export function resumeHomeFeedPosterWork(reason = "home-blur") {
+  const token = canonicalizePosterPauseReason(reason);
+  const reasons = posterWorkPauseReasonMap();
+  if (!reasons[token]) {
+    return;
+  }
+  delete reasons[token];
+  syncHomePosterPausedFlag();
+  logHomePosterWork("KRISTO_HOME_POSTER_WORK_RESUME", {
+    reason: token,
+    detail: reason,
+    stillPaused: isHomeFeedPosterWorkPaused(),
+    remainingReasons: listPosterPauseReasons(),
+  });
+}
+
+/** Stop visible/background poster generation when Live Room navigation starts. */
+export function pauseHomeFeedPosterWorkForLiveNavigation(reason = "live-navigation") {
+  pauseHomeFeedPosterWork(reason);
 }

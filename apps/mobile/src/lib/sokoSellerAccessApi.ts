@@ -7,6 +7,14 @@ import {
   getKristoHeaders,
 } from "@/src/lib/kristoHeaders";
 
+export type SokoSellerAccess = {
+  approved: boolean;
+  userId: string;
+  kristoId: string;
+  activatedAt?: string;
+  applicationId?: string;
+};
+
 export type SokoSellerApplicationStatus =
   | "pending"
   | "approved"
@@ -46,6 +54,37 @@ function assertOk(
   }
 
   return response;
+}
+
+export async function fetchSokoSellerAccess() {
+  const response: any =
+    await apiGet(
+      "/api/soko/seller/access",
+      {
+        headers:
+          getKristoHeaders() as any,
+      }
+    );
+
+  assertOk(
+    response,
+    "Could not load seller access."
+  );
+
+  const access =
+    response.access || {};
+
+  return {
+    approved: Boolean(access.approved),
+    userId: String(access.userId || ""),
+    kristoId: String(access.kristoId || ""),
+    activatedAt: access.activatedAt
+      ? String(access.activatedAt)
+      : undefined,
+    applicationId: access.applicationId
+      ? String(access.applicationId)
+      : undefined,
+  } as SokoSellerAccess;
 }
 
 export async function fetchMySokoSellerApplication() {

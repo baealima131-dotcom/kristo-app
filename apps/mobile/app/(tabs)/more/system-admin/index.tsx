@@ -337,7 +337,7 @@ export default function SystemAdminScreen() {
   const sections: SectionLink[] = [
     {
       key: "subscription_codes",
-      title: "Subscription Activation Codes",
+      title: "Church Activation Codes",
       subtitle: "Generate batches and view platform codes.",
       badge: "MANAGE",
       icon: "ticket-outline",
@@ -623,7 +623,7 @@ export default function SystemAdminScreen() {
               <View style={styles.activityHeader}>
                 <View style={styles.activityHeaderCopy}>
                   <Text style={styles.activityTitle}>Activation Church Activity</Text>
-                  <Text style={styles.activitySub}>Track offline subscription activations</Text>
+                  <Text style={styles.activitySub}>Track offline church activations</Text>
                   <Text style={styles.activityMonthLabel}>{formatMonthLabel(activityMonth)}</Text>
                 </View>
                 <View style={styles.monthFilterPill}>

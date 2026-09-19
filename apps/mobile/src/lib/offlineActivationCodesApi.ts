@@ -67,8 +67,6 @@ export type GenerateActivationCodesResponse = {
 };
 
 export const ACTIVATION_COUNTRY_OPTIONS = ["BDI", "CD", "TZ", "US"] as const;
-export const ACTIVATION_DURATION_OPTIONS = [1, 3, 6, 12] as const;
-
 /** Matches backend assignable pool: not assigned, redeemed, or disabled. */
 export function isAssignableActivationCode(code: ActivationCode): boolean {
   if (code.status === "redeemed" || code.status === "disabled") return false;
@@ -148,7 +146,7 @@ export async function fetchActivationCodes(
   const res = await apiGet<ActivationCodesListResponse | { ok: false; error: string }>(
     path,
     { headers: buildActivationRequestHeaders(path) },
-    activationTraffic("system-admin-subscription-codes", options?.fresh)
+    activationTraffic("system-admin-activation-codes", options?.fresh)
   );
 
   if (!res || (res as any).ok === false) {
@@ -160,7 +158,6 @@ export async function fetchActivationCodes(
 
 export type GenerateActivationCodesInput = {
   countryCode: string;
-  durationMonths: number;
   quantity: number;
 };
 
@@ -171,8 +168,8 @@ export async function generateActivationCodes(
 
   console.log("KRISTO_ACTIVATION_CODES_GENERATE_START", {
     countryCode: input.countryCode,
-    durationMonths: input.durationMonths,
     quantity: input.quantity,
+    activationPolicy: "permanent_one_time",
   });
 
   const res = await apiPost<GenerateActivationCodesResponse | { ok: false; error: string }>(
@@ -471,8 +468,6 @@ export type ActivationChurchActivityItem = {
   supervisorUserId?: string | null;
   agentName?: string;
   agentUserId?: string | null;
-  durationMonths: number;
-  durationLabel: string;
   status: "Redeemed";
 };
 

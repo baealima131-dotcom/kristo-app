@@ -24,7 +24,7 @@
         "NSMicrophoneUsageDescription": "Kristo App needs microphone access for live streaming and audio in live rooms.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "2"
+      "buildNumber": "3"
     },
     "android": {
       "adaptiveIcon": {
@@ -33,13 +33,15 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.princefariji.kristoapp",
+      "package": "com.princefariji.kristoapp.free",
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
+        "com.android.vending.BILLING",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      "versionCode": 13
     },
     "web": {
       "bundler": "metro",
@@ -72,7 +74,6 @@
       "typedRoutes": true
     },
     "extra": {
-      "stripePublishableKey": "pk_test_xxxxxxxxxxxxxxxxx",
       "router": {},
       "eas": {
         "projectId": "1dc15ae7-821f-479e-b1fd-feb0450be12f"

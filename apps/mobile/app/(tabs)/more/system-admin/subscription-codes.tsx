@@ -28,7 +28,6 @@ import { hasOfflineActivationRole } from "@/src/lib/offlineActivationCodes";
 import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
 import {
   ACTIVATION_COUNTRY_OPTIONS,
-  ACTIVATION_DURATION_OPTIONS,
   fetchActivationCodes,
   generateActivationCodes,
   isAssignableActivationCode,
@@ -63,19 +62,13 @@ const COUNTRY_CARDS = [
   { code: "US" as const, flag: "🇺🇸", name: "United States" },
 ];
 
-const DURATION_CARDS = [
-  { months: 1 as const, label: "1 Month" },
-  { months: 3 as const, label: "3 Months" },
-  { months: 6 as const, label: "6 Months" },
-  { months: 12 as const, label: "12 Months" },
-];
 
 const FILTER_CHIPS: { key: CodeFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "available", label: "Available" },
   { key: "assigned", label: "Assigned" },
   { key: "redeemed", label: "Redeemed" },
-  { key: "expired", label: "Expired" },
+  { key: "expired", label: "Disabled" },
 ];
 
 function formatWhen(iso: string) {
@@ -359,8 +352,6 @@ export default function SubscriptionActivationCodesScreen() {
   const [codeSort, setCodeSort] = React.useState<CodeSort>("newest");
 
   const [countryCode, setCountryCode] = React.useState<(typeof ACTIVATION_COUNTRY_OPTIONS)[number]>("BDI");
-  const [durationMonths, setDurationMonths] =
-    React.useState<(typeof ACTIVATION_DURATION_OPTIONS)[number]>(1);
   const [quantity, setQuantity] = React.useState("10");
 
   const sparkleAnim = React.useRef(new Animated.Value(0)).current;
@@ -475,7 +466,7 @@ export default function SubscriptionActivationCodesScreen() {
     setGenerating(true);
     setError("");
     try {
-      await generateActivationCodes({ countryCode, durationMonths, quantity: qty });
+      await generateActivationCodes({ countryCode, quantity: qty });
       setGenerateSuccess(true);
       setShowForm(false);
       await loadCodes(true);
@@ -509,7 +500,7 @@ export default function SubscriptionActivationCodesScreen() {
     setExpandedCodeIds((prev) => ({ ...prev, [codeId]: !prev[codeId] }));
   };
 
-  const previewFormat = `KR-${countryCode}-M${durationMonths}-XXXX-XXXX`;
+  const previewFormat = `KR-${countryCode}-XXXX-XXXX`;
   const sparkleRotate = sparkleAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "18deg"] });
   const sparkleScale = sparkleAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
 
@@ -527,7 +518,7 @@ export default function SubscriptionActivationCodesScreen() {
               <Text style={styles.title} numberOfLines={1}>
                 Activation Codes
               </Text>
-              <Text style={styles.subtitle}>Offline subscription generator</Text>
+              <Text style={styles.subtitle}>Offline church activation generator</Text>
             </View>
             <View style={styles.headerBadge}>
               <LinearGradient
@@ -605,25 +596,6 @@ export default function SubscriptionActivationCodesScreen() {
                       );
                     })}
                   </View>
-
-                  <Text style={styles.fieldLabel}>Duration</Text>
-                  <View style={styles.durationGrid}>
-                    {DURATION_CARDS.map((item) => {
-                      const selected = durationMonths === item.months;
-                      return (
-                        <Pressable
-                          key={item.months}
-                          onPress={() => setDurationMonths(item.months)}
-                          style={[styles.durationCard, selected && styles.durationCardSelected]}
-                        >
-                          <Text style={[styles.durationLabel, selected && styles.durationLabelSelected]}>
-                            {item.label}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-
                   <Text style={styles.fieldLabel}>Quantity</Text>
                   <View style={styles.quantityRow}>
                     <Pressable style={styles.stepperBtn} onPress={() => adjustQuantity(-1)}>
@@ -707,7 +679,7 @@ export default function SubscriptionActivationCodesScreen() {
                   <AnalyticsPill dot="🟢" label="Available" value={codeAnalytics.available} />
                   <AnalyticsPill dot="🟣" label="Assigned" value={codeAnalytics.assigned} />
                   <AnalyticsPill dot="🔴" label="Redeemed" value={codeAnalytics.redeemed} />
-                  <AnalyticsPill dot="⚫" label="Expired" value={codeAnalytics.expired} />
+                  <AnalyticsPill dot="⚫" label="Disabled" value={codeAnalytics.expired} />
                 </View>
 
                 <SectionHeader title="Recent batches" count={batches.length} />
@@ -734,7 +706,7 @@ export default function SubscriptionActivationCodesScreen() {
                         <View style={styles.batchTopRow}>
                           <View style={{ flex: 1, gap: 2 }}>
                             <Text style={styles.batchTitle}>
-                              {batch.countryCode} · {batch.durationMonths} mo · {batch.quantity} codes
+                              {batch.countryCode} · {batch.quantity} codes
                             </Text>
                             <Text style={styles.batchMeta}>Created {formatDateShort(batch.createdAt)}</Text>
                           </View>
@@ -753,8 +725,8 @@ export default function SubscriptionActivationCodesScreen() {
                             <Text style={styles.batchGridValue}>{batch.countryCode}</Text>
                           </View>
                           <View style={styles.batchGridCell}>
-                            <Text style={styles.batchGridLabel}>Duration</Text>
-                            <Text style={styles.batchGridValue}>{batch.durationMonths} mo</Text>
+                            <Text style={styles.batchGridLabel}>Activation</Text>
+                            <Text style={styles.batchGridValue}>One-time</Text>
                           </View>
                           <View style={styles.batchGridCell}>
                             <Text style={styles.batchGridLabel}>Quantity</Text>
@@ -865,7 +837,7 @@ export default function SubscriptionActivationCodesScreen() {
                             <View style={styles.codeHeaderMetaRow}>
                               <StatusBadge status={row.status} />
                               <Text style={styles.codeMetaInline}>
-                                {row.countryCode} · {row.durationMonths} mo
+                                {row.countryCode} · One-time
                               </Text>
                             </View>
                           </View>
@@ -936,7 +908,7 @@ export default function SubscriptionActivationCodesScreen() {
                 <View style={styles.qrMetaRow}>
                   <Text style={styles.qrMetaText}>{qrModalCode.countryCode}</Text>
                   <Text style={styles.qrMetaDot}>·</Text>
-                  <Text style={styles.qrMetaText}>{qrModalCode.durationMonths} months</Text>
+                  <Text style={styles.qrMetaText}>One-time activation</Text>
                   <Text style={styles.qrMetaDot}>·</Text>
                   <Text style={[styles.qrMetaText, { color: statusColor(qrModalCode.status) }]}>
                     {statusLabel(qrModalCode.status)}

@@ -4,6 +4,7 @@ import { seedChurchMediaAccessFromSession } from "./refreshCoordinator";
 import { resolveSessionChurchId } from "./churchStore";
 import { isPastorSessionRole } from "./churchRoleUtils";
 import { preloadTlmcAssets } from "./tlmcPreload";
+import { prefetchSokoWorkforceMeForCurrentUser } from "./sokoWorkforceApi";
 
 export type MoreTabPremountSnapshot = {
   hasChurch: boolean;
@@ -28,6 +29,7 @@ export function peekMoreTabPremountSnapshot() {
 export async function runMoreTabPremount(session: KristoSession) {
   const key = `${session.userId}:${session.churchId || ""}`;
   if (premountReady && lastPremountKey === key) {
+    prefetchSokoWorkforceMeForCurrentUser("more-tab-premount-ready");
     return;
   }
   if (premountInflight) {
@@ -51,6 +53,8 @@ export async function runMoreTabPremount(session: KristoSession) {
       },
       churchId
     );
+
+    prefetchSokoWorkforceMeForCurrentUser("more-tab-premount");
 
     premountSnapshot = {
       hasChurch: Boolean(churchId),

@@ -24,6 +24,7 @@ import { markHomeFeedPosterPipelineStage } from "@/src/lib/homeFeedPosterPipelin
 import {
   prefetchHomeFeedPosterMetadata,
   queueHomeFeedPosterPrewarm,
+  isHomeFeedPosterWorkPaused,
 } from "@/src/lib/homeFeedPosterPrewarm";
 import { isHomeFeedYoutubePosterMetadataEnabled } from "@/src/lib/homeFeedVideoMode";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
@@ -577,6 +578,10 @@ function YouTubeFeedVideoPoster({
     }
 
     if (!isHomeFeedYoutubePosterMetadataEnabled() || !item) return;
+
+    if (isHomeFeedPosterWorkPaused()) {
+      return;
+    }
 
     prefetchHomeFeedPosterMetadata(item);
     void hydrateMediaPosterCache().then(() => {

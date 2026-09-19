@@ -63,7 +63,7 @@ export type SupervisorInventoryBatch = {
 
 export type SupervisorCodeActivityItem = {
   id: string;
-  type: "assigned_to_agent" | "redeemed" | "returned" | "expired" | "received";
+  type: "assigned_to_agent" | "redeemed" | "returned" | "disabled" | "received";
   title: string;
   subtitle?: string;
   code: string;

@@ -841,9 +841,14 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         if (startupTarget) {
           holdStartupVideoPlayerForRemount(remotePlaybackUri, postId, adoptedPlayer);
         } else {
-          try {
-            adoptedPlayer.release();
-          } catch {}
+          // VideoView may still be detaching during effect cleanup.
+          // Releasing the shared native player immediately can make
+          // SurfaceVideoView receive an already-released object.
+          setTimeout(() => {
+            try {
+              adoptedPlayer.release();
+            } catch {}
+          }, 250);
         }
       }
     };

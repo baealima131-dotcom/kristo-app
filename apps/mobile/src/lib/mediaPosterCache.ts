@@ -431,6 +431,21 @@ export async function rememberMediaPoster(params: {
 
 export function prefetchMediaPosterImages(uris: string[], trace?: { postId?: string; videoUrl?: string }) {
   if (shouldDeferBackgroundMediaJobs()) return;
+  if (
+    Boolean((globalThis as any).__KRISTO_HOME_POSTER_WORK_PAUSED__) ||
+    Boolean((globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__)
+  ) {
+    if (typeof __DEV__ !== "undefined" && __DEV__) {
+      console.log("KRISTO_HOME_POSTER_WORK_STALE_COMPLETION_SKIPPED", {
+        stage: "image-prefetch",
+        reason: Object.keys(
+          ((globalThis as any).__KRISTO_HOME_POSTER_WORK_PAUSE_REASONS__ || {}) as Record<string, unknown>
+        ),
+        uriCount: uris.length,
+      });
+    }
+    return;
+  }
   for (const raw of uris) {
     const uri = String(raw || "").trim();
     if (!uri || prefetchedUris.has(uri)) continue;

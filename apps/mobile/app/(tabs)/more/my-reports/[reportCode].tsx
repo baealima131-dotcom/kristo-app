@@ -475,6 +475,15 @@ type TimelineStep = {
  */
 const CANONICAL_STAGE_COUNT = 6;
 
+function hasVerifiedReportFlag(
+  report: SafetyReportSummary,
+  key: "aiScreeningCompleted" | "assignedToSafetyTeam" | "humanReviewCompleted"
+): boolean {
+  return Object.prototype.hasOwnProperty.call(report, key) &&
+    Reflect.get(report, key) === true;
+}
+
+
 function buildTimeline(
   report: SafetyReportSummary
 ): TimelineStep[] {
@@ -498,7 +507,7 @@ function buildTimeline(
     icon: "create-outline",
   });
 
-  if (report.aiScreeningCompleted) {
+  if (hasVerifiedReportFlag(report, "aiScreeningCompleted")) {
     steps.push({
       key: "ai",
       label: "AI Initial Screening",
@@ -508,7 +517,7 @@ function buildTimeline(
     });
   }
 
-  if (report.assignedToSafetyTeam) {
+  if (hasVerifiedReportFlag(report, "assignedToSafetyTeam")) {
     steps.push({
       key: "assigned",
       label: "Assigned to Safety Team",
@@ -1625,9 +1634,9 @@ export default function MyReportDetailScreen() {
 
           {/* Investigation summary — only proven backend signals */}
           {(
-            report.aiScreeningCompleted ||
-            report.assignedToSafetyTeam ||
-            report.humanReviewCompleted ||
+            hasVerifiedReportFlag(report, "aiScreeningCompleted") ||
+            hasVerifiedReportFlag(report, "assignedToSafetyTeam") ||
+            hasVerifiedReportFlag(report, "humanReviewCompleted") ||
             report.status ===
               "in_review" ||
             report.status ===
@@ -1646,7 +1655,7 @@ export default function MyReportDetailScreen() {
                 Investigation Summary
               </Text>
 
-              {report.aiScreeningCompleted ? (
+              {hasVerifiedReportFlag(report, "aiScreeningCompleted") ? (
                 <InvestigationSummaryRow
                   icon="sparkles-outline"
                   label="AI initial screening"
@@ -1655,7 +1664,7 @@ export default function MyReportDetailScreen() {
                 />
               ) : null}
 
-              {report.assignedToSafetyTeam ? (
+              {hasVerifiedReportFlag(report, "assignedToSafetyTeam") ? (
                 <InvestigationSummaryRow
                   icon="people-outline"
                   label="Assigned to Safety Team"
@@ -1673,7 +1682,7 @@ export default function MyReportDetailScreen() {
                   "resolved" ||
                 report.status ===
                   "dismissed" ||
-                report.humanReviewCompleted
+                hasVerifiedReportFlag(report, "humanReviewCompleted")
               ) ? (
                 <InvestigationSummaryRow
                   icon="search-outline"
@@ -1683,7 +1692,7 @@ export default function MyReportDetailScreen() {
                 />
               ) : null}
 
-              {report.humanReviewCompleted ? (
+              {hasVerifiedReportFlag(report, "humanReviewCompleted") ? (
                 <InvestigationSummaryRow
                   icon="reader-outline"
                   label="Human review completed"

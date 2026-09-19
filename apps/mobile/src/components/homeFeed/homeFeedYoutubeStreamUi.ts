@@ -81,18 +81,30 @@ async function runWithConcurrency<T>(
 /** Start poster jobs for an incoming page — limited concurrency, never blocks caller. */
 export function kickoffYoutubePagePosterPrewarm(rows: any[]): void {
   if (!rows.length) return;
-  const { queueHomeFeedPosterPrewarm } = require("@/src/lib/homeFeedPosterPrewarm") as {
+  const {
+    queueHomeFeedPosterPrewarm,
+    shouldSkipStaleHomeFeedPosterWork,
+  } = require("@/src/lib/homeFeedPosterPrewarm") as {
     queueHomeFeedPosterPrewarm: (
       item: any,
       opts?: { priority?: "visible" | "background" }
     ) => Promise<boolean>;
+    shouldSkipStaleHomeFeedPosterWork: (
+      token?: number,
+      stage?: string
+    ) => boolean;
   };
+
+  if (shouldSkipStaleHomeFeedPosterWork(undefined, "youtube-page-kickoff")) {
+    return;
+  }
 
   const headCount = Math.min(HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT, rows.length);
   const head = rows.slice(0, headCount);
   const tail = rows.slice(headCount);
 
   void runWithConcurrency(head, HOME_FEED_YOUTUBE_APPEND_POSTER_CONCURRENCY, async (row) => {
+    if (shouldSkipStaleHomeFeedPosterWork(undefined, "youtube-page-kickoff-item")) return;
     try {
       await queueHomeFeedPosterPrewarm(row, { priority: "visible" });
     } catch {}
@@ -100,6 +112,7 @@ export function kickoffYoutubePagePosterPrewarm(rows: any[]): void {
 
   if (!tail.length) return;
   void runWithConcurrency(tail, 1, async (row) => {
+    if (shouldSkipStaleHomeFeedPosterWork(undefined, "youtube-page-kickoff-item")) return;
     try {
       await queueHomeFeedPosterPrewarm(row, { priority: "background" });
     } catch {}

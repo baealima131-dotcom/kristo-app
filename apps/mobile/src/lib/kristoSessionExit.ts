@@ -5,6 +5,7 @@ import {
   type LogoutCleanupParams,
 } from "./kristoSession";
 import { cancelAllScheduledRefreshes, resetAuthRefreshStateForLogout } from "./refreshCoordinator";
+import { clearSokoWorkforceMeCache } from "./sokoWorkforceApi";
 import {
   markDeleteAccountExitFinished,
   markDeleteAccountExitStarted,
@@ -23,6 +24,7 @@ function beginSessionExit(kind: "delete" | "logout") {
   else markLogoutExitStarted();
 
   setSessionSync(null);
+  clearSokoWorkforceMeCache();
   cancelAllScheduledRefreshes();
   resetAuthRefreshStateForLogout();
   void setLoggedOutFlag(true);

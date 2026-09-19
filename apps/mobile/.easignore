@@ -35,3 +35,7 @@ liveSlotsCatalog
 mediaScheduleLock
 mediaScheduleSlotTimes
 scripts/audit-rebuild-parity-report.json
+*.backup
+*.backup-*
+*.before-*
+.qa-*

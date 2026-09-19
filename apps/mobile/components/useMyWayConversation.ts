@@ -1,0 +1,294 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AppState } from "react-native";
+import { useFocusEffect } from "expo-router";
+import {
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  setIsAudioActiveAsync,
+  useAudioRecorder,
+} from "expo-audio";
+import { File } from "expo-file-system";
+import { deleteAsync } from "expo-file-system/legacy";
+import { fetch as expoFetch } from "expo/fetch";
+import { getSessionSync } from "@/src/lib/kristoSession";
+
+type Phase = "idle" | "starting" | "listening" | "processing" | "stopping";
+
+const pause = (ms: number) =>
+  new Promise<void>(resolve => setTimeout(resolve, ms));
+
+async function remove(uri: string) {
+  if (uri) await deleteAsync(uri, { idempotent: true }).catch(() => {});
+}
+
+export function useMyWayConversation() {
+  const recorder = useAudioRecorder({
+    ...RecordingPresets.HIGH_QUALITY,
+    isMeteringEnabled: true,
+  });
+
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [active, setActive] = useState(false);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [message, setMessage] = useState("");
+  const [shownBible, setShownBible] = useState(false);
+
+  const focused = useRef(false);
+  const running = useRef(false);
+  const recordingNow = useRef(false);
+  const control = useRef<AbortController | null>(null);
+
+  const cancel = useCallback(() => {
+    control.current?.abort();
+    if (focused.current) {
+      setActive(false);
+      if (running.current) setPhase("stopping");
+    }
+  }, []);
+
+  useFocusEffect(useCallback(() => {
+    focused.current = true;
+    // A previous request may still be finishing cleanup.
+    setActive(false);
+    setPhase(running.current ? "stopping" : "idle");
+    return () => {
+      focused.current = false;
+      cancel();
+    };
+  }, [cancel]));
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", state => {
+      if (
+        state === "background" ||
+        (state === "inactive" && recordingNow.current)
+      ) cancel();
+    });
+    return () => subscription.remove();
+  }, [cancel]);
+
+  async function begin() {
+    if (running.current || !focused.current) return;
+
+    const account = getSessionSync();
+    if (!account?.userId || !account.sessionToken) {
+      setMessage("Ingia tena kwenye Kristo App kwanza.");
+      return;
+    }
+    if (!__DEV__) {
+      setMessage("Muunganiko huu bado ni wa majaribio.");
+      return;
+    }
+
+    const base = (process.env.EXPO_PUBLIC_MYWAY_API_BASE || "")
+      .trim().replace(/\/+$/, "");
+    if (!base) {
+      setMessage("Anwani ya server ya MY WAY haijawekwa.");
+      return;
+    }
+
+    const userId = account.userId;
+    const sessionToken = account.sessionToken;
+    const controller = new AbortController();
+    control.current = controller;
+    running.current = true;
+    setActive(true);
+    setPhase("starting");
+    setMessage("");
+
+    let timedOut = false;
+    const valid = () => {
+      const current = getSessionSync();
+      return focused.current && !controller.signal.aborted &&
+        current?.userId === userId &&
+        current?.sessionToken === sessionToken;
+    };
+
+    try {
+      const permission = await requestRecordingPermissionsAsync();
+      if (!valid()) return;
+      if (!permission.granted) {
+        throw new Error("Ruhusu microphone kwenye Settings za simu.");
+      }
+
+      await setIsAudioActiveAsync(true);
+      if (!valid()) return;
+
+      while (valid()) {
+        let needsStop = false;
+        let audioUri = "";
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+
+        try {
+          setPhase("starting");
+          await setAudioModeAsync({
+            allowsRecording: true,
+            playsInSilentMode: true,
+            interruptionMode: "doNotMix",
+            shouldPlayInBackground: false,
+          });
+          if (!valid()) break;
+
+          needsStop = true;
+          await recorder.prepareToRecordAsync();
+          if (!valid()) break;
+
+          recorder.record();
+          recordingNow.current = true;
+          setPhase("listening");
+
+          const beganAt = Date.now();
+          let heardSpeech = false;
+          let loudSamples = 0;
+          let lastLoudAt = beganAt;
+          let gotMeter = false;
+
+          // Short recording turns; the conversation stays open.
+          while (valid()) {
+            await pause(150);
+            if (!valid()) break;
+
+            const state = recorder.getStatus();
+            const now = Date.now();
+            const elapsed = now - beganAt;
+
+            if (!state.isRecording) {
+              if (elapsed > 1500) {
+                throw new Error("Microphone imesimama. Anza mazungumzo tena.");
+              }
+              continue;
+            }
+
+            const level = state.metering;
+            if (typeof level === "number" && Number.isFinite(level)) {
+              gotMeter = true;
+              // Visual level only; this does not change speech detection.
+              if (valid()) {
+                setAudioLevel(Math.max(0, Math.min(1, (level + 45) / 35)));
+              }
+              if (level > -29) {
+                loudSamples += 1;
+                lastLoudAt = now;
+                if (loudSamples >= 3) heardSpeech = true;
+              } else {
+                loudSamples = 0;
+              }
+            }
+
+            if (!gotMeter && elapsed > 5000) {
+              throw new Error("Kipimo cha microphone hakipatikani.");
+            }
+
+            if (heardSpeech && now - lastLoudAt >= 1800) break;
+            if (elapsed >= 55000) break;
+          }
+
+          await recorder.stop();
+          needsStop = false;
+          recordingNow.current = false;
+          audioUri = recorder.uri || "";
+
+          if (!valid()) break;
+
+          // Do not send a silent recording to Whisper.
+          if (!heardSpeech) continue;
+          if (!audioUri) throw new Error("Rekodi haijapatikana.");
+
+          setPhase("processing");
+          await setAudioModeAsync({
+            allowsRecording: false,
+            playsInSilentMode: true,
+          });
+          if (!valid()) break;
+
+          timeout = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, 150000);
+
+          const response = await expoFetch(
+            base + "/api/member/voice",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/octet-stream",
+                "x-kristo-user-id": userId,
+                "x-kristo-session-token": sessionToken,
+              },
+              body: new File(audioUri),
+              signal: controller.signal,
+            }
+          );
+
+          const result = await response.json();
+          if (!valid()) break;
+          if (!response.ok || !result?.ok) {
+            throw new Error(result?.error || "MY WAY haijakamilisha ombi.");
+          }
+
+          if (result.understood && result.action?.type === "show_screen") {
+            if (result.action.screen === "bible") {
+              setShownBible(true);
+              setMessage("Ukurasa wa Biblia umefunguliwa.");
+            } else if (result.action.screen === "agent") {
+              setShownBible(false);
+              setMessage("");
+            } else {
+              setMessage("Screen hii bado haijaunganishwa hapa.");
+            }
+          } else {
+            const transcript = typeof result.transcript === "string"
+              ? result.transcript : "";
+            setMessage(
+              (transcript ? "Nimesikia: " + transcript + "\n" : "") +
+              (result.reply || "Sijasikia vizuri. Jaribu tena.")
+            );
+          }
+
+          // The next loop starts listening without another button press.
+        } finally {
+          if (timeout) clearTimeout(timeout);
+          if (needsStop) await recorder.stop().catch(() => {});
+          recordingNow.current = false;
+          await remove(audioUri || recorder.uri || "");
+        }
+      }
+    } catch (error) {
+      if (
+        focused.current &&
+        control.current === controller &&
+        (timedOut || !controller.signal.aborted)
+      ) {
+        setMessage(timedOut
+          ? "Jibu limechelewa. Bonyeza kuanza mazungumzo tena."
+          : error instanceof Error ? error.message : "Muunganiko umeshindwa.");
+      }
+    } finally {
+      await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      recordingNow.current = false;
+      running.current = false;
+      if (control.current === controller) control.current = null;
+      if (focused.current) {
+        setActive(false);
+        setPhase("idle");
+      }
+    }
+  }
+
+  function toggle() {
+    if (running.current) cancel();
+    else void begin();
+  }
+
+  return {
+    active,
+    busy: phase !== "idle",
+    audioLevel: phase === "listening" ? audioLevel : 0,
+    recording: phase === "listening",
+    phase,
+    message,
+    shownBible,
+    toggle,
+  };
+}

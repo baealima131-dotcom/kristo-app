@@ -27,6 +27,13 @@ import { resolveVideoDurationMs } from "@/src/lib/homeFeedVideoDuration";
 
 export { resolveVideoDurationMs } from "@/src/lib/homeFeedVideoDuration";
 
+function isHomeFeedPosterGenerationPaused() {
+  return (
+    (globalThis as any).__KRISTO_HOME_POSTER_WORK_PAUSED__ === true ||
+    Boolean((globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__)
+  );
+}
+
 const GENERATE_TIMEOUT_MS = 45000;
 const HOME_FEED_GENERATE_TIMEOUT_MS = 70000;
 const MIN_CAPTURE_MS = 500;
@@ -142,6 +149,15 @@ async function capturePosterFrameCandidates(
 
   await Promise.all(
     captureTimesMs.map(async (captureTimeMs) => {
+      if (isHomeFeedPosterGenerationPaused()) {
+        if (typeof __DEV__ !== "undefined" && __DEV__) {
+          console.log("KRISTO_HOME_POSTER_WORK_STALE_COMPLETION_SKIPPED", {
+            stage: "video-frame-capture",
+            captureTimeMs,
+          });
+        }
+        return;
+      }
       try {
         const result = await VideoThumbnails.getThumbnailAsync(videoUrl, {
           time: captureTimeMs,
@@ -174,9 +190,22 @@ async function generateHomeFeedPosterFrame(params: {
   videoUrl: string;
   durationMs?: number;
 }): Promise<string> {
+  if (isHomeFeedPosterGenerationPaused()) {
+    return resolveCachedMediaPoster(params.postId, params.videoUrl) || "";
+  }
   const candidateTimes = computeHomeFeedPosterCandidateTimesMs(params.durationMs);
   const candidates = await capturePosterFrameCandidates(params.videoUrl, candidateTimes);
   if (!candidates.length) return "";
+
+  if (isHomeFeedPosterGenerationPaused()) {
+    if (typeof __DEV__ !== "undefined" && __DEV__) {
+      console.log("KRISTO_HOME_POSTER_WORK_STALE_COMPLETION_SKIPPED", {
+        stage: "video-frame-generate",
+        postId: params.postId || null,
+        candidateCount: candidates.length,
+      });
+    }
+  }
 
   const best = await selectBestPosterFrameCandidate(candidates);
   if (!best) return "";
@@ -225,6 +254,15 @@ export async function generateVideoPosterFrame(params: {
   mode?: "home-feed" | "default";
 }): Promise<string> {
   if (shouldDeferBackgroundMediaJobs()) return "";
+  if (params.mode === "home-feed" && isHomeFeedPosterGenerationPaused()) {
+    const postId = String(params.postId || "").trim();
+    const videoUrl = String(params.videoUrl || "").trim();
+    if (postId || videoUrl) {
+      const cached = resolveCachedMediaPoster(postId, videoUrl);
+      if (cached) return cached;
+    }
+    return "";
+  }
 
   const videoUrl = String(params.videoUrl || "").trim();
   const postId = String(params.postId || "").trim();

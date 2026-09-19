@@ -98,8 +98,6 @@ export function markHomeFeedPosterPipelineStage(
 
 /** Called as soon as feed API rows are available — starts poster download before cards mount. */
 export function markHomeFeedPosterApiRowsReceived(rows: any[]) {
-  if (!Array.isArray(rows) || !rows.length) return;
-
   rows.forEach((row, index) => {
     const postId = String(row?.id || "").trim();
     const videoUrl = resolveRowVideoUrl(row);
@@ -122,11 +120,22 @@ export function markHomeFeedPosterApiRowsReceived(rows: any[]) {
     }
   });
 
-  void import("@/src/lib/homeFeedPosterPrewarm").then(({ prefetchHomeFeedPosterMetadata }) => {
-    for (const row of rows) {
-      prefetchHomeFeedPosterMetadata(row);
+  void import("@/src/lib/homeFeedPosterPrewarm").then(
+    ({
+      prefetchHomeFeedPosterMetadata,
+      shouldSkipStaleHomeFeedPosterWork,
+    }) => {
+      if (shouldSkipStaleHomeFeedPosterWork(undefined, "api-rows-received-prefetch")) {
+        return;
+      }
+      for (const row of rows) {
+        if (shouldSkipStaleHomeFeedPosterWork(undefined, "api-rows-received-prefetch-item")) {
+          return;
+        }
+        prefetchHomeFeedPosterMetadata(row);
+      }
     }
-  });
+  );
 }
 
 export function resetHomeFeedPosterPipelineTrace() {

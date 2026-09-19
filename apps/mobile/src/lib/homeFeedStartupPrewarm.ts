@@ -22,7 +22,7 @@ import {
   warmHomeFeedStartupMedia,
 } from "@/src/lib/homeFeedVideoBufferAhead";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
-import { startInitialHomeFeedPosterPrewarm, startYoutubeHomeFeedVisiblePosterPrewarm } from "@/src/lib/homeFeedPosterPrewarm";
+import { startInitialHomeFeedPosterPrewarm, startYoutubeHomeFeedVisiblePosterPrewarm, isHomeFeedPosterWorkPaused } from "@/src/lib/homeFeedPosterPrewarm";
 import { hydrateMediaPosterCache } from "@/src/lib/mediaPosterCache";
 import { isHomeFeedLiveNavBackgroundPaused } from "@/src/lib/liveRoomStartup";
 
@@ -46,6 +46,10 @@ function logSkip(reason: string) {
   console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_SKIP", { reason });
 }
 
+function isStartupPosterWorkBlocked() {
+  return isHomeFeedLiveNavBackgroundPaused() || isHomeFeedPosterWorkPaused();
+}
+
 function isSessionReadyForPrewarm(session: KristoSession | null): session is KristoSession {
   if (!session) return false;
   const userId = String(session.userId || "").trim();
@@ -55,8 +59,8 @@ function isSessionReadyForPrewarm(session: KristoSession | null): session is Kri
 }
 
 async function runHomeFeedStartupPrewarm(session: KristoSession) {
-  if (isHomeFeedLiveNavBackgroundPaused()) {
-    logSkip("live-navigation");
+  if (isStartupPosterWorkBlocked()) {
+    logSkip(isHomeFeedPosterWorkPaused() && !isHomeFeedLiveNavBackgroundPaused() ? "home-blur" : "live-navigation");
     return;
   }
   if (await isLoggedOutFlagSet()) {
@@ -114,6 +118,11 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
       try {
         await hydrateMediaPosterCache();
       } catch {}
+
+      if (isStartupPosterWorkBlocked()) {
+        logSkip("home-blur");
+        return;
+      }
 
       if (warmRows.length) {
         startYoutubeHomeFeedVisiblePosterPrewarm(warmRows);
@@ -196,7 +205,9 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
         : buildHomeFeedDisplayRows(getCachedHomeFeedBackendRows(), feedList(), Date.now(), {
             rebuildPersonalOrder: false,
           });
-      startInitialHomeFeedPosterPrewarm(displayRows);
+      if (!isStartupPosterWorkBlocked()) {
+        startInitialHomeFeedPosterPrewarm(displayRows);
+      }
 
       warmRows = displayRows.slice(0, HOME_FEED_INITIAL_LIMIT);
     }
@@ -204,7 +215,7 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
     // Poster/byte warm for remaining rows — only after first video frame paints.
     deferStartupWorkAfterHomeFirstFrame(
       async () => {
-        if (isHomeFeedLiveNavBackgroundPaused()) return;
+        if (isStartupPosterWorkBlocked()) return;
         try {
           const warmed = await warmHomeFeedStartupMedia(warmRows, {
             maxPosters: STARTUP_POSTER_MAX,
@@ -251,8 +262,8 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
 
 /** Fire-and-forget Home Feed startup prewarm (rows + posters + video byte warm). */
 export function startHomeFeedStartupPrewarm(session: KristoSession | null | undefined) {
-  if (isHomeFeedLiveNavBackgroundPaused()) {
-    logSkip("live-navigation");
+  if (isStartupPosterWorkBlocked()) {
+    logSkip(isHomeFeedPosterWorkPaused() && !isHomeFeedLiveNavBackgroundPaused() ? "home-blur" : "live-navigation");
     return;
   }
   if (

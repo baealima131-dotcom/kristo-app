@@ -51,7 +51,7 @@ export type AgentInventoryBatch = {
 
 export type AgentCodeActivityItem = {
   id: string;
-  type: "assigned_to_agent" | "redeemed" | "returned" | "expired" | "received";
+  type: "assigned_to_agent" | "redeemed" | "returned" | "disabled" | "received";
   title: string;
   subtitle?: string;
   code: string;
@@ -97,12 +97,10 @@ export type ActivateChurchForAgentResponse = {
   church: { churchId: string; churchName: string };
   redeemedByAgentId: string;
   redeemedByUserId: string;
-  subscription?: {
-    subscriptionActive: boolean;
-    subscriptionPlan: string;
-    subscriptionExpiresAt: number;
-    subscriptionActivatedAt?: number;
-    source: "offline_activation";
+  activation: {
+    activated: true;
+    activatedAt: string;
+    source: "agent_activation_code";
   };
 };
 

@@ -44,6 +44,15 @@ const KINGDOM_BOX_CODES: Array<{ id: string; title: string; desc: string; code: 
 
 const BUILTIN_MY_WAY_COMMANDS: MyWayCommandResolution[] = [
   {
+    code: "A",
+    title: "Agent Room",
+    description: "Ongea na msaidizi wako wa MY WAY.",
+    action: "navigate",
+    route: "/more/my-way-agent",
+    source: "builtin",
+  },
+
+  {
     code: "X",
     title: "My Appointments",
     description: "Open all of your appointment requests, schedules, and confirmations.",
@@ -89,6 +98,38 @@ const BUILTIN_MY_WAY_COMMANDS: MyWayCommandResolution[] = [
     description: "Open Bible reading.",
     action: "navigate",
     route: "/more/bible",
+    source: "builtin",
+  },
+  {
+    code: "TR",
+    title: "Track Order",
+    description: "View delivery progress for your SOKO orders.",
+    action: "navigate",
+    route: "/more/track-order",
+    source: "builtin",
+  },
+  {
+    code: "TRACK1",
+    title: "Track Order",
+    description: "View delivery progress for your SOKO orders.",
+    action: "navigate",
+    route: "/more/track-order",
+    source: "builtin",
+  },
+  {
+    code: "SL0",
+    title: "Sell on SOKO",
+    description: "Open Sell on SOKO to apply, track approval, or use seller access.",
+    action: "navigate",
+    route: "/more/soko-seller",
+    source: "builtin",
+  },
+  {
+    code: "SL1",
+    title: "SOKO Work Level 01",
+    description: "Open the Level 01 SOKO Work dashboard when you have an active assignment.",
+    action: "navigate",
+    route: "/more/soko-work",
     source: "builtin",
   },
   {

@@ -190,6 +190,14 @@ export async function saveSession(s: KristoSession): Promise<void> {
     } catch {
       // non-fatal
     }
+    try {
+      const { clearSokoWorkforceMeCache } = await import(
+        "@/src/lib/sokoWorkforceApi"
+      );
+      clearSokoWorkforceMeCache(prevUserId);
+    } catch {
+      // non-fatal
+    }
   }
 
   console.log("KRISTO_SESSION_SAVE_TOKEN", {

@@ -674,6 +674,8 @@ export type SafetyReportSummary = {
 
   createdAt: string;
   updatedAt: string;
+  assignedAt?: string;
+  resolvedAt?: string;
 };
 
 

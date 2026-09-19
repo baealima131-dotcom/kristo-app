@@ -200,7 +200,7 @@ function CodeTimelineCard({ code }: { code: ActivationCode }) {
               </Text>
             </View>
             <Text style={styles.durationTag}>
-              {code.durationMonths} mo · {code.countryCode}
+              {code.countryCode} · One-time
             </Text>
           </View>
         </View>
@@ -243,7 +243,7 @@ function CodeTimelineCard({ code }: { code: ActivationCode }) {
             <DetailRow label="Redeemed" value={formatDateShort(code.redeemedAt)} />
             <DetailRow label="Church" value={code.redeemedByChurchId || code.deliveredToChurchId || "—"} />
             <DetailRow label="Agent" value={code.assignedAgentUserId || "—"} />
-            <DetailRow label="Duration" value={`${code.durationMonths} months`} />
+            <DetailRow label="Activation" value="One-time" />
             <DetailRow label="Country" value={code.countryCode || "—"} />
           </View>
 

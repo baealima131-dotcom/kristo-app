@@ -1,5 +1,6 @@
 import { InteractionManager } from "react-native";
 import { decideMoreTabBarPress } from "./moreTabPressPolicy";
+import { prefetchSokoWorkforceMeForCurrentUser } from "./sokoWorkforceApi";
 
 export {
   isMoreNestedRoute,
@@ -72,12 +73,14 @@ export function handleMoreTabBarPress(args: {
   if (decision === "return-more-root") {
     args.preventDefault?.();
     console.log("KRISTO_MORE_TAB_RESELECT_RETURN_ROOT");
+    prefetchSokoWorkforceMeForCurrentUser("more-tab-return-root");
     // Direct replace — no beginMoreTabPressTransition / shell overlay.
     args.navigateToMore();
     return "return-more-root";
   }
 
   beginMoreTabPressTransition();
+  prefetchSokoWorkforceMeForCurrentUser("more-tab-press");
   args.navigateToMore();
   return "enter-more";
 }

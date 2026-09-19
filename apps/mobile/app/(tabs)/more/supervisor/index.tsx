@@ -250,7 +250,7 @@ function CodeInventoryPanel({ batches }: { batches: SupervisorInventoryBatch[] }
         <View style={adminStyles.inventoryTableShell}>
           <View style={styles.batchHeaderRow}>
             <Text style={[styles.batchHeaderCell, styles.batchHeaderWide]}>Country</Text>
-            <Text style={styles.batchHeaderCell}>Duration</Text>
+            <Text style={styles.batchHeaderCell}>Type</Text>
             <Text style={styles.batchHeaderCell}>Total</Text>
             <Text style={styles.batchHeaderCell}>Rem</Text>
             <Text style={styles.batchHeaderCell}>Red</Text>
@@ -295,7 +295,7 @@ function InventoryBatchRow({
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const country = countryDisplay(batch.countryCode);
-  const durationLabel = batch.durationMonths === 1 ? "1 mo" : `${batch.durationMonths} mo`;
+  const durationLabel = "One-time";
 
   return (
     <>
@@ -331,7 +331,7 @@ function InventoryBatchRow({
 function activityVisual(item: SupervisorCodeActivityItem) {
   if (item.type === "assigned_to_agent") return { color: SA_GREEN, icon: "person-add" as const };
   if (item.type === "redeemed") return { color: "#60A5FA", icon: "checkmark-circle" as const };
-  if (item.type === "expired") return { color: SA_RED, icon: "time" as const };
+  if (item.type === "disabled") return { color: SA_RED, icon: "ban" as const };
   if (item.type === "returned") return { color: SA_AMBER, icon: "return-down-back" as const };
   return { color: SA_PURPLE, icon: "download" as const };
 }

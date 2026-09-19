@@ -1,6 +1,6 @@
 import { InteractionManager } from "react-native";
 import { Camera } from "expo-camera";
-import { pauseHomeFeedPosterWorkForLiveNavigation } from "@/src/lib/homeFeedPosterPrewarm";
+import { pauseHomeFeedPosterWorkForLiveNavigation, resumeHomeFeedPosterWork } from "@/src/lib/homeFeedPosterPrewarm";
 
 export const LIVE_ROOM_DEFER_MS = 300;
 
@@ -127,6 +127,7 @@ export function forceKristoLiveCleanup(
     g.__KRISTO_LIVE_ACTIVE_COUNT__ = 0;
     g.__KRISTO_HOME_FEED_RENDER_PAUSED__ = false;
     g.__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__ = false;
+    resumeHomeFeedPosterWork("live-navigation");
 
     if (options?.forceReentry) {
       g.__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = 0;
@@ -144,6 +145,7 @@ export function forceKristoLiveCleanup(
 export function resumeHomeFeedAfterLiveExit() {
   setHomeFeedRenderPaused(false);
   (globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__ = false;
+  resumeHomeFeedPosterWork("live-navigation");
   const g = globalThis as any;
   const liveCount = Number(g.__KRISTO_LIVE_ACTIVE_COUNT__ || 0);
   if (liveCount <= 0) {

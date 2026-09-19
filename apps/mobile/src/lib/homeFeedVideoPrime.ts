@@ -61,12 +61,20 @@ function isNetworkUrl(url: string): boolean {
   return Boolean(trimmed) && /^https?:\/\//i.test(trimmed);
 }
 
+const VIDEO_VIEW_DETACH_RELEASE_DELAY_MS = 250;
+
 function safeRelease(player: VideoPlayer | null | undefined) {
   if (!player) return;
+
+  // Stop playback immediately, but do not release the native shared object
+  // until React Native has had time to detach any VideoView using it.
   safePauseVideoPlayer(player, { source: "home-feed-video-prime" });
-  try {
-    player.release();
-  } catch {}
+
+  setTimeout(() => {
+    try {
+      player.release();
+    } catch {}
+  }, VIDEO_VIEW_DETACH_RELEASE_DELAY_MS);
 }
 
 function playerCurrentTime(player: VideoPlayer): number {

@@ -13,6 +13,10 @@ import { silentPreloadTabScreens } from "@/src/lib/screenDataCache";
 import { setHomeTabFocused } from "@/src/lib/firstPaint";
 import { markHomeFeedStartupTiming } from "@/src/lib/homeFeedStartupTiming";
 import { notifyUserLeftHomeTab, runAfterHomeDeferredStartup } from "@/src/lib/homeFeedDeferredStartup";
+import {
+  pauseHomeFeedPosterWork,
+  resumeHomeFeedPosterWork,
+} from "@/src/lib/homeFeedPosterPrewarm";
 import { startMoreTabPremount } from "@/src/lib/moreTabPremount";
 import {
   endMoreTabPressTransition,
@@ -309,8 +313,10 @@ export default function TabLayout() {
     setHomeTabFocused(tab === "index");
     if (tab === "index") {
       markHomeFeedStartupTiming("HOME_SCREEN_FOCUS_TS", { tab });
+      resumeHomeFeedPosterWork("home-blur");
     }
     if (wasHome && tab !== "index") {
+      pauseHomeFeedPosterWork("home-blur");
       notifyUserLeftHomeTab();
     }
     const prevTab = prevTabRef.current;

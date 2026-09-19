@@ -91,6 +91,7 @@ const SAFETY_AGENT_MORE_ITEM: Item = {
   href: "/more/safety-agent",
 };
 
+/** Preserved for More tab restore; currently hidden via HIDDEN_MORE_CARD_KEYS. */
 const SOKO_SELLER_MORE_ITEM: Item = {
   key: "soko_seller",
   title: "Sell on SOKO",
@@ -98,6 +99,16 @@ const SOKO_SELLER_MORE_ITEM: Item = {
   iconLib: "ion",
   icon: "storefront-outline",
   href: "/more/soko-seller",
+};
+
+/** Preserved for More tab restore; currently hidden via HIDDEN_MORE_CARD_KEYS. */
+const SOKO_WORK_MORE_ITEM: Item = {
+  key: "soko_work",
+  title: "SOKO Work",
+  sub: "My seller work dashboard",
+  iconLib: "ion",
+  icon: "briefcase-outline",
+  href: "/more/soko-work",
 };
 
 /** Preserved for More tab restore; currently hidden via HIDDEN_MORE_CARD_KEYS. */
@@ -113,7 +124,9 @@ const MESSAGES_MORE_ITEM: Item = {
 /** UI-hidden More cards (routes and feature code remain intact). */
 const HIDDEN_MORE_CARD_KEYS = new Set<string>([
   MESSAGES_MORE_ITEM.key,
-  // Kristo App is free on every platform. Church Subscription / Payments UI is retired.
+  SOKO_SELLER_MORE_ITEM.key,
+  SOKO_WORK_MORE_ITEM.key,
+  // Kristo App is FREE on every platform. Subscription/Payments UI is retired.
   "payments",
 ]);
 
@@ -123,7 +136,6 @@ function shouldShowAgentMoreCard(platformRole: string, access: AgentAccessRespon
 }
 
 const ITEMS: Item[] = [
-  SOKO_SELLER_MORE_ITEM,
   {
     key: "tlmc",
     title: "TLMC",
@@ -149,6 +161,7 @@ const ITEMS: Item[] = [
     icon: "notifications",
     href: "/more/notifications",
   },
+
   {
     key: "media",
     title: "Media",
@@ -186,7 +199,6 @@ const ITEMS: Item[] = [
 
 const NO_CHURCH_ONBOARDING_ORDER = [
   "tlmc",
-  "soko_seller",
   "church",
   "kristo_guide",
   "notifications",

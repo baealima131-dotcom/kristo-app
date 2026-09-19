@@ -1,7 +1,17 @@
+import { Image } from "react-native";
+import { useFonts, Cinzel_700Bold } from "@expo-google-fonts/cinzel";
+import MyWayVoice from "@/components/MyWayVoice";
+import MyWayWorkspace from "@/components/MyWayWorkspace";
+import MyWayAppCommands from "@/components/MyWayAppCommands";
+import { LinearGradient } from "expo-linear-gradient";
 import React, { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   View,
+  Modal,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
   Text,
   StyleSheet,
   Pressable,
@@ -10,10 +20,11 @@ import {
 } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getSessionSync } from "@/src/lib/kristoSession";
 
-const BG = "#0B0F17";
-const GOLD = "#D9B35F";
+const BG = "#031936";
+const GOLD = "#77D5FF";
 const BORDER = "rgba(255,255,255,0.10)";
 const STORAGE_AGENT_COMMAND = "tlmc.quickCommand.agent.v1";
 const DEFAULT_AGENT_COMMAND = "A";
@@ -95,9 +106,13 @@ async function saveAgentCommandToBackend(next: string) {
 }
 
 export default function MyWayAgentScreen() {
+  const [royalReady] = useFonts({ Cinzel_700Bold });
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [agentCommand, setAgentCommand] = useState(DEFAULT_AGENT_COMMAND);
   const [draftCommand, setDraftCommand] = useState(DEFAULT_AGENT_COMMAND);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -183,30 +198,50 @@ export default function MyWayAgentScreen() {
   }
 
   return (
-    <View style={s.wrap}>
-      <Stack.Screen options={{ headerShown: false }} />
+    <LinearGradient colors={["#1769AE", "#0B417C", "#051D40"]} style={{flex:1}}>
+      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+<Image
+        source={require("../../../assets/images/kokolo.png")}
+        resizeMode="stretch"
 
-      <Pressable onPress={() => router.back()} style={s.backBtn}>
-        <Ionicons name="chevron-back" size={18} color="white" />
-        <Text style={s.backText}>Back</Text>
-      </Pressable>
-
-      <Text style={s.title}>Agent Room</Text>
-      <Text style={s.sub}>Page hii imefunguliwa na Agent command yako.</Text>
-
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Agent Command</Text>
-        <Text style={s.cardText}>
-          Current command: {loading ? "Loading..." : agentCommand}
-        </Text>
-        <Text style={s.cardText}>
-          Hapa ndio utaweka content ya Agent Room.
-        </Text>
+        accessible={false}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%"
+        }}
+      />
+</View>
+      <Stack.Screen options={{headerShown:false}}/>
+      <View style={{paddingTop:insets.top+8,paddingHorizontal:20,flexDirection:"row",alignItems:"center",justifyContent:"space-between"}}>
+        <Pressable accessibilityLabel="Rudi" accessibilityRole="button" onPress={()=>router.back()} style={{padding:12}}><Ionicons name="chevron-back" size={25} color="#BFEAFF"/></Pressable>
+        <Text style={{color:"#E0F5FF",letterSpacing:3,fontSize:19,fontWeight:royalReady?"normal":"900",fontFamily:royalReady?"Cinzel_700Bold":undefined}}>MY WAY</Text>
+        <Pressable accessibilityLabel="Mipangilio" accessibilityRole="button" onPress={()=>setSettingsOpen(true)} style={{padding:12}}><Ionicons name="ellipsis-horizontal" size={25} color="#BFEAFF"/></Pressable>
       </View>
-
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Change Agent Command</Text>
-        <Text style={s.label}>New command</Text>
+      <ScrollView removeClippedSubviews={false} contentContainerStyle={{flexGrow:1}}>
+        {!settingsOpen && !workspaceOpen && <MyWayVoice/>}
+      </ScrollView>
+      <Pressable accessibilityRole="button" onPress={()=>setWorkspaceOpen(true)} style={{alignSelf:"center",flexDirection:"row",gap:8,alignItems:"center",padding:14,marginBottom:16}}>
+        <Ionicons name="albums-outline" size={18} color="#8EBEF0"/><Text style={{color:"#8EBEF0",fontSize:12}}>Fungua screen ya kazi</Text>
+      </Pressable>
+      <Modal visible={settingsOpen||workspaceOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={()=>{setSettingsOpen(false);setWorkspaceOpen(false);}}>
+        <KeyboardAvoidingView style={{flex:1,backgroundColor:BG}} behavior={Platform.OS==="ios"?"padding":undefined}>
+          <ScrollView contentContainerStyle={{padding:22,paddingTop:24,paddingBottom:insets.bottom+24}} keyboardShouldPersistTaps="handled">
+            <Pressable accessibilityRole="button" onPress={()=>{setSettingsOpen(false);setWorkspaceOpen(false);}} style={{alignSelf:"flex-end",padding:12}}><Text style={{color:GOLD}}>Funga</Text></Pressable>
+            {workspaceOpen ? <>
+              <MyWayAppCommands onOpen={(route) => {
+                setWorkspaceOpen(false);
+                setSettingsOpen(false);
+                router.push(route);
+              }}/>
+              <MyWayWorkspace/>
+            </> : <>
+            <Text style={{color:"#A6D2FF",fontSize:13,lineHeight:21,marginBottom:16}}>Hali ya sauti: rekodi ya simu tu. Majibu ya AI kwa sauti bado hayajaunganishwa.</Text>
+      <View style={[s.card, { marginTop: 0 }]}>
+        <Text style={s.cardTitle}>Badilisha command</Text>
+        <Text style={s.label}>Command mpya</Text>
 
         <TextInput
           value={draftCommand}
@@ -234,7 +269,7 @@ export default function MyWayAgentScreen() {
           ]}
         >
           <Ionicons name="save-outline" size={18} color={BG} />
-          <Text style={s.saveText}>{saving ? "Saving..." : "Save Command"}</Text>
+          <Text style={s.saveText}>{saving ? "Inahifadhi…" : "Hifadhi command"}</Text>
         </Pressable>
 
         <Pressable
@@ -246,10 +281,15 @@ export default function MyWayAgentScreen() {
           ]}
         >
           <Ionicons name="refresh-outline" size={18} color="white" />
-          <Text style={s.resetText}>Reset</Text>
+          <Text style={s.resetText}>Rudisha</Text>
         </Pressable>
       </View>
-    </View>
+
+            </>}
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+    </LinearGradient>
   );
 }
 
@@ -272,7 +312,7 @@ const s = StyleSheet.create({
 
   backText: { color: "white", fontWeight: "800" },
 
-  title: { color: "white", fontSize: 28, fontWeight: "900" },
+  title: { color: "#F1F2F5", fontSize: 29, fontWeight: "800", letterSpacing: -0.7 },
 
   sub: {
     color: "rgba(255,255,255,0.68)",
@@ -285,8 +325,8 @@ const s = StyleSheet.create({
     borderRadius: 20,
     padding: 16,
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.24)",
-    backgroundColor: "rgba(217,179,95,0.08)",
+    borderColor: "rgba(80,170,255,0.24)",
+    backgroundColor: "rgba(80,170,255,0.08)",
   },
 
   cardTitle: { color: GOLD, fontSize: 18, fontWeight: "900" },

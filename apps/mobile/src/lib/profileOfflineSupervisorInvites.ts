@@ -11,7 +11,7 @@ export const OFFLINE_SUPERVISOR_INVITE_KIND = "offline_supervisor" as const;
 export const OFFLINE_SUPERVISOR_INVITE_TITLE = "Supervisor invitation";
 
 export const OFFLINE_SUPERVISOR_INVITE_BODY =
-  "You have been invited to serve as a Kristo App Activation Supervisor. You will help distribute subscription activation codes safely through approved agents.";
+  "You have been invited to serve as a Kristo App Activation Supervisor. You will help distribute church activation codes safely through approved agents.";
 
 export function buildOfflineSupervisorReferenceChurchLabel(churchId: string): string {
   return `Reference church: ${String(churchId || "").trim()}`;
