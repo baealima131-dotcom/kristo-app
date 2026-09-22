@@ -14,13 +14,13 @@ export function SokoStripeProvider({
 }) {
   const publishableKey = getExpoStripePublishableKey();
 
+  if (!isExpoStripePublishableConfigured()) {
+    return <>{children}</>;
+  }
+
   return (
     <StripeProvider
-      publishableKey={
-        isExpoStripePublishableConfigured()
-          ? publishableKey
-          : "pk_test_soko_card_checkout_unconfigured"
-      }
+      publishableKey={publishableKey}
       urlScheme={STRIPE_URL_SCHEME}
     >
       <>{children}</>
