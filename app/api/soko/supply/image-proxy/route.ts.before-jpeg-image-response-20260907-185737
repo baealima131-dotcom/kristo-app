@@ -1,0 +1,388 @@
+import type {
+  NextRequest,
+} from "next/server";
+
+export const runtime =
+  "nodejs";
+
+export const dynamic =
+  "force-dynamic";
+
+export const revalidate =
+  0;
+
+const MAX_IMAGE_BYTES =
+  10 * 1024 * 1024;
+
+function allowedHost(
+  hostname: string
+) {
+  const host =
+    hostname
+      .trim()
+      .toLowerCase();
+
+  return (
+    host === "alicdn.com" ||
+    host.endsWith(
+      ".alicdn.com"
+    ) ||
+    host === "alibaba.com" ||
+    host.endsWith(
+      ".alibaba.com"
+    ) ||
+    host ===
+      "alibabausercontent.com" ||
+    host.endsWith(
+      ".alibabausercontent.com"
+    )
+  );
+}
+
+function parseImageUrl(
+  raw: string
+) {
+  let url: URL;
+
+  try {
+    url =
+      new URL(raw);
+  } catch {
+    throw new Error(
+      "Invalid product image URL."
+    );
+  }
+
+  if (
+    url.protocol !==
+      "https:" ||
+    !allowedHost(
+      url.hostname
+    )
+  ) {
+    throw new Error(
+      "Product image host is not allowed."
+    );
+  }
+
+  return url;
+}
+
+function supportedImageType(
+  contentType: string
+) {
+  const type =
+    contentType
+      .toLowerCase()
+      .split(";")[0]
+      .trim();
+
+  return (
+    type ===
+      "image/jpeg" ||
+    type ===
+      "image/jpg" ||
+    type ===
+      "image/png" ||
+    type ===
+      "image/webp" ||
+    type ===
+      "image/gif"
+  );
+}
+
+async function fetchImage(
+  startUrl: URL
+) {
+  let current =
+    startUrl;
+
+  for (
+    let redirects = 0;
+    redirects < 5;
+    redirects += 1
+  ) {
+    const response =
+      await fetch(
+        current.toString(),
+        {
+          redirect:
+            "manual",
+
+          cache:
+            "no-store",
+
+          headers: {
+            Accept:
+              "image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8",
+
+            Referer:
+              "https://www.alibaba.com/",
+
+            "User-Agent":
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+          },
+        }
+      );
+
+    console.log(
+      "SOKO_SUPPLY_IMAGE_PROXY_DIAG",
+      {
+        stage: "upstream",
+        host: current.hostname,
+        pathname:
+          current.pathname.slice(
+            0,
+            180
+          ),
+        status: response.status,
+        ok: response.ok,
+        contentType:
+          response.headers.get(
+            "content-type"
+          ) || "",
+        contentLength:
+          response.headers.get(
+            "content-length"
+          ) || "",
+        locationHost:
+          (() => {
+            const location =
+              response.headers.get(
+                "location"
+              );
+
+            if (!location) {
+              return "";
+            }
+
+            try {
+              return new URL(
+                location,
+                current
+              ).hostname;
+            } catch {
+              return "";
+            }
+          })(),
+      }
+    );
+
+    if (
+      response.status >=
+        300 &&
+      response.status <
+        400
+    ) {
+      const location =
+        response.headers.get(
+          "location"
+        );
+
+      if (!location) {
+        throw new Error(
+          "Image redirect failed."
+        );
+      }
+
+      const next =
+        new URL(
+          location,
+          current
+        );
+
+      if (
+        next.protocol !==
+          "https:" ||
+        !allowedHost(
+          next.hostname
+        )
+      ) {
+        throw new Error(
+          "Image redirected outside Alibaba."
+        );
+      }
+
+      current =
+        next;
+
+      continue;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Image provider returned ${response.status}.`
+      );
+    }
+
+    const contentType =
+      String(
+        response.headers.get(
+          "content-type"
+        ) || ""
+      );
+
+    if (
+      !supportedImageType(
+        contentType
+      )
+    ) {
+      throw new Error(
+        `Unsupported product image type: ${contentType || "unknown"}.`
+      );
+    }
+
+    const contentLength =
+      Number(
+        response.headers.get(
+          "content-length"
+        ) || 0
+      );
+
+    if (
+      contentLength >
+      MAX_IMAGE_BYTES
+    ) {
+      throw new Error(
+        "Product image is too large."
+      );
+    }
+
+    const bytes =
+      await response.arrayBuffer();
+
+    console.log(
+      "SOKO_SUPPLY_IMAGE_PROXY_DIAG",
+      {
+        stage: "bytes",
+        host: current.hostname,
+        byteLength:
+          bytes.byteLength,
+        contentType:
+          contentType
+            .split(";")[0]
+            .trim(),
+        magic:
+          Array.from(
+            new Uint8Array(
+              bytes
+            ).slice(
+              0,
+              12
+            )
+          )
+            .map(
+              (value) =>
+                value
+                  .toString(16)
+                  .padStart(2, "0")
+            )
+            .join(" "),
+      }
+    );
+
+    if (
+      bytes.byteLength >
+      MAX_IMAGE_BYTES
+    ) {
+      throw new Error(
+        "Product image is too large."
+      );
+    }
+
+    return {
+      bytes,
+      contentType:
+        contentType
+          .split(";")[0]
+          .trim(),
+    };
+  }
+
+  throw new Error(
+    "Too many image redirects."
+  );
+}
+
+export async function GET(
+  req: NextRequest
+) {
+  try {
+    const rawUrl =
+      String(
+        req.nextUrl
+          .searchParams
+          .get("url") ||
+          ""
+      ).trim();
+
+    if (!rawUrl) {
+      return Response.json(
+        {
+          ok: false,
+          error:
+            "Product image URL is required.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const imageUrl =
+      parseImageUrl(
+        rawUrl
+      );
+
+    console.log(
+      "SOKO_SUPPLY_IMAGE_PROXY_DIAG",
+      {
+        stage: "proxy-request",
+        host: imageUrl.hostname,
+        pathname:
+          imageUrl.pathname.slice(
+            0,
+            180
+          ),
+      }
+    );
+
+    const image =
+      await fetchImage(
+        imageUrl
+      );
+
+    return new Response(
+      image.bytes,
+      {
+        status: 200,
+
+        headers: {
+          "Content-Type":
+            image.contentType,
+
+          "Cache-Control":
+            "private, max-age=3600",
+
+          "X-Content-Type-Options":
+            "nosniff",
+        },
+      }
+    );
+  } catch (error: any) {
+    return Response.json(
+      {
+        ok: false,
+
+        error:
+          String(
+            error?.message ||
+              error
+          ),
+      },
+      {
+        status: 502,
+      }
+    );
+  }
+}

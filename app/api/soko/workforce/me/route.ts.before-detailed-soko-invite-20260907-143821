@@ -1,0 +1,35 @@
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
+
+import { guardAuth } from "@/app/api/_lib/rbac";
+import {
+  dbListAcceptedSokoWorkforceAssignmentsForUser,
+  dbListPendingSokoWorkforceInvitationsForUser,
+} from "@/app/api/_lib/store/sokoWorkforceDb";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+export async function GET(req: NextRequest) {
+  const auth = await guardAuth(req);
+  if (auth instanceof NextResponse) return auth;
+
+  try {
+    const userId = String(auth.viewer.userId || "").trim();
+    const [pendingInvitations, assignments] = await Promise.all([
+      dbListPendingSokoWorkforceInvitationsForUser(userId),
+      dbListAcceptedSokoWorkforceAssignmentsForUser(userId),
+    ]);
+
+    return NextResponse.json(
+      { ok: true, pendingInvitations, assignments },
+      { headers: { "Cache-Control": "private, no-store, no-cache, must-revalidate" } }
+    );
+  } catch (error: any) {
+    return NextResponse.json(
+      { ok: false, error: String(error?.message || "Could not load SOKO work access") },
+      { status: 500 }
+    );
+  }
+}

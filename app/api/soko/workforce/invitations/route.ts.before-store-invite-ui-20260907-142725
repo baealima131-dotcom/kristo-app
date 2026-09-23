@@ -1,0 +1,146 @@
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
+
+import { guardAuth } from "@/app/api/_lib/rbac";
+import { resolveAgentRegistrationByKristoAndChurch } from "@/app/api/_lib/offlineActivationAdmin";
+import { dbGetSokoSellerAccess } from "@/app/api/_lib/store/sokoSellerAccessDb";
+import {
+  dbCreateSokoWorkforceInvitation,
+  dbListSokoWorkforceTeamForSeller,
+  dbRemoveSokoWorkforceMember,
+  isSokoWorkStage,
+} from "@/app/api/_lib/store/sokoWorkforceDb";
+import { getProfile } from "@/app/api/auth/_lib/profile";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+async function requireSeller(userId: string) {
+  const profile = await getProfile(userId);
+  const identity = {
+    userId,
+    kristoId: String(profile?.userCode || "").trim().toUpperCase(),
+    displayName: String(profile?.fullName || "SOKO Seller").trim(),
+  };
+
+  if (!identity.kristoId) {
+    throw new Error("Seller Kristo ID could not be resolved");
+  }
+
+  const access = await dbGetSokoSellerAccess({
+    userId: identity.userId,
+    kristoId: identity.kristoId,
+  });
+
+  if (!access.approved) {
+    const error = new Error("Active SOKO seller access is required");
+    (error as any).status = 403;
+    throw error;
+  }
+
+  return identity;
+}
+
+function fail(error: any) {
+  const status =
+    Number(error?.status) ||
+    (String(error?.message || "").toLowerCase().includes("not found")
+      ? 404
+      : 400);
+
+  return NextResponse.json(
+    { ok: false, error: String(error?.message || "Could not manage SOKO workforce") },
+    { status }
+  );
+}
+
+export async function GET(req: NextRequest) {
+  const auth = await guardAuth(req);
+  if (auth instanceof NextResponse) return auth;
+
+  try {
+    const seller = await requireSeller(auth.viewer.userId);
+    const team = await dbListSokoWorkforceTeamForSeller(seller.userId);
+    return NextResponse.json(
+      { ok: true, team },
+      { headers: { "Cache-Control": "private, no-store, no-cache, must-revalidate" } }
+    );
+  } catch (error: any) {
+    return fail(error);
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const auth = await guardAuth(req);
+  if (auth instanceof NextResponse) return auth;
+
+  const body = await req.json().catch(() => ({}));
+
+  try {
+    const seller = await requireSeller(auth.viewer.userId);
+    const kristoId = String(body?.kristoId || "").trim().toUpperCase();
+    const churchId = String(body?.churchId || "").trim();
+    const stage = body?.stage;
+
+    if (!kristoId) throw new Error("Worker KRISTO ID is required");
+    if (!churchId) throw new Error("Worker Church ID is required");
+    if (!isSokoWorkStage(stage)) throw new Error("Choose a valid SOKO work level");
+
+    const worker = await resolveAgentRegistrationByKristoAndChurch(
+      kristoId,
+      churchId
+    );
+
+    if (worker.userId === seller.userId) {
+      throw new Error("Seller owner cannot invite the same Kristo account as a worker");
+    }
+
+    const invitation = await dbCreateSokoWorkforceInvitation({
+      sellerUserId: seller.userId,
+      sellerKristoId: seller.kristoId,
+      sellerDisplayName: seller.displayName,
+      inviteeUserId: worker.userId,
+      inviteeKristoId: worker.kristoId,
+      inviteeDisplayName: worker.fullName || "Kristo Member",
+      churchId: worker.churchId,
+      stage,
+    });
+
+    console.log("SOKO_WORKFORCE_INVITATION_CREATED", {
+      invitationId: invitation.id,
+      sellerUserId: seller.userId,
+      inviteeUserId: worker.userId,
+      inviteeKristoId: worker.kristoId,
+      churchId: worker.churchId,
+      stage,
+      status: invitation.status,
+    });
+
+    return NextResponse.json({ ok: true, invitation });
+  } catch (error: any) {
+    return fail(error);
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  const auth = await guardAuth(req);
+  if (auth instanceof NextResponse) return auth;
+
+  const body = await req.json().catch(() => ({}));
+
+  try {
+    const seller = await requireSeller(auth.viewer.userId);
+    const invitationId = String(body?.invitationId || "").trim();
+    if (!invitationId) throw new Error("Worker assignment ID is required");
+
+    const removed = await dbRemoveSokoWorkforceMember({
+      invitationId,
+      sellerUserId: seller.userId,
+    });
+
+    return NextResponse.json({ ok: true, removed });
+  } catch (error: any) {
+    return fail(error);
+  }
+}

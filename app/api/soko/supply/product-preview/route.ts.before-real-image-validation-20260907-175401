@@ -1,0 +1,774 @@
+import type {
+  NextRequest,
+} from "next/server";
+
+import {
+  NextResponse,
+} from "next/server";
+
+import {
+  guardAuth,
+} from "@/app/api/_lib/rbac";
+
+export const runtime =
+  "nodejs";
+
+export const dynamic =
+  "force-dynamic";
+
+export const revalidate =
+  0;
+
+const MAX_HTML_BYTES =
+  2_000_000;
+
+function fail(
+  error: any
+) {
+  return NextResponse.json(
+    {
+      ok: false,
+
+      error: String(
+        error?.message ||
+          "Could not read product preview."
+      ),
+    },
+    {
+      status:
+        Number(
+          error?.status
+        ) || 400,
+    }
+  );
+}
+
+function allowedAlibabaHost(
+  hostname: string
+) {
+  const host =
+    hostname
+      .trim()
+      .toLowerCase();
+
+  return (
+    host ===
+      "alibaba.com" ||
+    host.endsWith(
+      ".alibaba.com"
+    )
+  );
+}
+
+function parseAlibabaUrl(
+  raw: string
+) {
+  let url: URL;
+
+  try {
+    url =
+      new URL(raw);
+  } catch {
+    throw Object.assign(
+      new Error(
+        "Invalid Alibaba product link."
+      ),
+      {
+        status: 400,
+      }
+    );
+  }
+
+  if (
+    url.protocol !==
+      "https:" ||
+    !allowedAlibabaHost(
+      url.hostname
+    )
+  ) {
+    throw Object.assign(
+      new Error(
+        "Only HTTPS Alibaba product links are allowed."
+      ),
+      {
+        status: 400,
+      }
+    );
+  }
+
+  return url;
+}
+
+function decodeHtml(
+  value: string
+) {
+  return String(
+    value || ""
+  )
+    .replace(
+      /&amp;/gi,
+      "&"
+    )
+    .replace(
+      /&quot;/gi,
+      '"'
+    )
+    .replace(
+      /&#39;/gi,
+      "'"
+    )
+    .replace(
+      /&lt;/gi,
+      "<"
+    )
+    .replace(
+      /&gt;/gi,
+      ">"
+    )
+    .replace(
+      /&#x([0-9a-f]+);/gi,
+      (
+        _,
+        value
+      ) =>
+        String.fromCodePoint(
+          parseInt(
+            value,
+            16
+          )
+        )
+    )
+    .replace(
+      /&#(\d+);/g,
+      (
+        _,
+        value
+      ) =>
+        String.fromCodePoint(
+          Number(value)
+        )
+    );
+}
+
+function attribute(
+  tag: string,
+  name: string
+) {
+  const escaped =
+    name.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
+
+  const match =
+    tag.match(
+      new RegExp(
+        `${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+        "i"
+      )
+    );
+
+  return decodeHtml(
+    match?.[1] ||
+      match?.[2] ||
+      match?.[3] ||
+      ""
+  ).trim();
+}
+
+function metaContent(
+  html: string,
+  key: string
+) {
+  const tags =
+    html.match(
+      /<meta\b[^>]*>/gi
+    ) || [];
+
+  for (
+    const tag of tags
+  ) {
+    const marker =
+      attribute(
+        tag,
+        "property"
+      ) ||
+      attribute(
+        tag,
+        "name"
+      ) ||
+      attribute(
+        tag,
+        "itemprop"
+      );
+
+    if (
+      marker
+        .toLowerCase() ===
+      key.toLowerCase()
+    ) {
+      return attribute(
+        tag,
+        "content"
+      );
+    }
+  }
+
+  return "";
+}
+
+function linkImage(
+  html: string
+) {
+  const tags =
+    html.match(
+      /<link\b[^>]*>/gi
+    ) || [];
+
+  for (
+    const tag of tags
+  ) {
+    const rel =
+      attribute(
+        tag,
+        "rel"
+      ).toLowerCase();
+
+    if (
+      rel ===
+        "image_src" ||
+      rel ===
+        "preload"
+    ) {
+      const href =
+        attribute(
+          tag,
+          "href"
+        );
+
+      if (href) {
+        return href;
+      }
+    }
+  }
+
+  return "";
+}
+
+function jsonImage(
+  html: string
+) {
+  const match =
+    html.match(
+      /"image"\s*:\s*(?:"([^"]+)"|\[\s*"([^"]+)")/i
+    );
+
+  return (
+    match?.[1] ||
+    match?.[2] ||
+    ""
+  );
+}
+
+function normalizeUrl(
+  raw: string,
+  base: string
+) {
+  if (!raw) {
+    return "";
+  }
+
+  const cleaned =
+    decodeHtml(raw)
+      .replace(
+        /\\u002f/gi,
+        "/"
+      )
+      .replace(
+        /\\\//g,
+        "/"
+      )
+      .trim();
+
+  try {
+    const url =
+      new URL(
+        cleaned,
+        base
+      );
+
+    if (
+      url.protocol !==
+        "https:" &&
+      url.protocol !==
+        "http:"
+    ) {
+      return "";
+    }
+
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function pageTitle(
+  html: string
+) {
+  const socialTitle =
+    metaContent(
+      html,
+      "og:title"
+    ) ||
+    metaContent(
+      html,
+      "twitter:title"
+    );
+
+  if (socialTitle) {
+    return socialTitle;
+  }
+
+  const title =
+    html.match(
+      /<title[^>]*>([\s\S]*?)<\/title>/i
+    )?.[1];
+
+  return decodeHtml(
+    String(
+      title || ""
+    ).replace(
+      /\s+/g,
+      " "
+    )
+  ).trim();
+}
+
+
+function extractAlibabaProductId(
+  url: URL
+) {
+  const path =
+    decodeURIComponent(
+      url.pathname
+    );
+
+  const matches = [
+    path.match(
+      /[_-](\d{8,})\.html$/i
+    ),
+    path.match(
+      /(\d{8,})\.html$/i
+    ),
+    path.match(
+      /(\d{8,})/i
+    ),
+  ];
+
+  for (
+    const match of matches
+  ) {
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return "";
+}
+
+function buildAlibabaCandidates(
+  original: URL
+) {
+  const candidates: URL[] =
+    [];
+
+  const add = (
+    value: URL
+  ) => {
+    if (
+      !candidates.some(
+        (row) =>
+          row.toString() ===
+          value.toString()
+      )
+    ) {
+      candidates.push(
+        value
+      );
+    }
+  };
+
+  add(
+    new URL(
+      original.toString()
+    )
+  );
+
+  const clean =
+    new URL(
+      original.toString()
+    );
+
+  clean.search = "";
+  clean.hash = "";
+
+  add(clean);
+
+  const productId =
+    extractAlibabaProductId(
+      original
+    );
+
+  if (productId) {
+    add(
+      new URL(
+        `https://www.alibaba.com/product-detail/_${productId}.html`
+      )
+    );
+
+    add(
+      new URL(
+        `https://www.alibaba.com/product-detail/ali_${productId}.html`
+      )
+    );
+  }
+
+  return candidates;
+}
+
+async function
+fetchAlibabaPage(
+  startUrl: URL
+) {
+  let current =
+    startUrl;
+
+  for (
+    let redirects = 0;
+    redirects < 5;
+    redirects += 1
+  ) {
+    const response =
+      await fetch(
+        current.toString(),
+        {
+          redirect:
+            "manual",
+
+          cache:
+            "no-store",
+
+          headers: {
+            Accept:
+              "text/html,application/xhtml+xml",
+
+            "Accept-Language":
+              "en-US,en;q=0.9",
+
+            "User-Agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+
+            Referer:
+              "https://www.alibaba.com/",
+
+            "Sec-Fetch-Dest":
+              "document",
+
+            "Sec-Fetch-Mode":
+              "navigate",
+
+            "Sec-Fetch-Site":
+              "same-origin",
+          },
+        }
+      );
+
+    if (
+      response.status >=
+        300 &&
+      response.status <
+        400
+    ) {
+      const location =
+        response.headers.get(
+          "location"
+        );
+
+      if (!location) {
+        throw Object.assign(
+          new Error(
+            "Alibaba redirect did not contain a destination."
+          ),
+          {
+            status: 502,
+          }
+        );
+      }
+
+      const next =
+        new URL(
+          location,
+          current
+        );
+
+      if (
+        next.protocol !==
+          "https:" ||
+        !allowedAlibabaHost(
+          next.hostname
+        )
+      ) {
+        throw Object.assign(
+          new Error(
+            "Alibaba redirected outside the allowed product domain."
+          ),
+          {
+            status: 502,
+          }
+        );
+      }
+
+      current =
+        next;
+
+      continue;
+    }
+
+    if (
+      !response.ok
+    ) {
+      throw Object.assign(
+        new Error(
+          `Alibaba returned ${response.status}.`
+        ),
+        {
+          status: 502,
+        }
+      );
+    }
+
+    const contentType =
+      String(
+        response.headers.get(
+          "content-type"
+        ) || ""
+      ).toLowerCase();
+
+    if (
+      !contentType.includes(
+        "text/html"
+      )
+    ) {
+      throw Object.assign(
+        new Error(
+          "Alibaba did not return a product page."
+        ),
+        {
+          status: 502,
+        }
+      );
+    }
+
+    const contentLength =
+      Number(
+        response.headers.get(
+          "content-length"
+        ) || 0
+      );
+
+    if (
+      contentLength >
+      MAX_HTML_BYTES
+    ) {
+      throw Object.assign(
+        new Error(
+          "Alibaba product page is too large to preview."
+        ),
+        {
+          status: 502,
+        }
+      );
+    }
+
+    const html =
+      (
+        await response.text()
+      ).slice(
+        0,
+        MAX_HTML_BYTES
+      );
+
+    return {
+      html,
+
+      finalUrl:
+        current.toString(),
+    };
+  }
+
+  throw Object.assign(
+    new Error(
+      "Too many Alibaba redirects."
+    ),
+    {
+      status: 502,
+    }
+  );
+}
+
+export async function GET(
+  req: NextRequest
+) {
+  const auth =
+    await guardAuth(req);
+
+  if (
+    auth instanceof
+      NextResponse
+  ) {
+    return auth;
+  }
+
+  try {
+    const rawUrl =
+      String(
+        req.nextUrl
+          .searchParams
+          .get("url") ||
+          ""
+      ).trim();
+
+    if (!rawUrl) {
+      throw Object.assign(
+        new Error(
+          "Alibaba product link is required."
+        ),
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const productUrl =
+      parseAlibabaUrl(
+        rawUrl
+      );
+
+    const candidates =
+      buildAlibabaCandidates(
+        productUrl
+      );
+
+    let page:
+      | {
+          html: string;
+          finalUrl: string;
+        }
+      | null =
+        null;
+
+    let lastError:
+      any = null;
+
+    for (
+      const candidate
+      of candidates
+    ) {
+      try {
+        page =
+          await fetchAlibabaPage(
+            candidate
+          );
+
+        if (page) {
+          break;
+        }
+      } catch (error: any) {
+        lastError =
+          error;
+      }
+    }
+
+    if (!page) {
+      throw (
+        lastError ||
+        Object.assign(
+          new Error(
+            "Alibaba product preview could not be loaded."
+          ),
+          {
+            status: 502,
+          }
+        )
+      );
+    }
+
+    const rawImage =
+      metaContent(
+        page.html,
+        "og:image"
+      ) ||
+      metaContent(
+        page.html,
+        "og:image:secure_url"
+      ) ||
+      metaContent(
+        page.html,
+        "twitter:image"
+      ) ||
+      metaContent(
+        page.html,
+        "twitter:image:src"
+      ) ||
+      metaContent(
+        page.html,
+        "image"
+      ) ||
+      linkImage(
+        page.html
+      ) ||
+      jsonImage(
+        page.html
+      );
+
+    const imageUrl =
+      normalizeUrl(
+        rawImage,
+        page.finalUrl
+      );
+
+    return NextResponse.json(
+      {
+        ok: true,
+
+        found:
+          Boolean(
+            imageUrl
+          ),
+
+        productUrl:
+          page.finalUrl,
+
+        title:
+          pageTitle(
+            page.html
+          ),
+
+        imageUrl,
+
+        source:
+          imageUrl
+            ? "alibaba_page_metadata"
+            : "not_found",
+      },
+      {
+        headers: {
+          "Cache-Control":
+            "private, no-store, no-cache, must-revalidate",
+        },
+      }
+    );
+  } catch (error: any) {
+    return fail(error);
+  }
+}

@@ -1,0 +1,640 @@
+import { randomUUID } from "crypto";
+
+import {
+  neon,
+  neonConfig,
+} from "@neondatabase/serverless";
+
+import {
+  getDatabaseUrl,
+} from "@/app/api/_lib/store/authDb";
+
+neonConfig.fetchConnectionCache = true;
+
+export type SokoProductStage =
+  | "supply"
+  | "setup"
+  | "costing"
+  | "payments"
+  | "review";
+
+export type SokoSupplyStatus =
+  | "working"
+  | "sent"
+  | "returned";
+
+export type SokoProductOperation = {
+  id: string;
+
+  sellerUserId: string;
+
+  createdByUserId: string;
+  updatedByUserId: string;
+
+  supplierName: string;
+  supplierContact: string;
+  productName: string;
+  supplierCode: string;
+
+  quantity: number;
+  unitCost: number;
+  notes: string;
+
+  currentStage: SokoProductStage;
+  supplyStatus: SokoSupplyStatus;
+
+  createdAt: string;
+  updatedAt: string;
+};
+
+let sqlClient:
+  | ReturnType<typeof neon>
+  | null = null;
+
+let schemaReady:
+  | Promise<void>
+  | null = null;
+
+function getSql() {
+  if (!sqlClient) {
+    const url = getDatabaseUrl();
+
+    if (!url) {
+      throw new Error(
+        "DATABASE_URL not configured"
+      );
+    }
+
+    sqlClient = neon(url);
+  }
+
+  return sqlClient;
+}
+
+function clean(
+  value: unknown,
+  max = 500
+) {
+  return String(value || "")
+    .trim()
+    .slice(0, max);
+}
+
+function numberValue(
+  value: unknown
+) {
+  const n = Number(value);
+
+  return Number.isFinite(n)
+    ? n
+    : 0;
+}
+
+function dateText(
+  value: unknown
+) {
+  if (!value) return "";
+
+  try {
+    return new Date(
+      value as any
+    ).toISOString();
+  } catch {
+    return String(value || "");
+  }
+}
+
+async function ensureSchema() {
+  if (!schemaReady) {
+    schemaReady = (async () => {
+      const sql = getSql();
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS
+          soko_product_operations (
+            id TEXT PRIMARY KEY,
+
+            seller_user_id TEXT NOT NULL,
+
+            created_by_user_id TEXT NOT NULL,
+            updated_by_user_id TEXT NOT NULL,
+
+            supplier_name TEXT NOT NULL DEFAULT '',
+            supplier_contact TEXT NOT NULL DEFAULT '',
+            product_name TEXT NOT NULL DEFAULT '',
+            supplier_code TEXT NOT NULL DEFAULT '',
+
+            quantity NUMERIC NOT NULL DEFAULT 0,
+            unit_cost NUMERIC NOT NULL DEFAULT 0,
+            notes TEXT NOT NULL DEFAULT '',
+
+            current_stage TEXT NOT NULL
+              DEFAULT 'supply',
+
+            supply_status TEXT NOT NULL
+              DEFAULT 'working',
+
+            deleted_at TIMESTAMPTZ,
+
+            created_at TIMESTAMPTZ
+              NOT NULL DEFAULT NOW(),
+
+            updated_at TIMESTAMPTZ
+              NOT NULL DEFAULT NOW()
+          )
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS
+          soko_product_operations_seller_idx
+        ON soko_product_operations (
+          seller_user_id,
+          current_stage,
+          updated_at DESC
+        )
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS
+          soko_product_operation_events (
+            id TEXT PRIMARY KEY,
+
+            operation_id TEXT NOT NULL,
+            seller_user_id TEXT NOT NULL,
+            actor_user_id TEXT NOT NULL,
+
+            action TEXT NOT NULL,
+            from_stage TEXT,
+            to_stage TEXT,
+
+            created_at TIMESTAMPTZ
+              NOT NULL DEFAULT NOW()
+          )
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS
+          soko_product_operation_events_op_idx
+        ON soko_product_operation_events (
+          operation_id,
+          created_at DESC
+        )
+      `;
+    })().catch((error) => {
+      schemaReady = null;
+      throw error;
+    });
+  }
+
+  await schemaReady;
+}
+
+function fromRow(
+  row: Record<string, any>
+): SokoProductOperation {
+  return {
+    id:
+      String(row.id || ""),
+
+    sellerUserId:
+      String(
+        row.seller_user_id || ""
+      ),
+
+    createdByUserId:
+      String(
+        row.created_by_user_id || ""
+      ),
+
+    updatedByUserId:
+      String(
+        row.updated_by_user_id || ""
+      ),
+
+    supplierName:
+      String(
+        row.supplier_name || ""
+      ),
+
+    supplierContact:
+      String(
+        row.supplier_contact || ""
+      ),
+
+    productName:
+      String(
+        row.product_name || ""
+      ),
+
+    supplierCode:
+      String(
+        row.supplier_code || ""
+      ),
+
+    quantity:
+      numberValue(row.quantity),
+
+    unitCost:
+      numberValue(row.unit_cost),
+
+    notes:
+      String(row.notes || ""),
+
+    currentStage:
+      row.current_stage as
+        SokoProductStage,
+
+    supplyStatus:
+      row.supply_status as
+        SokoSupplyStatus,
+
+    createdAt:
+      dateText(row.created_at),
+
+    updatedAt:
+      dateText(row.updated_at),
+  };
+}
+
+async function addEvent(input: {
+  operationId: string;
+  sellerUserId: string;
+  actorUserId: string;
+  action: string;
+  fromStage?: string;
+  toStage?: string;
+}) {
+  const sql = getSql();
+
+  await sql`
+    INSERT INTO
+      soko_product_operation_events (
+        id,
+        operation_id,
+        seller_user_id,
+        actor_user_id,
+        action,
+        from_stage,
+        to_stage
+      )
+    VALUES (
+      ${`sokoe_${randomUUID()}`},
+      ${input.operationId},
+      ${input.sellerUserId},
+      ${input.actorUserId},
+      ${input.action},
+      ${input.fromStage || null},
+      ${input.toStage || null}
+    )
+  `;
+}
+
+export async function
+dbListSokoSupplyOperations(
+  sellerUserId: string
+): Promise<SokoProductOperation[]> {
+  await ensureSchema();
+
+  const sql = getSql();
+
+  const sellerId =
+    clean(sellerUserId, 180);
+
+  if (!sellerId) return [];
+
+  const rows = (await sql`
+    SELECT *
+    FROM soko_product_operations
+    WHERE seller_user_id = ${sellerId}
+      AND deleted_at IS NULL
+    ORDER BY updated_at DESC
+  `) as Array<Record<string, any>>;
+
+  return rows.map(fromRow);
+}
+
+export async function
+dbSaveSokoSupplyOperation(input: {
+  sellerUserId: string;
+  actorUserId: string;
+
+  operationId?: string;
+
+  supplierName: string;
+  supplierContact?: string;
+  productName: string;
+  supplierCode?: string;
+
+  quantity?: number;
+  unitCost?: number;
+  notes?: string;
+
+  mode: "working" | "sent";
+}) {
+  await ensureSchema();
+
+  const sql = getSql();
+
+  const sellerUserId =
+    clean(input.sellerUserId, 180);
+
+  const actorUserId =
+    clean(input.actorUserId, 180);
+
+  const supplierName =
+    clean(input.supplierName, 240);
+
+  const supplierContact =
+    clean(
+      input.supplierContact,
+      500
+    );
+
+  const productName =
+    clean(input.productName, 240);
+
+  const supplierCode =
+    clean(input.supplierCode, 240);
+
+  const quantity =
+    numberValue(input.quantity);
+
+  const unitCost =
+    numberValue(input.unitCost);
+
+  const notes =
+    clean(input.notes, 3000);
+
+  if (
+    !sellerUserId ||
+    !actorUserId
+  ) {
+    throw new Error(
+      "Seller and actor are required"
+    );
+  }
+
+  if (
+    !supplierName ||
+    !productName
+  ) {
+    throw new Error(
+      "Supplier and product are required"
+    );
+  }
+
+  if (
+    input.mode === "sent" &&
+    quantity <= 0
+  ) {
+    throw new Error(
+      "Quantity is required before sending to Level 02"
+    );
+  }
+
+  if (
+    input.mode === "sent" &&
+    unitCost < 0
+  ) {
+    throw new Error(
+      "Supplier cost is required"
+    );
+  }
+
+  const nextStage =
+    input.mode === "sent"
+      ? "setup"
+      : "supply";
+
+  const operationId =
+    clean(input.operationId, 240);
+
+  if (operationId) {
+    const existingRows = (await sql`
+      SELECT *
+      FROM soko_product_operations
+      WHERE id = ${operationId}
+        AND seller_user_id =
+          ${sellerUserId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `) as Array<
+      Record<string, any>
+    >;
+
+    const existing =
+      existingRows[0];
+
+    if (!existing) {
+      throw new Error(
+        "SOKO product operation not found"
+      );
+    }
+
+    if (
+      String(
+        existing.current_stage
+      ) !== "supply" &&
+      String(
+        existing.supply_status
+      ) !== "returned"
+    ) {
+      throw new Error(
+        "This product has already moved beyond Level 01"
+      );
+    }
+
+    const rows = (await sql`
+      UPDATE soko_product_operations
+      SET
+        updated_by_user_id =
+          ${actorUserId},
+
+        supplier_name =
+          ${supplierName},
+
+        supplier_contact =
+          ${supplierContact},
+
+        product_name =
+          ${productName},
+
+        supplier_code =
+          ${supplierCode},
+
+        quantity =
+          ${quantity},
+
+        unit_cost =
+          ${unitCost},
+
+        notes =
+          ${notes},
+
+        current_stage =
+          ${nextStage},
+
+        supply_status =
+          ${input.mode},
+
+        updated_at = NOW()
+
+      WHERE id = ${operationId}
+
+      RETURNING *
+    `) as Array<
+      Record<string, any>
+    >;
+
+    await addEvent({
+      operationId,
+      sellerUserId,
+      actorUserId,
+
+      action:
+        input.mode === "sent"
+          ? "SUPPLY_SENT_TO_SETUP"
+          : "SUPPLY_DRAFT_SAVED",
+
+      fromStage:
+        String(
+          existing.current_stage ||
+            "supply"
+        ),
+
+      toStage:
+        nextStage,
+    });
+
+    return fromRow(rows[0]);
+  }
+
+  const id =
+    `sokoop_${randomUUID()}`;
+
+  const rows = (await sql`
+    INSERT INTO
+      soko_product_operations (
+        id,
+        seller_user_id,
+
+        created_by_user_id,
+        updated_by_user_id,
+
+        supplier_name,
+        supplier_contact,
+        product_name,
+        supplier_code,
+
+        quantity,
+        unit_cost,
+        notes,
+
+        current_stage,
+        supply_status
+      )
+    VALUES (
+      ${id},
+      ${sellerUserId},
+
+      ${actorUserId},
+      ${actorUserId},
+
+      ${supplierName},
+      ${supplierContact},
+      ${productName},
+      ${supplierCode},
+
+      ${quantity},
+      ${unitCost},
+      ${notes},
+
+      ${nextStage},
+      ${input.mode}
+    )
+
+    RETURNING *
+  `) as Array<
+    Record<string, any>
+  >;
+
+  await addEvent({
+    operationId: id,
+    sellerUserId,
+    actorUserId,
+
+    action:
+      input.mode === "sent"
+        ? "SUPPLY_CREATED_AND_SENT"
+        : "SUPPLY_DRAFT_CREATED",
+
+    fromStage: "supply",
+    toStage: nextStage,
+  });
+
+  return fromRow(rows[0]);
+}
+
+export async function
+dbDeleteSokoSupplyDraft(input: {
+  sellerUserId: string;
+  actorUserId: string;
+  operationId: string;
+}) {
+  await ensureSchema();
+
+  const sql = getSql();
+
+  const sellerUserId =
+    clean(input.sellerUserId, 180);
+
+  const actorUserId =
+    clean(input.actorUserId, 180);
+
+  const operationId =
+    clean(input.operationId, 240);
+
+  const rows = (await sql`
+    UPDATE soko_product_operations
+    SET
+      deleted_at = NOW(),
+      updated_by_user_id =
+        ${actorUserId},
+      updated_at = NOW()
+
+    WHERE id = ${operationId}
+      AND seller_user_id =
+        ${sellerUserId}
+      AND deleted_at IS NULL
+      AND (
+        supply_status = 'working'
+        OR supply_status =
+          'returned'
+      )
+
+    RETURNING *
+  `) as Array<
+    Record<string, any>
+  >;
+
+  if (!rows[0]) {
+    throw new Error(
+      "Only working or returned Level 01 items can be deleted"
+    );
+  }
+
+  await addEvent({
+    operationId,
+    sellerUserId,
+    actorUserId,
+    action:
+      "SUPPLY_DRAFT_DELETED",
+    fromStage:
+      String(
+        rows[0].current_stage ||
+          "supply"
+      ),
+  });
+
+  return fromRow(rows[0]);
+}

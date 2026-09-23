@@ -1,0 +1,730 @@
+import {
+  randomUUID,
+} from "crypto";
+
+import {
+  neon,
+  neonConfig,
+} from "@neondatabase/serverless";
+
+import {
+  getDatabaseUrl,
+} from "@/app/api/_lib/store/authDb";
+
+neonConfig.fetchConnectionCache =
+  true;
+
+export type SokoSupplyPurchaseStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "ordered";
+
+export type SokoSupplyPurchaseRequest = {
+  id: string;
+
+  sellerUserId: string;
+
+  taskId: string;
+
+  createdByUserId: string;
+
+  provider: string;
+
+  providerProductId: string;
+
+  productName: string;
+
+  productUrl: string;
+  checkoutUrl: string;
+
+  imageUrl: string;
+
+  supplierName: string;
+
+  currency: string;
+
+  unitPrice: number;
+
+  quantity: number;
+
+  shippingEstimate: number;
+
+  totalEstimate: number;
+
+  status:
+    SokoSupplyPurchaseStatus;
+
+  providerOrderId: string;
+
+  createdAt: string;
+  updatedAt: string;
+  decidedAt: string | null;
+};
+
+let sqlClient:
+  | ReturnType<
+      typeof neon
+    >
+  | null = null;
+
+let schemaReady:
+  | Promise<void>
+  | null = null;
+
+function getSql() {
+  if (!sqlClient) {
+    const url =
+      getDatabaseUrl();
+
+    if (!url) {
+      throw new Error(
+        "DATABASE_URL not configured"
+      );
+    }
+
+    sqlClient =
+      neon(url);
+  }
+
+  return sqlClient;
+}
+
+function clean(
+  value: unknown,
+  max = 1200
+) {
+  return String(
+    value ?? ""
+  )
+    .trim()
+    .slice(
+      0,
+      max
+    );
+}
+
+function numberValue(
+  value: unknown
+) {
+  const n =
+    Number(value);
+
+  return Number.isFinite(n)
+    ? n
+    : 0;
+}
+
+function iso(
+  value: unknown
+) {
+  if (!value) return "";
+
+  return new Date(
+    value as any
+  ).toISOString();
+}
+
+async function ensureSchema() {
+  if (!schemaReady) {
+    schemaReady =
+      (async () => {
+        const sql =
+          getSql();
+
+        await sql`
+          CREATE TABLE
+          IF NOT EXISTS
+            soko_supply_purchase_requests (
+              id TEXT PRIMARY KEY,
+
+              seller_user_id
+                TEXT NOT NULL,
+
+              task_id
+                TEXT NOT NULL,
+
+              created_by_user_id
+                TEXT NOT NULL,
+
+              provider
+                TEXT NOT NULL,
+
+              provider_product_id
+                TEXT NOT NULL DEFAULT '',
+
+              product_name
+                TEXT NOT NULL,
+
+              product_url
+                TEXT NOT NULL DEFAULT '',
+
+              checkout_url
+                TEXT NOT NULL DEFAULT '',
+
+              image_url
+                TEXT NOT NULL DEFAULT '',
+
+              supplier_name
+                TEXT NOT NULL DEFAULT '',
+
+              currency
+                TEXT NOT NULL DEFAULT 'USD',
+
+              unit_price
+                NUMERIC NOT NULL DEFAULT 0,
+
+              quantity
+                NUMERIC NOT NULL DEFAULT 0,
+
+              shipping_estimate
+                NUMERIC NOT NULL DEFAULT 0,
+
+              total_estimate
+                NUMERIC NOT NULL DEFAULT 0,
+
+              status
+                TEXT NOT NULL DEFAULT 'pending',
+
+              provider_order_id
+                TEXT NOT NULL DEFAULT '',
+
+              decided_at
+                TIMESTAMPTZ,
+
+              created_at
+                TIMESTAMPTZ
+                NOT NULL DEFAULT NOW(),
+
+              updated_at
+                TIMESTAMPTZ
+                NOT NULL DEFAULT NOW()
+            )
+        `;
+
+        await sql`
+          CREATE INDEX
+          IF NOT EXISTS
+            soko_supply_purchase_requests_seller_idx
+
+          ON
+            soko_supply_purchase_requests (
+              seller_user_id,
+              status,
+              updated_at DESC
+            )
+        `;
+
+        await sql`
+          CREATE INDEX
+          IF NOT EXISTS
+            soko_supply_purchase_requests_task_idx
+
+          ON
+            soko_supply_purchase_requests (
+              task_id,
+              updated_at DESC
+            )
+        `;
+      })().catch(
+        (error) => {
+          schemaReady =
+            null;
+
+          throw error;
+        }
+      );
+  }
+
+  await schemaReady;
+}
+
+function fromRow(
+  row:
+    Record<
+      string,
+      any
+    >
+): SokoSupplyPurchaseRequest {
+  return {
+    id:
+      String(
+        row.id || ""
+      ),
+
+    sellerUserId:
+      String(
+        row.seller_user_id ||
+        ""
+      ),
+
+    taskId:
+      String(
+        row.task_id || ""
+      ),
+
+    createdByUserId:
+      String(
+        row.created_by_user_id ||
+        ""
+      ),
+
+    provider:
+      String(
+        row.provider || ""
+      ),
+
+    providerProductId:
+      String(
+        row.provider_product_id ||
+        ""
+      ),
+
+    productName:
+      String(
+        row.product_name ||
+        ""
+      ),
+
+    productUrl:
+      String(
+        row.product_url ||
+        ""
+      ),
+
+    checkoutUrl:
+      String(
+        row.checkout_url ||
+        ""
+      ),
+
+    imageUrl:
+      String(
+        row.image_url ||
+        ""
+      ),
+
+    supplierName:
+      String(
+        row.supplier_name ||
+        ""
+      ),
+
+    currency:
+      String(
+        row.currency ||
+        "USD"
+      ),
+
+    unitPrice:
+      numberValue(
+        row.unit_price
+      ),
+
+    quantity:
+      numberValue(
+        row.quantity
+      ),
+
+    shippingEstimate:
+      numberValue(
+        row.shipping_estimate
+      ),
+
+    totalEstimate:
+      numberValue(
+        row.total_estimate
+      ),
+
+    status:
+      row.status,
+
+    providerOrderId:
+      String(
+        row.provider_order_id ||
+        ""
+      ),
+
+    createdAt:
+      iso(
+        row.created_at
+      ),
+
+    updatedAt:
+      iso(
+        row.updated_at
+      ),
+
+    decidedAt:
+      row.decided_at
+        ? iso(
+            row.decided_at
+          )
+        : null,
+  };
+}
+
+export async function
+dbListSokoSupplyPurchaseRequests(
+  sellerUserId: string
+) {
+  await ensureSchema();
+
+  const sql =
+    getSql();
+
+  const sellerId =
+    clean(
+      sellerUserId,
+      180
+    );
+
+  const rows =
+    (await sql`
+      SELECT *
+      FROM
+        soko_supply_purchase_requests
+
+      WHERE
+        seller_user_id =
+          ${sellerId}
+
+      ORDER BY
+        updated_at DESC
+    `) as Array<
+      Record<
+        string,
+        any
+      >
+    >;
+
+  return rows.map(
+    fromRow
+  );
+}
+
+export async function
+dbGetSokoSupplyPurchaseRequest(
+  input: {
+    sellerUserId: string;
+    requestId: string;
+  }
+) {
+  await ensureSchema();
+
+  const sql =
+    getSql();
+
+  const rows =
+    (await sql`
+      SELECT *
+      FROM
+        soko_supply_purchase_requests
+
+      WHERE
+        seller_user_id =
+          ${clean(
+            input.sellerUserId,
+            180
+          )}
+
+        AND id =
+          ${clean(
+            input.requestId,
+            240
+          )}
+
+      LIMIT 1
+    `) as Array<
+      Record<
+        string,
+        any
+      >
+    >;
+
+  return rows[0]
+    ? fromRow(
+        rows[0]
+      )
+    : null;
+}
+
+export async function
+dbCreateSokoSupplyPurchaseRequest(
+  input: {
+    sellerUserId: string;
+
+    taskId: string;
+
+    actorUserId: string;
+
+    provider: string;
+
+    providerProductId?: string;
+
+    productName: string;
+
+    productUrl?: string;
+    checkoutUrl?: string;
+
+    imageUrl?: string;
+
+    supplierName?: string;
+
+    currency?: string;
+
+    unitPrice?: number;
+
+    quantity: number;
+
+    shippingEstimate?: number;
+  }
+) {
+  await ensureSchema();
+
+  const sql =
+    getSql();
+
+  const quantity =
+    numberValue(
+      input.quantity
+    );
+
+  const unitPrice =
+    numberValue(
+      input.unitPrice
+    );
+
+  const shipping =
+    numberValue(
+      input.shippingEstimate
+    );
+
+  if (
+    quantity <= 0
+  ) {
+    throw new Error(
+      "Purchase quantity must be greater than zero."
+    );
+  }
+
+  const productName =
+    clean(
+      input.productName,
+      500
+    );
+
+  if (!productName) {
+    throw new Error(
+      "Product name is required."
+    );
+  }
+
+  const id =
+    `sokopr_${randomUUID()}`;
+
+  const total =
+    (
+      unitPrice *
+      quantity
+    ) + shipping;
+
+  const rows =
+    (await sql`
+      INSERT INTO
+        soko_supply_purchase_requests (
+          id,
+
+          seller_user_id,
+
+          task_id,
+
+          created_by_user_id,
+
+          provider,
+
+          provider_product_id,
+
+          product_name,
+
+          product_url,
+
+          checkout_url,
+
+          image_url,
+
+          supplier_name,
+
+          currency,
+
+          unit_price,
+
+          quantity,
+
+          shipping_estimate,
+
+          total_estimate,
+
+          status
+        )
+
+      VALUES (
+        ${id},
+
+        ${clean(
+          input.sellerUserId,
+          180
+        )},
+
+        ${clean(
+          input.taskId,
+          240
+        )},
+
+        ${clean(
+          input.actorUserId,
+          180
+        )},
+
+        ${clean(
+          input.provider,
+          100
+        )},
+
+        ${clean(
+          input.providerProductId,
+          500
+        )},
+
+        ${productName},
+
+        ${clean(
+          input.productUrl,
+          1500
+        )},
+
+        ${clean(
+          input.checkoutUrl,
+          1500
+        )},
+
+        ${clean(
+          input.imageUrl,
+          1500
+        )},
+
+        ${clean(
+          input.supplierName,
+          500
+        )},
+
+        ${
+          clean(
+            input.currency,
+            20
+          ) || "USD"
+        },
+
+        ${unitPrice},
+
+        ${quantity},
+
+        ${shipping},
+
+        ${total},
+
+        'pending'
+      )
+
+      RETURNING *
+    `) as Array<
+      Record<
+        string,
+        any
+      >
+    >;
+
+  return fromRow(
+    rows[0]
+  );
+}
+
+export async function
+dbSetSokoSupplyPurchaseStatus(
+  input: {
+    sellerUserId: string;
+
+    requestId: string;
+
+    status:
+      SokoSupplyPurchaseStatus;
+
+    providerOrderId?: string;
+  }
+) {
+  await ensureSchema();
+
+  const sql =
+    getSql();
+
+  const rows =
+    (await sql`
+      UPDATE
+        soko_supply_purchase_requests
+
+      SET
+        status =
+          ${input.status},
+
+        provider_order_id =
+          ${clean(
+            input.providerOrderId,
+            500
+          )},
+
+        decided_at =
+          CASE
+            WHEN ${input.status}
+              IN (
+                'approved',
+                'rejected',
+                'ordered'
+              )
+            THEN NOW()
+            ELSE decided_at
+          END,
+
+        updated_at =
+          NOW()
+
+      WHERE
+        seller_user_id =
+          ${clean(
+            input.sellerUserId,
+            180
+          )}
+
+        AND id =
+          ${clean(
+            input.requestId,
+            240
+          )}
+
+      RETURNING *
+    `) as Array<
+      Record<
+        string,
+        any
+      >
+    >;
+
+  if (!rows[0]) {
+    throw new Error(
+      "Purchase request not found."
+    );
+  }
+
+  return fromRow(
+    rows[0]
+  );
+}

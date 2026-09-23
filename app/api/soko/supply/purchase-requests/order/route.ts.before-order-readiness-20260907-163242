@@ -1,0 +1,226 @@
+import type {
+  NextRequest,
+} from "next/server";
+
+import {
+  NextResponse,
+} from "next/server";
+
+import {
+  guardAuth,
+} from "@/app/api/_lib/rbac";
+
+import {
+  requireSokoSellerOwner,
+} from "@/app/api/_lib/store/sokoSupplyAccess";
+
+import {
+  dbGetSokoSupplyPurchaseRequest,
+  dbSetSokoSupplyPurchaseStatus,
+} from "@/app/api/_lib/store/sokoSupplyPurchaseDb";
+
+import {
+  placeSokoSupplyOrder,
+} from "@/app/api/_lib/store/sokoSupplyConnectors";
+
+export const runtime =
+  "nodejs";
+
+export const dynamic =
+  "force-dynamic";
+
+export const revalidate =
+  0;
+
+function fail(
+  error: any
+) {
+  return NextResponse.json(
+    {
+      ok: false,
+
+      error: String(
+        error?.message ||
+        "Could not place order."
+      ),
+    },
+    {
+      status:
+        Number(
+          error?.status
+        ) || 400,
+    }
+  );
+}
+
+export async function POST(
+  req: NextRequest
+) {
+  const auth =
+    await guardAuth(req);
+
+  if (
+    auth instanceof
+      NextResponse
+  ) {
+    return auth;
+  }
+
+  const body =
+    await req
+      .json()
+      .catch(
+        () => ({})
+      );
+
+  try {
+    const owner =
+      await requireSokoSellerOwner(
+        auth.viewer.userId
+      );
+
+    const requestId =
+      String(
+        body?.requestId ||
+        ""
+      ).trim();
+
+    const purchase =
+      await dbGetSokoSupplyPurchaseRequest({
+        sellerUserId:
+          owner.sellerUserId,
+
+        requestId,
+      });
+
+    if (!purchase) {
+      throw Object.assign(
+        new Error(
+          "Purchase request not found."
+        ),
+        {
+          status: 404,
+        }
+      );
+    }
+
+    if (
+      purchase.status ===
+      "rejected"
+    ) {
+      throw new Error(
+        "Rejected purchase request cannot be ordered."
+      );
+    }
+
+    if (
+      purchase.status ===
+      "ordered"
+    ) {
+      return NextResponse.json({
+        ok: true,
+
+        ordered: true,
+
+        mode: "api",
+
+        providerOrderId:
+          purchase.providerOrderId,
+
+        request:
+          purchase,
+      });
+    }
+
+    await dbSetSokoSupplyPurchaseStatus({
+      sellerUserId:
+        owner.sellerUserId,
+
+      requestId,
+
+      status:
+        "approved",
+    });
+
+    const result =
+      await placeSokoSupplyOrder({
+        provider:
+          purchase.provider as
+            "alibaba",
+
+        requestId:
+          purchase.id,
+
+        providerProductId:
+          purchase.providerProductId,
+
+        productName:
+          purchase.productName,
+
+        productUrl:
+          purchase.productUrl,
+
+        checkoutUrl:
+          purchase.checkoutUrl,
+
+        quantity:
+          purchase.quantity,
+
+        unitPrice:
+          purchase.unitPrice,
+
+        currency:
+          purchase.currency,
+
+        supplierName:
+          purchase.supplierName,
+      });
+
+    if (
+      result.ordered &&
+      result.providerOrderId
+    ) {
+      const orderedRequest =
+        await dbSetSokoSupplyPurchaseStatus({
+          sellerUserId:
+            owner.sellerUserId,
+
+          requestId,
+
+          status:
+            "ordered",
+
+          providerOrderId:
+            result.providerOrderId,
+        });
+
+      return NextResponse.json({
+        ok: true,
+
+        ...result,
+
+        request:
+          orderedRequest,
+      });
+    }
+
+    const approvedRequest =
+      await dbGetSokoSupplyPurchaseRequest({
+        sellerUserId:
+          owner.sellerUserId,
+
+        requestId,
+      });
+
+    return NextResponse.json({
+      ok: true,
+
+      ...result,
+
+      request:
+        approvedRequest,
+    });
+  } catch (error: any) {
+    return fail(error);
+  }
+}

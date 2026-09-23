@@ -1,0 +1,369 @@
+import { File } from "expo-file-system";
+import { fetch as expoFetch } from "expo/fetch";
+import { getSessionSync } from "@/src/lib/kristoSession";
+import BibleScreen from "../app/(tabs)/more/bible";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Easing, Animated, AccessibilityInfo, AppState, Pressable, StyleSheet, Text, View } from "react-native";
+import { useFocusEffect } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { RecordingPresets, setIsAudioActiveAsync, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import { LinearGradient } from "expo-linear-gradient";
+import { deleteAsync } from "expo-file-system/legacy";
+
+export default function MyWayVoice() {
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const status = useAudioRecorderState(recorder, 150);
+  const player = useAudioPlayer(null, { keepAudioSessionActive: true });
+  const playback = useAudioPlayerStatus(player);
+  const [uri, setUri] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [message, setMessage] = useState("");
+  const [shownBible, setShownBible] = useState(false);
+  const voiceRequest = useRef<AbortController | null>(null);
+  const recordingAccount = useRef({ userId: "", sessionToken: "" });
+  const glow = useRef(new Animated.Value(0)).current;
+  const planetSpin = useRef(new Animated.Value(0)).current;
+  const voiceActive = recording || busy || playback.playing;
+
+  useEffect(() => {
+    let alive = true;
+    let animation: Animated.CompositeAnimation | undefined;
+    planetSpin.setValue(0);
+    if (voiceActive) {
+      AccessibilityInfo.isReduceMotionEnabled().then(reduce => {
+        if (!alive || reduce) return;
+        animation = Animated.loop(
+          Animated.timing(planetSpin, {
+            toValue: 1,
+            duration: 4200,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          })
+        );
+        animation.start();
+      }).catch(() => {});
+    }
+    return () => { alive = false; animation?.stop(); };
+  }, [voiceActive, planetSpin]);
+
+  useEffect(() => {
+    let animation: Animated.CompositeAnimation | undefined;
+    let alive=true;
+    AccessibilityInfo.isReduceMotionEnabled().then(reduce=>{
+      if(!alive || reduce)return;
+      animation=Animated.loop(Animated.sequence([
+        Animated.timing(glow,{toValue:1,duration:2200,useNativeDriver:true}),
+        Animated.timing(glow,{toValue:0,duration:2200,useNativeDriver:true}),
+      ]));animation.start();
+    }).catch(()=>{});
+    return ()=>{alive=false;animation?.stop();};
+  },[glow]);
+  const live = useRef(false);
+  const serial = useRef(0);
+  const locked = useRef(false);
+  const started = useRef(false);
+  const file = useRef("");
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTimer = () => { if (timer.current) clearTimeout(timer.current); timer.current=null; };
+  const remove = (value: string) => { if(value) void deleteAsync(value,{idempotent:true}).catch(()=>{}); };
+
+  const discard = useCallback(() => {
+    serial.current += 1;
+    voiceRequest.current?.abort();
+    voiceRequest.current = null;
+    setShownBible(false);
+    clearTimer();
+    try { player.pause(); } catch {}
+    if(started.current) {
+      started.current=false;
+      locked.current=true;
+      if(live.current) setBusy(true);
+      void recorder.stop().catch(()=>{}).finally(()=>{
+        remove(recorder.uri || "");
+        void setAudioModeAsync({allowsRecording:false}).catch(()=>{}).finally(()=>{
+          locked.current=false;
+          if(live.current) setBusy(false);
+        });
+      });
+    }
+    remove(file.current); file.current="";
+    if(live.current) {setUri("");setRecording(false);setMessage("");}
+  },[recorder,player]);
+  useFocusEffect(useCallback(()=>{
+    live.current=true;
+    return ()=>{live.current=false;discard();};
+  },[discard]));
+  useEffect(()=>{
+    const sub=AppState.addEventListener("change",state=>{if(state==="background" || (state==="inactive" && started.current)) discard();});
+    return ()=>sub.remove();
+  },[discard]);
+
+  async function stop() {
+    if (locked.current || !started.current) return;
+    locked.current = true;
+    setBusy(true);
+    clearTimer();
+    const version = serial.current;
+    const account = recordingAccount.current;
+    started.current = false;
+    let next = "";
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+
+    const valid = () => {
+      const current = getSessionSync();
+      return live.current && version === serial.current &&
+        current?.userId === account.userId &&
+        current?.sessionToken === account.sessionToken;
+    };
+
+    try {
+      await recorder.stop();
+      next = recorder.uri || "";
+      await setAudioModeAsync({allowsRecording:false, playsInSilentMode:true});
+      if (!valid()) return;
+      setRecording(false);
+      if (!next) throw new Error("Rekodi haijapatikana.");
+      if (!__DEV__) throw new Error("Muunganiko huu bado ni wa majaribio.");
+
+      setMessage("Ninasikiliza ombi lako…");
+      controller = new AbortController();
+      voiceRequest.current = controller;
+      timeout = setTimeout(() => controller?.abort(), 150000);
+
+      const response = await expoFetch(
+        "http://192.168.12.141:3001/api/member/voice",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "x-kristo-user-id": account.userId,
+            "x-kristo-session-token": account.sessionToken,
+          },
+          body: new File(next),
+          signal: controller.signal,
+        }
+      );
+      const result = await response.json();
+      if (!valid()) return;
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.error || "MY WAY haijakamilisha ombi.");
+      }
+
+      if (result.understood && result.action?.type === "show_screen") {
+        if (result.action.screen === "bible") {
+          setShownBible(true);
+          setMessage("Ukurasa wa Biblia umefunguliwa.");
+        } else if (result.action.screen === "agent") {
+          setShownBible(false);
+          setMessage("");
+        } else {
+          setMessage("Ombi limetambuliwa. Screen hii bado haijaunganishwa hapa.");
+        }
+      } else {
+        setMessage(result.reply || "Sijasikia vizuri. Jaribu tena.");
+      }
+    } catch (error) {
+      if (valid()) setMessage(
+        controller?.signal.aborted
+          ? "Ombi limechukua muda mrefu. Jaribu tena."
+          : error instanceof Error ? error.message : "Muunganiko umeshindwa."
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (voiceRequest.current === controller) voiceRequest.current = null;
+      remove(next);
+      locked.current = false;
+      if (live.current && version === serial.current) {
+        setBusy(false);
+        setRecording(false);
+      }
+    }
+  }
+  async function start() {
+    if(locked.current || started.current) return;
+    locked.current=true;setBusy(true);setMessage("");
+    const version=serial.current;
+    try {
+      player.pause();
+      const account = getSessionSync();
+      if (!account?.userId || !account.sessionToken) {
+        setMessage("Ingia tena kwenye Kristo App kwanza.");
+        return;
+      }
+      recordingAccount.current = {
+        userId: account.userId,
+        sessionToken: account.sessionToken,
+      };
+      const permission=await requestRecordingPermissionsAsync();
+      if(!live.current || version!==serial.current) return;
+      if(!permission.granted) throw new Error("Ruhusu microphone kwenye Settings za simu ili kurekodi.");
+      await setIsAudioActiveAsync(true);
+      await setAudioModeAsync({allowsRecording:true,playsInSilentMode:true,interruptionMode:"doNotMix",shouldPlayInBackground:false});
+      await recorder.prepareToRecordAsync();
+      if(!live.current || version!==serial.current) {
+        await recorder.stop().catch(()=>{});remove(recorder.uri || "");
+        await setAudioModeAsync({allowsRecording:false});return;
+      }
+      recorder.record();started.current=true;setRecording(true);
+      timer.current=setTimeout(()=>{void stop();},60000);
+    } catch(e) {
+      await setAudioModeAsync({allowsRecording:false}).catch(()=>{});
+      if(live.current && version===serial.current) { console.warn("MYWAY_MIC_START_FAILED", e); setMessage("Microphone haijaanza. Funga call au live nyingine, kisha jaribu tena. Ruhusu microphone kwenye Settings."); }
+    } finally {locked.current=false;if(live.current)setBusy(false);}
+  }
+  async function play() {
+    try {
+      if(playback.playing){player.pause();return;}
+      if(playback.didJustFinish || playback.currentTime>=playback.duration) await player.seekTo(0);
+      player.play();
+    } catch {setMessage("Sauti haijacheza. Jaribu kurekodi tena.");}
+  }
+  return <View style={s.box}>
+
+    {shownBible ? (
+      <View style={{
+        width:"100%", minHeight:330, borderRadius:22,
+        overflow:"hidden", marginBottom:22
+      }}>
+        <BibleScreen/>
+      </View>
+    ) : (
+    <View style={s.orbit}>
+      <Animated.View pointerEvents="none" style={{
+        position:"absolute", bottom:14, width:160, height:26,
+        alignItems:"center", justifyContent:"center",
+        opacity:glow.interpolate({inputRange:[0,1],outputRange:[0.32,0.16]}),
+        transform:[{scaleX:glow.interpolate({inputRange:[0,1],outputRange:[1,0.8]})}]
+      }}>
+        {[0,1,2,3,4,5].map(i => (
+          <View key={i} style={{
+            position:"absolute", width:160-i*18, height:26-i*3,
+            borderRadius:80, backgroundColor:"rgba(0,25,65,0.18)"
+          }}/>
+        ))}
+      </Animated.View>
+
+      <Animated.View pointerEvents="none" style={[
+        s.floating,
+        {transform:[{translateY:glow.interpolate({
+          inputRange:[0,1],outputRange:[2,-12]
+        })}]}
+      ]}>
+        <Animated.View style={[s.glowField,{
+          opacity:glow.interpolate({inputRange:[0,1],outputRange:[0.65,1]})
+        }]}>
+          {Array.from({length:22},(_,i) => {
+            const size=300-i*4;
+            return <View key={i} style={{
+              position:"absolute",width:size,height:size,borderRadius:size/2,
+              backgroundColor:"rgba(180,244,255,0.025)"
+            }}/>;
+          })}
+        </Animated.View>
+
+        <View style={{
+          width:202,height:202,borderRadius:101,
+          shadowColor:"#EAFFFF",shadowOpacity:0.95,
+          shadowRadius:28,shadowOffset:{width:0,height:0}
+        }}>
+          <LinearGradient
+            colors={["#FFFFFF","#DCF9FF","#8EE6FF","#37ADEE"]}
+            start={{x:0.2,y:0}} end={{x:0.85,y:1}}
+            style={s.orb}
+          >
+            <View style={{
+              position:"absolute",top:12,left:22,width:130,height:100,
+              alignItems:"center",justifyContent:"center"
+            }}>
+              {Array.from({length:16},(_,i) => (
+                <View key={i} style={{
+                  position:"absolute",width:130-i*6,height:100-i*4,
+                  borderRadius:70,backgroundColor:"rgba(255,255,255,0.035)"
+                }}/>
+              ))}
+            </View>
+            <LinearGradient
+              colors={["#FFFFFF80","#FFFFFF00"]}
+              style={{
+                position:"absolute",top:12,left:26,width:136,height:65,
+                borderRadius:70,transform:[{rotate:"-25deg"}]
+              }}
+            />
+          </LinearGradient>
+        </View>
+
+        {voiceActive && <>
+          <View style={{
+            position:"absolute",width:272,height:272,borderRadius:136,
+            borderWidth:1,borderColor:"rgba(255,228,158,0.3)"
+          }}/>
+          <Animated.View style={{
+            position:"absolute",width:272,height:272,
+            transform:[{rotate:planetSpin.interpolate({
+              inputRange:[0,1],outputRange:["0deg","360deg"]
+            })}]
+          }}>
+            <View style={{
+              position:"absolute",top:-13,left:122,
+              shadowColor:"#FFE3A0",shadowOpacity:1,shadowRadius:14,
+              shadowOffset:{width:0,height:0}
+            }}>
+              <LinearGradient
+                colors={["#FFFBE5","#F4D276","#B57A20"]}
+                start={{x:0,y:0}} end={{x:1,y:1}}
+                style={{
+                  width:28,height:28,borderRadius:14,
+                  borderWidth:1,borderColor:"#FFF0BA"
+                }}
+              />
+            </View>
+          </Animated.View>
+        </>}
+      </Animated.View>
+    </View>
+    
+    )}
+    {(recording || busy || playback.playing) && <Text style={s.copy}>{recording?`Inarekodi · ${Math.floor(status.durationMillis/1000)}s`:playback.playing?"Rekodi yako inacheza":"Inatayarisha…"}</Text>}
+    <View style={s.controls}>
+      {!!uri && !recording && <Pressable accessibilityRole="button" accessibilityLabel={playback.playing?"Sitisha sauti":"Sikiliza rekodi"} onPress={()=>void play()} disabled={busy} style={s.small}><Ionicons name={playback.playing?"pause":"play"} size={22} color="#ACDCFF"/></Pressable>}
+      <Pressable accessibilityRole="button" accessibilityLabel={recording?"Maliza ombi la sauti":"Ongea na MY WAY"} disabled={busy} onPress={()=>void(recording?stop():start())} style={[s.mic,busy&&{opacity:0.45}]}>
+        <LinearGradient
+          colors={recording
+            ? ["#F5D998","#C18B31","#8C5D18"]
+            : ["#FFF2BE","#EAC365","#BC842B"]}
+          start={{x:0.15,y:0}} end={{x:0.85,y:1}}
+          style={{
+            width:72,height:72,borderRadius:36,
+            alignItems:"center",justifyContent:"center",
+            borderWidth:1,borderColor:"#FFF0B5"
+          }}
+        >
+          <Ionicons name="call" size={30} color="#50340E"
+            style={{transform:[{rotate:recording?"135deg":"0deg"}]}}/>
+        </LinearGradient>
+      </Pressable>
+      {!!uri && !recording && <Pressable accessibilityRole="button" accessibilityLabel="Futa rekodi" disabled={busy} onPress={discard} style={s.small}><Ionicons name="trash-outline" size={22} color="#ACDCFF"/></Pressable>}
+    </View>
+    {!!message && <Text accessibilityRole="alert" style={s.notice}>{message}</Text>}
+  </View>;
+}
+const s=StyleSheet.create({
+ cross:{position:"absolute",left:65,top:49,width:72,height:105,shadowColor:"#FFFFFF",shadowOpacity:0.95,shadowRadius:17,shadowOffset:{width:0,height:0}},
+ crossVertical:{position:"absolute",top:0,left:31,width:10,height:105,borderRadius:3,backgroundColor:"#F4FDFF"},
+ crossHorizontal:{position:"absolute",top:28,left:0,width:72,height:10,borderRadius:3,backgroundColor:"#F4FDFF"},
+ verse:{alignItems:"center",paddingHorizontal:12,maxWidth:330,marginBottom:4},
+ verseText:{color:"#E2F6FF",fontSize:18,lineHeight:27,fontWeight:"700",textAlign:"center"},
+ verseReference:{color:"#9ACCF1",fontSize:10,fontWeight:"800",letterSpacing:2,marginTop:10},
+ box:{flex:1,alignItems:"center",justifyContent:"center",paddingHorizontal:20,paddingTop:16,paddingBottom:136},
+ orbit:{width:310,height:330,alignItems:"center",justifyContent:"center",marginBottom:22},
+ floating:{width:310,height:310,alignItems:"center",justifyContent:"center"},
+ glowField:{position:"absolute",width:310,height:310,alignItems:"center",justifyContent:"center"},
+ shine:{position:"absolute",top:-40,left:40,width:95,height:300},
+ orb:{width:202,height:202,borderRadius:101,overflow:"hidden",borderWidth:0},
+ sheen:{position:"absolute",width:180,height:140,top:-28,left:-24,borderRadius:90,transform:[{rotate:"-30deg"}]},
+ title:{color:"#EFFAFF",fontSize:26,fontWeight:"900",letterSpacing:0.3,textAlign:"center"},copy:{color:"#A6D2FF",fontSize:13,fontWeight:"700",marginTop:10,textAlign:"center"},
+ controls:{flexDirection:"row",gap:24,alignItems:"center",justifyContent:"center",marginTop:28},mic:{width:72,height:72,borderRadius:36,backgroundColor:"#EAC365",alignItems:"center",justifyContent:"center",shadowColor:"#A66D13",shadowOpacity:0.45,shadowRadius:16,shadowOffset:{width:0,height:6},elevation:7},small:{width:48,height:48,borderRadius:24,backgroundColor:"#0C3870",alignItems:"center",justifyContent:"center"},
+ notice:{color:"#AFCBE9",fontSize:12,lineHeight:18,textAlign:"center",marginTop:16,maxWidth:310},note:{color:"#729AC7",fontSize:11,textAlign:"center",marginTop:20}
+});
