@@ -283,7 +283,7 @@ function clean(value: unknown, max: number) {
   return String(value || "").trim().slice(0, max);
 }
 
-function publicOrder(row: OrderRow) {
+export function publicOrder(row: OrderRow) {
   const snapshot =
     row.snapshot && typeof row.snapshot === "object"
       ? { ...row.snapshot }
@@ -1042,6 +1042,10 @@ export async function updateSokoOrder(args: {
 
   const action = clean(args.action, 50);
 
+  if (order.snapshot?.payment?.basketId && order.status === "awaiting_payment" && action !== "report_payment_issue") {
+    throw new Error("This order belongs to a pending basket payment. Resolve the basket payment before changing its orders.");
+  }
+
   if (action === "report_payment_issue") {
     if (!buyer) {
       throw new Error("Only the buyer can report a payment problem.");
@@ -1599,24 +1603,14 @@ export async function updateSokoOrder(args: {
           AND inventory_reserved=TRUE
         RETURNING *
       ),
+      restore_lines AS (
+        SELECT x."productId",x.quantity FROM cancelled_order c,
+        LATERAL jsonb_to_recordset(CASE WHEN c.snapshot->'combinedParcel' IS NOT NULL THEN c.snapshot #> '{inventory,lines}' ELSE jsonb_build_array(jsonb_build_object('productId',c.product_id,'quantity',1)) END) AS x("productId" text,quantity integer)
+      ),
       restored_stock AS (
-        UPDATE soko_products
-        SET
-          stock_available=LEAST(
-            stock_total,
-            stock_available+1
-          ),
-          status=CASE
-            WHEN status='Sold'
-              THEN 'Active'
-            ELSE status
-          END,
-          updated_at=NOW()
-        WHERE id=${order.product_id}
-          AND EXISTS (
-            SELECT 1 FROM cancelled_order
-          )
-        RETURNING id
+        UPDATE soko_products p SET stock_available=LEAST(p.stock_total,p.stock_available+x.quantity),
+          status=CASE WHEN p.status='Sold' THEN 'Active' ELSE p.status END,updated_at=NOW()
+        FROM restore_lines x WHERE p.id=x."productId" RETURNING p.id
       )
       SELECT * FROM cancelled_order
     ` as OrderRow[];
@@ -3188,6 +3182,8 @@ export async function getSokoStripePaymentContext(args: {
   if (!order) {
     throw new Error("Card payment is unavailable for this order.");
   }
+
+  if (order.snapshot?.payment?.basketId) throw new Error("Use the basket checkout for this order.");
 
   if (order.buyer_user_id !== buyerUserId) {
     throw new Error("Card payment is unavailable for this order.");

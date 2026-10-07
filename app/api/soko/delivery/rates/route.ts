@@ -1,3 +1,4 @@
+import {loadCombinedParcel} from '@/app/api/_lib/store/sokoCombinedParcelDb';
 import { NextRequest, NextResponse } from "next/server";
 import { guardCheckoutAuth } from "@/app/api/_lib/rbac";
 import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
@@ -113,7 +114,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = await readJson(req);
     timer.stage("body");
-    const productId = clean(body.productId, 100);
+    const combined = body.items === undefined ? null : await loadCombinedParcel(body.items);
+    const productId = combined ? combined.group.quoteKey : clean(body.productId, 100);
 
     const address =
       body.address &&
@@ -131,7 +133,7 @@ export async function POST(req: NextRequest) {
 
     const sql = database();
 
-    const products = await sql`
+    const products = combined ? [{...combined.products[0],id:productId,payload:{...combined.products[0].payload,fulfillmentOptions:{...combined.products[0].payload.fulfillmentOptions,addressFrom:combined.group.from,parcel:combined.group.parcel}}}] : await sql`
       SELECT id,seller_user_id,payload,status
       FROM soko_products
       WHERE id=${productId}
@@ -154,7 +156,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const payload = product.payload || {};
+    const payload: JsonRecord = product.payload || {};
     const category = clean(payload.category, 50).toLowerCase();
 
     const fulfillment =
@@ -254,6 +256,7 @@ export async function POST(req: NextRequest) {
         state: clean(address.state, 100),
         city: clean(address.city, 100),
         streetAddress: clean(address.streetAddress, 240),
+      apartment: clean(address.apartment, 80),
         postalCode: clean(address.postalCode, 30),
       });
       const originFp = sokoShippingOriginFingerprint({
@@ -261,7 +264,7 @@ export async function POST(req: NextRequest) {
         from,
         vehicleType,
       });
-      const cached = await listReusableSokoShippingQuotes({
+      const cached = body.separateParcel === true ? [] : await listReusableSokoShippingQuotes({
         buyerUserId: auth.viewer.userId,
         productId,
         addressFp,
@@ -485,6 +488,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (combined && originCountry !== destinationCountry) {
+      return quoteRequired("Combined international shipping requires the seller's customs declaration.", "parcel");
+    }
+    const combinedParcel = combined ? {unitCount:combined.group.unitCount,weight:combined.group.parcel.weight,massUnit:'lb',value:combined.group.valueMinor/100,currency:combined.group.currency,dimensions:combined.group.parcel,packingMethod:'stacked_packed_units'} : undefined;
     const length = positive(parcel.length);
     const width = positive(parcel.width);
     const height = positive(parcel.height);
@@ -504,6 +511,7 @@ export async function POST(req: NextRequest) {
       state: clean(address.state, 100),
       city: clean(address.city, 100),
       streetAddress: clean(address.streetAddress, 240),
+      apartment: clean(address.apartment, 80),
       postalCode: clean(address.postalCode, 30),
     });
     const originFp = sokoShippingOriginFingerprint({
@@ -511,7 +519,7 @@ export async function POST(req: NextRequest) {
       from,
       parcel,
     });
-    const cached = await listReusableSokoShippingQuotes({
+    const cached = body.separateParcel === true ? [] : await listReusableSokoShippingQuotes({
       buyerUserId: auth.viewer.userId,
       productId,
       addressFp,
@@ -524,6 +532,7 @@ export async function POST(req: NextRequest) {
         ok: true,
         mode: "live_rates",
         fulfillmentType: "parcel",
+        combinedParcel,
         shipmentId: cached[0].shipmentId,
         rates: cached.map((quote) => ({
           id: quote.rateId,
@@ -563,6 +572,7 @@ export async function POST(req: NextRequest) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          metadata: combined ? `Zpora parcel ${combined.group.signature.slice(0,16)}; value ${combined.group.currency} ${(combined.group.valueMinor/100).toFixed(2)}` : undefined,
           address_from: {
             name: clean(from.name, 120),
             street1: clean(from.street1, 240),
@@ -576,6 +586,7 @@ export async function POST(req: NextRequest) {
           address_to: {
             name: clean(address.fullName, 120),
             street1: clean(address.streetAddress, 240),
+            street2: clean(address.apartment, 80),
             city: clean(address.city, 100),
             state: clean(address.state, 100),
             zip: clean(address.postalCode, 30),
@@ -708,6 +719,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       mode: "live_rates",
       fulfillmentType: "parcel",
+      combinedParcel,
       shipmentId,
       rates,
     });

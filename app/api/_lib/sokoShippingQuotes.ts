@@ -88,6 +88,7 @@ export function sokoShippingAddressFingerprint(input: {
   state: string;
   city: string;
   streetAddress: string;
+  apartment?: string;
   postalCode: string;
 }) {
   return createHash("sha256")
@@ -99,6 +100,7 @@ export function sokoShippingAddressFingerprint(input: {
         clean(input.state, 100).toUpperCase(),
         clean(input.city, 100).toLowerCase(),
         clean(input.streetAddress, 240).toLowerCase(),
+        clean(input.apartment, 80).toLowerCase(),
         clean(input.postalCode, 30).toUpperCase(),
       ].join("\n")
     )

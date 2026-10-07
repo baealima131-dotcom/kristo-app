@@ -1,3 +1,4 @@
+import {applyBasketCapture} from "@/app/api/_lib/store/sokoBasketPaymentsDb";
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type Stripe from "stripe";
@@ -156,6 +157,17 @@ export async function POST(req: NextRequest) {
       received: true,
       inserted: saved.inserted,
     });
+  }
+
+  if (paymentIntent.metadata?.sokoBasketId) {
+    try {
+      await applyBasketCapture(paymentIntent, eventId);
+      const matched = await markPaymentWebhookOrderMatch({ eventId, orderId: paymentIntent.metadata.sokoBasketId });
+      if (!matched) return reply({ ok: false, error: "Basket webhook reconciliation pending." }, 500);
+      await markPaymentWebhookProcessed({ eventId, orderId: paymentIntent.metadata.sokoBasketId });
+      return reply({ ok: true, received: true, applied: true });
+    }
+    catch { return reply({ok:false,error:"Basket payment reconciliation pending."},500); }
   }
 
   const matches = await findSokoOrderByStripePaymentIntent(
