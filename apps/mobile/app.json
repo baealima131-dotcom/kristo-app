@@ -37,11 +37,10 @@
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
-        "com.android.vending.BILLING",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "versionCode": 15
+      "versionCode": 100
     },
     "web": {
       "bundler": "metro",

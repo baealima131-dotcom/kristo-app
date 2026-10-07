@@ -1,0 +1,13 @@
+
+# Mobile app is built separately
+/apps/mobile/
+
+# Local dependencies, builds and backups
+**/node_modules/
+**/.git/
+**/.next/
+**/.expo/
+/backups/
+/.backups/
+/_bak/
+/.trash_baks/

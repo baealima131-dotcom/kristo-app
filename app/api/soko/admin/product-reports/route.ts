@@ -44,6 +44,8 @@ export async function GET(req: NextRequest) {
         priority: row.priority,
         reason: row.reason,
         createdAt: row.created_at,
+        reviewDueAt: new Date(new Date(String(row.created_at)).getTime() + 24 * 60 * 60 * 1000).toISOString(),
+        reviewOverdue: Date.now() > new Date(String(row.created_at)).getTime() + 24 * 60 * 60 * 1000 && !["resolved", "dismissed"].includes(String(row.status)),
         productTitle: (snapshot as { title?: string } | null)?.title || row.target_title || "",
         productImage: (snapshot as { image?: string } | null)?.image || row.target_thumbnail_uri || "",
         reporter: {

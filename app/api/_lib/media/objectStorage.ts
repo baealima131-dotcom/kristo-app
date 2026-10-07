@@ -5,9 +5,11 @@ import type { Readable } from "node:stream";
 import {
   CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  DeleteObjectsCommand,
   CreateMultipartUploadCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
@@ -61,6 +63,27 @@ export function getVideoStorageConfig(): VideoStorageConfig | null {
     accessKeyId,
     secretAccessKey,
   };
+}
+
+/** Delete only the marketplace image prefix belonging to this account. */
+export async function deleteSokoProductImagesByOwner(ownerHash: string) {
+  if (!/^[a-f0-9]{64}$/.test(ownerHash)) throw new Error("Invalid image owner.");
+  const config = getVideoStorageConfig();
+  if (!config) return;
+  const client = createStorageClient(config);
+  const prefix = `uploads/soko-products/${ownerHash}/`;
+  for (;;) {
+    const page = await client.send(new ListObjectsV2Command({
+      Bucket: config.bucket, Prefix: prefix,
+    }));
+    const objects = (page.Contents || []).filter((item) => item.Key?.startsWith(prefix));
+    if (!objects.length) break;
+    const result = await client.send(new DeleteObjectsCommand({
+      Bucket: config.bucket,
+      Delete: { Objects: objects.map((item) => ({ Key: item.Key! })), Quiet: true },
+    }));
+    if (result.Errors?.length) throw new Error("Could not remove all marketplace images.");
+  }
 }
 
 export function videoStorageConfigError(): string {

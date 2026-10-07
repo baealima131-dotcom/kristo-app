@@ -9,6 +9,7 @@ import {
   readSafetyEnforcementCache,
 } from "@/app/api/_lib/safetyEnforcementCache";
 import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
+import { isSokoAccountDeleted } from "@/app/api/_lib/store/sokoAccountStateDb";
 
 import { getCheckoutViewer, getViewer } from "@/app/api/_lib/auth";
 import { describeCheckoutAuthDiag, describeSessionSecretConfig } from "@/app/api/auth/_lib/sessionToken";
@@ -472,6 +473,17 @@ export async function guardCheckoutAuth(
       { status: 401 }
     );
   }
+
+  // A deleted marketplace account may only reach consent (to create a fresh
+  // account) or its deletion endpoint. The Kristo identity remains valid.
+  const path = req.nextUrl.pathname;
+  if (path.startsWith("/api/soko/") &&
+      !path.startsWith("/api/soko/policies/consent") &&
+      path !== "/api/soko/account" &&
+      await isSokoAccountDeleted(viewer.userId)) {
+    return json({ ok: false, error: "Zpora account was deleted. Agree to the current terms to create a new Zpora account." }, { status: 403 });
+  }
+  if (path === "/api/soko/account") return { viewer: { userId: viewer.userId } };
 
   const safetyCached = Boolean(readSafetyEnforcementCache(viewer.userId));
   const blocked = await assertSafetyEnforcementAllows(

@@ -27,7 +27,7 @@ export type SokoPolicyDocument = {
   body: string;
 };
 
-const CURRENT_VERSION = "2026-09-15.1";
+const CURRENT_VERSION = "2026-10-07.1";
 
 export const SOKO_CURRENT_POLICY_VERSIONS: SokoPolicyVersions = {
   termsVersion: CURRENT_VERSION,
@@ -72,12 +72,14 @@ export function sokoPolicyDocuments(): SokoPolicyDocument[] {
       title: "Terms of Use",
       version: versions.termsVersion,
       summary:
-        "SOKO is a marketplace that connects buyers with independent sellers. SOKO does not sell listed goods itself and does not guarantee every seller, product, payment, or delivery.",
+        "Zpora is a marketplace that connects buyers with independent sellers. Zpora does not sell listed goods itself and does not guarantee every seller, product, payment, or delivery.",
       body: [
-        "SOKO is a marketplace in the Kristo ecosystem. It connects buyers with independent sellers. It is not the seller of the goods on listings created by those sellers.",
-        "Buying and selling on SOKO uses your Kristo identity. Listing accuracy, price, payment method, delivery, returns, and disputes are governed by these Terms, the Marketplace Rules, and the independent seller’s own lawful terms where they apply.",
-        "SOKO does not guarantee every seller, product, payment, or delivery. A Chat status of Sent means SOKO accepted the message for sending. It does not mean the message was legally delivered or read.",
-        "SOKO may hide listings, restrict marketplace features, or act on reports of fraud or prohibited activity as described in the Safety Standards.",
+        "Zpora is a marketplace in the Kristo ecosystem. It connects buyers with independent sellers. It is not the seller of the goods on listings created by those sellers.",
+        "Buying and selling on Zpora uses your Kristo identity. Listing accuracy, price, payment method, delivery, returns, and disputes are governed by these Terms, the Marketplace Rules, and the independent seller’s own lawful terms where they apply.",
+        "Zpora does not guarantee every seller, product, payment, or delivery. A Chat status of Sent means Zpora accepted the message for sending. It does not mean the message was legally delivered or read.",
+        "Zpora may hide listings, restrict marketplace features, or act on reports of fraud or prohibited activity as described in the Safety Standards.",
+        "There is zero tolerance for objectionable content or abusive users. Do not post harassment, threats, hate, sexual exploitation, scams, or other harmful content. We may remove offending content and eject abusive users from Zpora.",
+        "When you delete a Zpora-only account, its login and profile are deleted too. If you have used the same login in Kristo App, Zpora deletion preserves the linked Kristo identity and church membership while removing marketplace content.",
         "These documents are an initial English draft. They are not attorney-reviewed legal advice.",
       ].join("\n\n"),
     },
@@ -86,11 +88,11 @@ export function sokoPolicyDocuments(): SokoPolicyDocument[] {
       title: "Privacy Policy",
       version: versions.privacyVersion,
       summary:
-        "SOKO stores the account, listing, order, message, and consent records needed to operate the marketplace. Consent records do not keep IP or device identifiers.",
+        "Zpora stores the account, listing, order, message, and consent records needed to operate the marketplace. Consent records do not keep IP or device identifiers.",
       body: [
-        "SOKO uses your Kristo account to operate buying, selling, Chat, payments, and delivery coordination.",
+        "Zpora uses your account to operate buying, selling, Chat, payments, and delivery coordination.",
         "We keep listing, order, message, and policy-consent records that are required to run those features. A consent record includes the policy versions you accepted, the time, app version, platform, and locale. It does not store IP address or advertising device identifiers.",
-        "You can review these policies anytime in Settings. Withdrawing consent on a device ends SOKO use on that device. It does not delete your Kristo account, listings, orders, or messages.",
+        "You can review these policies anytime in Settings. Withdrawing consent on a device does not delete your account. Delete Zpora Account in Profile → Privacy & Safety removes your marketplace account and public content. A login created only for Zpora and its profile are deleted. If you have used the login in Kristo App, the linked Kristo identity and church membership are preserved. Transaction records may be retained when legally required.",
         "These documents are an initial English draft. They are not attorney-reviewed legal advice.",
       ].join("\n\n"),
     },
@@ -103,8 +105,8 @@ export function sokoPolicyDocuments(): SokoPolicyDocument[] {
       body: [
         "Independent sellers are responsible for the accuracy of titles, photos, price, quantity, condition, and delivery promises.",
         "Do not list prohibited goods, stolen items, or fraudulent offers. Do not impersonate another person or Kristo congregation.",
-        "Payment method, delivery, and returns follow the listing, these rules, and any lawful seller terms. SOKO does not promise a result for every transaction.",
-        "SOKO may remove listings or limit marketplace access when these rules are broken.",
+        "Payment method, delivery, and returns follow the listing, these rules, and any lawful seller terms. Zpora does not promise a result for every transaction.",
+        "Zpora may remove listings or limit marketplace access when these rules are broken.",
         "These documents are an initial English draft. They are not attorney-reviewed legal advice.",
       ].join("\n\n"),
     },
@@ -113,10 +115,11 @@ export function sokoPolicyDocuments(): SokoPolicyDocument[] {
       title: "Community and Safety Standards",
       version: versions.safetyVersion,
       summary:
-        "Report fraud, prohibited goods, and harmful conduct in Safety Center. SOKO can hide listings or restrict marketplace access after a report.",
+        "Report fraud, prohibited goods, and harmful conduct in Safety Center. Zpora can hide listings or restrict marketplace access after a report.",
       body: [
         "Use Safety Center to report fraud, prohibited goods, harassment, or other harmful conduct.",
-        "SOKO can hide listings, restrict selling or buying features, or require additional review. That enforcement is about marketplace use. It does not delete your Kristo App account by itself.",
+        "Users can report listings and block abusive sellers. Blocking hides that seller’s listings immediately and sends a report to Zpora Safety. We review objectionable-content reports within 24 hours and remove offending content and eject users who provided it.",
+        "Zpora can hide listings, restrict selling or buying features, or require additional review. That enforcement is about marketplace use. It does not delete your Kristo App account by itself.",
         "Do not use Chat to evade these standards. A Sent chat state is not proof that a person received or read a warning.",
         "These documents are an initial English draft. They are not attorney-reviewed legal advice.",
       ].join("\n\n"),
@@ -133,11 +136,11 @@ export function publicSokoPolicyBundle() {
     versions,
     documents,
     welcome: {
-      title: "Welcome to SOKO",
-      subtitle: "A marketplace for Kristo members.",
+      title: "Welcome to Zpora",
+      subtitle: "A marketplace for buyers and independent sellers.",
       explanation: [
-        "SOKO connects buyers and independent sellers. Sellers list goods. Buyers browse, message in Chat, and arrange payment and delivery with the seller under these policies.",
-        "Buying and selling use your Kristo identity. SOKO does not guarantee every seller, product, payment, or delivery.",
+        "Zpora connects buyers and independent sellers. Sellers list goods. Buyers browse, message in Chat, and arrange payment and delivery with the seller under these policies.",
+        "Buying and selling use your Kristo identity. Zpora does not guarantee every seller, product, payment, or delivery.",
         "Safety Center is how you report fraud or prohibited goods. Chat Sent means the app accepted a message for sending, not that it was legally delivered or read.",
       ].join(" "),
     },
@@ -211,7 +214,7 @@ export function evaluateSokoPolicyConsent(input: {
     currentAccepted: false,
     enforcement,
     blocking: true,
-    error: "Current SOKO policy consent is required.",
+    error: "Current Zpora policy consent is required.",
     code: "consent_required" as const,
   };
 }

@@ -22,6 +22,7 @@ const ACTIONS = new Set([
   "resolve",
   "escalate",
   "restrict_listing",
+  "ban_seller",
 ]);
 
 function reply(body: unknown, status = 200) {
@@ -75,17 +76,17 @@ export async function POST(
       return reply({ ok: false, error: "That user is not a trusted safety supervisor." }, 400);
     }
     await dbAssignReportToSupervisor({ reportId, supervisorUserId });
-  } else if (action === "restrict_listing") {
+  } else if (action === "restrict_listing" || action === "ban_seller") {
     const product = await getSokoProductById(report.target_id);
     if (!product) return reply({ ok: false, error: "Listing not found." }, 404);
-    if (product.status === "Deleted") {
+    if (action === "restrict_listing" && product.status === "Deleted") {
       return reply({ ok: false, error: "This listing is already restricted." }, 409);
     }
     await dbIssueSokoSafetyDecision({
       reportId,
       actorUserId: auth.viewer.userId,
       actorRole: "system_admin",
-      decisionType: "remove_product",
+      decisionType: action === "ban_seller" ? "ban_seller" : "remove_product",
       reason: note,
       notes: note,
     });

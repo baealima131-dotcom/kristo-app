@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import { getDatabaseUrl } from "./authDb";
+import { assertSokoContentAllowed } from "../sokoContentFilter";
 import { ensureSokoSellerAccessSchema, dbGetSokoSellerAccess } from "./sokoSellerAccessDb";
 import { ensureSokoSafetySchema, dbGetSokoEnforcementStatus } from "./sokoSafetyDb";
 import {
@@ -167,6 +168,7 @@ export async function publishSokoProduct(userId: string, kristoId: string, displ
   }
   const title = text(input.title, 3, 120), location = text(input.location, 2, 160);
   const category = text(input.category, 1, 50), description = text(input.description ?? "", 0, 3000);
+  assertSokoContentAllowed(title, description);
   if (!["TZS", "BIF", "USD"].includes(String(input.currency)) || !["New", "Used"].includes(String(input.condition))) throw new Error("Invalid currency or condition.");
   if (typeof input.price !== "number" || !Number.isFinite(input.price) || input.price <= 0 || input.price > 1e12) throw new Error("Invalid price.");
   if (!Array.isArray(input.imageKeys) || input.imageKeys.length < 1 || input.imageKeys.length > 8 || input.imageKeys.some(key => typeof key !== "string")) throw new Error("Choose 1–8 images.");

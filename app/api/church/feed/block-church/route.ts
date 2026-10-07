@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
     await createModerationEvent({
       eventType: actionType === "block" ? "block_church" : "hide_church",
       actorUserId: ctxOrRes.viewer.userId,
-      actorChurchId: ctxOrRes.churchId || "",
+      actorChurchId: "",
       targetChurchId: churchId,
       reason: reason || (actionType === "block" ? "Blocked church from feed" : "Hidden church from feed"),
       details: "",

@@ -1,3 +1,5 @@
+import { getZporaIdentity, markZporaIdentityShared } from "@/app/api/_lib/store/zporaIdentityDb";
+import { getDatabaseUrl } from "@/app/api/_lib/store/authDb";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
@@ -17,7 +19,7 @@ import { issueSessionToken } from "@/app/api/auth/_lib/sessionToken";
 
 export const runtime = "nodejs";
 
-type Body = { email?: string; identifier?: string; password?: string };
+type Body = { email?: string; identifier?: string; password?: string; clientApp?: string };
 
 const LOGIN_ATTEMPTS = new Map<string, { count: number; lockedUntil: number }>();
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -110,6 +112,13 @@ export async function handleLogin(req: Request) {
       return NextResponse.json({ ok: false, error: "Password is incorrect." }, { status: 401 });
     }
 
+    if (getDatabaseUrl()) {
+      const origin = await getZporaIdentity(user.id);
+      if (origin && !origin.verified_at) {
+        return NextResponse.json({ ok: false, needsVerification: true, error: "Verify your Zpora email first. Use Resend verification code on the account screen." }, { status: 403 });
+      }
+      if (origin && body.clientApp !== "zpora") await markZporaIdentityShared(user.id);
+    }
     clearFailedLogin(rawIdentifier);
 
     const sess = createSession(user.id);

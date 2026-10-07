@@ -521,7 +521,7 @@ export type RestartMessageRequestResult =
 function isVerifiedPendingRestart(
   record: DirectMessageRelationshipRecord | null | undefined,
   initiatorUserId: string
-): record is DirectMessageRelationshipRecord {
+): boolean {
   if (!record) return false;
   return (
     record.requestStatus === "pending" &&
@@ -667,20 +667,21 @@ export async function restartMessageRequestAsPending(args: {
       {}
     );
 
-    if (!result.ok) {
+    const persistedResult = result as RestartMessageRequestResult;
+    if (!persistedResult.ok) {
       console.log("KRISTO_DM_REQUEST_RESTART_FAILED", {
         roomId,
         viewerUserId: initiatorUserId,
         previousStatus,
-        newStatus: result.record?.requestStatus || "",
+        newStatus: persistedResult.record?.requestStatus || "",
         initiatorUserId,
-        code: result.code,
+        code: persistedResult.code,
       });
-      return result;
+      return persistedResult;
     }
 
     const verified = await getDirectMessageRelationshipByRoomId(roomId);
-    if (!isVerifiedPendingRestart(verified, initiatorUserId)) {
+    if (!verified || !isVerifiedPendingRestart(verified, initiatorUserId)) {
       console.log("KRISTO_DM_REQUEST_RESTART_FAILED", {
         roomId,
         viewerUserId: initiatorUserId,
@@ -719,7 +720,7 @@ export async function restartMessageRequestAsPending(args: {
     return {
       ok: true,
       record: verified,
-      restarted: result.restarted,
+      restarted: persistedResult.restarted,
       previousStatus,
     };
   }
@@ -837,7 +838,7 @@ export async function restartMessageRequestAsPending(args: {
 
     // Fresh re-read outside the txn as a hard persistence guarantee.
     const reread = await getDirectMessageRelationshipByRoomId(roomId);
-    if (!isVerifiedPendingRestart(reread, initiatorUserId)) {
+    if (!reread || !isVerifiedPendingRestart(reread, initiatorUserId)) {
       console.log("KRISTO_DM_REQUEST_RESTART_FAILED", {
         roomId,
         viewerUserId: initiatorUserId,

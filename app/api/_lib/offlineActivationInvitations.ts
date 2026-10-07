@@ -375,16 +375,17 @@ async function persistInvitationResponse(input: {
     { invitations: [] }
   );
 
-  if (!updated) throw new Error("Invitation not found");
+  const persisted = updated as OfflineActivationInvitation | null;
+  if (!persisted) throw new Error("Invitation not found");
 
   console.log("KRISTO_OFFLINE_INVITES_RESPOND_PERSISTED", {
     mode: "local-json",
-    invitationId: updated.id,
-    status: updated.status,
-    inviteeUserId: updated.inviteeUserId,
+    invitationId: persisted.id,
+    status: persisted.status,
+    inviteeUserId: persisted.inviteeUserId,
   });
 
-  return updated;
+  return persisted;
 }
 
 export async function respondToInvitation(input: {

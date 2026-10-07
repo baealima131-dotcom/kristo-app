@@ -1331,12 +1331,12 @@ function applyFeedPostImageEnrichment(item: any) {
   const isVideoItem = isVideoFeedPostItem(item);
   const resolved = resolveFeedPostImageFields(item);
   const finalMediaUri = String(
-    resolved.mediaUri || item?.mediaUri || item?.imageUrl || item?.photoUrl || ""
+    ("mediaUri" in resolved ? resolved.mediaUri : "") || item?.mediaUri || item?.imageUrl || item?.photoUrl || ""
   ).trim();
   const finalImageUrl = String(
-    resolved.imageUrl || item?.imageUrl || item?.photoUrl || finalMediaUri || ""
+    ("imageUrl" in resolved ? resolved.imageUrl : "") || item?.imageUrl || item?.photoUrl || finalMediaUri || ""
   ).trim();
-  let finalMediaType = String(resolved.mediaType || item?.mediaType || "")
+  let finalMediaType = String(("mediaType" in resolved ? resolved.mediaType : "") || item?.mediaType || "")
     .trim()
     .toLowerCase();
 
@@ -1432,9 +1432,9 @@ function buildFeedItemImageDebugReport(item: any, rawPayload: Record<string, unk
   return {
     explicitCandidates,
     scannedImageUri: scannedImageUri || null,
-    resolvedMediaUri: resolved.mediaUri || null,
-    resolvedImageUrl: resolved.imageUrl || null,
-    resolvedMediaType: resolved.mediaType || null,
+    resolvedMediaUri: "mediaUri" in resolved ? resolved.mediaUri : null,
+    resolvedImageUrl: "imageUrl" in resolved ? resolved.imageUrl : null,
+    resolvedMediaType: "mediaType" in resolved ? resolved.mediaType : null,
     repaired: resolved.repaired === true,
     imageLikeFields,
   };
@@ -2301,10 +2301,10 @@ async function enrichFeedListItem(
       if (postId) {
         void upsertFeedItem({
           ...item,
+          ...(usingBranded ? brandedVideoPosterFields() : { brandedPoster: false }),
           posterUri,
           videoPosterUri: posterUri,
           thumbnailUri,
-          ...(usingBranded ? brandedVideoPosterFields() : { brandedPoster: false }),
         }).catch(() => {});
       }
     } else if (item?.brandedPoster === true) {
@@ -3472,7 +3472,7 @@ const item = await getFeedItemById(postId);
   const activeSlotCount = getActiveScheduleSlots(updatedItem).length;
   if (activeSlotCount === 0) {
     const scheduleLiveId = String(
-      updatedItem.sourceScheduleId || updatedItem.liveId || updatedItem.id || postId
+      updatedItem.sourceScheduleId || (updatedItem as typeof updatedItem & { liveId?: string }).liveId || updatedItem.id || postId
     ).trim();
     try {
       const { endChurchLiveSessionsForSchedule } = await import("@/app/api/_lib/churchLiveControl");
@@ -3978,7 +3978,7 @@ const item = await getFeedItemById(postId);
           postId,
           slots: [],
           deleted: ended.deleted,
-          endedLiveKeys: ended.endedLiveKeys,
+          endedLiveKeys: ended.ok ? ended.endedLiveKeys : [],
         });
       }
 
@@ -4297,14 +4297,14 @@ const item = await getFeedItemById(postId);
       cleanText(
         body?.name ||
           profile?.fullName ||
-          profile?.displayName ||
+          (profile as typeof profile & { displayName?: string })?.displayName ||
           activeMembership?.name ||
           "Church Member",
         240
       ) || "Church Member";
     const role =
       cleanText(
-        body?.role || profile?.role || activeMembership?.churchRole || "Member",
+        body?.role || (profile as typeof profile & { role?: string })?.role || activeMembership?.churchRole || "Member",
         120
       ) || "Member";
     const avatarUri =

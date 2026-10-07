@@ -268,7 +268,7 @@ export async function GET(req: NextRequest) {
     churchId,
     normalizeMinistryId(ministryId),
     scoped,
-    enrichMember
+    (row) => enrichMember({ ...row, role: row.role === "Leader" || row.role === "Assistant" ? row.role : "Member" })
   );
 
   return json<MinistryMember[]>({ ok: true, data });

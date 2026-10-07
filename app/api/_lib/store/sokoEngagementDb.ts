@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import { getDatabaseUrl } from "./authDb";
+import { assertSokoContentAllowed } from "../sokoContentFilter";
 import { getSokoProductById } from "./sokoProductsDb";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import {
@@ -265,6 +266,7 @@ export async function dbListSavedProducts(userId: string) {
 export async function dbCreateProductComment(productId: string, userId: string, body: unknown) {
   const clean = cleanCommentBody(body);
   if (!clean) throw Object.assign(new Error("Comment must be 1–500 characters."), { status: 400 });
+  assertSokoContentAllowed(clean);
   await ensureSokoEngagementSchema();
   const sql = sqlClient();
   const limited = await dbConsumeEngagementRateLimit(

@@ -99,7 +99,7 @@ export function actionTargetStatus(action: string): ReportStatus | null {
   if (action === "assign") return "assigned";
   if (action === "escalate") return "escalated";
   if (action === "dismiss") return "dismissed";
-  if (action === "resolve" || action === "restrict_listing") return "resolved";
+  if (action === "resolve" || action === "restrict_listing" || action === "ban_seller") return "resolved";
   return null;
 }
 

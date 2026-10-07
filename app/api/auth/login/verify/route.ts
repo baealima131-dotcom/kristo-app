@@ -1,3 +1,5 @@
+import { markZporaIdentityShared } from "@/app/api/_lib/store/zporaIdentityDb";
+import { getDatabaseUrl } from "@/app/api/_lib/store/authDb";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
@@ -49,6 +51,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (getDatabaseUrl()) await markZporaIdentityShared(v.userId);
     const now = Date.now();
     await updateUserPersist(v.userId, { lastOtpAt: now, lastSeenAt: now });
 

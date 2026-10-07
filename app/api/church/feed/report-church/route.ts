@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
     const eventId = await createModerationEvent({
       eventType: "report_church",
       actorUserId: ctxOrRes.viewer.userId,
-      actorChurchId: ctxOrRes.churchId || "",
+      actorChurchId: "",
       targetChurchId: churchId,
       reason,
       details,

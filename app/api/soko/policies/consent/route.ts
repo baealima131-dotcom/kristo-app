@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { guardCheckoutAuth } from "@/app/api/_lib/rbac";
+import { reactivateSokoAccount } from "@/app/api/_lib/store/sokoAccountStateDb";
 import {
   evaluateSokoPolicyConsent,
   parseSokoConsentClientContext,
@@ -83,6 +84,7 @@ export async function POST(req: NextRequest) {
       platform: context.platform,
       locale: context.locale,
     });
+    await reactivateSokoAccount(auth.viewer.userId);
     const evaluation = evaluateSokoPolicyConsent({
       current: SOKO_CURRENT_POLICY_VERSIONS,
       accepted: acceptedVersionsFromConsent(accepted.record),
