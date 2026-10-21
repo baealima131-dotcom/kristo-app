@@ -179,6 +179,14 @@ const ITEMS: Item[] = [
     href: "/more/kristo-guide",
   },
   {
+    key: "uvumbuzi",
+    title: "Uvumbuzi Lab",
+    sub: "Inventions • tasks • reports",
+    iconLib: "ion",
+    icon: "flask-outline",
+    href: "/more/uvumbuzi",
+  },
+  {
     key: "church",
     title: "Church",
     sub: "Create • Join (unlock Church tab)",
@@ -201,6 +209,7 @@ const NO_CHURCH_ONBOARDING_ORDER = [
   "tlmc",
   "church",
   "kristo_guide",
+  "uvumbuzi",
   "notifications",
 ] as const;
 

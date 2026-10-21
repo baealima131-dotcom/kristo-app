@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { readCookieSessionUserId } from "@/app/api/auth/_lib/session";
-import { verifySessionToken } from "@/app/api/auth/_lib/sessionToken";
+import { verifiedUvumbuziUserId } from "@/app/api/_lib/uvumbuziIdentity";
 import {
   issueUvumbuziBridgeToken,
   uvumbuziBridgeConfigFromEnv,
@@ -9,20 +8,6 @@ import {
 export const runtime = "nodejs";
 
 const NO_STORE = { "Cache-Control": "no-store" };
-
-/**
- * Identity for the Lab bridge comes ONLY from a verified Kristo session:
- * the HMAC-signed mobile token, or the server-side web cookie session.
- * Raw x-kristo-user-id / dev header identities are deliberately not accepted.
- */
-async function verifiedUserId(req: Request): Promise<string> {
-  const token = String(req.headers.get("x-kristo-session-token") || "").trim();
-  if (token) {
-    const v = verifySessionToken(token);
-    return v.ok && v.userId ? v.userId : "";
-  }
-  return readCookieSessionUserId();
-}
 
 export async function POST(req: Request) {
   const config = uvumbuziBridgeConfigFromEnv();
@@ -33,7 +18,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const userId = await verifiedUserId(req);
+  const userId = await verifiedUvumbuziUserId(req);
   if (!userId) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401, headers: NO_STORE });
   }
