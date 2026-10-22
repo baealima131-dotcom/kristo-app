@@ -191,10 +191,16 @@ async function relay(input: {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return { status: 400, body: { ok: false, error: "Body must be a JSON object" } };
     }
-    // Invite by public Kristo ID: resolved here, on the Kristo server; the Lab only ever sees the internal id.
+    // Invite ONLY by public Kristo ID: never permit clients to submit a raw
+    // internal subject, even when they own the project. Resolution is performed
+    // by this trusted Kristo server, not by the phone or Lab.
     const isInvite = segments.length === 3 && segments[0] === "projects" && segments[2] === "members";
-    const inviteKristoId = (parsed as { kristoId?: unknown }).kristoId;
-    if (isInvite && inviteKristoId !== undefined) {
+    if (isInvite) {
+      const keys = Object.keys(parsed);
+      if (keys.length !== 1 || keys[0] !== "kristoId") {
+        return { status: 400, body: { ok: false, error: "Invite by Kristo ID only", reason: "kristo_id_required" } };
+      }
+      const inviteKristoId = (parsed as { kristoId?: unknown }).kristoId;
       if (typeof inviteKristoId !== "string" || !KRISTO_PUBLIC_ID.test(inviteKristoId.trim())) {
         return { status: 400, body: { ok: false, error: "Enter a Kristo ID like KR7-12345AB", reason: "invalid_kristo_id" } };
       }
