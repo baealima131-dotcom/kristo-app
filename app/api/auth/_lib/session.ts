@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
+import { issueSessionToken, verifySessionToken } from "./sessionToken";
 import {
   logDeprecatedHeaderSession,
   resolvePresentedMobileSession,
@@ -457,7 +458,8 @@ const SESSION_MAX_AGE_MS = SESSION_MAX_AGE_SEC * 1000;
 
 export function createSession(userId: string) {
   const store = sessStore();
-  const id = makeId("sess");
+  const id = issueSessionToken(userId, SESSION_MAX_AGE_MS);
+  if (!id) throw new Error("Cannot create secure Kristo session");
   const now = Date.now();
   const expiresAt = now + SESSION_MAX_AGE_MS;
   store[id] = { id, userId, createdAt: now, lastSeenAt: now, expiresAt };
@@ -511,6 +513,11 @@ export async function readSession(req?: any) {
     const s = store[sid];
     if (s && Date.now() <= s.expiresAt) return s;
     if (s) delete store[sid];
+    const signed = verifySessionToken(sid);
+    if (signed.ok && signed.userId) {
+      const now = Date.now();
+      return { id: sid, userId: signed.userId, createdAt: now, lastSeenAt: now, expiresAt: now + SESSION_MAX_AGE_MS };
+    }
   }
 
   return devAutoSession();
@@ -524,12 +531,10 @@ export async function readCookieSessionUserId(): Promise<string> {
     if (!sid) return "";
     const store = sessStore();
     const session = store[sid];
-    if (!session) return "";
-    if (Date.now() > session.expiresAt) {
-      delete store[sid];
-      return "";
-    }
-    return String(session.userId || "").trim();
+    if (session && Date.now() <= session.expiresAt) return String(session.userId || "").trim();
+    if (session) delete store[sid];
+    const signed = verifySessionToken(sid);
+    return signed.ok ? String(signed.userId || "").trim() : "";
   } catch {
     return "";
   }
