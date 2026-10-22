@@ -226,6 +226,7 @@ export default function UvumbuziPage() {
                         {project.description ? <p style={{ fontSize: 13, color: "#b6bfcb" }}>{project.description}</p> : null}
                         <div style={{ color: "#b6bfcb", fontSize: 12, marginBottom: 12 }}>Ruhusa: {project.role}</div>
                         <button type="button" style={secondary} disabled={historyLoading} onClick={() => { void openHistory(project.id); }}>Fungua historia</button>
+                        <a href={`/uvumbuzi/${encodeURIComponent(project.id)}`} style={{ ...secondary, textDecoration: "none", display: "inline-block", marginLeft: 8 }}>Fungua ushirikiano</a>
                       </div>
                     ))}
                   </div>
