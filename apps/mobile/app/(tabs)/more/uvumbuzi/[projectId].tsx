@@ -9,6 +9,7 @@ import {
   type LabProjectHistory,
   type LabProposal,
   type LabResult,
+  type LabPeople,
   type LabTask,
 } from "@/src/lib/uvumbuziLabApi";
 import {
@@ -26,6 +27,7 @@ import {
   s,
   when,
   who,
+  KRISTO_ID_PATTERN,
 } from "@/src/features/uvumbuzi/ui";
 
 type Tab = "tasks" | "proposals" | "team" | "history";
@@ -95,20 +97,20 @@ export default function UvumbuziProjectScreen() {
             <ActivityIndicator color={UV.teal} />
           </View>
         ) : tab === "tasks" ? (
-          <TasksTab data={data} me={me} projectId={String(projectId)} reload={load} />
+          <TasksTab data={data} me={me} people={data.people ?? {}} projectId={String(projectId)} reload={load} />
         ) : tab === "proposals" ? (
-          <ProposalsTab data={data} me={me} projectId={String(projectId)} reload={load} />
+          <ProposalsTab data={data} me={me} people={data.people ?? {}} projectId={String(projectId)} reload={load} />
         ) : tab === "team" ? (
-          <TeamTab data={data} me={me} projectId={String(projectId)} reload={load} />
+          <TeamTab data={data} me={me} people={data.people ?? {}} projectId={String(projectId)} reload={load} />
         ) : (
-          <HistoryTab activity={data.activity} me={me} />
+          <HistoryTab activity={data.activity} me={me} people={data.people ?? {}} />
         )}
       </ScrollView>
     </UvScreen>
   );
 }
 
-type TabProps = { data: LabProjectHistory; me: string; projectId: string; reload: () => Promise<void> };
+type TabProps = { data: LabProjectHistory; me: string; people: LabPeople; projectId: string; reload: () => Promise<void> };
 
 /** Run a Lab action; on success reload, on failure keep the form and show why. */
 function useAction() {
@@ -126,14 +128,14 @@ function useAction() {
   return { busy, error, setError, run };
 }
 
-function TasksTab({ data, me, projectId, reload }: TabProps) {
+function TasksTab({ data, me, people, projectId, reload }: TabProps) {
   const canManage = data.role !== "member";
   const [assigning, setAssigning] = useState(false);
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
   const [assignee, setAssignee] = useState("");
   const a = useAction();
-  const people = [data.ownerSubject, ...(data.members ?? []).map((m) => m.subject)];
+  const assignees = [data.ownerSubject, ...(data.members ?? []).map((m) => m.subject)];
 
   const assign = async () => {
     if (!title.trim() || !assignee) return a.setError("Add a title and choose who will do it.");
@@ -156,9 +158,9 @@ function TasksTab({ data, me, projectId, reload }: TabProps) {
             <Field label="Details (optional)" value={details} onChangeText={setDetails} multiline maxLength={5000} />
             <Text style={s.label}>Assign to</Text>
             <View style={[s.row, { flexWrap: "wrap" }]}>
-              {people.map((p) => (
+              {assignees.map((p) => (
                 <Pressable key={p} onPress={() => setAssignee(p)} accessibilityRole="radio" accessibilityState={{ checked: assignee === p }}>
-                  <Chip label={who(p, me)} tone={assignee === p ? "teal" : "grey"} />
+                  <Chip label={who(p, me, people)} tone={assignee === p ? "teal" : "grey"} />
                 </Pressable>
               ))}
             </View>
@@ -175,13 +177,13 @@ function TasksTab({ data, me, projectId, reload }: TabProps) {
       {data.tasks.length === 0 ? (
         <Notice icon="checkbox-outline" title="No tasks yet" text={canManage ? "Assign the first task to someone on the team." : "Tasks assigned to you will appear here."} />
       ) : (
-        data.tasks.map((t) => <TaskCard key={t.id} task={t} me={me} canReview={canManage && t.assigneeSubject !== me} reload={reload} />)
+        data.tasks.map((t) => <TaskCard key={t.id} task={t} me={me} people={people} canReview={canManage && t.assigneeSubject !== me} reload={reload} />)
       )}
     </>
   );
 }
 
-function TaskCard({ task, me, canReview, reload }: { task: LabTask; me: string; canReview: boolean; reload: () => Promise<void> }) {
+function TaskCard({ task, me, people, canReview, reload }: { task: LabTask; me: string; people: LabPeople; canReview: boolean; reload: () => Promise<void> }) {
   const [open, setOpen] = useState(task.status === "changes_requested" || (task.status === "assigned" && task.assigneeSubject === me));
   const [note, setNote] = useState("");
   const [evidence, setEvidence] = useState("");
@@ -215,7 +217,7 @@ function TaskCard({ task, me, canReview, reload }: { task: LabTask; me: string; 
         </View>
         <View style={s.row}>
           <TaskStatusChip status={task.status} />
-          <Text style={s.meta}>for {who(task.assigneeSubject, me)} • {when(task.createdAt)}</Text>
+          <Text style={s.meta}>for {who(task.assigneeSubject, me, people)} • {when(task.createdAt)}</Text>
         </View>
       </Pressable>
       {open ? (
@@ -223,13 +225,13 @@ function TaskCard({ task, me, canReview, reload }: { task: LabTask; me: string; 
           {task.details ? <Text style={s.body}>{task.details}</Text> : null}
           {task.status === "changes_requested" && lastCorrection ? (
             <View style={{ backgroundColor: UV.redSoft, borderRadius: 12, padding: 10, gap: 4 }}>
-              <Text style={[s.label, { color: UV.red }]}>Correction requested by {who(lastCorrection.reviewerSubject, me)}</Text>
+              <Text style={[s.label, { color: UV.red }]}>Correction requested by {who(lastCorrection.reviewerSubject, me, people)}</Text>
               <Text style={s.body}>{lastCorrection.reason || "Please revise and send again."}</Text>
             </View>
           ) : null}
           {task.reports.map((r) => (
             <View key={r.id} style={{ borderLeftWidth: 2, borderLeftColor: UV.teal, paddingLeft: 10, gap: 2 }}>
-              <Text style={s.meta}>Report by {who(r.authorSubject, me)} • {when(r.createdAt)}</Text>
+              <Text style={s.meta}>Report by {who(r.authorSubject, me, people)} • {when(r.createdAt)}</Text>
               <Text style={s.body}>{r.note}</Text>
               {r.evidenceUrl ? <Text selectable style={[s.meta, { color: UV.teal }]}>{r.evidenceUrl}</Text> : null}
             </View>
@@ -257,7 +259,7 @@ function TaskCard({ task, me, canReview, reload }: { task: LabTask; me: string; 
   );
 }
 
-function ProposalsTab({ data, me, projectId, reload }: TabProps) {
+function ProposalsTab({ data, me, people, projectId, reload }: TabProps) {
   const [writing, setWriting] = useState(false);
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState("");
@@ -293,13 +295,13 @@ function ProposalsTab({ data, me, projectId, reload }: TabProps) {
       {data.proposals.length === 0 ? (
         <Notice icon="document-text-outline" title="No proposals" text="Nothing has been proposed yet." />
       ) : (
-        data.proposals.map((p) => <ProposalCard key={p.id} p={p} me={me} isOwner={data.role === "owner"} reload={reload} />)
+        data.proposals.map((p) => <ProposalCard key={p.id} p={p} me={me} people={people} isOwner={data.role === "owner"} reload={reload} />)
       )}
     </>
   );
 }
 
-function ProposalCard({ p, me, isOwner, reload }: { p: LabProposal; me: string; isOwner: boolean; reload: () => Promise<void> }) {
+function ProposalCard({ p, me, people, isOwner, reload }: { p: LabProposal; me: string; people: LabPeople; isOwner: boolean; reload: () => Promise<void> }) {
   const [reason, setReason] = useState("");
   const a = useAction();
   const pending = p.status === "pending";
@@ -314,7 +316,7 @@ function ProposalCard({ p, me, isOwner, reload }: { p: LabProposal; me: string; 
         <ProposalStatusChip status={p.status} />
       </View>
       <Text style={s.body}>{p.summary}</Text>
-      <Text style={s.meta}>by {who(p.proposerSubject, me)} • {when(p.createdAt)}</Text>
+      <Text style={s.meta}>by {who(p.proposerSubject, me, people)} • {when(p.createdAt)}</Text>
       {p.decisionReason ? <Text style={s.body}>Owner: {p.decisionReason}</Text> : null}
       {pending && isOwner ? (
         <>
@@ -333,26 +335,26 @@ function ProposalCard({ p, me, isOwner, reload }: { p: LabProposal; me: string; 
   );
 }
 
-function TeamTab({ data, me, projectId, reload }: TabProps) {
+function TeamTab({ data, me, people, projectId, reload }: TabProps) {
   const isOwner = data.role === "owner";
   const [subject, setSubject] = useState("");
   const a = useAction();
   const add = async () => {
     const id = subject.trim();
-    if (!id) return a.setError("Enter the person's Lab ID (shown on their UVUMBUZI Lab screen).");
-    const ok = await a.run("add", () => uvumbuziLab.addMember(projectId, id), reload);
+    if (!KRISTO_ID_PATTERN.test(id)) return a.setError("Enter their Kristo ID, like KR7-12345AB (shown on their UVUMBUZI Lab screen).");
+    const ok = await a.run("add", () => uvumbuziLab.addMember(projectId, id.toUpperCase()), reload);
     if (ok) setSubject("");
   };
   return (
     <>
       <Card>
         <View style={[s.row, { justifyContent: "space-between" }]}>
-          <Text style={s.body}>{who(data.ownerSubject, me)}</Text>
+          <Text style={s.body}>{who(data.ownerSubject, me, people)}</Text>
           <Chip label="Owner" />
         </View>
         {(data.members ?? []).map((m) => (
           <View key={m.subject} style={[s.row, { justifyContent: "space-between" }]}>
-            <Text style={[s.body, { flex: 1 }]}>{who(m.subject, me)}</Text>
+            <Text style={[s.body, { flex: 1 }]}>{who(m.subject, me, people)}</Text>
             {isOwner ? (
               <Pressable
                 onPress={() => void a.run(m.subject, () => uvumbuziLab.setRole(projectId, m.subject, m.role === "leader" ? "member" : "leader"), reload)}
@@ -370,7 +372,7 @@ function TeamTab({ data, me, projectId, reload }: TabProps) {
       {isOwner ? (
         <Card>
           <Text style={s.h2}>Add a collaborator</Text>
-          <Field label="Their Lab ID" value={subject} onChangeText={setSubject} autoCapitalize="none" autoCorrect={false} placeholder="u_…" />
+          <Field label="Their Kristo ID" value={subject} onChangeText={setSubject} autoCapitalize="characters" autoCorrect={false} placeholder="KR7-…" />
           <Text style={s.meta}>Leaders can assign tasks and review reports. Only you can add people, change roles and decide proposals.</Text>
           <Button label="Add" icon="person-add-outline" busy={a.busy === "add"} onPress={add} />
         </Card>
@@ -395,14 +397,14 @@ const ACTION_LABEL: Record<string, string> = {
   proposal_withdrawn: "withdrew a proposal",
 };
 
-function HistoryTab({ activity, me }: { activity: LabActivity[]; me: string }) {
+function HistoryTab({ activity, me, people }: { activity: LabActivity[]; me: string; people: LabPeople }) {
   if (!activity.length) return <Notice icon="time-outline" title="No history yet" text="Project events will be listed here." />;
   return (
     <Card>
       {[...activity].reverse().map((e) => (
         <View key={e.seq} style={{ gap: 2, paddingVertical: 4 }}>
           <Text style={s.body}>
-            <Text style={{ fontWeight: "800" }}>{who(e.actorSubject, me)}</Text> {ACTION_LABEL[e.action] ?? e.action}
+            <Text style={{ fontWeight: "800" }}>{who(e.actorSubject, me, people)}</Text> {ACTION_LABEL[e.action] ?? e.action}
             {e.detail && e.action !== "report_submitted" && e.action !== "task_assigned" ? ` — ${e.detail}` : ""}
           </Text>
           <Text style={s.meta}>{when(e.createdAt)}</Text>

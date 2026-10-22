@@ -10,7 +10,7 @@ type State =
   | { kind: "loading" }
   | { kind: "not_connected" }
   | { kind: "error"; message: string }
-  | { kind: "ready"; subject: string; projects: LabProjectSummary[] };
+  | { kind: "ready"; subject: string; kristoId: string | null; projects: LabProjectSummary[] };
 
 /** UVUMBUZI Lab: the viewer's invention projects, using their existing Kristo account. */
 export default function UvumbuziProjectsScreen() {
@@ -26,7 +26,7 @@ export default function UvumbuziProjectsScreen() {
 
   const load = useCallback(async () => {
     const r = await uvumbuziLab.me();
-    if (r.ok) setState({ kind: "ready", subject: r.data.subject, projects: r.data.projects });
+    if (r.ok) setState({ kind: "ready", subject: r.data.subject, kristoId: r.data.kristoId ?? null, projects: r.data.projects });
     else if (isLabNotConnected(r)) setState({ kind: "not_connected" });
     else setState({ kind: "error", message: r.error });
   }, []);
@@ -90,8 +90,8 @@ export default function UvumbuziProjectsScreen() {
                 <Ionicons name="person-circle-outline" size={20} color={UV.teal} />
                 <Text style={s.h2}>Signed in with Kristo</Text>
               </View>
-              <Text style={s.meta}>Your Lab ID (share it with a project owner to be invited)</Text>
-              <Text selectable style={[s.body, { fontFamily: "Courier" }]}>{state.subject}</Text>
+              <Text style={s.meta}>Your Kristo ID — share it with a project owner to be invited</Text>
+              <Text selectable style={[s.body, { fontFamily: "Courier" }]}>{state.kristoId ?? state.subject}</Text>
             </Card>
 
             {creating ? (
@@ -113,7 +113,7 @@ export default function UvumbuziProjectsScreen() {
               <Notice
                 icon="bulb-outline"
                 title="No projects yet"
-                text="Create a project, or ask a project owner to add your Lab ID as a collaborator."
+                text="Create a project, or ask a project owner to add your Kristo ID as a collaborator."
               />
             ) : (
               state.projects.map((p) => (

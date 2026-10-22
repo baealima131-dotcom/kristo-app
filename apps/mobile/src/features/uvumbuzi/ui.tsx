@@ -4,7 +4,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { LabProposalStatus, LabRole, LabTaskStatus } from "@/src/lib/uvumbuziLabApi";
+import type { LabPeople, LabProposalStatus, LabRole, LabTaskStatus } from "@/src/lib/uvumbuziLabApi";
 
 export const UV = {
   bg: "#061418",
@@ -125,11 +125,16 @@ export function ErrorLine({ text }: { text: string | null }) {
   );
 }
 
-/** Show Kristo user ids compactly; "You" for the viewer. */
-export function who(subject: string, me: string): string {
+/** "You" for the viewer, otherwise the person's public Kristo ID; a short internal id only as a fallback. */
+export function who(subject: string, me: string, people?: LabPeople): string {
   if (subject === me) return "You";
+  const kristoId = people?.[subject]?.kristoId;
+  if (kristoId) return kristoId;
   return subject.length > 14 ? `${subject.slice(0, 6)}…${subject.slice(-4)}` : subject;
 }
+
+/** Public Kristo ID format, e.g. KR7-12345AB (same rule the Kristo server enforces). */
+export const KRISTO_ID_PATTERN = /^KR[0-9A-Z]?-[0-9A-Z]{3,20}$/i;
 
 export function when(iso: string): string {
   const d = new Date(iso);

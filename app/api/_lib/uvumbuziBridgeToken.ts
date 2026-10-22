@@ -15,6 +15,7 @@ import crypto from "node:crypto";
  */
 
 export const UVUMBUZI_BRIDGE_TOKEN_TTL_SECONDS = 300;
+export const CLOCK_SKEW_SECONDS = 30;
 
 export type UvumbuziBridgeConfig = {
   privateKey: crypto.KeyObject;
@@ -55,7 +56,8 @@ export function issueUvumbuziBridgeToken(
   const exp = iat + UVUMBUZI_BRIDGE_TOKEN_TTL_SECONDS;
   const head = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const body = b64url(
-    JSON.stringify({ iss: config.issuer, aud: config.audience, sub, iat, nbf: iat, exp, jti: crypto.randomUUID() })
+    // nbf 30 s in the past tolerates a Lab clock slightly behind Kristo's (the Lab allows the same skew).
+    JSON.stringify({ iss: config.issuer, aud: config.audience, sub, iat, nbf: iat - CLOCK_SKEW_SECONDS, exp, jti: crypto.randomUUID() })
   );
   const sig = crypto.sign("RSA-SHA256", Buffer.from(`${head}.${body}`), config.privateKey).toString("base64url");
   return { token: `${head}.${body}.${sig}`, expiresAt: new Date(exp * 1000).toISOString() };

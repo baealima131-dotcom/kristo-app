@@ -41,6 +41,8 @@ export type LabProposal = {
 };
 export type LabActivity = { seq: number; actorSubject: string; action: string; targetType: string; targetId: string; detail: string; createdAt: string };
 export type LabMember = { subject: string; role: "leader" | "member"; invitedBy: string; createdAt: string };
+/** Added by the Kristo server: internal user id -> public Kristo ID (never names or contact details). */
+export type LabPeople = Record<string, { kristoId: string }>;
 export type LabProjectHistory = {
   role: LabRole;
   projectId: string;
@@ -50,6 +52,7 @@ export type LabProjectHistory = {
   tasks: LabTask[];
   proposals: LabProposal[];
   activity: LabActivity[];
+  people?: LabPeople;
 };
 
 export type LabError = { ok: false; error: string; status?: number; reason?: string };
@@ -74,11 +77,12 @@ export function isLabNotConnected(r: LabResult<unknown>): boolean {
 }
 
 export const uvumbuziLab = {
-  me: () => get<{ subject: string; projects: LabProjectSummary[] }>("me"),
+  me: () => get<{ subject: string; kristoId?: string | null; people?: LabPeople; projects: LabProjectSummary[] }>("me"),
   createProject: (name: string, description: string) =>
     post<{ id: string; name: string; role: LabRole }>("projects", { name, description }),
   history: (projectId: string) => get<LabProjectHistory>(`projects/${seg(projectId)}/history`),
-  addMember: (projectId: string, subject: string) => post(`projects/${seg(projectId)}/members`, { subject }),
+  /** Invite by public Kristo ID (e.g. KR7-12345AB); the Kristo server resolves it. */
+  addMember: (projectId: string, kristoId: string) => post(`projects/${seg(projectId)}/members`, { kristoId }),
   setRole: (projectId: string, subject: string, role: "leader" | "member") =>
     post(`projects/${seg(projectId)}/members/${seg(subject)}/role`, { role }),
   createTask: (projectId: string, title: string, details: string, assigneeSubject: string) =>

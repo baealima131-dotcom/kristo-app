@@ -54,6 +54,12 @@ export async function localGetUserById(userId: string): Promise<UserRecord | nul
   return readLocalUsers().find((u) => u.id === userId) || null;
 }
 
+export async function localFindUserByKristoId(kristoId: string): Promise<UserRecord | null> {
+  const key = String(kristoId || "").trim().toUpperCase();
+  if (!key) return null;
+  return readLocalUsers().find((u) => String(u.kristoId || "").trim().toUpperCase() === key) || null;
+}
+
 export async function localFindUserByEmail(email: string): Promise<UserRecord | null> {
   const key = normEmailLocal(email);
   return readLocalUsers().find((u) => normEmailLocal(u.email || "") === key) || null;

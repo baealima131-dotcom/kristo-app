@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifiedUvumbuziUserId } from "@/app/api/_lib/uvumbuziIdentity";
 import { labProxyConfigFromEnv, proxyToLab } from "@/app/api/_lib/uvumbuziLabProxy";
+import { uvumbuziPeople } from "@/app/api/_lib/uvumbuziPeople";
 
 export const runtime = "nodejs";
 
@@ -28,6 +29,7 @@ async function handle(req: Request, ctx: Ctx, method: "GET" | "POST") {
     bodyText: method === "POST" ? await req.text() : undefined,
     verifiedUserId: userId,
     config,
+    people: uvumbuziPeople,
   });
   return NextResponse.json(result.body, { status: result.status, headers: NO_STORE });
 }
