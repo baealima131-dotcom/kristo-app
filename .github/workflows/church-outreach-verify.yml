@@ -1,0 +1,33 @@
+name: Church Outreach Preview Checks
+on:
+  push:
+    branches:
+      - work/church-outreach-more-card-v1
+  workflow_dispatch:
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck:web
+  mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
