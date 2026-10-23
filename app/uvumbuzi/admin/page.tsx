@@ -118,6 +118,21 @@ export default function AgentAdmin(){
         <section style={st.panel}><h2 style={{marginTop:0}}>Ufuatiliaji wa kazi za kesho</h2>{tomorrow.length===0?<p style={st.sub}>Hakuna kazi iliyopangiwa tarehe ya kesho. Nenda Kazi za kesho kuigawa.</p>:tomorrow.map(t=><div key={t.id} className="taskRow" style={{borderBottom:"1px solid #32516a",padding:"10px 0"}}><strong>{t.title}</strong><div style={st.sub}>{display(t.assigneeSubject)} · {t.status}</div></div>)}<button style={{...st.dark,marginTop:12}} onClick={()=>setView("tasks")}>Gawa kazi →</button></section>
         <section style={st.panel}><h2 style={{marginTop:0}}>Ripoti zinazohitaji ukaguzi</h2>{awaiting.length===0?<p style={st.sub}>Hakuna ripoti inayosubiri maamuzi.</p>:awaiting.map(t=><div key={t.id} style={{padding:"11px 0",borderBottom:"1px solid #32516a"}}><b>{t.title}</b><div style={st.sub}>{display(t.assigneeSubject)} · Inasubiri ukaguzi</div></div>)}<button style={{...st.dark,marginTop:12}} onClick={()=>setView("reports")}>Tazama ripoti & picha →</button></section>
       </div>}
+
+      {view==="supervisors"&&<section style={st.panel}><h2 style={{marginTop:0}}>Supervisors wa mradi</h2>
+        <p style={st.sub}>Mmiliki atengeneze Supervisor Code na aitume kwa mtu aliyeingia Kristo. Supervisor ataweza kuwaalika agents kwa codes zake pekee.</p>
+        {!operations?.supervisors.length?<p style={st.sub}>Hakuna supervisor aliyejiunga bado.</p>:operations.supervisors.map(sv=><div key={sv.subject} style={{padding:"12px 0",borderBottom:"1px solid #335a7c"}}><b>{display(sv.subject)}</b><div style={st.sub}>Agents: {operations.agents.filter(a=>a.supervisorSubject===sv.subject).length} · Church submissions: {outreach.filter(x=>x.supervisorSubject===sv.subject).length} · {timeStamp(sv.createdAt)}</div></div>)}
+        {owner?<button style={{...st.gold,marginTop:12}} onClick={()=>{setCodeRole("supervisor");setView("invites");}}>+ Invite Supervisor</button>:null}
+      </section>}
+      {view==="churches"&&<section style={st.panel}><h2 style={{marginTop:0}}>Church outreach & uthibitisho</h2><p style={st.sub}>Agent huingiza Church ID na Kristo ID ya mwakilishi aliyefundishwa; jibu la mwakilishi ndilo linalotofautisha confirmed, needs follow-up au declined. Church ID yenyewe bado haijathibitishwa dhidi ya registry ya Kristo.</p>
+        {!outreach.length?<p style={st.sub}>Hakuna church iliyowasilishwa bado.</p>:outreach.map(o=><article key={o.id} style={{border:"1px solid #3c6283",borderRadius:12,background:"#081c30",padding:14,marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><strong>Church ID: {o.churchId}</strong><b style={{color:o.status==="confirmed"?"#8eeac3":"#f5cd82"}}>{o.status}</b></div>
+          <p style={st.sub}>Church Kristo ID: {display(o.churchPersonSubject)} · Agent: {display(o.agentSubject)} · Supervisor: {display(o.supervisorSubject)}</p>
+          <p style={st.sub}>Imeingizwa: {timeStamp(o.createdAt)} · Jibu: {o.respondedAt?timeStamp(o.respondedAt):"Pending"}</p>
+          {o.note?<p style={{whiteSpace:"pre-wrap"}}>Maelezo ya agent: {o.note}</p>:null}
+          {o.status!=="pending"?<p style={{whiteSpace:"pre-wrap"}}>Alifundishwa: {o.trained===1?"Ndiyo":"Hapana"} · Alielewa: {o.understood===1?"Ndiyo":"Hapana"} {o.responseNote?"· "+o.responseNote:""}</p>:<p style={st.sub}>Barua ya kuthibitisha iko kwenye akaunti ya Kristo ya mtu aliyetajwa.</p>}
+        </article>)}
+      </section>}
       {view==="agents"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:13}}>
         <section style={st.panel}><h2 style={{marginTop:0}}>Wafanyakazi / Agents ({operations?.agents.length||0})</h2><p style={st.sub}>Watu waliopewa ruhusa kwenye mradi huu; jina la agent linaoneshwa kwa Kristo ID inayopatikana.</p>
           {!operations?.agents.length?<p style={st.sub}>Hakuna agent wa code bado.</p>:operations.agents.map(m=><div key={m.agentSubject} style={{borderBottom:"1px solid #32516a",padding:"11px 0",display:"flex",gap:12,alignItems:"center"}}><div style={{borderRadius:"50%",background:"#134c75",padding:12}}>♙</div><div><strong>{display(m.agentSubject)}</strong><div style={st.sub}>Supervisor: {display(m.supervisorSubject)} · {timeStamp(m.enrolledAt)}</div></div></div>)}
