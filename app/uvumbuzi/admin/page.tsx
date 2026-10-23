@@ -8,7 +8,8 @@ type Report = { id: string; note: string; evidenceUrl?: string | null; createdAt
 type Task = { id: string; title: string; details?: string; assigneeSubject: string; status: "assigned" | "submitted" | "approved" | "changes_requested"; dueDate?: string | null; reports?: Report[]; createdAt?: string };
 type Activity = { seq: number; action: string; actorSubject: string; createdAt?: string };
 type History = { projectId: string; role: "owner" | "leader" | "member"; ownerSubject: string; members: Member[]; tasks: Task[]; activity: Activity[]; people?: Record<string,{ kristoId: string }> };
-type Invite = { id: string; codeSuffix: string; label: string; expiresAt: string; redeemedAt?: string | null; redeemedBy?: string | null };
+type Operations = {role:"owner"|"leader";supervisors:{subject:string;createdAt:string}[];agents:{agentSubject:string;supervisorSubject:string;enrolledAt:string}[];claims:{id:string;churchId:string;churchPersonSubject:string;agentSubject:string;supervisorSubject:string;status:string;note:string;trained:number|null;understood:number|null;responseNote:string;createdAt:string;respondedAt?:string|null}[];people?:Record<string,{kristoId:string}>};
+type Invite = { role?:string;createdBy?:string;id: string; codeSuffix: string; label: string; expiresAt: string; redeemedAt?: string | null; redeemedBy?: string | null };
 type Viewer = { kristoId?: string; projects?: Project[] };
 const st: Record<string,CSSProperties> = {
   page:{minHeight:"100dvh",background:"radial-gradient(ellipse at 50% 0,#143456,#06111e 75%)",color:"#f2f7fe",fontFamily:"Inter,system-ui,sans-serif",padding:"20px 18px 45px"},
@@ -46,6 +47,8 @@ export default function AgentAdmin(){
   const [selected,setSelected]=useState("");
   const [history,setHistory]=useState<History|null>(null);
   const [invites,setInvites]=useState<Invite[]>([]);
+  const [operations,setOperations]=useState<Operations|null>(null);
+  const [codeRole,setCodeRole]=useState<"agent"|"supervisor">("supervisor");
   const [loading,setLoading]=useState(true);
   const [working,setWorking]=useState(false);
   const [error,setError]=useState("");
@@ -57,12 +60,12 @@ export default function AgentAdmin(){
   const [taskDetails,setTaskDetails]=useState("");
   const [assignee,setAssignee]=useState("");
   const [dueDate,setDueDate]=useState(tomorrowLocal);
-  const [view,setView]=useState<"overview"|"agents"|"tasks"|"reports"|"invites">("overview");
+  const [view,setView]=useState<"overview"|"supervisors"|"agents"|"churches"|"tasks"|"reports"|"invites">("overview");
   const current=projects.find(x=>x.id===selected);
   const owner=history?.role==="owner";
   const permitted=owner||history?.role==="leader";
-  const memberIds=useMemo(()=>[...(history?.members||[])].map(m=>m.subject),[history]);
-  const people=history?.people||{};
+  const memberIds=useMemo(()=>operations?.agents.map(a=>a.agentSubject)||[],[operations]);
+  const people={...(history?.people||{}),...(operations?.people||{})};
   const display=(subject:string)=>people[subject]?.kristoId||"Agent · "+subject.slice(0,8)+"…";
   const tasks=history?.tasks||[];
   const reports=tasks.flatMap(t=>(t.reports||[]).map(r=>({...r,task:t}))).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
@@ -70,27 +73,29 @@ export default function AgentAdmin(){
   const today=tomorrowLocal();
   const tomorrow=tasks.filter(t=>t.dueDate===today);
   const activeCodes=invites.filter(i=>!i.redeemedAt&&Date.parse(i.expiresAt)>Date.now());
+  const outreach=operations?.claims||[];
+  const confirmed=outreach.filter(c=>c.status==="confirmed");
   const load=useCallback(async(projectId?:string)=>{
     const me=await bridge("me") as Viewer;
     const allowed=(me.projects||[]).filter(p=>p.role==="owner"||p.role==="leader");
     setViewer(me);setProjects(allowed);
     const id=projectId&&allowed.some(p=>p.id===projectId)?projectId:allowed[0]?.id||"";
     setSelected(id);
-    if(!id){setHistory(null);setInvites([]);return;}
-    const [h,c]=await Promise.all([bridge("projects/"+encodeURIComponent(id)+"/history"),bridge("projects/"+encodeURIComponent(id)+"/invitations")]);
-    setHistory(h);setInvites(Array.isArray(c)?c:[]);
+    if(!id){setHistory(null);setInvites([]);setOperations(null);return;}
+    const [h,c,ops]=await Promise.all([bridge("projects/"+encodeURIComponent(id)+"/history"),bridge("projects/"+encodeURIComponent(id)+"/invitations"),bridge("projects/"+encodeURIComponent(id)+"/operations")]);
+    setHistory(h);setInvites(Array.isArray(c)?c:[]);setOperations(ops);
   },[]);
   useEffect(()=>{let live=true;void load().catch(e=>{if(live)setError(msg(e));}).finally(()=>{if(live)setLoading(false);});return()=>{live=false;};},[load]);
   async function run(action:()=>Promise<void>,success:string) {
     if(working)return;setWorking(true);setError("");setNotice("");
     try{await action();await load(selected);setNotice(success);}catch(e){setError(msg(e));try{await load(selected);}catch{/* original error retained */}}finally{setWorking(false);}
   }
-  function changeProject(v:string) {setCode("");setHistory(null);setInvites([]);setError("");setLoading(true);void load(v).catch(e=>setError(msg(e))).finally(()=>setLoading(false));}
-  function createCode(e:FormEvent){e.preventDefault();void run(async()=>{const result=await bridge("projects/"+encodeURIComponent(selected)+"/invitations",{label:codeLabel.trim(),validDays:7});setCode(result.code);setCodeLabel("");},"Code mpya imeundwa. Nakili na mtumie agent kwa njia salama; haitarudi tena baada ya kufunga ukurasa.");}
+  function changeProject(v:string) {setCode("");setHistory(null);setInvites([]);setOperations(null);setError("");setLoading(true);void load(v).catch(e=>setError(msg(e))).finally(()=>setLoading(false));}
+  function createCode(e:FormEvent){e.preventDefault();void run(async()=>{const result=await bridge("projects/"+encodeURIComponent(selected)+"/invitations",{label:codeLabel.trim(),validDays:7,role:owner?codeRole:"agent"});setCode(result.code);setCodeLabel("");},"Code mpya imeundwa. Nakili na mtumie agent kwa njia salama; haitarudi tena baada ya kufunga ukurasa.");}
   function inviteById(e:FormEvent){e.preventDefault();const kristoId=inviteKristoId.trim().toUpperCase();void run(async()=>{await bridge("projects/"+encodeURIComponent(selected)+"/members",{kristoId});setInviteKristoId("");},"Mshiriki ameongezwa kwa Kristo ID yake.");}
   function createTask(e:FormEvent){e.preventDefault();if(!memberIds.includes(assignee)){setError("Chagua agent kutoka orodha ya washiriki.");return;}void run(async()=>{await bridge("projects/"+encodeURIComponent(selected)+"/tasks",{title:taskTitle.trim(),details:taskDetails.trim(),assigneeSubject:assignee,dueDate});setTaskTitle("");setTaskDetails("");},"Kazi imegawiwa kwa agent, na tarehe imehifadhiwa.");}
   function decide(t:Task,decision:"approved"|"changes_requested"){if(!confirm(decision==="approved"?"Kubali ripoti hii?":"Rudisha ripoti ili agent airekebishe?"))return;void run(()=>bridge("tasks/"+encodeURIComponent(t.id)+"/decision",{decision,reason:decision==="changes_requested"?"Tafadhali boresha ripoti na ushahidi.":""}).then(()=>{}),"Uamuzi wa ripoti umehifadhiwa.");}
-  const tabs:[typeof view,string][]=[["overview","Muhtasari"],["agents","Agents"],["tasks","Kazi za kesho"],["reports","Ripoti & picha"],["invites","Mialiko & codes"]];
+  const tabs:[typeof view,string][]=[["overview","Muhtasari"],["supervisors","Supervisors"],["agents","Agents"],["churches","Churches"],["tasks","Kazi za kesho"],["reports","Ripoti & picha"],["invites","Mialiko & codes"]];
   return <main style={st.page}><div style={st.wrap}>
     <header style={{display:"flex",gap:15,justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",marginBottom:18}}>
       <div><span style={{fontSize:11,letterSpacing:2,color:"#f0c976"}}>UVUMBUZI LAB / SYSTEM ADMIN EYE</span><h1 style={{fontSize:30,margin:"4px 0"}}>Agent Operations Center</h1><p style={{...st.sub,margin:0}}>Uendeshaji wa miradi ya Lab kwa ruhusa za Kristo · Preview</p></div>
@@ -106,7 +111,7 @@ export default function AgentAdmin(){
         <select aria-label="Chagua mradi" style={{...st.field,maxWidth:360}} value={selected} onChange={e=>changeProject(e.target.value)}>{projects.map(p=><option key={p.id} value={p.id}>{p.name} · {p.role}</option>)}</select>
       </section>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(155px,1fr))",gap:10,marginBottom:13}}>
-        {[[String(history.members.length),"Washiriki"],[String(tomorrow.length),"Kazi za kesho"],[String(awaiting.length),"Ripoti za kukagua"],[String(reports.length),"Ripoti zote"],[String(activeCodes.length),"Codes hai"]].map(([n,label])=><div key={label} style={{...st.panel,padding:16}}><div style={{fontSize:27,fontWeight:850,color:"#f5c97c"}}>{n}</div><div style={st.sub}>{label}</div></div>)}
+        {[[String(operations?.supervisors.length||0),"Supervisors"],[String(operations?.agents.length||0),"Agents"],[String(confirmed.length),"Churches confirmed"],[String(outreach.filter(c=>c.status==="pending").length),"Churches pending"],[String(tomorrow.length),"Kazi za kesho"],[String(awaiting.length),"Ripoti za kukagua"],[String(reports.length),"Ripoti zote"],[String(activeCodes.length),"Codes hai"]].map(([n,label])=><div key={label} style={{...st.panel,padding:16}}><div style={{fontSize:27,fontWeight:850,color:"#f5c97c"}}>{n}</div><div style={st.sub}>{label}</div></div>)}
       </div>
       <nav aria-label="Admin tools" style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>{tabs.map(([k,name])=><button key={k} type="button" aria-pressed={view===k} onClick={()=>setView(k)} style={view===k?st.gold:st.dark}>{name}</button>)}</nav>
       {view==="overview"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:13}}>
@@ -114,15 +119,15 @@ export default function AgentAdmin(){
         <section style={st.panel}><h2 style={{marginTop:0}}>Ripoti zinazohitaji ukaguzi</h2>{awaiting.length===0?<p style={st.sub}>Hakuna ripoti inayosubiri maamuzi.</p>:awaiting.map(t=><div key={t.id} style={{padding:"11px 0",borderBottom:"1px solid #32516a"}}><b>{t.title}</b><div style={st.sub}>{display(t.assigneeSubject)} · Inasubiri ukaguzi</div></div>)}<button style={{...st.dark,marginTop:12}} onClick={()=>setView("reports")}>Tazama ripoti & picha →</button></section>
       </div>}
       {view==="agents"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:13}}>
-        <section style={st.panel}><h2 style={{marginTop:0}}>Wafanyakazi / Agents ({history.members.length})</h2><p style={st.sub}>Watu waliopewa ruhusa kwenye mradi huu; jina la agent linaoneshwa kwa Kristo ID inayopatikana.</p>
-          {history.members.length===0?<p style={st.sub}>Bado hakuna agent aliyejiunga.</p>:history.members.map(m=><div key={m.subject} style={{borderBottom:"1px solid #32516a",padding:"11px 0",display:"flex",gap:12,alignItems:"center"}}><div style={{borderRadius:"50%",background:"#134c75",padding:12}}>♙</div><div><strong>{display(m.subject)}</strong><div style={st.sub}>Ruhusa: {m.role} · {m.createdAt?timeStamp(m.createdAt):""}</div></div></div>)}
+        <section style={st.panel}><h2 style={{marginTop:0}}>Wafanyakazi / Agents ({operations?.agents.length||0})</h2><p style={st.sub}>Watu waliopewa ruhusa kwenye mradi huu; jina la agent linaoneshwa kwa Kristo ID inayopatikana.</p>
+          {!operations?.agents.length?<p style={st.sub}>Hakuna agent wa code bado.</p>:operations.agents.map(m=><div key={m.agentSubject} style={{borderBottom:"1px solid #32516a",padding:"11px 0",display:"flex",gap:12,alignItems:"center"}}><div style={{borderRadius:"50%",background:"#134c75",padding:12}}>♙</div><div><strong>{display(m.agentSubject)}</strong><div style={st.sub}>Supervisor: {display(m.supervisorSubject)} · {timeStamp(m.enrolledAt)}</div></div></div>)}
         </section>
         <section style={st.panel}><h2 style={{marginTop:0}}>Alika kwa Kristo ID</h2><p style={st.sub}>Wamiliki pekee wanaweza kuongeza washiriki bila code.</p>{owner?<form onSubmit={inviteById}><label htmlFor="person" style={st.label}>Kristo ID</label><input id="person" style={st.field} required placeholder="KR7-12345AB" value={inviteKristoId} maxLength={24} onChange={e=>setInviteKristoId(e.target.value)}/><button disabled={working} style={{...st.gold,marginTop:12}} type="submit">Alika agent</button></form>:<p style={st.sub}>Wewe ni leader, mwombe owner atoe code.</p>}</section>
       </div>}
       {view==="tasks"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(350px,1fr))",gap:13}}>
         <section style={st.panel}><h2 style={{marginTop:0}}>Gawa kazi za kesho</h2>{permitted?<form onSubmit={createTask} style={{display:"grid",gap:12}}>
           <div><label style={st.label} htmlFor="task-title">Jina la kazi</label><input id="task-title" style={st.field} required maxLength={200} placeholder="Mfano: Tembelea taasisi 3" value={taskTitle} onChange={e=>setTaskTitle(e.target.value)}/></div>
-          <div><label style={st.label} htmlFor="agent-select">Agent</label><select id="agent-select" style={st.field} required value={assignee} onChange={e=>setAssignee(e.target.value)}><option value="">Chagua agent</option>{history.members.map(m=><option value={m.subject} key={m.subject}>{display(m.subject)}</option>)}</select></div>
+          <div><label style={st.label} htmlFor="agent-select">Agent</label><select id="agent-select" style={st.field} required value={assignee} onChange={e=>setAssignee(e.target.value)}><option value="">Chagua agent</option>{(operations?.agents||[]).map(m=><option value={m.agentSubject} key={m.agentSubject}>{display(m.agentSubject)}</option>)}</select></div>
           <div><label style={st.label} htmlFor="due">Tarehe ya kazi (local)</label><input id="due" style={st.field} type="date" required value={dueDate} onChange={e=>setDueDate(e.target.value)}/></div>
           <div><label style={st.label} htmlFor="instructions">Maelekezo</label><textarea id="instructions" rows={4} style={st.field} value={taskDetails} maxLength={5000} onChange={e=>setTaskDetails(e.target.value)} placeholder="Andika lengo na ripoti inayotakiwa."/></div>
           <button disabled={working||!memberIds.length} style={st.gold} type="submit">Tuma kazi kwa agent</button><p style={st.sub}>Kazi inahifadhiwa kwenye Lab. Hakuna notification ya simu inayotumwa moja kwa moja bado.</p>
@@ -141,7 +146,7 @@ export default function AgentAdmin(){
       </section>}
       {view==="invites"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(350px,1fr))",gap:13}}>
         <section style={st.panel}><h2 style={{marginTop:0}}>Unda Agent Code</h2><p style={st.sub}>Code hutumika mara moja tu na inaisha baada ya siku 7. Anayeitumia lazima awe ameingia kwa Kristo. Haimpi ruhusa ya admin.</p>
-          {owner?<form onSubmit={createCode}><label style={st.label} htmlFor="code-label">Jina la code / kundi (hiari)</label><input id="code-label" style={st.field} maxLength={120} placeholder="Mfano: Agent Tanzania 01" value={codeLabel} onChange={e=>setCodeLabel(e.target.value)}/><button style={{...st.gold,marginTop:12}} disabled={working} type="submit">Tengeneza code mpya</button></form>:<p style={st.sub}>Ni owner pekee anayeweza kuunda agent codes.</p>}
+          {permitted?<form onSubmit={createCode}>{owner?<><label htmlFor="code-role" style={st.label}>Aina ya mwaliko</label><select id="code-role" style={{...st.field,marginBottom:10}} value={codeRole} onChange={e=>setCodeRole(e.target.value as "supervisor"|"agent")}><option value="supervisor">Supervisor</option><option value="agent">Agent</option></select></>:<p style={st.sub}>Wewe supervisor unaweza kutoa code za agent wako tu.</p>}<label style={st.label} htmlFor="code-label">Jina la code / kundi (hiari)</label><input id="code-label" style={st.field} maxLength={120} placeholder="Mfano: Agent Tanzania 01" value={codeLabel} onChange={e=>setCodeLabel(e.target.value)}/><button style={{...st.gold,marginTop:12}} disabled={working} type="submit">Tengeneza code mpya</button></form>:<p style={st.sub}>Code inahitaji ruhusa ya owner au supervisor.</p>}
           {code?<div role="status" style={{marginTop:15,padding:15,border:"1px solid #b69956",borderRadius:11}}><div style={st.sub}>CODE — nakili sasa. Haitaoneshwa tena.</div><strong style={{fontSize:18,letterSpacing:1.1,wordBreak:"break-all"}}>{code}</strong><br/><button style={{...st.dark,marginTop:12}} type="button" onClick={()=>{void navigator.clipboard?.writeText(code).then(()=>setNotice("Code imenakiliwa."),()=>setError("Chagua na nakili code kwa mkono."));}}>Nakili code</button><p style={st.sub}>Mtumie agent <a href="/uvumbuzi/join" style={{color:"#efc875"}}>/uvumbuzi/join</a> ili kuitumia.</p></div>:null}
         </section>
         <section style={st.panel}><h2 style={{marginTop:0}}>Codes zilizotolewa ({invites.length})</h2><p style={st.sub}>Kwa usalama, code kamili haihifadhiwi hapa; mwisho wake tu ndio unaooneshwa.</p>{invites.length===0?<p style={st.sub}>Hakuna code iliyotolewa.</p>:invites.map(c=><div key={c.id} style={{padding:"10px 0",borderBottom:"1px solid #36556d"}}><b>{c.label||"Agent invitation"} · …{c.codeSuffix}</b><div style={st.sub}>{c.redeemedAt?"Imetumika":Date.parse(c.expiresAt)<=Date.now()?"Imeisha muda":"Inasubiri agent"} · Mwisho {timeStamp(c.expiresAt)}</div></div>)}</section>
