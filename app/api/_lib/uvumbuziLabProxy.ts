@@ -98,6 +98,10 @@ const ROUTES: Array<[method: "GET" | "POST", pattern: string]> = [
   ["GET", "me"],
   ["POST", "projects"],
   ["GET", "projects/:id/history"],
+  ["GET", "projects/:id/operations"],
+  ["POST", "projects/:id/church-outreach"],
+  ["GET", "confirmations"],
+  ["POST", "confirmations/:id/respond"],
   ["GET", "projects/:id/invitations"],
   ["POST", "projects/:id/invitations"],
   ["POST", "invitations/redeem"],
@@ -214,6 +218,23 @@ async function relay(input: {
       if (!subject) return { status: 404, body: { ok: false, error: "No Kristo account has that Kristo ID", reason: "unknown_kristo_id" } };
       parsed = { subject };
     }
+    // An agent may request confirmation only from a real Kristo account.
+    // Resolve the public Kristo ID on the trusted server; do not accept internal IDs from the browser.
+    const churchOutreach = segments.length === 3 && segments[0] === "projects" && segments[2] === "church-outreach";
+    if (churchOutreach) {
+      const val = parsed as Record<string,unknown>;
+      const keys = Object.keys(val);
+      if (keys.some(k=>!["churchId","kristoId","note"].includes(k)) || typeof val.churchId !== "string" || typeof val.kristoId !== "string" ||
+          !KRISTO_PUBLIC_ID.test(val.kristoId.trim()) || (val.note!==undefined && typeof val.note!=="string")) {
+        return {status:400,body:{ok:false,error:"Provide churchId, Kristo ID and optional note only"}};
+      }
+      if (!input.people) return {status:503,body:{ok:false,error:"Kristo directory unavailable"}};
+      const inviteWait = limits.invites.take(input.verifiedUserId);
+      if (inviteWait) return {status:429,body:{ok:false,error:"Too many lookups",reason:"rate_limited"}};
+      const churchPersonSubject = await input.people.resolveKristoId(val.kristoId.trim().toUpperCase());
+      if (!churchPersonSubject) return {status:404,body:{ok:false,error:"Kristo ID not found"}};
+      parsed = {churchId:val.churchId,note:val.note??"",churchPersonSubject};
+    }
     body = JSON.stringify(parsed);
   }
 
@@ -266,9 +287,10 @@ async function withPublicIds(segments: string[], json: unknown, viewer: string, 
   if (!people || !json || typeof json !== "object" || Array.isArray(json)) return json;
   const isMe = segments.length === 1 && segments[0] === "me";
   const isHistory = segments.length === 3 && segments[0] === "projects" && segments[2] === "history";
-  if (!isMe && !isHistory) return json;
+  const isOperations = segments.length === 3 && segments[0] === "projects" && segments[2] === "operations";
+  if (!isMe && !isHistory && !isOperations) return json;
   const ids = new Set<string>([viewer]);
-  if (isHistory) subjectsIn(json, ids);
+  if (isHistory || isOperations) subjectsIn(json, ids);
   try {
     const map = await people.publicIds([...ids].slice(0, 500));
     const out: Record<string, { kristoId: string }> = {};
