@@ -219,6 +219,34 @@ async function relay(input: {
       if (!subject) return { status: 404, body: { ok: false, error: "No Kristo account has that Kristo ID", reason: "unknown_kristo_id" } };
       parsed = { subject };
     }
+    // Kristo public-ID resolution for role invitations; raw internal subject IDs are never accepted.
+    const roleInvite = segments.length === 3 && segments[0] === "projects" && segments[2] === "invitations";
+    if (roleInvite) {
+      const value = parsed as Record<string,unknown>;
+      const keys = Object.keys(value);
+      if (keys.some(k => !["role","label","validDays","kristoId","maxAgents"].includes(k)) ||
+          (value.role !== undefined && value.role !== "supervisor" && value.role !== "agent") ||
+          (value.maxAgents !== undefined && (!Number.isInteger(value.maxAgents) || Number(value.maxAgents) < 1 || Number(value.maxAgents) > 100))) {
+        return {status:400,body:{ok:false,error:"Invalid invitation request"}};
+      }
+      const kind = value.role === "supervisor" ? "supervisor":"agent";
+      const typedId = typeof value.kristoId==="string"?value.kristoId.trim().toUpperCase():"";
+      if (kind === "supervisor" && !typedId)
+        return {status:400,body:{ok:false,error:"Supervisor invitation needs a Kristo ID"}};
+      if (typedId && !KRISTO_PUBLIC_ID.test(typedId))
+        return {status:400,body:{ok:false,error:"Invalid Kristo ID"}};
+      if (typedId) {
+        if (!input.people) return {status:503,body:{ok:false,error:"Kristo directory unavailable"}};
+        const wait=limits.invites.take(input.verifiedUserId);
+        if (wait) return {status:429,body:{ok:false,error:"Too many invitations",reason:"rate_limited"}};
+        const targetSubject=await input.people.resolveKristoId(typedId);
+        if (!targetSubject) return {status:404,body:{ok:false,error:"Kristo ID not found"}};
+        parsed={role:kind,label:value.label??"",validDays:value.validDays??7,targetSubject,
+          ...(kind==="supervisor"?{maxAgents:value.maxAgents??5}:{})};
+      } else {
+        parsed={role:kind,label:value.label??"",validDays:value.validDays??7};
+      }
+    }
     // An agent may request confirmation only from a real Kristo account.
     // Resolve the public Kristo ID on the trusted server; do not accept internal IDs from the browser.
     const churchOutreach = segments.length === 3 && segments[0] === "projects" && segments[2] === "church-outreach";
