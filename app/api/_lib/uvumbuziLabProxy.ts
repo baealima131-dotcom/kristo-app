@@ -98,6 +98,7 @@ const ROUTES: Array<[method: "GET" | "POST", pattern: string]> = [
   ["GET", "me"],
   ["POST", "projects"],
   ["GET", "projects/:id/history"],
+  ["POST", "projects/:id/supervisors/:id/limit"],
   ["GET", "projects/:id/operations"],
   ["POST", "projects/:id/church-outreach"],
   ["GET", "confirmations"],
