@@ -95,11 +95,22 @@ export default function AgentAdmin(){
   function inviteById(e:FormEvent){e.preventDefault();const kristoId=inviteKristoId.trim().toUpperCase();void run(async()=>{await bridge("projects/"+encodeURIComponent(selected)+"/members",{kristoId});setInviteKristoId("");},"Mshiriki ameongezwa kwa Kristo ID yake.");}
   function createTask(e:FormEvent){e.preventDefault();if(!memberIds.includes(assignee)){setError("Chagua agent kutoka orodha ya washiriki.");return;}void run(async()=>{await bridge("projects/"+encodeURIComponent(selected)+"/tasks",{title:taskTitle.trim(),details:taskDetails.trim(),assigneeSubject:assignee,dueDate});setTaskTitle("");setTaskDetails("");},"Kazi imegawiwa kwa agent, na tarehe imehifadhiwa.");}
   function decide(t:Task,decision:"approved"|"changes_requested"){if(!confirm(decision==="approved"?"Kubali ripoti hii?":"Rudisha ripoti ili agent airekebishe?"))return;void run(()=>bridge("tasks/"+encodeURIComponent(t.id)+"/decision",{decision,reason:decision==="changes_requested"?"Tafadhali boresha ripoti na ushahidi.":""}).then(()=>{}),"Uamuzi wa ripoti umehifadhiwa.");}
+  function startOutreachCampaign(){
+    if(!confirm("Unda mradi mpya wa Kristo Church Outreach? Hii haibadilishi mradi wako wa Sumaku na Umeme."))return;
+    if(working)return;
+    setWorking(true);setError("");setNotice("");
+    void (async()=>{
+      try{
+        const made=await bridge("projects",{name:"Kristo Church Outreach — Tanzania",description:"Usimamizi wa supervisors, agents, makanisa na uthibitisho wa mafunzo.",domain:"outreach"}) as Project;
+        await load(made.id);setView("supervisors");setNotice("Mradi mpya wa Church Outreach umeundwa. Sasa alika supervisor wa kwanza.");
+      }catch(e){setError(msg(e));}finally{setWorking(false);}
+    })();
+  }
   const tabs:[typeof view,string][]=[["overview","Muhtasari"],["supervisors","Supervisors"],["agents","Agents"],["churches","Churches"],["tasks","Kazi za kesho"],["reports","Ripoti & picha"],["invites","Mialiko & codes"]];
   return <main style={st.page}><div style={st.wrap}>
     <header style={{display:"flex",gap:15,justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",marginBottom:18}}>
       <div><span style={{fontSize:11,letterSpacing:2,color:"#f0c976"}}>UVUMBUZI LAB / SYSTEM ADMIN EYE</span><h1 style={{fontSize:30,margin:"4px 0"}}>Agent Operations Center</h1><p style={{...st.sub,margin:0}}>Uendeshaji wa miradi ya Lab kwa ruhusa za Kristo · Preview</p></div>
-      <div style={{display:"flex",gap:9}}><a href="/uvumbuzi" style={{...st.dark,textDecoration:"none"}}>← Miradi yangu</a><button style={st.dark} disabled={working||loading} onClick={()=>{void load(selected).catch(e=>setError(msg(e)));}}>↻ Sasisha</button></div>
+      <div style={{display:"flex",gap:9,flexWrap:"wrap"}}><button type="button" onClick={startOutreachCampaign} disabled={working||loading||!projects.some(p=>p.role==="owner")} style={st.gold}>+ Church Outreach Project</button><a href="/uvumbuzi" style={{...st.dark,textDecoration:"none"}}>← Miradi yangu</a><button style={st.dark} disabled={working||loading} onClick={()=>{void load(selected).catch(e=>setError(msg(e)));}}>↻ Sasisha</button></div>
     </header>
     {loading?<div style={st.panel}>Ninathibitisha akaunti na ruhusa za mradi…</div>:null}
     {error?<div role="alert" style={{...st.panel,borderColor:"#b96f77",color:"#ffd9db",marginBottom:12}}>{error} {error.includes("Session")?<a href="/sign-in" style={{color:"#f3c978"}}>Ingia tena</a>:null}</div>:null}
