@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 
-type Project = { id: string; name: string; role: "owner" | "leader" | "member" };
+type Project = { id: string; name: string; domain?: string; role: "owner" | "leader" | "member" };
 type Member = { subject: string; role: string; createdAt?: string };
 type Report = { id: string; note: string; evidenceUrl?: string | null; createdAt?: string };
 type Task = { id: string; title: string; details?: string; assigneeSubject: string; status: "assigned" | "submitted" | "approved" | "changes_requested"; dueDate?: string | null; reports?: Report[]; createdAt?: string };
 type Activity = { seq: number; action: string; actorSubject: string; createdAt?: string };
 type History = { projectId: string; role: "owner" | "leader" | "member"; ownerSubject: string; members: Member[]; tasks: Task[]; activity: Activity[]; people?: Record<string,{ kristoId: string }> };
-type Operations = {role:"owner"|"leader";supervisors:{subject:string;createdAt:string}[];agents:{agentSubject:string;supervisorSubject:string;enrolledAt:string}[];claims:{id:string;churchId:string;churchPersonSubject:string;agentSubject:string;supervisorSubject:string;status:string;note:string;trained:number|null;understood:number|null;responseNote:string;createdAt:string;respondedAt?:string|null}[];people?:Record<string,{kristoId:string}>};
+type Operations = {role:"owner"|"leader";supervisors:{subject:string;createdAt:string;maxAgents:number;agentsUsed:number}[];agents:{agentSubject:string;supervisorSubject:string;enrolledAt:string}[];claims:{id:string;churchId:string;churchPersonSubject:string;agentSubject:string;supervisorSubject:string;status:string;note:string;trained:number|null;understood:number|null;responseNote:string;createdAt:string;respondedAt?:string|null}[];people?:Record<string,{kristoId:string}>};
 type Invite = { role?:string;createdBy?:string;id: string; codeSuffix: string; label: string; expiresAt: string; redeemedAt?: string | null; redeemedBy?: string | null };
 type Viewer = { kristoId?: string; projects?: Project[] };
 const st: Record<string,CSSProperties> = {
@@ -55,6 +55,9 @@ export default function AgentAdmin(){
   const [notice,setNotice]=useState("");
   const [code,setCode]=useState("");
   const [codeLabel,setCodeLabel]=useState("");
+  const [codeKristoId,setCodeKristoId]=useState("");
+  const [codeMaxAgents,setCodeMaxAgents]=useState(5);
+  const [capEdit,setCapEdit]=useState<Record<string,string>>({});
   const [inviteKristoId,setInviteKristoId]=useState("");
   const [taskTitle,setTaskTitle]=useState("");
   const [taskDetails,setTaskDetails]=useState("");
@@ -77,7 +80,7 @@ export default function AgentAdmin(){
   const confirmed=outreach.filter(c=>c.status==="confirmed");
   const load=useCallback(async(projectId?:string)=>{
     const me=await bridge("me") as Viewer;
-    const allowed=(me.projects||[]).filter(p=>p.role==="owner"||p.role==="leader");
+    const allowed=(me.projects||[]).filter(p=>(p.role==="owner"||p.role==="leader")&&p.domain==="outreach");
     setViewer(me);setProjects(allowed);
     const id=projectId&&allowed.some(p=>p.id===projectId)?projectId:allowed[0]?.id||"";
     setSelected(id);
@@ -91,8 +94,16 @@ export default function AgentAdmin(){
     try{await action();await load(selected);setNotice(success);}catch(e){setError(msg(e));try{await load(selected);}catch{/* original error retained */}}finally{setWorking(false);}
   }
   function changeProject(v:string) {setCode("");setHistory(null);setInvites([]);setOperations(null);setError("");setLoading(true);void load(v).catch(e=>setError(msg(e))).finally(()=>setLoading(false));}
-  function createCode(e:FormEvent){e.preventDefault();void run(async()=>{const result=await bridge("projects/"+encodeURIComponent(selected)+"/invitations",{label:codeLabel.trim(),validDays:7,role:owner?codeRole:"agent"});setCode(result.code);setCodeLabel("");},"Code mpya imeundwa. Nakili na mtumie agent kwa njia salama; haitarudi tena baada ya kufunga ukurasa.");}
+  function createCode(e:FormEvent){e.preventDefault();void run(async()=>{const result=await bridge("projects/"+encodeURIComponent(selected)+"/invitations",{label:codeLabel.trim(),validDays:7,role:owner?codeRole:"agent",
+  ...(codeKristoId.trim()?{kristoId:codeKristoId.trim().toUpperCase()}:{}),
+  ...(owner&&codeRole==="supervisor"?{maxAgents:codeMaxAgents}:{})});setCode(result.code);setCodeLabel("");setCodeKristoId("");},"Code mpya imeundwa. Nakili na mtumie agent kwa njia salama; haitarudi tena baada ya kufunga ukurasa.");}
   function inviteById(e:FormEvent){e.preventDefault();const kristoId=inviteKristoId.trim().toUpperCase();void run(async()=>{await bridge("projects/"+encodeURIComponent(selected)+"/members",{kristoId});setInviteKristoId("");},"Mshiriki ameongezwa kwa Kristo ID yake.");}
+  function saveSupervisorCap(subject:string){
+    const maxAgents=Number(capEdit[subject]);
+    if(!Number.isInteger(maxAgents)||maxAgents<1||maxAgents>100){setError("Limit iwe 1 hadi 100.");return;}
+    void run(()=>bridge("projects/"+encodeURIComponent(selected)+"/supervisors/"+encodeURIComponent(subject)+"/limit",{maxAgents}).then(()=>{}),
+      "Idadi ya juu ya agents wa supervisor imesasishwa.");
+  }
   function createTask(e:FormEvent){e.preventDefault();if(!memberIds.includes(assignee)){setError("Chagua agent kutoka orodha ya washiriki.");return;}void run(async()=>{await bridge("projects/"+encodeURIComponent(selected)+"/tasks",{title:taskTitle.trim(),details:taskDetails.trim(),assigneeSubject:assignee,dueDate});setTaskTitle("");setTaskDetails("");},"Kazi imegawiwa kwa agent, na tarehe imehifadhiwa.");}
   function decide(t:Task,decision:"approved"|"changes_requested"){if(!confirm(decision==="approved"?"Kubali ripoti hii?":"Rudisha ripoti ili agent airekebishe?"))return;void run(()=>bridge("tasks/"+encodeURIComponent(t.id)+"/decision",{decision,reason:decision==="changes_requested"?"Tafadhali boresha ripoti na ushahidi.":""}).then(()=>{}),"Uamuzi wa ripoti umehifadhiwa.");}
   function startOutreachCampaign(){
@@ -110,12 +121,12 @@ export default function AgentAdmin(){
   return <main style={st.page}><div style={st.wrap}>
     <header style={{display:"flex",gap:15,justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",marginBottom:18}}>
       <div><span style={{fontSize:11,letterSpacing:2,color:"#f0c976"}}>UVUMBUZI LAB / SYSTEM ADMIN EYE</span><h1 style={{fontSize:30,margin:"4px 0"}}>Agent Operations Center</h1><p style={{...st.sub,margin:0}}>Uendeshaji wa miradi ya Lab kwa ruhusa za Kristo · Preview</p></div>
-      <div style={{display:"flex",gap:9,flexWrap:"wrap"}}><button type="button" onClick={startOutreachCampaign} disabled={working||loading||!projects.some(p=>p.role==="owner")} style={st.gold}>+ Church Outreach Project</button><a href="/uvumbuzi" style={{...st.dark,textDecoration:"none"}}>← Miradi yangu</a><button style={st.dark} disabled={working||loading} onClick={()=>{void load(selected).catch(e=>setError(msg(e)));}}>↻ Sasisha</button></div>
+      <div style={{display:"flex",gap:9,flexWrap:"wrap"}}><button type="button" onClick={startOutreachCampaign} disabled={working||loading||!viewer} style={st.gold}>+ Church Outreach Project</button><a href="/uvumbuzi" style={{...st.dark,textDecoration:"none"}}>← Miradi yangu</a><button style={st.dark} disabled={working||loading} onClick={()=>{void load(selected).catch(e=>setError(msg(e)));}}>↻ Sasisha</button></div>
     </header>
     {loading?<div style={st.panel}>Ninathibitisha akaunti na ruhusa za mradi…</div>:null}
     {error?<div role="alert" style={{...st.panel,borderColor:"#b96f77",color:"#ffd9db",marginBottom:12}}>{error} {error.includes("Session")?<a href="/sign-in" style={{color:"#f3c978"}}>Ingia tena</a>:null}</div>:null}
     {notice?<div role="status" style={{...st.panel,borderColor:"#488d71",color:"#c1f7dc",marginBottom:12}}>{notice}</div>:null}
-    {!loading&&viewer&&projects.length===0?<section style={st.panel}><h2>Hakuna mradi wenye ruhusa ya usimamizi</h2><p style={st.sub}>System Admin inaonyesha miradi ambayo wewe ni owner au leader tu. Fungua mradi wa Kristo kwanza, au muombe mmiliki akupe ruhusa.</p><a href="/uvumbuzi" style={st.dark}>Fungua Miradi</a></section>:null}
+    {!loading&&viewer&&projects.length===0?<section style={st.panel}><h2>Hakuna mradi wenye ruhusa ya usimamizi</h2><p style={st.sub}>Hii ni System Admin ya Church Outreach pekee. Bonyeza + Church Outreach Project ili kuanza; miradi ya maabara haionyeshwi hapa.</p><a href="/uvumbuzi" style={st.dark}>Fungua Miradi</a></section>:null}
     {history&&current&&<div>
       <section style={{...st.panel,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:12}}>
         <div><small style={{color:"#a5cbe5"}}>ACTIVE PROJECT</small><div style={{fontSize:17,fontWeight:800}}>{current.name}</div><div style={st.sub}>Kristo: {viewer?.kristoId||"Haijaoneshwa"} · Role: <b>{history.role}</b> · Admin hii haioni miradi ya watu wengine</div></div>
@@ -132,7 +143,11 @@ export default function AgentAdmin(){
 
       {view==="supervisors"&&<section style={st.panel}><h2 style={{marginTop:0}}>Supervisors wa mradi</h2>
         <p style={st.sub}>Mmiliki atengeneze Supervisor Code na aitume kwa mtu aliyeingia Kristo. Supervisor ataweza kuwaalika agents kwa codes zake pekee.</p>
-        {!operations?.supervisors.length?<p style={st.sub}>Hakuna supervisor aliyejiunga bado.</p>:operations.supervisors.map(sv=><div key={sv.subject} style={{padding:"12px 0",borderBottom:"1px solid #335a7c"}}><b>{display(sv.subject)}</b><div style={st.sub}>Agents: {operations.agents.filter(a=>a.supervisorSubject===sv.subject).length} · Church submissions: {outreach.filter(x=>x.supervisorSubject===sv.subject).length} · {timeStamp(sv.createdAt)}</div></div>)}
+        {!operations?.supervisors.length?<p style={st.sub}>Hakuna supervisor aliyejiunga bado.</p>:operations.supervisors.map(sv=><div key={sv.subject} style={{padding:"12px 0",borderBottom:"1px solid #335a7c"}}><b>{display(sv.subject)}</b><div style={st.sub}>Agents: {sv.agentsUsed}/{sv.maxAgents} · Church submissions: {outreach.filter(x=>x.supervisorSubject===sv.subject).length} · {timeStamp(sv.createdAt)}</div>
+          {owner?<div style={{display:"flex",gap:9,alignItems:"center",marginTop:10,flexWrap:"wrap"}}>
+            <label style={st.label}>Agent limit <input aria-label={"Agent limit for "+display(sv.subject)} style={{...st.field,width:94,marginLeft:8}} type="number" min={1} max={100} value={capEdit[sv.subject]??String(sv.maxAgents)} onChange={e=>setCapEdit(v=>({...v,[sv.subject]:e.target.value}))}/></label>
+            <button style={st.dark} disabled={working} onClick={()=>saveSupervisorCap(sv.subject)}>Hifadhi limit</button>
+          </div>:null}</div>)}
         {owner?<button style={{...st.gold,marginTop:12}} onClick={()=>{setCodeRole("supervisor");setView("invites");}}>+ Invite Supervisor</button>:null}
       </section>}
       {view==="churches"&&<section style={st.panel}><h2 style={{marginTop:0}}>Church outreach & uthibitisho</h2><p style={st.sub}>Agent huingiza Church ID na Kristo ID ya mwakilishi aliyefundishwa; jibu la mwakilishi ndilo linalotofautisha confirmed, needs follow-up au declined. Church ID yenyewe bado haijathibitishwa dhidi ya registry ya Kristo.</p>
@@ -172,8 +187,12 @@ export default function AgentAdmin(){
       </section>}
       {view==="invites"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(350px,1fr))",gap:13}}>
         <section style={st.panel}><h2 style={{marginTop:0}}>Unda Agent Code</h2><p style={st.sub}>Code hutumika mara moja tu na inaisha baada ya siku 7. Anayeitumia lazima awe ameingia kwa Kristo. Haimpi ruhusa ya admin.</p>
-          {permitted?<form onSubmit={createCode}>{owner?<><label htmlFor="code-role" style={st.label}>Aina ya mwaliko</label><select id="code-role" style={{...st.field,marginBottom:10}} value={codeRole} onChange={e=>setCodeRole(e.target.value as "supervisor"|"agent")}><option value="supervisor">Supervisor</option><option value="agent">Agent</option></select></>:<p style={st.sub}>Wewe supervisor unaweza kutoa code za agent wako tu.</p>}<label style={st.label} htmlFor="code-label">Jina la code / kundi (hiari)</label><input id="code-label" style={st.field} maxLength={120} placeholder="Mfano: Agent Tanzania 01" value={codeLabel} onChange={e=>setCodeLabel(e.target.value)}/><button style={{...st.gold,marginTop:12}} disabled={working} type="submit">Tengeneza code mpya</button></form>:<p style={st.sub}>Code inahitaji ruhusa ya owner au supervisor.</p>}
-          {code?<div role="status" style={{marginTop:15,padding:15,border:"1px solid #b69956",borderRadius:11}}><div style={st.sub}>CODE — nakili sasa. Haitaoneshwa tena.</div><strong style={{fontSize:18,letterSpacing:1.1,wordBreak:"break-all"}}>{code}</strong><br/><button style={{...st.dark,marginTop:12}} type="button" onClick={()=>{void navigator.clipboard?.writeText(code).then(()=>setNotice("Code imenakiliwa."),()=>setError("Chagua na nakili code kwa mkono."));}}>Nakili code</button><p style={st.sub}>Mtumie agent <a href="/uvumbuzi/join" style={{color:"#efc875"}}>/uvumbuzi/join</a> ili kuitumia.</p></div>:null}
+          {permitted?<form onSubmit={createCode}>{owner?<><label htmlFor="code-role" style={st.label}>Aina ya mwaliko</label><select id="code-role" style={{...st.field,marginBottom:10}} value={codeRole} onChange={e=>setCodeRole(e.target.value as "supervisor"|"agent")}><option value="supervisor">Supervisor</option><option value="agent">Agent</option></select></>:<p style={st.sub}>Wewe supervisor unaweza kutoa code za agent wako tu.</p>}<label style={st.label} htmlFor="code-kristo-id">Kristo ID ya anayealikwa {owner&&codeRole==="supervisor"?"(lazima)":"(hiari)"}</label>
+<input id="code-kristo-id" style={{...st.field,marginBottom:12}} value={codeKristoId} onChange={e=>setCodeKristoId(e.target.value)} required={owner&&codeRole==="supervisor"} placeholder="KR7-12345AB" maxLength={24}/>
+{owner&&codeRole==="supervisor"?<><label style={st.label} htmlFor="limit-new">Agent limit ya supervisor huyu</label>
+<input id="limit-new" type="number" min={1} max={100} required style={{...st.field,marginBottom:12}} value={codeMaxAgents} onChange={e=>setCodeMaxAgents(Number(e.target.value))}/></>:null}
+<label style={st.label} htmlFor="code-label">Jina la code / kundi (hiari)</label><input id="code-label" style={st.field} maxLength={120} placeholder="Mfano: Agent Tanzania 01" value={codeLabel} onChange={e=>setCodeLabel(e.target.value)}/><button style={{...st.gold,marginTop:12}} disabled={working} type="submit">Tengeneza code mpya</button></form>:<p style={st.sub}>Code inahitaji ruhusa ya owner au supervisor.</p>}
+          {code?<div role="status" style={{marginTop:15,padding:15,border:"1px solid #b69956",borderRadius:11}}><div style={st.sub}>CODE — nakili sasa. Haitaoneshwa tena.</div><strong style={{fontSize:18,letterSpacing:1.1,wordBreak:"break-all"}}>{code}</strong><br/><button style={{...st.dark,marginTop:12}} type="button" onClick={()=>{void navigator.clipboard?.writeText(code).then(()=>setNotice("Code imenakiliwa."),()=>setError("Chagua na nakili code kwa mkono."));}}>Nakili code</button><p style={st.sub}>Mtumie mhusika aliyealikwa <a href="/uvumbuzi/join" style={{color:"#efc875"}}>/uvumbuzi/join</a> ili kuitumia.</p></div>:null}
         </section>
         <section style={st.panel}><h2 style={{marginTop:0}}>Codes zilizotolewa ({invites.length})</h2><p style={st.sub}>Kwa usalama, code kamili haihifadhiwi hapa; mwisho wake tu ndio unaooneshwa.</p>{invites.length===0?<p style={st.sub}>Hakuna code iliyotolewa.</p>:invites.map(c=><div key={c.id} style={{padding:"10px 0",borderBottom:"1px solid #36556d"}}><b>{c.label||"Agent invitation"} · …{c.codeSuffix}</b><div style={st.sub}>{c.redeemedAt?"Imetumika":Date.parse(c.expiresAt)<=Date.now()?"Imeisha muda":"Inasubiri agent"} · Mwisho {timeStamp(c.expiresAt)}</div></div>)}</section>
       </div>}
