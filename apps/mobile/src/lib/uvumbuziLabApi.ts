@@ -11,7 +11,19 @@ export type LabRole = "owner" | "leader" | "member";
 export type LabTaskStatus = "assigned" | "submitted" | "approved" | "changes_requested";
 export type LabProposalStatus = "pending" | "approved" | "rejected" | "withdrawn";
 
-export type LabProjectSummary = { id: string; name: string; description: string; role: LabRole };
+export type LabProjectSummary = { id: string; name: string; description: string; domain?:string; role: LabRole };
+export type LabInvite = {id:string;role:string;label:string;expiresAt:string;targetRestricted?:boolean;code?:string};
+export type LabOperations = {
+  role:"owner"|"leader";
+  supervisors:Array<{subject:string;createdAt:string;maxAgents:number;agentsUsed:number}>;
+  agents:Array<{agentSubject:string;supervisorSubject:string;enrolledAt:string}>;
+  claims:Array<{id:string;churchId:string;agentSubject:string;supervisorSubject:string;
+    churchPersonSubject:string;status:"pending"|"confirmed"|"declined"|"needs_followup";
+    trained:number|null;understood:number|null;createdAt:string}>;
+  people?:Record<string,{kristoId:string}>;
+};
+export type LabConfirmation = {id:string;churchId:string;projectName:string;note:string;status:string;
+  trained:number|null;understood:number|null;responseNote?:string|null;createdAt:string};
 export type LabReport = { id: string; authorSubject: string; note: string; evidenceUrl: string | null; createdAt: string };
 export type LabDecision = { id: string; reportId: string; reviewerSubject: string; decision: "approved" | "changes_requested"; reason: string; createdAt: string };
 export type LabTask = {
@@ -78,6 +90,17 @@ export function isLabNotConnected(r: LabResult<unknown>): boolean {
 
 export const uvumbuziLab = {
   me: () => get<{ subject: string; kristoId?: string | null; people?: LabPeople; projects: LabProjectSummary[] }>("me"),
+  outreachOperations: (projectId:string) => get<LabOperations>(`projects/${seg(projectId)}/operations`),
+  createInvite: (projectId:string, role:"supervisor"|"agent", label:string, kristoId?:string, maxAgents?:number) =>
+    post<LabInvite>(`projects/${seg(projectId)}/invitations`,
+      {role,label,...(kristoId?{kristoId}:{}) ,...(role==="supervisor"?{maxAgents:maxAgents??5}:{})}),
+  redeemInvite: (code:string) => post<{projectId:string;programRole:string}>( "invitations/redeem", {code}),
+  recordChurchVisit: (projectId:string,churchId:string,kristoId:string,note:string) =>
+    post<{id:string;status:string}>(`projects/${seg(projectId)}/church-outreach`,{churchId,kristoId,note}),
+  confirmations: () => get<LabConfirmation[]>("confirmations"),
+  answerConfirmation: (id:string,trained:boolean,understood:boolean,note:string) =>
+    post<{id:string;status:string}>(`confirmations/${seg(id)}/respond`,{trained,understood,note}),
+
   createProject: (name: string, description: string) =>
     post<{ id: string; name: string; role: LabRole }>("projects", { name, description }),
   history: (projectId: string) => get<LabProjectHistory>(`projects/${seg(projectId)}/history`),
