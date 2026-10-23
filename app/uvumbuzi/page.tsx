@@ -100,6 +100,7 @@ export default function UvumbuziPage() {
   const [selected, setSelected] = useState("");
   const [history, setHistory] = useState<History | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [pendingLetters,setPendingLetters] = useState(0);
 
   const refresh = useCallback(async () => {
     const raw = await api("me");
@@ -110,6 +111,9 @@ export default function UvumbuziPage() {
 
   useEffect(() => {
     let active = true;
+    void api("confirmations").then(data => {
+      if(active && Array.isArray(data)) setPendingLetters(data.filter((x: {status?:string})=>x.status==="pending").length);
+    }).catch(()=>{ /* inbox is optional when the relay is unavailable */ });
     void api("me")
       .then((raw) => {
         if (!active) return;
@@ -178,7 +182,12 @@ export default function UvumbuziPage() {
             <h1 style={{ fontSize: "clamp(26px,4vw,40px)", margin: "8px 0" }}>Chumba cha Miradi</h1>
             <p style={{ color: "#b6bfcb", margin: 0 }}>Tengeneza mradi, tunza umiliki wako na uone historia ya kazi.</p>
           </div>
-          <a href="/dashboard" style={{ ...secondary, textDecoration: "none", display: "inline-block" }}>← Rudi Kristo</a>
+          <div style={{display:"flex",gap:9,flexWrap:"wrap"}}>
+            <a href="/uvumbuzi/confirm" style={{...button,textDecoration:"none",display:"inline-block"}}>✉ Barua za Uthibitisho{pendingLetters>0?" ("+pendingLetters+")":""}</a>
+            <a href="/uvumbuzi/agent" style={{...secondary,textDecoration:"none",display:"inline-block"}}>Agent Desk</a>
+            <a href="/uvumbuzi/admin" style={{...secondary,textDecoration:"none",display:"inline-block"}}>System Admin</a>
+            <a href="/dashboard" style={{...secondary,textDecoration:"none",display:"inline-block"}}>← Rudi Kristo</a>
+          </div>
         </header>
 
         {loading ? <section style={panel}>Ninakagua Kristo session yako…</section> : null}
