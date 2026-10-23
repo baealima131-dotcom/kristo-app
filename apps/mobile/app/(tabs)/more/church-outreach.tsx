@@ -129,6 +129,11 @@ export default function ChurchOutreachScreen(){
         </View>}
         {tab==="church"&&<>
           <View style={styles.panel}><Text style={styles.sectionTitle}>Help a Church</Text>
+            <Pressable accessibilityRole="button" onPress={()=>router.push("/more/church" as any)}
+              style={[styles.action,{backgroundColor:"#4E3D7C"}]}>
+              <Text style={[styles.actionText,{color:"#F6E7FF"}]}>Open Church · Create / Find / Join</Text>
+              <Ionicons name="arrow-forward" size={17} color="#F6E7FF"/>
+            </Pressable>
             <Text style={styles.body}>After teaching someone to register or use Kristo App, enter the Church ID and the Kristo ID of the person you helped. They must verify this inside their own Kristo account.</Text>
             {projects.length===0?<Text style={styles.body}>Join the team using an invitation code first.</Text>:<View style={styles.form}>
               {field("Church ID",churchId,setChurchId,"Church ID", {upper:true})}
