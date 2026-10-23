@@ -179,6 +179,14 @@ const ITEMS: Item[] = [
     href: "/more/kristo-guide",
   },
   {
+    key: "church_outreach",
+    title: "Church Outreach",
+    sub: "Agents • Churches • Confirm",
+    iconLib: "ion",
+    icon: "people-circle-outline",
+    href: "/more/church-outreach",
+  },
+  {
     key: "uvumbuzi",
     title: "Uvumbuzi Lab",
     sub: "Inventions • tasks • reports",
@@ -210,6 +218,7 @@ const NO_CHURCH_ONBOARDING_ORDER = [
   "church",
   "kristo_guide",
   "uvumbuzi",
+  "church_outreach",
   "notifications",
 ] as const;
 
@@ -271,6 +280,7 @@ type CardSurface = {
 };
 
 function getMoreCardToneKey(key: string): string {
+  if (key === "church_outreach") return "church";
   if (key === "system_admin") return "church";
   if (key === "supervisor") return "notifications";
   if (key === "agent" || key === "agent_invitation") return "notifications";
