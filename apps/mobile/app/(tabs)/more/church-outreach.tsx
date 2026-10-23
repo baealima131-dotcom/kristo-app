@@ -11,7 +11,6 @@ import {
 const C = { bg: "#071121",surface:"#11223E",line:"#5674A2",gold:"#F4D07C",text:"#F8F5F8",muted:"#B7BED5",violet:"#9587D5",green:"#7CE0BC" };
 type ScreenTab = "church"|"team"|"letters"|"join";
 const names:Record<ScreenTab,string>={church:"Church Visit",team:"My Agents",letters:"My Letters",join:"Join Team"};
-const inputProps={autoCorrect:false as const,autoCapitalize:"characters" as const};
 
 export default function ChurchOutreachScreen(){
   const router=useRouter();
@@ -93,7 +92,6 @@ export default function ChurchOutreachScreen(){
   const setAnswer=(id:string,partial:Partial<{trained:boolean;understood:boolean;note:string}>)=>
     setAnswers(v=>({...v,[id]:{...{note:""},...v[id],...partial}}));
   const validInbox=letters.filter(l=>l.status==="pending");
-  const pill=(value:string)=> <Text style={styles.pillText}>{value}</Text>;
   const field=(label:string,value:string,fn:(s:string)=>void,placeholder:string,opts?:{multiline?:boolean;numeric?:boolean;upper?:boolean})=>
     <View style={{gap:7}}><Text style={styles.label}>{label}</Text><TextInput
       style={[styles.input,opts?.multiline&&{minHeight:85,textAlignVertical:"top"}]} value={value} onChangeText={fn}
@@ -123,7 +121,7 @@ export default function ChurchOutreachScreen(){
         {projects.length>0&&<View style={styles.panel}>
           <Text style={styles.label}>My outreach campaign</Text>
           <View style={{flexDirection:"row",flexWrap:"wrap",gap:8,marginTop:10}}>{projects.map(p=>
-            <Pressable accessibilityRole="button" key={p.id} onPress={()=>{setProjectId(p.id);void reload();}}
+            <Pressable accessibilityRole="button" key={p.id} onPress={()=>{setProjectId(p.id);setError("");void load(p.id).catch(e=>setError(e instanceof Error?e.message:"Could not switch project."));}}
               style={[styles.project,p.id===projectId&&{borderColor:C.gold}]}>
               <Text style={{color:p.id===projectId?C.gold:C.text,fontWeight:"700"}} numberOfLines={1}>{p.name}</Text>
             </Pressable>)}</View>
