@@ -8,6 +8,7 @@ import {
   loadSafetyEnforcementCached,
   readSafetyEnforcementCache,
 } from "@/app/api/_lib/safetyEnforcementCache";
+import { assertProgramMemberAllowed } from "@/app/api/_lib/offlineActivationProgram";
 import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
 import { isSokoAccountDeleted } from "@/app/api/_lib/store/sokoAccountStateDb";
 
@@ -564,6 +565,16 @@ export async function guardPlatformOfflineActivation(
         details: { required: roles, youAre: platformRole || null },
       } satisfies ApiErr,
       { status: 403 }
+    );
+  }
+
+  // Program suspensions/revocations also close the legacy offline-activation routes.
+  try {
+    await assertProgramMemberAllowed(userId, platformRole, { requireAgentRegistration: false });
+  } catch (error: any) {
+    return json(
+      { ok: false, error: String(error?.message || "Access not active") } satisfies ApiErr,
+      { status: Number(error?.status) || 403 }
     );
   }
 

@@ -25,16 +25,24 @@ neonConfig.fetchConnectionCache = true;
 export const OFFLINE_ACTIVATION_CODES_STORE_KEY = "offline_activation_codes.json";
 export const OFFLINE_ACTIVATION_AGENTS_STORE_KEY = "offline_activation_agents.json";
 export const OFFLINE_ACTIVATION_INVITATIONS_STORE_KEY = "offline_activation_invitations.json";
+/** Program extension: supervisor limits, agent invite codes, church onboardings, leader confirmations. */
+export const OFFLINE_ACTIVATION_PROGRAM_STORE_KEY = "offline_activation_program.json";
+/** Append-only audit history for the program (invitations, role changes, submissions, confirmations). */
+export const OFFLINE_ACTIVATION_AUDIT_STORE_KEY = "offline_activation_audit.json";
 
 type OfflineActivationStoreKey =
   | typeof OFFLINE_ACTIVATION_CODES_STORE_KEY
   | typeof OFFLINE_ACTIVATION_AGENTS_STORE_KEY
-  | typeof OFFLINE_ACTIVATION_INVITATIONS_STORE_KEY;
+  | typeof OFFLINE_ACTIVATION_INVITATIONS_STORE_KEY
+  | typeof OFFLINE_ACTIVATION_PROGRAM_STORE_KEY
+  | typeof OFFLINE_ACTIVATION_AUDIT_STORE_KEY;
 
 const SUPPORTED_KEYS = new Set<string>([
   OFFLINE_ACTIVATION_CODES_STORE_KEY,
   OFFLINE_ACTIVATION_AGENTS_STORE_KEY,
   OFFLINE_ACTIVATION_INVITATIONS_STORE_KEY,
+  OFFLINE_ACTIVATION_PROGRAM_STORE_KEY,
+  OFFLINE_ACTIVATION_AUDIT_STORE_KEY,
 ]);
 
 let sqlClient: ReturnType<typeof neon> | null = null;

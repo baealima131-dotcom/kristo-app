@@ -62,3 +62,74 @@ export function issueUvumbuziBridgeToken(
   const sig = crypto.sign("RSA-SHA256", Buffer.from(`${head}.${body}`), config.privateKey).toString("base64url");
   return { token: `${head}.${body}.${sig}`, expiresAt: new Date(exp * 1000).toISOString() };
 }
+
+/**
+ * UVUMBUZI Lab admin pass: same RS256 issuer/audience as the bridge, but with
+ * `scope: "uvumbuzi:lab-admin"`. Issued only after a System_Admin sign-in code
+ * is exchanged; the Lab checks the scope, and Kristo re-checks the System_Admin
+ * role on every admin request, so revoking the role ends access immediately.
+ */
+export const UVUMBUZI_LAB_ADMIN_SCOPE = "uvumbuzi:lab-admin";
+export const UVUMBUZI_LAB_ADMIN_TOKEN_TTL_SECONDS = 900;
+
+export function issueUvumbuziLabAdminToken(
+  userId: string,
+  config: UvumbuziBridgeConfig,
+  nowMs: number = Date.now()
+): { token: string; expiresAt: string } {
+  const sub = String(userId || "").trim();
+  if (!/^[\w.:-]{1,200}$/.test(sub)) throw new Error("uvumbuzi-bridge: unsupported user id");
+  const iat = Math.floor(nowMs / 1000);
+  const exp = iat + UVUMBUZI_LAB_ADMIN_TOKEN_TTL_SECONDS;
+  const head = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const body = b64url(
+    JSON.stringify({
+      iss: config.issuer,
+      aud: config.audience,
+      sub,
+      iat,
+      nbf: iat - CLOCK_SKEW_SECONDS,
+      exp,
+      jti: crypto.randomUUID(),
+      scope: UVUMBUZI_LAB_ADMIN_SCOPE,
+    })
+  );
+  const sig = crypto.sign("RSA-SHA256", Buffer.from(`${head}.${body}`), config.privateKey).toString("base64url");
+  return { token: `${head}.${body}.${sig}`, expiresAt: new Date(exp * 1000).toISOString() };
+}
+
+/** Returns the subject of a valid, unexpired lab-admin pass signed by this Kristo server, else "". */
+export function verifyUvumbuziLabAdminToken(
+  token: string,
+  config: UvumbuziBridgeConfig,
+  nowMs: number = Date.now()
+): string {
+  const raw = String(token || "").trim();
+  if (raw.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(raw)) return "";
+  const [head, body, sig] = raw.split(".");
+  try {
+    const header = JSON.parse(Buffer.from(head, "base64url").toString("utf8"));
+    if (header?.alg !== "RS256") return "";
+    const publicKey = crypto.createPublicKey(config.privateKey);
+    const ok = crypto.verify("RSA-SHA256", Buffer.from(`${head}.${body}`), publicKey, Buffer.from(sig, "base64url"));
+    if (!ok) return "";
+    const claims = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    const now = Math.floor(nowMs / 1000);
+    if (
+      claims?.iss !== config.issuer ||
+      claims?.aud !== config.audience ||
+      claims?.scope !== UVUMBUZI_LAB_ADMIN_SCOPE ||
+      typeof claims.exp !== "number" ||
+      claims.exp <= now - CLOCK_SKEW_SECONDS ||
+      typeof claims.iat !== "number" ||
+      claims.exp - claims.iat > UVUMBUZI_LAB_ADMIN_TOKEN_TTL_SECONDS ||
+      typeof claims.sub !== "string" ||
+      !/^[\w.:-]{1,200}$/.test(claims.sub)
+    ) {
+      return "";
+    }
+    return claims.sub;
+  } catch {
+    return "";
+  }
+}

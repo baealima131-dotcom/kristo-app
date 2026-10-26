@@ -18,6 +18,7 @@ import {
 import {
   updateAgentRegistrationStatusByInvite,
 } from "@/app/api/_lib/offlineActivationAgentStore";
+import { appendOfflineActivationAudit } from "@/app/api/_lib/offlineActivationAudit";
 import { upsertPlatformRole, type PlatformRole } from "@/app/api/_lib/platformRoles";
 
 export type {
@@ -430,6 +431,14 @@ export async function respondToInvitation(input: {
         status: "declined",
       });
     }
+    await appendOfflineActivationAudit({
+      actorUserId: inviteeUserId,
+      actorRole: "Member",
+      action: existing.role === "Agent" ? "agent.invitation_responded" : "supervisor.invitation_responded",
+      targetType: "invitation",
+      targetId: invitationId,
+      details: { response: "declined", invitedByUserId: existing.invitedByUserId },
+    });
     return { invitation: declined, platformRole: null };
   }
 
@@ -453,6 +462,23 @@ export async function respondToInvitation(input: {
     invitationId,
     status: "accepted",
     respondedAt,
+  });
+
+  await appendOfflineActivationAudit({
+    actorUserId: inviteeUserId,
+    actorRole: "Member",
+    action: existing.role === "Agent" ? "agent.invitation_responded" : "supervisor.invitation_responded",
+    targetType: "invitation",
+    targetId: invitationId,
+    details: { response: "accepted", invitedByUserId: existing.invitedByUserId },
+  });
+  await appendOfflineActivationAudit({
+    actorUserId: inviteeUserId,
+    actorRole: "Member",
+    action: "role.granted",
+    targetType: "user",
+    targetId: inviteeUserId,
+    details: { role: targetRole, via: "invitation", invitationId },
   });
 
   return { invitation: accepted, platformRole: savedRole.platformRole };

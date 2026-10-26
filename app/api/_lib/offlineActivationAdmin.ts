@@ -18,6 +18,8 @@ import {
   findSupervisorAgentByLinkedUser,
   isAcceptedAgentStatus,
 } from "@/app/api/_lib/offlineActivationAgentStore";
+import { appendOfflineActivationAudit } from "@/app/api/_lib/offlineActivationAudit";
+import { assertSupervisorCanInviteAgent } from "@/app/api/_lib/offlineActivationProgram";
 
 export type ActivationUserRef = {
   userId: string;
@@ -295,6 +297,8 @@ export async function inviteAgentByKristoAndChurch(
     };
   }
 
+  await assertSupervisorCanInviteAgent(supervisorUserId);
+
   const invitation = await createAgentInvitation({
     inviteeUserId: resolved.userId,
     inviteeKristoId: resolved.kristoId,
@@ -311,6 +315,15 @@ export async function inviteAgentByKristoAndChurch(
     avatarUrl: resolved.avatarUrl,
     linkedUserId: resolved.userId,
     status: "pending",
+  });
+
+  await appendOfflineActivationAudit({
+    actorUserId: supervisorUserId,
+    actorRole: "Supervisor",
+    action: "agent.invited",
+    targetType: "invitation",
+    targetId: invitation.id,
+    details: { inviteeUserId: resolved.userId, churchId: normalizedChurchId },
   });
 
   return {
