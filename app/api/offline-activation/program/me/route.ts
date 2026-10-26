@@ -37,6 +37,8 @@ export async function GET(req: NextRequest) {
         supervisor: platformRole === "Supervisor" && roleActive,
         agent: platformRole === "Agent" && roleActive,
         leaderConfirmations: pending.length,
+        // Entering a supervisor's invite code needs church membership and no program role yet.
+        canJoinAsAgent: !platformRole && Boolean(active?.churchId),
       },
     });
   } catch (error) {

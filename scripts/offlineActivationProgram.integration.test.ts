@@ -535,9 +535,9 @@ test("11. progress: admin sees all, supervisor own team, agent own work", async 
   assert.equal(work2.body.work.churches[0].status, "rejected");
 
   const me = await call("GET", "/api/offline-activation/program/me", { as: U.agent1.id });
-  assert.deepEqual(me.body.cards, { supervisor: false, agent: true, leaderConfirmations: 0 });
+  assert.deepEqual(me.body.cards, { supervisor: false, agent: true, leaderConfirmations: 0, canJoinAsAgent: false });
   const meMember = await call("GET", "/api/offline-activation/program/me", { as: U.member.id });
-  assert.deepEqual(meMember.body.cards, { supervisor: false, agent: false, leaderConfirmations: 0 });
+  assert.deepEqual(meMember.body.cards, { supervisor: false, agent: false, leaderConfirmations: 0, canJoinAsAgent: true });
 });
 
 test("12. suspend and revoke keep history and close access", async () => {
