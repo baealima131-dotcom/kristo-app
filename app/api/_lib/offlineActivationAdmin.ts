@@ -19,7 +19,8 @@ import {
   isAcceptedAgentStatus,
 } from "@/app/api/_lib/offlineActivationAgentStore";
 import { appendOfflineActivationAudit } from "@/app/api/_lib/offlineActivationAudit";
-import { assertSupervisorCanInviteAgent } from "@/app/api/_lib/offlineActivationProgram";
+import { assertSupervisorCanInviteAgent, PROGRAM_LOCK } from "@/app/api/_lib/offlineActivationProgram";
+import { withOfflineActivationLock } from "@/app/api/_lib/store/offlineActivationDb";
 
 export type ActivationUserRef = {
   userId: string;
@@ -210,7 +211,7 @@ export async function inviteSupervisorByKristoAndChurch(
   };
 }
 
-export async function inviteAgentByKristoAndChurch(
+async function inviteAgentByKristoAndChurchUnlocked(
   kristoId: string,
   churchId: string,
   supervisorUserId: string
@@ -338,3 +339,8 @@ export async function inviteAgentByKristoAndChurch(
     agent,
   };
 }
+
+/** Limit check and registration happen under the program lock (no over-subscription). */
+export const inviteAgentByKristoAndChurch = (
+  ...args: Parameters<typeof inviteAgentByKristoAndChurchUnlocked>
+) => withOfflineActivationLock(PROGRAM_LOCK, () => inviteAgentByKristoAndChurchUnlocked(...args));

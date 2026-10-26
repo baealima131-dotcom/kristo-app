@@ -36,6 +36,7 @@ import {
   OFFLINE_ACTIVATION_PROGRAM_STORE_KEY,
   readOfflineActivationJsonFile,
   updateOfflineActivationJsonFile,
+  withOfflineActivationLock,
 } from "@/app/api/_lib/store/offlineActivationDb";
 
 /**
@@ -170,6 +171,9 @@ type ProgramStore = {
 };
 
 const STORE_FILE = OFFLINE_ACTIVATION_PROGRAM_STORE_KEY;
+
+/** One lock for every write that checks or changes limits, codes, teams or churches. */
+export const PROGRAM_LOCK = "offline-activation-program";
 
 function emptyStore(): ProgramStore {
   return { version: 1, members: {}, agentInviteCodes: [], onboardings: [], adminLoginCodes: [] };
@@ -324,9 +328,15 @@ export async function assertProgramMemberAllowed(
    Supervisor limits
    ========================= */
 
-export function agentLimitFor(member: ProgramMember | null | undefined): number {
+/**
+ * Explicit limit set by System Admin, else the default (5). A supervisor who
+ * already had more agents before limits existed keeps that many: the effective
+ * limit is never below the agents they already have, and nobody is removed.
+ */
+export function agentLimitFor(member: ProgramMember | null | undefined, currentAgents = 0): number {
   const raw = Number(member?.agentLimit);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : DEFAULT_SUPERVISOR_AGENT_LIMIT;
+  if (Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
+  return Math.max(DEFAULT_SUPERVISOR_AGENT_LIMIT, currentAgents);
 }
 
 /** Distinct agents that hold (or are invited to) a slot: pending or accepted, not revoked. */
@@ -357,8 +367,8 @@ function openCodeSlots(store: ProgramStore, supervisorUserId: string): number {
 
 export async function assertSupervisorHasCapacity(supervisorUserId: string, extra = 1) {
   const store = await readProgram();
-  const limit = agentLimitFor(store.members[supervisorUserId]);
   const used = await countSupervisorAgentSlots(supervisorUserId);
+  const limit = agentLimitFor(store.members[supervisorUserId], used);
   if (used + extra > limit) {
     throw new ProgramError(409, `Agent limit reached (${used}/${limit})`);
   }
@@ -368,8 +378,8 @@ export async function assertSupervisorHasCapacity(supervisorUserId: string, extr
 /** Legacy Kristo-ID invitations take a slot too, after open invite-code slots. */
 export async function assertSupervisorCanInviteAgent(supervisorUserId: string) {
   const store = await readProgram();
-  const limit = agentLimitFor(store.members[supervisorUserId]);
   const used = await countSupervisorAgentSlots(supervisorUserId);
+  const limit = agentLimitFor(store.members[supervisorUserId], used);
   const reserved = openCodeSlots(store, supervisorUserId);
   if (used + reserved + 1 > limit) {
     throw new ProgramError(
@@ -397,7 +407,7 @@ function upsertMember(
    System Admin
    ========================= */
 
-export async function adminSetSupervisorLimit(input: {
+async function adminSetSupervisorLimitUnlocked(input: {
   actorUserId: string;
   supervisorUserId: string;
   agentLimit: number;
@@ -413,9 +423,14 @@ export async function adminSetSupervisorLimit(input: {
     throw new ProgramError(404, "Supervisor not found");
   }
 
+  const used = await countSupervisorAgentSlots(supervisorUserId);
+  if (limit < used) {
+    throw new ProgramError(409, `This supervisor already has ${used} agents; the limit cannot be lower than that`);
+  }
+
   let previous = 0;
   const member = await mutateProgram((store) => {
-    previous = agentLimitFor(store.members[supervisorUserId]);
+    previous = agentLimitFor(store.members[supervisorUserId], used);
     return upsertMember(store, supervisorUserId, "Supervisor", {
       agentLimit: limit,
       limitUpdatedAt: nowIso(),
@@ -434,7 +449,7 @@ export async function adminSetSupervisorLimit(input: {
   return member;
 }
 
-export async function adminInviteSupervisor(input: {
+async function adminInviteSupervisorUnlocked(input: {
   actorUserId: string;
   kristoId: string;
   churchId: string;
@@ -448,6 +463,9 @@ export async function adminInviteSupervisor(input: {
       : Math.floor(Number(input.agentLimit));
   if (limit !== undefined && (!Number.isFinite(limit) || limit < 0 || limit > MAX_SUPERVISOR_AGENT_LIMIT)) {
     throw new ProgramError(400, `agentLimit must be 0–${MAX_SUPERVISOR_AGENT_LIMIT}`);
+  }
+  if (limit !== undefined && limit < (await countSupervisorAgentSlots(userId))) {
+    throw new ProgramError(409, "The limit cannot be lower than the agents this supervisor already has");
   }
 
   await mutateProgram((store) => {
@@ -473,7 +491,7 @@ export async function adminInviteSupervisor(input: {
   return result;
 }
 
-export async function adminSetMemberStatus(input: {
+async function adminSetMemberStatusUnlocked(input: {
   actorUserId: string;
   userId: string;
   status: ProgramMemberStatus;
@@ -565,7 +583,7 @@ function publicCode(code: AgentInviteCode): PublicInviteCode {
   return { ...rest, usedCount: uses.length, state };
 }
 
-export async function createAgentInviteCode(input: {
+async function createAgentInviteCodeUnlocked(input: {
   supervisorUserId: string;
   maxUses?: number;
   expiresInHours?: number;
@@ -583,7 +601,7 @@ export async function createAgentInviteCode(input: {
   const used = await countSupervisorAgentSlots(supervisorUserId);
   const code = `AG-${randomCode(4)}-${randomCode(4)}`;
   const record = await mutateProgram((store) => {
-    const limit = agentLimitFor(store.members[supervisorUserId]);
+    const limit = agentLimitFor(store.members[supervisorUserId], used);
     const reserved = openCodeSlots(store, supervisorUserId);
     if (used + reserved + maxUses > limit) {
       throw new ProgramError(
@@ -618,7 +636,7 @@ export async function createAgentInviteCode(input: {
   return { code, invite: publicCode(record) };
 }
 
-export async function revokeAgentInviteCode(input: {
+async function revokeAgentInviteCodeUnlocked(input: {
   actorUserId: string;
   actorRole: "Supervisor" | "System_Admin";
   codeId: string;
@@ -666,7 +684,7 @@ export function resetRedeemThrottleForTests() {
   redeemAttempts.clear();
 }
 
-export async function redeemAgentInviteCode(input: {
+async function redeemAgentInviteCodeUnlocked(input: {
   userId: string;
   code: string;
 }): Promise<{ agent: OfflineActivationAgent; supervisorUserId: string }> {
@@ -731,6 +749,51 @@ export async function redeemAgentInviteCode(input: {
     upsertMember(current, userId, "Agent", { status: "active", supervisorUserId });
   });
 
+  let result: { agent: OfflineActivationAgent; supervisorUserId: string };
+  try {
+    result = await finishRedemption({ userId, supervisorUserId, churchId, codeId: row.id });
+  } catch (error) {
+    // Give the use back so a failed registration does not burn the code.
+    await mutateProgram((current) => {
+      const live = current.agentInviteCodes.find((code) => code.id === row.id);
+      if (live) live.uses = live.uses.filter((use) => use.userId !== userId);
+      const member = current.members[userId];
+      if (member?.role === "Agent" && member.supervisorUserId === supervisorUserId && !existingMember) {
+        delete current.members[userId];
+      }
+    }).catch(() => {});
+    throw error;
+  }
+  const agent = result.agent;
+
+  await appendOfflineActivationAudit({
+    actorUserId: userId,
+    actorRole: "Member",
+    action: "agent.code_redeemed",
+    targetType: "invite_code",
+    targetId: row.id,
+    details: { supervisorUserId, agentRegistrationId: agent.id },
+  });
+  await appendOfflineActivationAudit({
+    actorUserId: userId,
+    actorRole: "Member",
+    action: "role.granted",
+    targetType: "user",
+    targetId: userId,
+    details: { role: "Agent", supervisorUserId, via: "invite_code" },
+  });
+
+  return result;
+}
+
+async function finishRedemption(input: {
+  userId: string;
+  supervisorUserId: string;
+  churchId: string;
+  codeId: string;
+}): Promise<{ agent: OfflineActivationAgent; supervisorUserId: string }> {
+  const { userId, supervisorUserId, churchId } = input;
+  const row = { id: input.codeId };
   const who = await displayName(userId);
   // Reuse an earlier (pending/declined) registration with this supervisor instead of duplicating it.
   const previous = await findSupervisorAgentByLinkedUser(supervisorUserId, userId, churchId);
@@ -750,23 +813,6 @@ export async function redeemAgentInviteCode(input: {
         linkedUserId: userId,
       });
   await upsertPlatformRole(userId, "Agent", `Agent of ${supervisorUserId} • invite code ${row.id}`);
-
-  await appendOfflineActivationAudit({
-    actorUserId: userId,
-    actorRole: "Member",
-    action: "agent.code_redeemed",
-    targetType: "invite_code",
-    targetId: row.id,
-    details: { supervisorUserId, agentRegistrationId: agent.id },
-  });
-  await appendOfflineActivationAudit({
-    actorUserId: userId,
-    actorRole: "Member",
-    action: "role.granted",
-    targetType: "user",
-    targetId: userId,
-    details: { role: "Agent", supervisorUserId, via: "invite_code" },
-  });
 
   return { agent, supervisorUserId };
 }
@@ -800,7 +846,7 @@ async function verifyRegisteredChurch(churchIdRaw: string, leaderUserId: string)
   return { churchId, churchName: String((church as any).name || "").trim() };
 }
 
-export async function upsertChurchOnboarding(input: {
+async function upsertChurchOnboardingUnlocked(input: {
   agentUserId: string;
   supervisorUserId: string;
   leaderKristoId: string;
@@ -896,7 +942,7 @@ export async function upsertChurchOnboarding(input: {
 
 const FOLLOW_UP_VALUES = new Set<FollowUpStatus>(["none", "scheduled", "in_progress", "completed"]);
 
-export async function submitTrainingReport(input: {
+async function submitTrainingReportUnlocked(input: {
   agentUserId: string;
   onboardingId: string;
   churchId?: string;
@@ -1091,7 +1137,7 @@ const RESPONSE_MAP: Record<string, LeaderConfirmationResponse> = {
   needs_help: "needs_help",
 };
 
-export async function respondLeaderConfirmation(input: {
+async function respondLeaderConfirmationUnlocked(input: {
   leaderUserId: string;
   requestId: string;
   response: string;
@@ -1255,11 +1301,13 @@ export async function supervisorTeamView(supervisorUserId: string, range: DateRa
   const agents = await listSupervisorAgents(supervisorUserId);
   const rows = store.onboardings.filter((row) => row.supervisorUserId === supervisorUserId);
   const member = store.members[supervisorUserId];
+  const used = await countSupervisorAgentSlots(supervisorUserId);
   return {
     supervisorUserId,
     accessStatus: member?.status || "active",
-    agentLimit: agentLimitFor(member),
-    agentSlotsUsed: await countSupervisorAgentSlots(supervisorUserId),
+    agentLimit: agentLimitFor(member, used),
+    agentLimitIsDefault: !(Number.isFinite(Number(member?.agentLimit)) && Number(member?.agentLimit) >= 0),
+    agentSlotsUsed: used,
     agents: await Promise.all(agents.map((agent) => agentSummary(agent, store, range))),
     onboardings: summarizeOnboardings(rows, range),
     series: dailySeries(rows, range),
@@ -1396,3 +1444,26 @@ export async function consumeAdminLoginCode(code: string): Promise<string> {
     return row.userId;
   });
 }
+
+/* =========================
+   Serialised entry points (see withOfflineActivationLock)
+   ========================= */
+
+export const adminSetSupervisorLimit = (...args: Parameters<typeof adminSetSupervisorLimitUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => adminSetSupervisorLimitUnlocked(...args));
+export const adminInviteSupervisor = (...args: Parameters<typeof adminInviteSupervisorUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => adminInviteSupervisorUnlocked(...args));
+export const adminSetMemberStatus = (...args: Parameters<typeof adminSetMemberStatusUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => adminSetMemberStatusUnlocked(...args));
+export const createAgentInviteCode = (...args: Parameters<typeof createAgentInviteCodeUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => createAgentInviteCodeUnlocked(...args));
+export const revokeAgentInviteCode = (...args: Parameters<typeof revokeAgentInviteCodeUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => revokeAgentInviteCodeUnlocked(...args));
+export const redeemAgentInviteCode = (...args: Parameters<typeof redeemAgentInviteCodeUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => redeemAgentInviteCodeUnlocked(...args));
+export const upsertChurchOnboarding = (...args: Parameters<typeof upsertChurchOnboardingUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => upsertChurchOnboardingUnlocked(...args));
+export const submitTrainingReport = (...args: Parameters<typeof submitTrainingReportUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => submitTrainingReportUnlocked(...args));
+export const respondLeaderConfirmation = (...args: Parameters<typeof respondLeaderConfirmationUnlocked>) =>
+  withOfflineActivationLock(PROGRAM_LOCK, () => respondLeaderConfirmationUnlocked(...args));
