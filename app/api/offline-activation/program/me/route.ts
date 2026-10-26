@@ -39,6 +39,8 @@ export async function GET(req: NextRequest) {
         leaderConfirmations: pending.length,
         // Entering a supervisor's invite code needs church membership and no program role yet.
         canJoinAsAgent: !platformRole && Boolean(active?.churchId),
+        // System Admin only: get a one-time code to sign in to the UVUMBUZI Lab admin page.
+        labAdminSignIn: platformRole === "System_Admin",
       },
     });
   } catch (error) {
