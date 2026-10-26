@@ -5,6 +5,7 @@ import {
   readOfflineActivationJsonFile,
   updateOfflineActivationJsonFile,
 } from "@/app/api/_lib/store/offlineActivationDb";
+import { dbAppendAudit, dbListAudit, useProgramPostgres } from "@/app/api/_lib/store/offlineActivationProgramDb";
 
 /**
  * Append-only audit history for the offline-activation program.
@@ -81,6 +82,11 @@ export async function appendOfflineActivationAudit(input: {
     details: cleanDetails(input.details),
   };
 
+  if (useProgramPostgres()) {
+    await dbAppendAudit(event);
+    return event;
+  }
+
   await updateOfflineActivationJsonFile<AuditStore>(
     STORE_FILE,
     (current) => {
@@ -98,6 +104,13 @@ export async function listOfflineActivationAudit(filter: {
   targetIds?: string[];
   actorUserIds?: string[];
 } = {}): Promise<OfflineActivationAuditEvent[]> {
+  if (useProgramPostgres()) {
+    const limit = Math.max(1, Math.min(1000, Math.floor(Number(filter.limit) || 200)));
+    const ids = filter.targetIds || filter.actorUserIds
+      ? [...new Set([...(filter.targetIds || []), ...(filter.actorUserIds || [])])]
+      : undefined;
+    return (await dbListAudit(limit, ids)) as OfflineActivationAuditEvent[];
+  }
   const store = await readOfflineActivationJsonFile<AuditStore>(STORE_FILE, { events: [] });
   const events = Array.isArray(store?.events) ? store.events : [];
   const targets = filter.targetIds ? new Set(filter.targetIds) : null;

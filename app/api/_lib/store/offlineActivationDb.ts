@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import crypto from "node:crypto";
 import { neon, neonConfig } from "@neondatabase/serverless";
 
 import {
@@ -113,13 +112,6 @@ async function ensureOfflineActivationSchema() {
         sql`
           ALTER TABLE kristo_offline_activation_store
           ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0
-        `,
-        sql`
-          CREATE TABLE IF NOT EXISTS kristo_offline_activation_locks (
-            name TEXT PRIMARY KEY,
-            owner TEXT NOT NULL,
-            expires_at TIMESTAMPTZ NOT NULL
-          )
         `,
       ]);
       console.log("KRISTO_OFFLINE_ACTIVATION_DURABLE_STORE_READY", {
@@ -289,8 +281,6 @@ async function updateDocumentAtomically<T>(
 
 const lockContext = new AsyncLocalStorage<Set<string>>();
 const localLockTails = new Map<string, Promise<void>>();
-const LOCK_LEASE_SECONDS = 20;
-const LOCK_WAIT_MS = 15_000;
 
 async function withLocalMutex<R>(name: string, fn: () => Promise<R>): Promise<R> {
   const previous = localLockTails.get(name) || Promise.resolve();
@@ -307,53 +297,18 @@ async function withLocalMutex<R>(name: string, fn: () => Promise<R>): Promise<R>
   }
 }
 
-async function acquireDbLease(name: string, owner: string) {
-  const sql = getSql();
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (let attempt = 0; ; attempt += 1) {
-    const rows = (await sql`
-      INSERT INTO kristo_offline_activation_locks (name, owner, expires_at)
-      VALUES (${name}, ${owner}, NOW() + make_interval(secs => ${LOCK_LEASE_SECONDS}))
-      ON CONFLICT (name) DO UPDATE
-        SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at
-        WHERE kristo_offline_activation_locks.expires_at < NOW()
-      RETURNING owner
-    `) as { owner: string }[];
-    if (rows[0]?.owner === owner) return;
-    if (Date.now() > deadline) throw new Error("Offline activation is busy. Please try again.");
-    await backoff(Math.min(attempt, 4));
-  }
-}
-
-async function releaseDbLease(name: string, owner: string) {
-  const sql = getSql();
-  await sql`DELETE FROM kristo_offline_activation_locks WHERE name = ${name} AND owner = ${owner}`;
-}
-
 /**
- * Serialises multi-document operations (agent limits, invite-code redemption,
- * church registration) across requests and server instances. Re-entrant within
- * one async call chain. Filesystem mode (single process) uses an in-process mutex.
+ * Filesystem mode (single process): serialises multi-document program writes
+ * in-process. In Postgres mode every such write is one PL/pgSQL transaction
+ * (see offlineActivationProgramSql.ts), so this is only a local queue there.
+ * Re-entrant within one async call chain.
  */
 export async function withOfflineActivationLock<R>(name: string, fn: () => Promise<R>): Promise<R> {
   const held = lockContext.getStore();
   if (held?.has(name)) return fn();
   const nextHeld = new Set(held || []);
   nextHeld.add(name);
-
-  return withLocalMutex(name, async () => {
-    if (!usePostgres()) return lockContext.run(nextHeld, fn);
-    await ensureOfflineActivationStoreReady();
-    const owner = `${process.pid}:${crypto.randomUUID()}`;
-    await acquireDbLease(name, owner);
-    try {
-      return await lockContext.run(nextHeld, fn);
-    } finally {
-      await releaseDbLease(name, owner).catch((error) =>
-        console.warn("KRISTO_OFFLINE_ACTIVATION_LOCK_RELEASE_FAILED", { name, error: String(error?.message || error) })
-      );
-    }
-  });
+  return withLocalMutex(name, () => lockContext.run(nextHeld, fn));
 }
 
 export async function readOfflineActivationJsonFile<T>(fileName: string, fallback: T): Promise<T> {

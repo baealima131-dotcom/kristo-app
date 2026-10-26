@@ -38,6 +38,14 @@ import {
   updateOfflineActivationJsonFile,
   withOfflineActivationLock,
 } from "@/app/api/_lib/store/offlineActivationDb";
+import {
+  callProgramFunction,
+  dbConsumeAdminLoginCode,
+  ProgramDbError,
+  readProgramSnapshot,
+  useProgramPostgres,
+} from "@/app/api/_lib/store/offlineActivationProgramDb";
+import { getInvitationById } from "@/app/api/_lib/offlineActivationInvitations";
 
 /**
  * Offline-activation program (Uvumbuzi Lab + Kristo): extends the existing
@@ -192,7 +200,30 @@ function normalizeStore(raw: Partial<ProgramStore> | null | undefined): ProgramS
 }
 
 async function readProgram(): Promise<ProgramStore> {
+  if (useProgramPostgres()) return normalizeStore((await readProgramSnapshot()) as unknown as ProgramStore);
   return normalizeStore(await readOfflineActivationJsonFile<ProgramStore>(STORE_FILE, emptyStore()));
+}
+
+/** Postgres: one PL/pgSQL call = one transaction; its errors become ProgramErrors. */
+async function pgCall<T>(name: string, args: unknown[], types: string[]): Promise<T> {
+  try {
+    return await callProgramFunction<T>(name, args, types);
+  } catch (error) {
+    if (error instanceof ProgramDbError) throw new ProgramError(error.status, error.message);
+    throw error;
+  }
+}
+
+async function pgOnboarding(id: string): Promise<ChurchOnboarding> {
+  const row = (await readProgram()).onboardings.find((item) => item.id === id);
+  if (!row) throw new ProgramError(404, "Onboarding not found");
+  return row;
+}
+
+async function pgMember(userId: string): Promise<ProgramMember> {
+  const member = (await readProgram()).members[userId];
+  if (!member) throw new ProgramError(404, "Supervisor or agent not found");
+  return member;
 }
 
 async function mutateProgram<R>(mutator: (store: ProgramStore) => R): Promise<R> {
@@ -417,6 +448,11 @@ async function adminSetSupervisorLimitUnlocked(input: {
   if (!Number.isFinite(limit) || limit < 0 || limit > MAX_SUPERVISOR_AGENT_LIMIT) {
     throw new ProgramError(400, `agentLimit must be 0–${MAX_SUPERVISOR_AGENT_LIMIT}`);
   }
+  if (useProgramPostgres()) {
+    await pgCall("oact_set_supervisor_limit", [input.actorUserId, supervisorUserId, limit, DEFAULT_SUPERVISOR_AGENT_LIMIT],
+      ["text", "text", "int", "int"]);
+    return pgMember(supervisorUserId);
+  }
   const role = await getPlatformRole(supervisorUserId);
   const existing = await getProgramMember(supervisorUserId);
   if (role !== "Supervisor" && existing?.role !== "Supervisor") {
@@ -455,6 +491,7 @@ async function adminInviteSupervisorUnlocked(input: {
   churchId: string;
   agentLimit?: number;
 }) {
+  if (useProgramPostgres()) return pgAdminInviteSupervisor(input);
   const result = await inviteSupervisorByKristoAndChurch(input.kristoId, input.churchId, input.actorUserId);
   const userId = result.user.userId;
   const limit =
@@ -503,6 +540,11 @@ async function adminSetMemberStatusUnlocked(input: {
     throw new ProgramError(400, "status must be active, suspended or revoked");
   }
   if (userId === input.actorUserId) throw new ProgramError(400, "Cannot change your own access");
+  if (useProgramPostgres()) {
+    await pgCall("oact_set_member_status", [input.actorUserId, userId, status, cleanText(input.reason, 300)],
+      ["text", "text", "text", "text"]);
+    return pgMember(userId);
+  }
 
   const currentRole = await getPlatformRole(userId);
   const existing = await getProgramMember(userId);
@@ -598,8 +640,17 @@ async function createAgentInviteCodeUnlocked(input: {
     throw new ProgramError(400, `expiresInHours must be within 1–${INVITE_CODE_MAX_TTL_HOURS}`);
   }
 
-  const used = await countSupervisorAgentSlots(supervisorUserId);
   const code = `AG-${randomCode(4)}-${randomCode(4)}`;
+  if (useProgramPostgres()) {
+    const id = newId("oactcode");
+    const expiresAt = new Date(Date.now() + ttlHours * 3600_000).toISOString();
+    await pgCall("oact_create_invite_code",
+      [supervisorUserId, id, hashSecret(normalizeCodeInput(code)), code.slice(-4), maxUses, expiresAt, DEFAULT_SUPERVISOR_AGENT_LIMIT],
+      ["text", "text", "text", "text", "int", "timestamptz", "int"]);
+    const row = (await readProgram()).agentInviteCodes.find((item) => item.id === id)!;
+    return { code, invite: publicCode(row) };
+  }
+  const used = await countSupervisorAgentSlots(supervisorUserId);
   const record = await mutateProgram((store) => {
     const limit = agentLimitFor(store.members[supervisorUserId], used);
     const reserved = openCodeSlots(store, supervisorUserId);
@@ -642,6 +693,10 @@ async function revokeAgentInviteCodeUnlocked(input: {
   codeId: string;
 }): Promise<PublicInviteCode> {
   const codeId = String(input.codeId || "").trim();
+  if (useProgramPostgres()) {
+    await pgCall("oact_revoke_invite_code", [input.actorUserId, input.actorRole, codeId], ["text", "text", "text"]);
+    return publicCode((await readProgram()).agentInviteCodes.find((item) => item.id === codeId)!);
+  }
   const record = await mutateProgram((store) => {
     const row = store.agentInviteCodes.find((code) => code.id === codeId);
     // Another supervisor's code is indistinguishable from a missing one.
@@ -695,6 +750,7 @@ async function redeemAgentInviteCodeUnlocked(input: {
   checkRedeemThrottle(userId);
 
   const codeHash = hashSecret(normalized);
+  if (useProgramPostgres()) return pgRedeem(userId, codeHash);
   const store = await readProgram();
   const row = store.agentInviteCodes.find((code) => code.codeHash === codeHash);
   if (!row) throw new ProgramError(404, "Invite code not found");
@@ -863,6 +919,13 @@ async function upsertChurchOnboardingUnlocked(input: {
     ? await verifyRegisteredChurch(input.churchId, leader.userId)
     : null;
 
+  if (useProgramPostgres()) {
+    const saved = await pgCall<{ id: string; created: boolean }>("oact_save_onboarding",
+      [agentUserId, input.supervisorUserId, leader.userId, leader.kristoId, registered?.churchId ?? null, newId("oactonb")],
+      ["text", "text", "text", "text", "text", "text"]);
+    return { onboarding: await pgOnboarding(saved.id), created: saved.created };
+  }
+
   const outcome = await mutateProgram((store) => {
     const byChurch = registered
       ? store.onboardings.find((row) => row.churchId === registered.churchId)
@@ -976,6 +1039,25 @@ async function submitTrainingReportUnlocked(input: {
       : null;
   if (!registered) {
     throw new ProgramError(400, "Register the church (Church ID) before submitting training");
+  }
+
+  if (useProgramPostgres()) {
+    const report = {
+      trainingTopics: topics,
+      trainingNotes,
+      trainingCompleted,
+      followUpStatus,
+      followUpNote: cleanText(input.followUpNote, 500),
+    };
+    const saved = await pgCall<{ duplicate: boolean; confirmationRequested: boolean }>("oact_submit_report",
+      [agentUserId, onboardingId, current.churchId ? null : registered.churchId, report, newId("oactconf"),
+        LEADER_CONFIRMATION_QUESTION, nowIso()],
+      ["text", "text", "text", "jsonb", "text", "text", "text"]);
+    return {
+      onboarding: await pgOnboarding(onboardingId),
+      confirmationRequested: saved.confirmationRequested,
+      duplicate: saved.duplicate,
+    };
   }
 
   const outcome = await mutateProgram((store) => {
@@ -1148,6 +1230,11 @@ async function respondLeaderConfirmationUnlocked(input: {
   const response = RESPONSE_MAP[String(input.response || "").trim()];
   if (!response) throw new ProgramError(400, "response must be confirm, reject or needs_help");
   const note = cleanText(input.note, 500);
+  if (useProgramPostgres()) {
+    const saved = await pgCall<{ duplicate: boolean; onboardingId: string }>("oact_respond_confirmation",
+      [leaderUserId, requestId, response, note], ["text", "text", "text", "text"]);
+    return { onboarding: await pgOnboarding(saved.onboardingId), duplicate: saved.duplicate };
+  }
 
   const outcome = await mutateProgram((store) => {
     const row = store.onboardings.find((item) => item.leaderConfirmation?.requestId === requestId);
@@ -1414,6 +1501,11 @@ export type { OfflineActivationAuditEvent };
 export async function createAdminLoginCode(userId: string): Promise<{ code: string; expiresAt: string }> {
   const code = `${randomCode(4)}-${randomCode(4)}`;
   const expiresAt = new Date(Date.now() + ADMIN_LOGIN_CODE_TTL_SECONDS * 1000).toISOString();
+  if (useProgramPostgres()) {
+    await pgCall("oact_create_admin_login_code", [userId, hashSecret(normalizeCodeInput(code)), expiresAt],
+      ["text", "text", "timestamptz"]);
+    return { code, expiresAt };
+  }
   await mutateProgram((store) => {
     const now = Date.now();
     store.adminLoginCodes = store.adminLoginCodes.filter(
@@ -1435,6 +1527,11 @@ export async function createAdminLoginCode(userId: string): Promise<{ code: stri
 /** Single use: a second exchange of the same code fails. */
 export async function consumeAdminLoginCode(code: string): Promise<string> {
   const codeHash = hashSecret(normalizeCodeInput(code));
+  if (useProgramPostgres()) {
+    const userId = await dbConsumeAdminLoginCode(codeHash);
+    if (!userId) throw new ProgramError(401, "Invalid or expired sign-in code");
+    return userId;
+  }
   return mutateProgram((store) => {
     const row = store.adminLoginCodes.find((item) => item.codeHash === codeHash);
     if (!row || row.usedAt || Date.parse(row.expiresAt) <= Date.now()) {
@@ -1443,6 +1540,83 @@ export async function consumeAdminLoginCode(code: string): Promise<string> {
     row.usedAt = nowIso();
     return row.userId;
   });
+}
+
+/* =========================
+   Postgres-only multi-record operations
+   ========================= */
+
+function newAgentRegistrationId() {
+  return `oactagent_${Date.now().toString(36)}_${crypto.randomBytes(3).toString("hex")}`;
+}
+
+async function pgRedeem(userId: string, codeHash: string): Promise<{ agent: OfflineActivationAgent; supervisorUserId: string }> {
+  const active = await getActiveMembership(userId);
+  const churchId = normalizeMembershipChurchId(active?.churchId);
+  if (!active || !churchId) {
+    throw new ProgramError(400, "Join your church in Kristo before becoming an agent");
+  }
+  const who = await displayName(userId);
+  const now = nowIso();
+  const record = {
+    id: newAgentRegistrationId(),
+    supervisorUserId: "",
+    kristoId: who.kristoId || userId,
+    churchId,
+    fullName: who.name || who.kristoId || "Agent",
+    phone: "",
+    status: "accepted",
+    linkedUserId: userId,
+    createdAt: now,
+    updatedAt: now,
+  };
+  // The supervisor is only known inside the transaction (from the locked code row).
+  const result = await pgCall<{ supervisorUserId: string; agentRegistrationId: string }>("oact_redeem_invite_code",
+    [userId, codeHash, churchId, record, DEFAULT_SUPERVISOR_AGENT_LIMIT, now],
+    ["text", "text", "text", "jsonb", "int", "text"]);
+  const agents = await listAgentsByLinkedUserId(userId);
+  let agent = agents.find((row) => row.id === result.agentRegistrationId);
+  if (agent && !agent.supervisorUserId) agent = { ...agent, supervisorUserId: result.supervisorUserId };
+  return { agent: agent!, supervisorUserId: result.supervisorUserId };
+}
+
+async function pgAdminInviteSupervisor(input: {
+  actorUserId: string;
+  kristoId: string;
+  churchId: string;
+  agentLimit?: number;
+}) {
+  const churchId = normalizeMembershipChurchId(input.churchId);
+  if (!churchId) throw new ProgramError(400, "Church ID is required");
+  const limit =
+    input.agentLimit === undefined || input.agentLimit === null ? null : Math.floor(Number(input.agentLimit));
+  if (limit !== null && (!Number.isFinite(limit) || limit < 0 || limit > MAX_SUPERVISOR_AGENT_LIMIT)) {
+    throw new ProgramError(400, `agentLimit must be 0–${MAX_SUPERVISOR_AGENT_LIMIT}`);
+  }
+  const resolved = await resolveUserByKristoId(input.kristoId).catch((error) => {
+    throw new ProgramError(400, String(error?.message || "KRISTO ID not found"));
+  });
+  if (!(await getChurchById(churchId))) throw new ProgramError(404, "Church ID not found");
+  const active = await getActiveMembership(resolved.userId);
+  if (!active || normalizeMembershipChurchId(active.churchId) !== churchId) {
+    throw new ProgramError(400, "User is not an Active member of this church");
+  }
+  const user = { userId: resolved.userId, kristoId: resolved.kristoId, churchId, fullName: resolved.fullName };
+  const existingRole = await getPlatformRole(resolved.userId);
+  if (existingRole === "System_Admin") throw new ProgramError(400, "User is already System_Admin");
+  if (existingRole === "Agent") throw new ProgramError(400, "User is already an Agent");
+  if (existingRole === "Supervisor") {
+    if (limit !== null) {
+      await pgCall("oact_set_supervisor_limit", [input.actorUserId, resolved.userId, limit, DEFAULT_SUPERVISOR_AGENT_LIMIT],
+        ["text", "text", "int", "int"]);
+    }
+    return { outcome: "alreadySupervisor" as const, user, invitation: undefined };
+  }
+  const result = await pgCall<{ outcome: "invited" | "alreadyPending"; invitationId: string }>("oact_invite_supervisor",
+    [input.actorUserId, resolved.userId, resolved.kristoId, churchId,
+      `oactinv_${Date.now().toString(36)}_${crypto.randomBytes(3).toString("hex")}`, limit],
+    ["text", "text", "text", "text", "text", "int"]);
+  return { outcome: result.outcome, user, invitation: (await getInvitationById(result.invitationId)) || undefined };
 }
 
 /* =========================

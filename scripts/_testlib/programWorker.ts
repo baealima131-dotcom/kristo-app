@@ -7,12 +7,10 @@ const job = JSON.parse(process.argv[2] || "{}");
 const program = await import("../../app/api/_lib/offlineActivationProgram.ts");
 const admin = await import("../../app/api/_lib/offlineActivationAdmin.ts");
 
-const invitationDb = await import("../../app/api/_lib/store/offlineActivationInvitationDb.ts");
-const storeDb = await import("../../app/api/_lib/store/offlineActivationDb.ts");
+const programDb = await import("../../app/api/_lib/store/offlineActivationProgramDb.ts");
 
 const actions: Record<string, () => Promise<unknown>> = {
-  initInvitationSchema: () =>
-    Promise.all([invitationDb.ensureOfflineActivationInvitationSchema(), storeDb.ensureOfflineActivationStoreReady()]),
+  initProgramSchema: () => programDb.ensureProgramSchema(),
   redeem: () => program.redeemAgentInviteCode({ userId: job.userId, code: job.code }),
   createCode: () => program.createAgentInviteCode({ supervisorUserId: job.supervisorUserId, maxUses: 1, expiresInHours: 1 }),
   legacyInvite: () => admin.inviteAgentByKristoAndChurch(job.kristoId, job.churchId, job.supervisorUserId),

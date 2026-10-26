@@ -18,6 +18,7 @@ import {
 import {
   updateAgentRegistrationStatusByInvite,
 } from "@/app/api/_lib/offlineActivationAgentStore";
+import { callProgramFunction, ProgramDbError, useProgramPostgres } from "@/app/api/_lib/store/offlineActivationProgramDb";
 import { appendOfflineActivationAudit } from "@/app/api/_lib/offlineActivationAudit";
 import { upsertPlatformRole, type PlatformRole } from "@/app/api/_lib/platformRoles";
 
@@ -404,6 +405,24 @@ export async function respondToInvitation(input: {
   if (!inviteeUserId) throw new Error("Not authorized");
   if (action !== "accept" && action !== "decline") {
     throw new Error("action must be accept or decline");
+  }
+
+  if (useProgramPostgres()) {
+    // Invitation, platform role, agent registration and audit change in one transaction.
+    let result: { status: string; platformRole: PlatformRole | null };
+    try {
+      result = await callProgramFunction<{ status: string; platformRole: PlatformRole | null }>(
+        "oact_respond_invitation",
+        [invitationId, inviteeUserId, action, new Date().toISOString()],
+        ["text", "text", "text", "text"]
+      );
+    } catch (error) {
+      if (error instanceof ProgramDbError) throw new Error(error.message);
+      throw error;
+    }
+    const updated = await getInvitationById(invitationId);
+    if (!updated) throw new Error("Invitation not found");
+    return { invitation: updated, platformRole: result.platformRole || null };
   }
 
   const existing = await getInvitationById(invitationId);

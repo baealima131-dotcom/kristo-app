@@ -1,20 +1,24 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-
-export default function LoginLegacyPage() {
-  const router = useRouter();
-  const sp = useSearchParams();
-
-  useEffect(() => {
-    const next = sp.get("next") || sp.get("redirect_url") || "/dashboard";
-    router.replace(`/sign-in?next=${encodeURIComponent(next)}`);
-  }, [router, sp]);
-
-  return (
-    <div style={{ padding: 16, opacity: 0.75, fontSize: 13 }}>
-      Redirecting to sign in...
-    </div>
-  );
+/**
+ * Legacy /login (and /login/...) entry point. One server-side redirect to the
+ * real sign-in page, keeping the return path and any sub-path. This replaces the
+ * former duplicate app/(auth)/login page, which resolved to the same URL and
+ * made `next build` fail.
+ */
+export default async function LoginLegacyPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ rest?: string[] }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const { rest } = await params;
+  const query = await searchParams;
+  const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value) || "";
+  const requested = first(query.next) || first(query.redirect_url) || "/dashboard";
+  // Only same-site relative paths, never an open redirect.
+  const next = requested.startsWith("/") && !requested.startsWith("//") ? requested : "/dashboard";
+  const sub = (rest || []).map((segment) => encodeURIComponent(segment)).join("/");
+  redirect(`/sign-in${sub ? `/${sub}` : ""}?next=${encodeURIComponent(next)}`);
 }
