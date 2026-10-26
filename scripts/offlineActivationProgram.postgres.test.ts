@@ -133,7 +133,7 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
   const coldStart = await runWorkers(Array.from({ length: 6 }, () => ({ action: "initProgramSchema" })));
   assert.ok(coldStart.every((r) => r.ok), JSON.stringify(coldStart));
   await ensureProgramSchema();
-  assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_migrations"))[0].n, 1, "import ran exactly once");
+  assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_migrations WHERE name = 'json_documents_to_tables_v1'"))[0].n, 1, "import ran exactly once");
   assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_onboardings WHERE id = 'oactonb_json_1'"))[0].n, 1);
   assert.equal((await q("SELECT status FROM kristo_oact_confirmations WHERE request_id = 'oactconf_json_1'"))[0].status, "confirmed");
   assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_audit WHERE id = 'oaudit_json_1'"))[0].n, 1);

@@ -25,6 +25,9 @@ const actions: Record<string, () => Promise<unknown>> = {
     program.respondLeaderConfirmation({ leaderUserId: job.leaderUserId, requestId: job.requestId, response: job.response }),
 };
 
+// Warm up (schema check, connections) BEFORE the shared start time, so the
+// operations themselves really run at the same moment.
+if (job.action !== "initProgramSchema" && process.env.DATABASE_URL) await programDb.ensureProgramSchema();
 await new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(job.startAt) - Date.now())));
 try {
   const result: any = await actions[job.action]();

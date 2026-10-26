@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 
 import { getDatabaseUrl, hasDurableStore } from "@/app/api/_lib/store/authDb";
@@ -46,14 +47,25 @@ export async function ensureProgramSchema(): Promise<void> {
       await ensurePlatformRoleStoreReady();
       await ensureOfflineActivationInvitationSchema();
       const sql = getSql();
+      const schemaVersion = `schema_${crypto.createHash("sha256").update(PROGRAM_SCHEMA_SQL.join("\n")).digest("hex").slice(0, 16)}`;
+      // Fast path: this exact schema (tables + functions) is already installed.
+      const installed = await sql`
+        SELECT to_regclass('kristo_oact_migrations') IS NOT NULL AS has_table
+      `.then(async (rows: any) =>
+        rows[0]?.has_table
+          ? ((await sql`SELECT 1 FROM kristo_oact_migrations WHERE name = ${schemaVersion}`) as unknown[]).length > 0
+          : false
+      );
+      if (installed) return;
       // One transaction behind an advisory lock: concurrent cold starts wait instead of racing,
       // and the one-time JSON import runs exactly once.
       const results = await sql.transaction([
         sql`SELECT pg_advisory_xact_lock(hashtext(${PROGRAM_SCHEMA_LOCK_KEY}))`,
         ...PROGRAM_SCHEMA_SQL.map((statement) => sql.query(statement)),
         sql`SELECT oact_migrate_json_documents() AS migration`,
+        sql`INSERT INTO kristo_oact_migrations (name) VALUES (${schemaVersion}) ON CONFLICT DO NOTHING`,
       ]);
-      const migration = (results[results.length - 1] as { migration: unknown }[])[0]?.migration;
+      const migration = (results[results.length - 2] as { migration: unknown }[])[0]?.migration;
       console.log("KRISTO_OACT_PROGRAM_SCHEMA_READY", { migration });
     })().catch((error) => {
       schemaReady = null;
