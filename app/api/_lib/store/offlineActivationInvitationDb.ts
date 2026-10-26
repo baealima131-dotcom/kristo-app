@@ -115,46 +115,55 @@ export async function ensureOfflineActivationInvitationSchema() {
   if (!schemaReady) {
     schemaReady = (async () => {
       const sql = getSql();
-      await sql`
-        CREATE TABLE IF NOT EXISTS kristo_offline_activation_invitations (
-          id TEXT PRIMARY KEY,
-          invitee_user_id TEXT NOT NULL,
-          invitee_kristo_id TEXT NOT NULL,
-          church_id TEXT NOT NULL,
-          invited_by_user_id TEXT NOT NULL,
-          role TEXT NOT NULL DEFAULT 'Supervisor',
-          status TEXT NOT NULL DEFAULT 'pending',
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          responded_at TIMESTAMPTZ,
-          CONSTRAINT kristo_offline_activation_invitations_status_check
-            CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled')),
-          CONSTRAINT kristo_offline_activation_invitations_role_check
-            CHECK (role IN ('Supervisor', 'Agent'))
-        )
-      `;
-      await sql`
-        ALTER TABLE kristo_offline_activation_invitations
-        DROP CONSTRAINT IF EXISTS kristo_offline_activation_invitations_role_check
-      `;
-      await sql`
-        ALTER TABLE kristo_offline_activation_invitations
-        ADD CONSTRAINT kristo_offline_activation_invitations_role_check
-        CHECK (role IN ('Supervisor', 'Agent'))
-      `;
-      await sql`
-        CREATE UNIQUE INDEX IF NOT EXISTS kristo_offline_activation_invitations_pending_unique_idx
-        ON kristo_offline_activation_invitations (invitee_user_id, church_id, role)
-        WHERE status = 'pending'
-      `;
-      await sql`
-        CREATE INDEX IF NOT EXISTS kristo_offline_activation_invitations_invitee_status_idx
-        ON kristo_offline_activation_invitations (invitee_user_id, status)
-      `;
-      await sql`
-        CREATE INDEX IF NOT EXISTS kristo_offline_activation_invitations_status_role_idx
-        ON kristo_offline_activation_invitations (status, role)
-      `;
-    })();
+      // One transaction behind an advisory lock: instances starting at the same
+      // time wait for each other instead of colliding on CREATE/ALTER (which
+      // previously failed with "already exists" / pg_class duplicate key).
+      await sql.transaction([
+        sql`SELECT pg_advisory_xact_lock(hashtext('kristo_offline_activation_invitations_schema'))`,
+        sql`
+          CREATE TABLE IF NOT EXISTS kristo_offline_activation_invitations (
+            id TEXT PRIMARY KEY,
+            invitee_user_id TEXT NOT NULL,
+            invitee_kristo_id TEXT NOT NULL,
+            church_id TEXT NOT NULL,
+            invited_by_user_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'Supervisor',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            responded_at TIMESTAMPTZ,
+            CONSTRAINT kristo_offline_activation_invitations_status_check
+              CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled')),
+            CONSTRAINT kristo_offline_activation_invitations_role_check
+              CHECK (role IN ('Supervisor', 'Agent'))
+          )
+        `,
+        sql`
+          ALTER TABLE kristo_offline_activation_invitations
+          DROP CONSTRAINT IF EXISTS kristo_offline_activation_invitations_role_check
+        `,
+        sql`
+          ALTER TABLE kristo_offline_activation_invitations
+          ADD CONSTRAINT kristo_offline_activation_invitations_role_check
+          CHECK (role IN ('Supervisor', 'Agent'))
+        `,
+        sql`
+          CREATE UNIQUE INDEX IF NOT EXISTS kristo_offline_activation_invitations_pending_unique_idx
+          ON kristo_offline_activation_invitations (invitee_user_id, church_id, role)
+          WHERE status = 'pending'
+        `,
+        sql`
+          CREATE INDEX IF NOT EXISTS kristo_offline_activation_invitations_invitee_status_idx
+          ON kristo_offline_activation_invitations (invitee_user_id, status)
+        `,
+        sql`
+          CREATE INDEX IF NOT EXISTS kristo_offline_activation_invitations_status_role_idx
+          ON kristo_offline_activation_invitations (status, role)
+        `,
+      ]);
+    })().catch((error) => {
+      schemaReady = null; // retry on the next request instead of failing forever
+      throw error;
+    });
   }
   await schemaReady;
 }

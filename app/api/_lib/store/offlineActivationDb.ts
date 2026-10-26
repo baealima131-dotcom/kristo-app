@@ -99,30 +99,37 @@ async function ensureOfflineActivationSchema() {
   if (!schemaReady) {
     schemaReady = (async () => {
       const sql = getSql();
-      await sql`
-        CREATE TABLE IF NOT EXISTS kristo_offline_activation_store (
-          key TEXT PRIMARY KEY,
-          data JSONB NOT NULL DEFAULT '{}'::jsonb,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-      `;
-      // Additive, data-preserving: existing rows start at version 0.
-      await sql`
-        ALTER TABLE kristo_offline_activation_store
-        ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0
-      `;
-      await sql`
-        CREATE TABLE IF NOT EXISTS kristo_offline_activation_locks (
-          name TEXT PRIMARY KEY,
-          owner TEXT NOT NULL,
-          expires_at TIMESTAMPTZ NOT NULL
-        )
-      `;
+      // Single transaction behind an advisory lock so concurrent cold starts
+      // cannot collide on CREATE/ALTER. The version column is additive (rows keep data).
+      await sql.transaction([
+        sql`SELECT pg_advisory_xact_lock(hashtext('kristo_offline_activation_store_schema'))`,
+        sql`
+          CREATE TABLE IF NOT EXISTS kristo_offline_activation_store (
+            key TEXT PRIMARY KEY,
+            data JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `,
+        sql`
+          ALTER TABLE kristo_offline_activation_store
+          ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0
+        `,
+        sql`
+          CREATE TABLE IF NOT EXISTS kristo_offline_activation_locks (
+            name TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL
+          )
+        `,
+      ]);
       console.log("KRISTO_OFFLINE_ACTIVATION_DURABLE_STORE_READY", {
         mode: "postgres",
         table: "kristo_offline_activation_store",
       });
-    })();
+    })().catch((error) => {
+      schemaReady = null;
+      throw error;
+    });
   }
   await schemaReady;
 }

@@ -115,6 +115,12 @@ test("offline-activation program on Postgres: concurrency, limits, codes, duplic
   assert.equal(agentsRow.data.agents.length, 7);
   assert.equal(Number(agentsRow.version), 0, "existing rows got version 0");
 
+  // 0b. Several instances initialising the invitation schema at once (cold start).
+  const coldStart = await runWorkers(
+    Array.from({ length: 6 }, (_, i) => ({ action: "initInvitationSchema", id: i }))
+  );
+  assert.ok(coldStart.every((r) => r.ok), JSON.stringify(coldStart));
+
   // 1. Lost updates: 40 concurrent appends from one process → all 40 kept.
   await Promise.all(
     Array.from({ length: 40 }, (_, i) =>
@@ -153,6 +159,7 @@ test("offline-activation program on Postgres: concurrency, limits, codes, duplic
   const single = await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup", maxUses: 1 });
   const redeemed = await runWorkers(members.slice(0, 6).map((m) => ({ action: "redeem", userId: m.id, code: single.code })));
   assert.equal(redeemed.filter((r) => r.ok).length, 1, JSON.stringify(redeemed));
+  assert.ok(redeemed.filter((r) => !r.ok).every((r) => r.status === 410), JSON.stringify(redeemed));
   const codeRow = (await pool.query("SELECT data FROM kristo_offline_activation_store WHERE key = 'offline_activation_program.json'")).rows[0].data
     .agentInviteCodes.find((c: any) => c.id === single.invite.id);
   assert.equal(codeRow.uses.length, 1);
@@ -165,6 +172,7 @@ test("offline-activation program on Postgres: concurrency, limits, codes, duplic
     members.slice(6, 12).map((m) => ({ action: "legacyInvite", kristoId: m.kristoId, churchId: HOME, supervisorUserId: "u_pg_sup" }))
   );
   assert.equal(mixed.filter((r) => r.ok).length, 2, JSON.stringify(mixed));
+  assert.ok(mixed.filter((r) => !r.ok).every((r) => /Agent limit reached/.test(r.error)), JSON.stringify(mixed));
   const after = await program.supervisorTeamView("u_pg_sup");
   assert.ok(after.agentSlotsUsed + after.inviteCodes.filter((c) => c.state === "active").length <= 6);
 
