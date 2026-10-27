@@ -203,7 +203,7 @@ export const respondLeaderConfirmation = (requestId: string, response: "confirm"
   post<{ status: OnboardingStatus; duplicate: boolean }>("/leader/confirmations/respond", { requestId, response, note });
 
 /** System Admin only (checked on the server): one-time Lab sign-in code. */
-export async function createLabAdminSignInCode(): Promise<{ code: string; expiresAt: string }> {
+export async function createLabAdminSignInCode(): Promise<{ code: string; expiresAt: string; labAdminUrl?: string | null }> {
   const path = "/api/uvumbuzi/admin/login-code";
   return unwrap(await apiPost(path, {}, { headers: headers(path) }));
 }

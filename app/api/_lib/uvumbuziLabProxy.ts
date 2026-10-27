@@ -120,6 +120,12 @@ export function isAllowedLabRoute(method: string, segments: string[]): boolean {
   });
 }
 
+/** Public URL of the Lab's System Admin page, or null when UVUMBUZI_LAB_URL is unset or not allowed. */
+export function labAdminPageUrl(env: NodeJS.ProcessEnv = process.env): string | null {
+  const labUrl = String(env.UVUMBUZI_LAB_URL || "").trim().replace(/\/+$/, "");
+  return labUrl && isAllowedLabUrl(labUrl) ? `${labUrl}/admin/` : null;
+}
+
 function isAllowedLabUrl(raw: string): boolean {
   try {
     const u = new URL(raw);

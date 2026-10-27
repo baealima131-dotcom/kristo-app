@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 
 import { createAdminLoginCode } from "@/app/api/_lib/offlineActivationProgram";
 import { guardProgram, programErrorResponse } from "@/app/api/_lib/offlineActivationProgramGuard";
+import { labAdminPageUrl } from "@/app/api/_lib/uvumbuziLabProxy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
   const ctx = await guardProgram(req, ["System_Admin"]);
   if (ctx instanceof NextResponse) return ctx;
   try {
-    return json({ ok: true, ...(await createAdminLoginCode(ctx.userId)) }, 201);
+    return json({ ok: true, ...(await createAdminLoginCode(ctx.userId)), labAdminUrl: labAdminPageUrl() }, 201);
   } catch (error) {
     return programErrorResponse(error);
   }

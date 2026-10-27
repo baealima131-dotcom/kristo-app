@@ -14,6 +14,7 @@ export default function UvumbuziLabCodeScreen() {
   const [expiresAt, setExpiresAt] = React.useState(0);
   const [now, setNow] = React.useState(Date.now());
   const [busy, setBusy] = React.useState(false);
+  const [labAdminUrl, setLabAdminUrl] = React.useState("");
 
   React.useEffect(() => {
     if (!expiresAt) return;
@@ -29,6 +30,7 @@ export default function UvumbuziLabCodeScreen() {
     try {
       const result = await createLabAdminSignInCode();
       setCode(result.code);
+      setLabAdminUrl(result.labAdminUrl || "");
       setExpiresAt(Date.parse(result.expiresAt));
       setNow(Date.now());
     } catch (e: any) {
@@ -44,6 +46,7 @@ export default function UvumbuziLabCodeScreen() {
         <Text style={programStyles.helper}>
           Fungua ukurasa wa System Admin wa Uvumbuzi Lab kwenye kompyuta, kisha ingiza code hii. Inatumika mara moja tu na inaisha baada ya dakika 2.
         </Text>
+        {labAdminUrl ? <Text selectable style={programStyles.strong}>{labAdminUrl}</Text> : null}
         {code && !expired ? (
           <>
             <Text selectable style={programStyles.code}>{code}</Text>
