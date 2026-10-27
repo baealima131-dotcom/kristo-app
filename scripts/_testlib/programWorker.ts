@@ -10,9 +10,15 @@ const admin = await import("../../app/api/_lib/offlineActivationAdmin.ts");
 const programDb = await import("../../app/api/_lib/store/offlineActivationProgramDb.ts");
 const agentStore = await import("../../app/api/_lib/offlineActivationAgentStore.ts");
 const invitations = await import("../../app/api/_lib/offlineActivationInvitations.ts");
+const store = await import("../../app/api/_lib/store/offlineActivationDb.ts");
 
 const actions: Record<string, () => Promise<unknown>> = {
   initProgramSchema: () => programDb.ensureProgramSchema(),
+  // Several appends to one JSON document from this "instance" at once (compare-and-swap across instances).
+  casAppend: () =>
+    Promise.all(Array.from({ length: Number(job.count || 1) }, (_, i) =>
+      store.updateOfflineActivationJsonFile<{ batches: unknown[] }>("offline_activation_codes.json",
+        (cur) => ({ batches: [...(cur?.batches || []), { batchId: `${job.prefix}-${i}`, codes: [] }] }), { batches: [] }))),
   legacyUpdate: () => agentStore.updateSupervisorAgent({ supervisorUserId: job.supervisorUserId, agentId: job.agentId, status: job.status }),
   legacyRemove: async () => {
     if (!(await agentStore.deleteSupervisorAgent(job.supervisorUserId, job.agentId))) throw Object.assign(new Error("Agent not found."), { status: 404 });

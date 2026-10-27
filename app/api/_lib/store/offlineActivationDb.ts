@@ -209,18 +209,10 @@ async function writeDocument<T>(key: OfflineActivationStoreKey, data: T): Promis
   `;
 }
 
-async function readDocumentVersion(key: OfflineActivationStoreKey): Promise<number | null> {
-  const sql = getSql();
-  const rows = (await sql`
-    SELECT version FROM kristo_offline_activation_store WHERE key = ${key} LIMIT 1
-  `) as { version: string | number }[];
-  return rows[0] ? Number(rows[0].version) : null;
-}
-
-const CAS_MAX_ATTEMPTS = 12;
+const CAS_MAX_ATTEMPTS = 24;
 
 function backoff(attempt: number) {
-  const ms = Math.min(250, 8 * 2 ** attempt) * (0.5 + Math.random());
+  const ms = Math.min(500, 8 * 2 ** attempt) * (0.5 + Math.random());
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -228,18 +220,32 @@ function backoff(attempt: number) {
  * Compare-and-swap update: read data + version, apply the mutator, write only
  * if nobody else wrote in between; otherwise re-read and retry. No update is
  * lost under concurrent requests, on any number of server instances.
+ * Writers to the same document inside one instance queue up first, so over a
+ * high-latency database (Neon HTTP) they do not keep invalidating each other.
  */
 async function updateDocumentAtomically<T>(
   key: OfflineActivationStoreKey,
   mutator: (current: T) => T,
   fallback: T
 ): Promise<T> {
+  return withLocalMutex(`cas:${key}`, () => compareAndSwapDocument(key, mutator, fallback));
+}
+
+async function compareAndSwapDocument<T>(
+  key: OfflineActivationStoreKey,
+  mutator: (current: T) => T,
+  fallback: T
+): Promise<T> {
   const sql = getSql();
+  // readDocument keeps the one-time local-JSON migration behaviour.
+  const current = await readDocument<T>(key, fallback);
   for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt += 1) {
-    // readDocument keeps the one-time local-JSON migration behaviour.
-    const current = await readDocument<T>(key, fallback);
-    let version = await readDocumentVersion(key);
-    if (version === null) {
+    // One read of data + version together per attempt, then one conditional write.
+    const rows = (await sql`
+      SELECT data, version FROM kristo_offline_activation_store WHERE key = ${key} LIMIT 1
+    `) as { data: T; version: string | number }[];
+    const snapshot = rows[0];
+    if (!snapshot) {
       await sql`
         INSERT INTO kristo_offline_activation_store (key, data, updated_at, version)
         VALUES (${key}, ${JSON.stringify(current ?? null)}::jsonb, NOW(), 0)
@@ -247,13 +253,7 @@ async function updateDocumentAtomically<T>(
       `;
       continue;
     }
-    // The data read above may predate this version; re-read both together.
-    const rows = (await sql`
-      SELECT data, version FROM kristo_offline_activation_store WHERE key = ${key} LIMIT 1
-    `) as { data: T; version: string | number }[];
-    const snapshot = rows[0];
-    if (!snapshot) continue;
-    version = Number(snapshot.version);
+    const version = Number(snapshot.version);
     const base =
       key === OFFLINE_ACTIVATION_CODES_STORE_KEY
         ? (normalizeActivationCodesStorePayload(snapshot.data) as T)

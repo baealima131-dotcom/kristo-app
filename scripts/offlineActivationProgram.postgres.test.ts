@@ -191,8 +191,12 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
   await Promise.all(Array.from({ length: 40 }, (_, i) =>
     updateOfflineActivationJsonFile<{ batches: unknown[] }>("offline_activation_codes.json",
       (cur) => ({ batches: [...(cur?.batches || []), { batchId: `cas-${i}`, codes: [] }] }), { batches: [] })));
+  // ...and across instances: 8 processes x 5 concurrent appends each.
+  const casWorkers = await runWorkers(Array.from({ length: 8 }, (_, w) => ({ action: "casAppend", count: 5, prefix: `xcas-${w}` })));
+  assert.equal(casWorkers.filter((r: any) => r.ok).length, 8, `cross-instance CAS: ${JSON.stringify(casWorkers.filter((r: any) => !r.ok))}`);
   const casDoc = (await q("SELECT data FROM kristo_offline_activation_store WHERE key = 'offline_activation_codes.json'"))[0].data;
   assert.equal(casDoc.batches.filter((b: any) => String(b.batchId).startsWith("cas-")).length, 40);
+  assert.equal(casDoc.batches.filter((b: any) => String(b.batchId).startsWith("xcas-")).length, 40);
   assert.ok(casDoc.batches.some((b: any) => b.batchId === "legacy-batch"), "legacy batch kept");
 
   // 2. Limits: legacy supervisor with 7 agents keeps 7, cannot be lowered below it; a new one starts at 5.
