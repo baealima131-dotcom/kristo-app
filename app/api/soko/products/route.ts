@@ -1,3 +1,4 @@
+import { readSellerBlocks } from "@/app/api/_lib/store/sokoSellerBlocksDb";
 import { NextRequest, NextResponse } from "next/server";
 import { guardAuth } from "@/app/api/_lib/rbac";
 import { getViewer } from "@/app/api/_lib/auth";
@@ -34,6 +35,7 @@ export async function GET(req: NextRequest) {
       req.nextUrl.searchParams.get("sellerId") || ""
     );
 
+    const blocked = new Set(signedInUserId ? (await readSellerBlocks(signedInUserId)).sellerIds : []);
     const sellerCache = new Map<string, Promise<any>>();
 
     const loadSeller = (userId: string) => {
@@ -104,7 +106,7 @@ export async function GET(req: NextRequest) {
       (Array.isArray((result as any).products)
         ? (result as any).products
         : []
-      ).map(async (product: any) => {
+      ).filter((product: any) => !blocked.has(String(product?.seller?.id || ""))).map(async (product: any) => {
         try {
           const userId =
             String(product?.seller?.id || "").trim();

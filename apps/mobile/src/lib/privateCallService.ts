@@ -19,6 +19,7 @@ export type PrivateCallSession = {
   pastorUserId: string;
   pastorName: string;
   pastorAvatarUrl?: string;
+  sokoConversationId?: string;
   pastorSourceField: string;
   status: "ringing" | "accepted" | "declined" | "ended" | "timeout" | "failed";
   createdAt: string;

@@ -46,6 +46,8 @@ import {
   type PrivateCallSession,
 } from "@/src/lib/privateCallService";
 
+import SokoLiveStore from "@/src/components/homeFeed/SokoLiveStore";
+
 const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
 const PRIVATE_CALL_AUDIO_ENABLED =
@@ -546,12 +548,14 @@ function PrivateCallConnectedRoom({
   peerName,
   peerAvatar,
   currentUserId,
+  isSokoCall,
   onEnd,
 }: {
   callId: string;
   peerName: string;
   peerAvatar?: string;
   currentUserId: string;
+  isSokoCall: boolean;
   onEnd: () => void;
 }) {
   const room = useRoomContext();
@@ -640,6 +644,8 @@ function PrivateCallConnectedRoom({
       ) : null}
       <Text style={styles.subtitle}>{peerName}</Text>
 
+      {isSokoCall ? <SokoLiveStore callId={callId} currentUserId={currentUserId} /> : null}
+
       <View style={styles.connectedControls}>
         <Pressable
           onPress={() => void handleToggleMute()}
@@ -664,6 +670,7 @@ function PrivateCallConnectedRoom({
 
 const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
   binding,
+  isSokoCall,
   peerUserId,
   currentUserId,
   peerDisplay,
@@ -673,6 +680,7 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
   latencyMarksRef,
 }: {
   binding: StableLiveKitBinding;
+  isSokoCall: boolean;
   peerUserId: string;
   currentUserId: string;
   peerDisplay: ConnectedPeerDisplay;
@@ -935,6 +943,7 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
       />
       <PrivateCallConnectedRoom
         callId={binding.callId}
+        isSokoCall={isSokoCall}
         peerName={peerDisplay.peerName}
         peerAvatar={peerDisplay.peerAvatar}
         currentUserId={currentUserId}
@@ -1581,7 +1590,7 @@ export default function PrivateCallScreen() {
   const statusMessage = (() => {
     if (!session) return "";
     if (session.status === "ringing" && role === "caller") {
-      return `Calling your Pastor…`;
+      return session.pastorSourceField === 'soko-purchase-call' ? 'Calling seller…' : `Calling your Pastor…`;
     }
     if (session.status === "ringing" && role === "pastor") {
       return `${session.callerName} is calling`;
@@ -1655,6 +1664,7 @@ export default function PrivateCallScreen() {
     return (
       <View style={[styles.screen, { paddingTop: insets.top }]}>
         <PrivateCallLiveKitShell
+          isSokoCall={session.pastorSourceField === "soko-purchase-call" && Boolean(session.sokoConversationId)}
           binding={liveKitBinding}
           peerUserId={peerUserId}
           currentUserId={currentUserId}

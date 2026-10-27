@@ -24,6 +24,7 @@ export type PrivateCallSession = {
   pastorUserId: string;
   pastorName: string;
   pastorAvatarUrl?: string;
+  sokoConversationId?: string;
   pastorSourceField: string;
   status: PrivateCallStatus;
   createdAt: string;
@@ -94,6 +95,7 @@ export async function createPrivateCallSession(input: {
   pastorUserId: string;
   pastorName: string;
   pastorAvatarUrl?: string;
+  sokoConversationId?: string;
   pastorSourceField: string;
 }): Promise<PrivateCallSession> {
   const callId = newCallId();
@@ -108,6 +110,7 @@ export async function createPrivateCallSession(input: {
     pastorUserId: String(input.pastorUserId || "").trim(),
     pastorName: String(input.pastorName || "Pastor").trim(),
     pastorAvatarUrl: String(input.pastorAvatarUrl || "").trim() || undefined,
+    sokoConversationId: input.sokoConversationId || undefined,
     pastorSourceField: String(input.pastorSourceField || "").trim(),
     status: "ringing",
     createdAt,

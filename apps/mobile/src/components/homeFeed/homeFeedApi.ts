@@ -1340,7 +1340,7 @@ async function appendHomeFeedBackendRows(
       incoming: active.length,
     });
     if (paging) {
-      await saveHomeFeedRowsCache(existing, undefined, getBackendSnapshotRowIds(), paging);
+      await saveHomeFeedRowsCache(existing, undefined, Array.from(getBackendSnapshotRowIds() || []), paging);
     }
     lastFetchedHomeFeedRows = existing;
     return { merged: existing, appended: 0, newRows };

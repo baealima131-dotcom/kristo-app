@@ -1,3 +1,7 @@
+import {authorizeSokoConversationAccess,isUnavailableSokoListingStatus} from "@/app/api/_lib/sokoBuyerSellerChatPolicy";
+import {dbGetSokoBuyerSellerConversation} from "@/app/api/_lib/store/sokoBuyerSellerChatDb";
+import {getSokoProductById} from "@/app/api/_lib/store/sokoProductsDb";
+import {readSellerBlocks} from "@/app/api/_lib/store/sokoSellerBlocksDb";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
@@ -99,8 +103,24 @@ export async function POST(req: NextRequest) {
     .json()
     .catch(() => ({} as Record<string, unknown>));
 
+  // Marketplace calls are authorized by a real product conversation.
+  // Never trust a buyer-supplied seller ID or a context flag alone.
+  const sokoConversationId=String(body?.sokoConversationId||'').trim();
+  let sokoReceiverUserId='';
+  if(sokoConversationId){
+    const conversation=await dbGetSokoBuyerSellerConversation(sokoConversationId);
+    const access=authorizeSokoConversationAccess(conversation,callerUserId);
+    if(!access.ok)return json({ok:false,error:access.error,message:access.error},{status:access.status});
+    if(!conversation)return json({ok:false,error:'conversation_unavailable'},{status:404});
+    const product=await getSokoProductById(conversation.productId);
+    if(!product||isUnavailableSokoListingStatus(product.status)||String(product.sellerUserId)!==conversation.sellerUserId)return json({ok:false,error:'product_unavailable',message:'This product is unavailable.'},{status:404});
+    sokoReceiverUserId=conversation.buyerUserId===callerUserId?conversation.sellerUserId:conversation.buyerUserId;
+    const [buyerBlocks,sellerBlocks]=await Promise.all([readSellerBlocks(conversation.buyerUserId),readSellerBlocks(conversation.sellerUserId)]);
+    if(buyerBlocks.sellerIds.includes(conversation.sellerUserId)||sellerBlocks.sellerIds.includes(conversation.buyerUserId))return json({ok:false,error:'conversation_blocked',message:'This conversation is blocked.'},{status:403});
+  }
+
   const requestedTargetUserId = String(
-    body?.targetUserId || ""
+    sokoReceiverUserId || body?.targetUserId || ""
   ).trim();
 
   let receiverUserId = "";
@@ -109,7 +129,7 @@ export async function POST(req: NextRequest) {
 
   if (requestedTargetUserId) {
     receiverUserId = requestedTargetUserId;
-    receiverSourceField = "direct-call-back";
+    receiverSourceField = sokoReceiverUserId ? "soko-purchase-call" : "direct-call-back";
     receiverFallbackName = "Kristo user";
   } else {
     const pastor = await resolveChurchPastorUserId(churchId);
@@ -209,7 +229,7 @@ export async function POST(req: NextRequest) {
   // Direct calls are pastoral calls only:
   // Pastor may call a member, and a member may call the Pastor.
   // Member-to-member voice calls remain disabled.
-  if (requestedTargetUserId) {
+  if (requestedTargetUserId && !sokoReceiverUserId) {
     const resolvedPastor =
       await resolveChurchPastorUserId(churchId);
 
@@ -254,7 +274,7 @@ export async function POST(req: NextRequest) {
     const threadStore = await readDirectMessageThreadStore<
       Record<string, unknown>
     >({}).catch(() => ({} as Record<string, unknown>));
-    const hasExistingConversation = Boolean(
+    const hasExistingConversation = Boolean(sokoReceiverUserId) || Boolean(
       directRoomId &&
         findThreadEntryByRoomId(threadStore as any, directRoomId)
     );
@@ -319,7 +339,8 @@ export async function POST(req: NextRequest) {
         pastorName: receiverNameAuto,
         pastorAvatarUrl:
           String(receiverProfileAuto?.avatarUrl || "").trim() || undefined,
-        pastorSourceField: receiverSourceField,
+        sokoConversationId: sokoConversationId || undefined,
+    pastorSourceField: receiverSourceField,
       });
 
       const declined = await updatePrivateCallSession(
@@ -393,6 +414,7 @@ export async function POST(req: NextRequest) {
     pastorAvatarUrl:
       String(receiverProfile?.avatarUrl || "").trim() ||
       undefined,
+    sokoConversationId: sokoConversationId || undefined,
     pastorSourceField: receiverSourceField,
   });
 

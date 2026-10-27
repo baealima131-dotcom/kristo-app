@@ -1,3 +1,4 @@
+import {notifyZporaCallPush} from "./zporaCallPush";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { isUnsafeActorDisplayName } from "@/app/api/_lib/notificationActor";
 import type { PrivateCallSession } from "@/app/api/_lib/privateCallSessions";
@@ -55,5 +56,6 @@ export async function notifyPastorPrivateCallIncoming(session: PrivateCallSessio
     status: session.status,
   });
 
+  await notifyZporaCallPush(session,title).catch(()=>console.warn("ZPORA_CALL_PUSH_UNAVAILABLE",{callId:session.id}));
   return created;
 }

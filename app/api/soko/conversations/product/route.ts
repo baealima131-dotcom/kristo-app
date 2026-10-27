@@ -1,3 +1,5 @@
+import {getProfile} from "@/app/api/auth/_lib/profile";
+import { readSellerBlocks } from "@/app/api/_lib/store/sokoSellerBlocksDb";
 import { NextRequest, NextResponse } from "next/server";
 
 import { guardCheckoutAuth } from "@/app/api/_lib/rbac";
@@ -50,24 +52,28 @@ export async function GET(req: NextRequest) {
       return reply({ ok: false, error: access.error }, access.status);
     }
 
+    if (!conversation || conversation.productId !== productId) return reply({ok:false,error:"Product does not belong to this conversation."},403);
     const product = await getSokoProductById(productId);
+    if (product && (await readSellerBlocks(auth.viewer.userId)).sellerIds.includes(product.sellerUserId)) return reply({ok:false,error:"This seller is blocked."},404);
     const status = String((product as { status?: unknown } | null)?.status || "");
     if (!product || isUnavailableSokoListingStatus(status)) {
       return reply({ ok: false, error: "Product unavailable." }, 404);
     }
 
+    const sellerProfile=await getProfile(product.sellerUserId).catch(()=>null);
     return reply({
       ok: true,
-      product: sanitizeSokoCatalogProduct(
+      product: { ...sanitizeSokoCatalogProduct(
         {
           ...product,
           seller: {
             id: String(product.sellerUserId || ""),
-            name: String((product as { seller?: { name?: unknown } }).seller?.name || ""),
+            name: String(sellerProfile?.fullName || (product as { seller?: { name?: unknown } }).seller?.name || ""),
+            avatarUrl: String(sellerProfile?.avatarUrl || ""),
           },
         },
         { includeInternalIds: true }
-      ),
+      ), paymentOptions: { ...sanitizeSokoCatalogProduct(product).paymentOptions, mobileNumber: String(product.paymentOptions?.mobileNumber || ""), recipientName: String(product.paymentOptions?.recipientName || ""), cashTag: String(product.paymentOptions?.cashTag || "") } },
     });
   } catch {
     return reply({ ok: false, error: "Could not load product." }, 503);

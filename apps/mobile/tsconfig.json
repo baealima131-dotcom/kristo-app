@@ -28,6 +28,7 @@
     "**/*.patch",
     "**/kristo_backups/**",
     "_restore/**",
-    "_restore"
+    "_restore",
+    "scripts/verify-device-owned-premium-ids.ts"
   ]
 }
