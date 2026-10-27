@@ -16,25 +16,48 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pgUrl = String(process.env.KRISTO_TEST_POSTGRES_URL || "");
+// Two modes: a local *test* Postgres behind the Neon-HTTP adapter (KRISTO_TEST_POSTGRES_URL),
+// or a dedicated Neon TEST branch over the real Neon HTTP driver (KRISTO_TEST_NEON_URL, direct
+// connection string). The Neon branch must carry kristo_launch_test_guard.marker (created by hand
+// on that branch only); without it the test refuses to touch the database. URLs are never logged.
+const neonUrl = String(process.env.KRISTO_TEST_NEON_URL || "");
+const pgUrl = neonUrl || String(process.env.KRISTO_TEST_POSTGRES_URL || "");
 const toolsDir = path.resolve(repoRoot, process.env.KRISTO_REVIEW_TOOLS_DIR || ".review-tools");
+const neonHost = (() => { try { return new URL(neonUrl).hostname; } catch { return ""; } })();
 const skip =
-  !pgUrl ? "KRISTO_TEST_POSTGRES_URL not set" :
-  !/@(127\.0\.0\.1|localhost):\d+\/[\w-]*test[\w-]*$/.test(pgUrl) ? "refusing: URL must be a local *test* database" :
+  !pgUrl ? "KRISTO_TEST_POSTGRES_URL / KRISTO_TEST_NEON_URL not set" :
+  neonUrl && !/\.neon\.tech$/.test(neonHost) ? "refusing: KRISTO_TEST_NEON_URL must be a Neon host" :
+  neonUrl && /-pooler\./.test(neonHost) ? "refusing: use the direct (non-pooled) Neon connection string" :
+  !neonUrl && !/@(127\.0\.0\.1|localhost):\d+\/[\w-]*test[\w-]*$/.test(pgUrl) ? "refusing: URL must be a local *test* database" :
   !fs.existsSync(path.join(toolsDir, "neonHttpProxy.mjs")) ? "review tools missing" : false;
 
 const hash = (code: string) =>
   crypto.createHash("sha256").update(`kristo-oact-program:${code.toUpperCase().replace(/[^A-Z0-9]/g, "")}`).digest("hex");
 
 test("offline-activation program on Postgres: transactions, constraints, long locks, crashes, migration", { skip, timeout: 240_000 }, async (t) => {
-  const { startNeonHttpProxy } = await import(pathToFileURL(path.join(toolsDir, "neonHttpProxy.mjs")).href);
-  const proxy = await startNeonHttpProxy({ connectionString: pgUrl, maxConnections: 40 });
+  let proxy: { pool: any; endpoint: string; stats: unknown; close: () => Promise<void> };
+  if (neonUrl) {
+    const pg = createRequire(path.join(toolsDir, "package.json"))("pg");
+    const neonPool = new pg.Pool({ connectionString: neonUrl, max: 40 });
+    const guard = await neonPool
+      .query("SELECT note FROM kristo_launch_test_guard.marker WHERE note = 'kristo-launch-test' LIMIT 1")
+      .catch(() => ({ rows: [] }));
+    if (!guard.rows.length) {
+      await neonPool.end();
+      throw new Error("refusing: Neon branch has no kristo_launch_test_guard.marker ('kristo-launch-test')");
+    }
+    proxy = { pool: neonPool, endpoint: "", stats: { mode: "neon" }, close: () => neonPool.end() };
+  } else {
+    const { startNeonHttpProxy } = await import(pathToFileURL(path.join(toolsDir, "neonHttpProxy.mjs")).href);
+    proxy = await startNeonHttpProxy({ connectionString: pgUrl, maxConnections: 40 });
+  }
   const pool = proxy.pool;
   const q = async (text: string, params: unknown[] = []) => (await pool.query(text, params)).rows;
 
@@ -78,7 +101,7 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "kristo-oact-pg-"));
   const env = {
     ...process.env,
-    DATABASE_URL: "postgresql://kristo_test:unused@localhost/kristo_concurrency_test",
+    DATABASE_URL: neonUrl || "postgresql://kristo_test:unused@localhost/kristo_concurrency_test",
     KRISTO_REVIEW_LOCAL_NEON_HTTP_ENDPOINT: proxy.endpoint,
     KRISTO_SESSION_SECRET: "pg-test-session-secret-0123456789abcdef",
   } as Record<string, string>;
