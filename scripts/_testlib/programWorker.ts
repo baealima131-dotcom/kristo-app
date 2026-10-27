@@ -34,16 +34,26 @@ const actions: Record<string, () => Promise<unknown>> = {
 
 // Warm up (schema check, connections) BEFORE the shared start time, so the
 // operations themselves really run at the same moment.
-if (job.action !== "initProgramSchema" && process.env.DATABASE_URL) await programDb.ensureProgramSchema();
+if (job.action !== "initProgramSchema" && process.env.DATABASE_URL) {
+  await programDb.ensureProgramSchema();
+  // Cold-start reads of the other stores (memberships/profiles schema checks) also happen
+  // before the barrier, so they cannot stagger the operations under test.
+  const { getActiveMembership } = await import("../../app/api/_lib/memberships.ts");
+  const { getProfile } = await import("../../app/api/auth/_lib/profile.ts");
+  const { getPlatformRole } = await import("../../app/api/_lib/platformRoles.ts");
+  const warmUser = String(job.userId || job.supervisorUserId || "u_warmup");
+  await Promise.all([getActiveMembership(warmUser), getProfile(warmUser), getPlatformRole(warmUser)]).catch(() => null);
+}
 await new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(job.startAt) - Date.now())));
+const startedAt = Date.now();
 try {
   const result: any = await actions[job.action]();
   process.stdout.write(
-    `RESULT ${JSON.stringify({ ok: true, id: job.id, created: result?.created, outcome: result?.outcome })}\n`
+    `RESULT ${JSON.stringify({ ok: true, id: job.id, created: result?.created, outcome: result?.outcome, startedAt, lateMs: startedAt - Number(job.startAt) })}\n`
   );
 } catch (error: any) {
   process.stdout.write(
-    `RESULT ${JSON.stringify({ ok: false, id: job.id, status: error?.status || 0, error: String(error?.message || error) })}\n`
+    `RESULT ${JSON.stringify({ ok: false, id: job.id, status: error?.status || 0, error: String(error?.message || error), startedAt, lateMs: startedAt - Number(job.startAt) })}\n`
   );
 }
 process.exit(0);

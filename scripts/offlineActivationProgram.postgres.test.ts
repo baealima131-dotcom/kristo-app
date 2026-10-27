@@ -335,18 +335,42 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
   const { inviteAgentByKristoAndChurch } = await import("@/app/api/_lib/offlineActivationAdmin");
   await program.adminSetSupervisorLimit({ actorUserId: "u_pg_admin", supervisorUserId: "u_pg_sup2", agentLimit: 30 });
   await program.adminSetSupervisorLimit({ actorUserId: "u_pg_admin", supervisorUserId: "u_pg_sup3", agentLimit: 30 });
+  // Only one pending agent invitation may exist per member+church (existing unique index), so the
+  // second supervisor's invitation is the same row; the real race is across different paths.
   const invA = await inviteAgentByKristoAndChurch("KR7-PGXTR008", HOME, "u_pg_sup2");
   const invB = await inviteAgentByKristoAndChurch("KR7-PGXTR008", HOME, "u_pg_sup3");
-  assert.ok(invA.invitation && invB.invitation);
-  const sup3Code = await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup", maxUses: 1 });
+  assert.equal(invB.outcome, "alreadyPending");
+  const teamCodes = [
+    await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup3", maxUses: 1 }),
+    await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup", maxUses: 1 }),
+    await program.createAgentInviteCode({ supervisorUserId: "u_pg_oldsup", maxUses: 1 }),
+  ];
   const teamRace = await runWorkers([
     { action: "respondInvitation", invitationId: invA.invitation!.id, userId: "u_pg_x8", response: "accept" },
-    { action: "respondInvitation", invitationId: invB.invitation!.id, userId: "u_pg_x8", response: "accept" },
-    { action: "redeem", userId: "u_pg_x8", code: sup3Code.code },
+    ...teamCodes.map((c) => ({ action: "redeem", userId: "u_pg_x8", code: c.code })),
   ]);
+  console.log("TEAM_RACE", JSON.stringify(teamRace.map((r) => ({ id: r.id, ok: r.ok, status: r.status, error: r.error, lateMs: r.lateMs, ms: r.finishedAt - r.startedAt }))));
   assert.equal(teamRace.filter((r) => r.ok).length, 1, JSON.stringify(teamRace));
   const teams = await q("SELECT DISTINCT supervisor_user_id FROM kristo_oact_agents WHERE linked_user_id = 'u_pg_x8' AND status = 'accepted'");
   assert.equal(teams.length, 1, "exactly one active team");
+
+  // 14b. Deterministic, at the database level: transaction A holds a redemption for a fresh member
+  //      open (uncommitted) for 5 s; transaction B redeems a code from another supervisor for the same
+  //      member meanwhile. B must wait for A and then be refused: one team only.
+  const codeA = await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup3", maxUses: 1 });
+  const codeB = await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup2", maxUses: 1 });
+  const redeemSql = "SELECT oact_redeem_invite_code($1, $2, $3, $4::jsonb, 5, $5) AS r";
+  const agentJson = (id: string) => JSON.stringify({ id, kristoId: "KR7-PGHOLD01", churchId: HOME, fullName: "Hold", phone: "" });
+  const holdA = holdTransaction(redeemSql, ["u_pg_holdtest", hash(codeA.code), HOME, agentJson("oactagent_hold_a"), "x"], 5);
+  assert.match(await holdA.locked, /LOCKED/);
+  const tB = Date.now();
+  const holdB = holdTransaction(redeemSql, ["u_pg_holdtest", hash(codeB.code), HOME, agentJson("oactagent_hold_b"), "x"], 0);
+  const outB = await holdB.closed;
+  assert.match(await holdA.closed, /COMMITTED/);
+  console.log("HOLD_RACE", JSON.stringify({ outB: outB.trim().slice(0, 160), waitedMs: Date.now() - tB }));
+  assert.match(outB, /ERROR .*already work with another supervisor/, "second team refused");
+  assert.ok(Date.now() - tB > 3_000, "B waited for A's transaction");
+  assert.equal((await q("SELECT count(DISTINCT supervisor_user_id)::int AS n FROM kristo_oact_agents WHERE linked_user_id = 'u_pg_holdtest' AND status = 'accepted'"))[0].n, 1);
 
   // 15. Old update route respects suspend/revoke and supervisor status.
   const x0 = (await listSupervisorAgents("u_pg_sup2")).find((a) => a.linkedUserId === "u_pg_x0")!;
