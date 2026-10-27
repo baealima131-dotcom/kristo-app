@@ -11,3 +11,8 @@
 /.backups/
 /_bak/
 /.trash_baks/
+
+# Local runtime JSON (dev/test data; gitignored). Never upload it: in Postgres mode the server can
+# import local JSON into an empty production document.
+/data/
+*.tsbuildinfo
