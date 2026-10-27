@@ -48,6 +48,8 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
     fullName: `Legacy Agent ${i}`, phone: "", status: "accepted", linkedUserId: `u_pg_legacy_${i}`,
     createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z",
   }));
+  // A duplicate registration (same supervisor, member, church) and a malformed timestamp, as real data may have.
+  legacyAgents.push({ ...legacyAgents[0], id: "oactagent_legacy_dup", status: "accepted", updatedAt: "not-a-date" } as any);
   const legacyCodes = { batches: [{ batchId: "legacy-batch", codes: [{ code: "LEGACY-0001", status: "available" }] }] };
   const jsonProgram = {
     version: 1,
@@ -138,7 +140,12 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
   assert.equal((await q("SELECT status FROM kristo_oact_confirmations WHERE request_id = 'oactconf_json_1'"))[0].status, "confirmed");
   assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_audit WHERE id = 'oaudit_json_1'"))[0].n, 1);
   assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_invite_codes WHERE id = 'oactcode_json_1' AND revoked_at IS NOT NULL"))[0].n, 1);
-  for (const row of await q("SELECT key, data FROM kristo_offline_activation_store WHERE key <> 'offline_activation_agents.json' ORDER BY key")) {
+  const migratedAgents = await q("SELECT id, status, migrated_note FROM kristo_oact_agents ORDER BY id");
+  assert.equal(migratedAgents.length, 8, "all 8 legacy registrations imported (none dropped)");
+  assert.equal(migratedAgents.filter((a: any) => a.status === "accepted").length, 7);
+  const dup = migratedAgents.find((a: any) => a.status === "removed");
+  assert.ok(dup && /duplicate/.test(dup.migrated_note), "duplicate kept as history, not counted");
+  for (const row of await q("SELECT key, data FROM kristo_offline_activation_store ORDER BY key")) {
     const before = jsonDocsBefore.find((b: any) => b.key === row.key);
     assert.deepEqual(row.data, before.data, `${row.key} kept as backup, unchanged`);
   }
@@ -204,7 +211,7 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
   // 5. A process killed half-way through a redemption: everything rolls back and the code stays usable.
   await program.adminSetSupervisorLimit({ actorUserId: "u_pg_admin", supervisorUserId: "u_pg_sup", agentLimit: 9 });
   const crashCode = await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup", maxUses: 1 });
-  const agentsBefore = (await q("SELECT data FROM kristo_offline_activation_store WHERE key = 'offline_activation_agents.json'"))[0].data;
+  const agentsBefore = (await q("SELECT count(*)::int AS n FROM kristo_oact_agents"))[0].n;
   const crash = holdTransaction(
     "SELECT oact_redeem_invite_code($1, $2, $3, $4::jsonb, 5, $5) AS r",
     [members[0].id, hash(crashCode.code), HOME, JSON.stringify({ id: "oactagent_crash", kristoId: members[0].kristoId, churchId: HOME,
@@ -216,9 +223,8 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
   assert.equal(afterCrash[0].ok, true, JSON.stringify(afterCrash));
   assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_invite_code_uses WHERE user_id = $1", [members[0].id]))[0].n, 0);
   assert.equal((await q("SELECT count(*)::int AS n FROM kristo_platform_roles WHERE user_id = $1", [members[0].id]))[0].n, 0);
-  const agentsAfter = (await q("SELECT data FROM kristo_offline_activation_store WHERE key = 'offline_activation_agents.json'"))[0].data;
-  assert.ok(!agentsAfter.agents.some((a: any) => a.id === "oactagent_crash"), "no half-written registration");
-  assert.equal(agentsAfter.agents.length, agentsBefore.agents.length + 1, "only the successful redemption was added");
+  assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_agents WHERE id = 'oactagent_crash'"))[0].n, 0, "no half-written registration");
+  assert.equal((await q("SELECT count(*)::int AS n FROM kristo_oact_agents"))[0].n, agentsBefore + 1, "only the successful redemption was added");
 
   // 6. Code use under concurrency: single-use code, 6 members at once -> exactly one agent.
   const single = await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup", maxUses: 1 });
@@ -287,8 +293,83 @@ test("offline-activation program on Postgres: transactions, constraints, long lo
   const actions = (await q("SELECT action FROM kristo_oact_audit WHERE target_id = $1", [agentA])).map((r: any) => r.action);
   assert.ok(actions.includes("role.removed") && actions.includes("member.status_changed"));
 
-  // 12. Legacy data intact.
-  const agentsFinal = (await q("SELECT data FROM kristo_offline_activation_store WHERE key = 'offline_activation_agents.json'"))[0].data.agents;
-  for (const legacy of legacyAgents) assert.ok(agentsFinal.some((a: any) => a.id === legacy.id && a.status === "accepted"));
+  // 12. Legacy data intact (table), and the original document untouched.
+  const agentsFinal = await q("SELECT id, status FROM kristo_oact_agents WHERE supervisor_user_id = 'u_pg_oldsup'");
+  for (const legacy of legacyAgents.slice(0, 7)) assert.ok(agentsFinal.some((a: any) => a.id === legacy.id && a.status === "accepted"));
+  const doc = (await q("SELECT data FROM kristo_offline_activation_store WHERE key = 'offline_activation_agents.json'"))[0].data;
+  assert.deepEqual(doc, jsonDocsBefore.find((b: any) => b.key === "offline_activation_agents.json").data);
+
+  // 13. Old routes and new routes at the same time: reactivations (old update route), code
+  //     redemptions and Kristo-ID invitations all compete for one supervisor's slots.
+  const { updateSupervisorAgent, deleteSupervisorAgent, listSupervisorAgents } = await import("@/app/api/_lib/offlineActivationAgentStore");
+  await seedUsers(Array.from({ length: 10 }, (_, i) => ({
+    id: `u_pg_x${i}`, kristoId: `KR7-PGXTR${String(i).padStart(3, "0")}`, name: `PG Extra ${i}`,
+    email: `pg-x${i}@example.test`, church: { id: HOME, role: "Member" as const },
+  })));
+  await seedUsers([{ id: "u_pg_sup2", kristoId: "KR7-PGSUPER2", name: "PG Supervisor 2", email: "pg-sup2@example.test", church: { id: HOME, role: "Member" }, platformRole: "Supervisor" },
+    { id: "u_pg_sup3", kristoId: "KR7-PGSUPER3", name: "PG Supervisor 3", email: "pg-sup3@example.test", church: { id: HOME, role: "Member" }, platformRole: "Supervisor" }]);
+  await program.adminSetSupervisorLimit({ actorUserId: "u_pg_admin", supervisorUserId: "u_pg_sup2", agentLimit: 20 });
+  const sup2Codes = [];
+  for (let i = 0; i < 4; i += 1) sup2Codes.push(await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup2", maxUses: 1 }));
+  for (let i = 0; i < 4; i += 1) await program.redeemAgentInviteCode({ userId: `u_pg_x${i}`, code: sup2Codes[i].code });
+  const sup2Agents = (await listSupervisorAgents("u_pg_sup2")).filter((a) => a.status === "accepted");
+  for (const a of sup2Agents.slice(0, 3)) await updateSupervisorAgent({ supervisorUserId: "u_pg_sup2", agentId: a.id, status: "inactive" });
+  const raceCodes = [];
+  for (let i = 0; i < 2; i += 1) raceCodes.push(await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup2", maxUses: 1 }));
+  // used 1 (+3 inactive) + 2 open codes = 3; limit 5 -> room for exactly 2 more slot-takers.
+  await program.adminSetSupervisorLimit({ actorUserId: "u_pg_admin", supervisorUserId: "u_pg_sup2", agentLimit: 5 });
+  const raceJobs = [
+    ...sup2Agents.slice(0, 3).map((a) => ({ action: "legacyUpdate", supervisorUserId: "u_pg_sup2", agentId: a.id, status: "accepted" })),
+    { action: "redeem", userId: "u_pg_x4", code: raceCodes[0].code },
+    { action: "redeem", userId: "u_pg_x5", code: raceCodes[1].code },
+    ...[6, 7].map((i) => ({ action: "legacyInvite", kristoId: `KR7-PGXTR00${i}`, churchId: HOME, supervisorUserId: "u_pg_sup2" })),
+  ];
+  const race = await runWorkers(raceJobs);
+  const used13 = (await q("SELECT oact_used_slots('u_pg_sup2') AS n"))[0].n;
+  const open13 = (await q("SELECT oact_open_code_slots('u_pg_sup2') AS n"))[0].n;
+  assert.ok(used13 + open13 <= 5, JSON.stringify({ used13, open13, race }));
+  assert.ok(race.filter((r) => !r.ok).every((r) => /limit reached/i.test(r.error)), JSON.stringify(race));
+  assert.equal(race.filter((r) => raceJobs[r.id].action === "redeem").filter((r) => r.ok).length, 2, "reserved code slots are always honoured");
+
+  // 14. One team per agent, even with simultaneous accepts from two supervisors and a code from a third.
+  const { inviteAgentByKristoAndChurch } = await import("@/app/api/_lib/offlineActivationAdmin");
+  await program.adminSetSupervisorLimit({ actorUserId: "u_pg_admin", supervisorUserId: "u_pg_sup2", agentLimit: 30 });
+  await program.adminSetSupervisorLimit({ actorUserId: "u_pg_admin", supervisorUserId: "u_pg_sup3", agentLimit: 30 });
+  const invA = await inviteAgentByKristoAndChurch("KR7-PGXTR008", HOME, "u_pg_sup2");
+  const invB = await inviteAgentByKristoAndChurch("KR7-PGXTR008", HOME, "u_pg_sup3");
+  assert.ok(invA.invitation && invB.invitation);
+  const sup3Code = await program.createAgentInviteCode({ supervisorUserId: "u_pg_sup", maxUses: 1 });
+  const teamRace = await runWorkers([
+    { action: "respondInvitation", invitationId: invA.invitation!.id, userId: "u_pg_x8", response: "accept" },
+    { action: "respondInvitation", invitationId: invB.invitation!.id, userId: "u_pg_x8", response: "accept" },
+    { action: "redeem", userId: "u_pg_x8", code: sup3Code.code },
+  ]);
+  assert.equal(teamRace.filter((r) => r.ok).length, 1, JSON.stringify(teamRace));
+  const teams = await q("SELECT DISTINCT supervisor_user_id FROM kristo_oact_agents WHERE linked_user_id = 'u_pg_x8' AND status = 'accepted'");
+  assert.equal(teams.length, 1, "exactly one active team");
+
+  // 15. Old update route respects suspend/revoke and supervisor status.
+  const x0 = (await listSupervisorAgents("u_pg_sup2")).find((a) => a.linkedUserId === "u_pg_x0")!;
+  await updateSupervisorAgent({ supervisorUserId: "u_pg_sup2", agentId: x0.id, status: "inactive" }).catch(() => null);
+  await program.adminSetMemberStatus({ actorUserId: "u_pg_admin", userId: "u_pg_x0", status: "revoked", reason: "test" });
+  await assert.rejects(() => updateSupervisorAgent({ supervisorUserId: "u_pg_sup2", agentId: x0.id, status: "accepted" }), /revoked/);
+  await program.adminSetMemberStatus({ actorUserId: "u_pg_admin", userId: "u_pg_sup2", status: "suspended", reason: "test" });
+  await assert.rejects(() => updateSupervisorAgent({ supervisorUserId: "u_pg_sup2", agentId: x0.id, fullName: "x" }), /suspended/);
+  await assert.rejects(() => deleteSupervisorAgent("u_pg_sup2", x0.id), /suspended/);
+  await program.adminSetMemberStatus({ actorUserId: "u_pg_admin", userId: "u_pg_sup2", status: "active" });
+
+  // 16. Remove and reactivate the same agent at the same time: ends consistent, history kept.
+  const x1 = (await listSupervisorAgents("u_pg_sup2")).find((a) => a.linkedUserId === "u_pg_x1")!;
+  await updateSupervisorAgent({ supervisorUserId: "u_pg_sup2", agentId: x1.id, status: "inactive" }).catch(() => null);
+  const removeRace = await runWorkers([
+    { action: "legacyRemove", supervisorUserId: "u_pg_sup2", agentId: x1.id },
+    { action: "legacyUpdate", supervisorUserId: "u_pg_sup2", agentId: x1.id, status: "accepted" },
+  ]);
+  const x1Row = (await q("SELECT status FROM kristo_oact_agents WHERE id = $1", [x1.id]))[0];
+  assert.ok(x1Row, "registration row kept (soft delete)");
+  assert.ok(removeRace[0].ok, JSON.stringify(removeRace));
+  assert.equal(x1Row.status, "removed");
+  assert.ok(removeRace[1].ok || removeRace[1].status === 404, JSON.stringify(removeRace));
+  assert.equal((await listSupervisorAgents("u_pg_sup2")).some((a) => a.id === x1.id), false, "removed agents are not listed");
   console.log("PG_PROXY_STATS", JSON.stringify(proxy.stats));
 });

@@ -8,9 +8,16 @@ const program = await import("../../app/api/_lib/offlineActivationProgram.ts");
 const admin = await import("../../app/api/_lib/offlineActivationAdmin.ts");
 
 const programDb = await import("../../app/api/_lib/store/offlineActivationProgramDb.ts");
+const agentStore = await import("../../app/api/_lib/offlineActivationAgentStore.ts");
+const invitations = await import("../../app/api/_lib/offlineActivationInvitations.ts");
 
 const actions: Record<string, () => Promise<unknown>> = {
   initProgramSchema: () => programDb.ensureProgramSchema(),
+  legacyUpdate: () => agentStore.updateSupervisorAgent({ supervisorUserId: job.supervisorUserId, agentId: job.agentId, status: job.status }),
+  legacyRemove: async () => {
+    if (!(await agentStore.deleteSupervisorAgent(job.supervisorUserId, job.agentId))) throw Object.assign(new Error("Agent not found."), { status: 404 });
+  },
+  respondInvitation: () => invitations.respondToInvitation({ invitationId: job.invitationId, inviteeUserId: job.userId, action: job.response }),
   redeem: () => program.redeemAgentInviteCode({ userId: job.userId, code: job.code }),
   createCode: () => program.createAgentInviteCode({ supervisorUserId: job.supervisorUserId, maxUses: 1, expiresInHours: 1 }),
   legacyInvite: () => admin.inviteAgentByKristoAndChurch(job.kristoId, job.churchId, job.supervisorUserId),

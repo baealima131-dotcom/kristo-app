@@ -6,6 +6,7 @@ import {
   getSupervisorAgent,
 } from "@/app/api/_lib/offlineActivationAgentStore";
 import { cancelAgentInvitation } from "@/app/api/_lib/offlineActivationInvitations";
+import { useProgramPostgres } from "@/app/api/_lib/store/offlineActivationProgramDb";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest) {
     const existing = await getSupervisorAgent(ctxOrRes.viewer.userId, agentId);
     if (!existing) return json({ ok: false, error: "Agent not found." }, { status: 404 });
 
-    if (existing.status === "pending" && existing.linkedUserId) {
+    if (!useProgramPostgres() && existing.status === "pending" && existing.linkedUserId) {
       await cancelAgentInvitation({
         inviteeUserId: existing.linkedUserId,
         churchId: existing.churchId,
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
 
     return json({ ok: true, agentId });
   } catch (error: any) {
-    return json({ ok: false, error: String(error?.message || "Failed to delete agent") }, { status: 400 });
+    const status = Number(error?.status) >= 400 && Number(error?.status) < 500 ? Number(error.status) : 400;
+    return json({ ok: false, error: String(error?.message || "Failed to delete agent") }, { status });
   }
 }

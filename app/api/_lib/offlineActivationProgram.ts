@@ -42,6 +42,7 @@ import {
   callProgramFunction,
   dbConsumeAdminLoginCode,
   ProgramDbError,
+  programDefaultAgentLimit,
   readProgramSnapshot,
   useProgramPostgres,
 } from "@/app/api/_lib/store/offlineActivationProgramDb";
@@ -69,10 +70,7 @@ export class ProgramError extends Error {
   }
 }
 
-export const DEFAULT_SUPERVISOR_AGENT_LIMIT = (() => {
-  const raw = Number(process.env.KRISTO_SUPERVISOR_DEFAULT_AGENT_LIMIT);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 5;
-})();
+export const DEFAULT_SUPERVISOR_AGENT_LIMIT = programDefaultAgentLimit();
 export const MAX_SUPERVISOR_AGENT_LIMIT = 500;
 export const INVITE_CODE_DEFAULT_TTL_HOURS = 72;
 export const INVITE_CODE_MAX_TTL_HOURS = 720;
@@ -541,8 +539,9 @@ async function adminSetMemberStatusUnlocked(input: {
   }
   if (userId === input.actorUserId) throw new ProgramError(400, "Cannot change your own access");
   if (useProgramPostgres()) {
-    await pgCall("oact_set_member_status", [input.actorUserId, userId, status, cleanText(input.reason, 300)],
-      ["text", "text", "text", "text"]);
+    await pgCall("oact_set_member_status",
+      [input.actorUserId, userId, status, cleanText(input.reason, 300), DEFAULT_SUPERVISOR_AGENT_LIMIT],
+      ["text", "text", "text", "text", "int"]);
     return pgMember(userId);
   }
 
@@ -1619,6 +1618,31 @@ async function pgAdminInviteSupervisor(input: {
   return { outcome: result.outcome, user, invitation: (await getInvitationById(result.invitationId)) || undefined };
 }
 
+/**
+ * Filesystem mode only (Postgres does this inside oact_update_agent): before the
+ * legacy route reactivates an inactive agent, apply the same rules.
+ */
+async function assertLegacyReactivationAllowedFsUnlocked(input: {
+  supervisorUserId: string;
+  linkedUserId?: string;
+}) {
+  if (input.linkedUserId) {
+    const member = await getProgramMember(input.linkedUserId);
+    if (member && member.status !== "active") {
+      throw new ProgramError(403, `Agent access is ${member.status} by System Admin`);
+    }
+    const role = await getPlatformRole(input.linkedUserId);
+    if (role === "System_Admin" || role === "Supervisor") {
+      throw new ProgramError(409, `User already has the ${role} role`);
+    }
+    const current = await resolveAgentSupervisor(input.linkedUserId);
+    if (current && current !== input.supervisorUserId) {
+      throw new ProgramError(409, "This agent already works with another supervisor");
+    }
+  }
+  await assertSupervisorCanInviteAgent(input.supervisorUserId);
+}
+
 /* =========================
    Serialised entry points (see withOfflineActivationLock)
    ========================= */
@@ -1641,3 +1665,6 @@ export const submitTrainingReport = (...args: Parameters<typeof submitTrainingRe
   withOfflineActivationLock(PROGRAM_LOCK, () => submitTrainingReportUnlocked(...args));
 export const respondLeaderConfirmation = (...args: Parameters<typeof respondLeaderConfirmationUnlocked>) =>
   withOfflineActivationLock(PROGRAM_LOCK, () => respondLeaderConfirmationUnlocked(...args));
+export const assertLegacyReactivationAllowedFs = (
+  ...args: Parameters<typeof assertLegacyReactivationAllowedFsUnlocked>
+) => withOfflineActivationLock(PROGRAM_LOCK, () => assertLegacyReactivationAllowedFsUnlocked(...args));

@@ -7,6 +7,8 @@ import {
   updateSupervisorAgent,
   type OfflineActivationAgentStatus,
 } from "@/app/api/_lib/offlineActivationAgentStore";
+import { assertLegacyReactivationAllowedFs } from "@/app/api/_lib/offlineActivationProgram";
+import { useProgramPostgres } from "@/app/api/_lib/store/offlineActivationProgramDb";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -59,16 +61,25 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const nextStatus =
+      statusRaw !== undefined ? normalizeSupervisorAgentStatusUpdate(statusRaw, existing.status) || existing.status : undefined;
+    if (!useProgramPostgres() && nextStatus === "accepted" && existing.status === "inactive") {
+      // Postgres checks this inside the update transaction; the filesystem store does it here.
+      await assertLegacyReactivationAllowedFs({
+        supervisorUserId: ctxOrRes.viewer.userId,
+        linkedUserId: existing.linkedUserId,
+      });
+    }
+
     const agent = await updateSupervisorAgent({
       supervisorUserId: ctxOrRes.viewer.userId,
       agentId,
-      ...(statusRaw !== undefined
-        ? { status: normalizeSupervisorAgentStatusUpdate(statusRaw, existing.status) || existing.status }
-        : {}),
+      ...(nextStatus !== undefined ? { status: nextStatus } : {}),
     });
 
     return json({ ok: true, agent });
   } catch (error: any) {
-    return json({ ok: false, error: String(error?.message || "Failed to update agent") }, { status: 400 });
+    const status = Number(error?.status) >= 400 && Number(error?.status) < 500 ? Number(error.status) : 400;
+    return json({ ok: false, error: String(error?.message || "Failed to update agent") }, { status });
   }
 }

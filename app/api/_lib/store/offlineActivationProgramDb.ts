@@ -16,6 +16,12 @@ import { ensurePlatformRoleStoreReady } from "@/app/api/_lib/store/platformRoleD
  * each); reads come straight from the tables.
  */
 
+/** Agent limit for supervisors without an explicit one (KRISTO_SUPERVISOR_DEFAULT_AGENT_LIMIT, default 5). */
+export function programDefaultAgentLimit(): number {
+  const raw = Number(process.env.KRISTO_SUPERVISOR_DEFAULT_AGENT_LIMIT);
+  return process.env.KRISTO_SUPERVISOR_DEFAULT_AGENT_LIMIT && Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 5;
+}
+
 export class ProgramDbError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -63,10 +69,12 @@ export async function ensureProgramSchema(): Promise<void> {
         sql`SELECT pg_advisory_xact_lock(hashtext(${PROGRAM_SCHEMA_LOCK_KEY}))`,
         ...PROGRAM_SCHEMA_SQL.map((statement) => sql.query(statement)),
         sql`SELECT oact_migrate_json_documents() AS migration`,
+        sql`SELECT oact_migrate_agents_document() AS agents`,
         sql`INSERT INTO kristo_oact_migrations (name) VALUES (${schemaVersion}) ON CONFLICT DO NOTHING`,
       ]);
-      const migration = (results[results.length - 2] as { migration: unknown }[])[0]?.migration;
-      console.log("KRISTO_OACT_PROGRAM_SCHEMA_READY", { migration });
+      const migration = (results[results.length - 3] as { migration: unknown }[])[0]?.migration;
+      const agents = (results[results.length - 2] as { agents: unknown }[])[0]?.agents;
+      console.log("KRISTO_OACT_PROGRAM_SCHEMA_READY", { schemaVersion, migration, agents });
     })().catch((error) => {
       schemaReady = null;
       throw error;
@@ -253,4 +261,82 @@ export async function dbConsumeAdminLoginCode(codeHash: string): Promise<string 
     [codeHash]
   );
   return rows[0]?.user_id || null;
+}
+
+/* ---------- agent registrations (kristo_oact_agents) ---------- */
+
+export type AgentRow = {
+  id: string;
+  supervisorUserId: string;
+  kristoId: string;
+  churchId: string;
+  fullName: string;
+  phone: string;
+  status: "pending" | "accepted" | "declined" | "inactive";
+  avatarUrl?: string;
+  linkedUserId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function mapAgentRow(r: any): AgentRow {
+  return {
+    id: r.id,
+    supervisorUserId: r.supervisor_user_id,
+    kristoId: r.kristo_id || "",
+    churchId: r.church_id || "",
+    fullName: r.full_name || "",
+    phone: r.phone || "",
+    status: r.status,
+    avatarUrl: r.avatar_url || undefined,
+    linkedUserId: r.linked_user_id || undefined,
+    createdAt: iso(r.created_at)!,
+    updatedAt: iso(r.updated_at)!,
+  };
+}
+
+/** Live registrations only; removed ones are history (kept, not listed). */
+export async function dbListAgents(where: { supervisorUserId?: string; linkedUserId?: string; id?: string; churchId?: string }) {
+  const clauses = ["status <> 'removed'"];
+  const params: unknown[] = [];
+  for (const [column, value] of [
+    ["supervisor_user_id", where.supervisorUserId],
+    ["linked_user_id", where.linkedUserId],
+    ["id", where.id],
+    ["church_id", where.churchId],
+  ] as const) {
+    if (value === undefined) continue;
+    params.push(value);
+    clauses.push(`${column} = $${params.length}`);
+  }
+  const rows = await programQuery<any>(
+    `SELECT * FROM kristo_oact_agents WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`,
+    params
+  );
+  return rows.map(mapAgentRow);
+}
+
+export async function dbInsertAgent(agent: AgentRow) {
+  const rows = await programQuery<any>(
+    `INSERT INTO kristo_oact_agents (id, supervisor_user_id, kristo_id, church_id, full_name, phone, status, avatar_url,
+       linked_user_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11::timestamptz) RETURNING *`,
+    [agent.id, agent.supervisorUserId, agent.kristoId, agent.churchId, agent.fullName, agent.phone, agent.status,
+      agent.avatarUrl || null, agent.linkedUserId || null, agent.createdAt, agent.updatedAt]
+  );
+  return mapAgentRow(rows[0]);
+}
+
+export async function dbSetAgentStatusByInvite(input: {
+  supervisorUserId: string;
+  linkedUserId: string;
+  churchId: string;
+  status: string;
+}) {
+  const rows = await programQuery<any>(
+    `UPDATE kristo_oact_agents SET status = $4, updated_at = NOW()
+     WHERE supervisor_user_id = $1 AND linked_user_id = $2 AND church_id = $3 AND status <> 'removed' RETURNING *`,
+    [input.supervisorUserId, input.linkedUserId, input.churchId, input.status]
+  );
+  return rows[0] ? mapAgentRow(rows[0]) : null;
 }

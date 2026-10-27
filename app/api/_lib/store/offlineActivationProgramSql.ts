@@ -7,18 +7,22 @@
  * the whole change back. There is no time-limited application lock.
  *
  * Lock order (always the same, so no deadlocks):
- *   invite code row -> supervisor member row -> user platform-role row ->
- *   user member row -> legacy agents document row -> other rows.
+ *   invite code row -> supervisor member row -> member advisory lock ->
+ *   member platform-role row -> member row -> agent rows -> other rows.
  *
- * Agent registrations stay in the existing `offline_activation_agents.json`
- * document (legacy routes read it); functions update it inside the same
- * transaction and bump its version, so concurrent compare-and-swap writers retry.
+ * Agent registrations live in kristo_oact_agents (imported once from the old
+ * `offline_activation_agents.json` document, which is kept unchanged as a
+ * backup). Per-member changes are serialised with a transaction-scoped
+ * advisory lock (oact_lock_user), per-supervisor changes with the supervisor's
+ * member row (oact_lock_supervisor). Both are released on commit, rollback or
+ * when the connection dies, so a crashed process can never leave a lock behind.
  *
  * Errors are raised as 'OACT|<http status>|<message>'.
  */
 
 export const PROGRAM_SCHEMA_LOCK_KEY = "kristo_oact_program_schema_v1";
 export const PROGRAM_JSON_MIGRATION = "json_documents_to_tables_v1";
+export const PROGRAM_AGENTS_MIGRATION = "agents_document_to_table_v1";
 
 export const PROGRAM_SCHEMA_SQL: string[] = [
   `CREATE TABLE IF NOT EXISTS kristo_oact_members (
@@ -36,6 +40,33 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CHECK (role <> 'Agent' OR supervisor_user_id IS NOT NULL)
   )`,
+  // Agent registrations (formerly only in the offline_activation_agents.json document).
+  `CREATE TABLE IF NOT EXISTS kristo_oact_agents (
+    id TEXT PRIMARY KEY,
+    supervisor_user_id TEXT NOT NULL CHECK (supervisor_user_id <> ''),
+    kristo_id TEXT NOT NULL DEFAULT '',
+    church_id TEXT NOT NULL DEFAULT '',
+    full_name TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'inactive', 'removed')),
+    avatar_url TEXT,
+    linked_user_id TEXT,
+    migrated_note TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (linked_user_id IS NULL OR linked_user_id <> supervisor_user_id)
+  )`,
+  // One live registration per (supervisor, member, church); removed rows are kept as history.
+  `CREATE UNIQUE INDEX IF NOT EXISTS kristo_oact_agents_registration_uidx
+    ON kristo_oact_agents (supervisor_user_id, linked_user_id, church_id)
+    WHERE status <> 'removed' AND linked_user_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS kristo_oact_agents_supervisor_idx ON kristo_oact_agents (supervisor_user_id, status)`,
+  `CREATE INDEX IF NOT EXISTS kristo_oact_agents_linked_idx ON kristo_oact_agents (linked_user_id, status)`,
+  // Drop helpers of the JSON-document era (replaced below).
+  `DROP FUNCTION IF EXISTS oact_used_slots(JSONB, TEXT, TEXT)`,
+  `DROP FUNCTION IF EXISTS oact_lock_agents_doc()`,
+  `DROP FUNCTION IF EXISTS oact_write_agents_doc(JSONB)`,
+  `DROP FUNCTION IF EXISTS oact_set_member_status(TEXT, TEXT, TEXT, TEXT)`,
   `CREATE TABLE IF NOT EXISTS kristo_oact_invite_codes (
     id TEXT PRIMARY KEY,
     code_hash TEXT NOT NULL UNIQUE,
@@ -134,38 +165,38 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
   END $$`,
 
   // Locks (and creates if missing) the legacy agents document row.
-  `CREATE OR REPLACE FUNCTION oact_lock_agents_doc() RETURNS JSONB LANGUAGE plpgsql AS $$
-  DECLARE v_doc JSONB;
+  `CREATE OR REPLACE FUNCTION oact_try_ts(p_value TEXT) RETURNS TIMESTAMPTZ LANGUAGE plpgsql STABLE AS $$
   BEGIN
-    INSERT INTO kristo_offline_activation_store (key, data, updated_at, version)
-    VALUES ('offline_activation_agents.json', '{"agents": []}'::jsonb, NOW(), 0)
-    ON CONFLICT (key) DO NOTHING;
-    SELECT data INTO v_doc FROM kristo_offline_activation_store
-    WHERE key = 'offline_activation_agents.json' FOR UPDATE;
-    IF v_doc IS NULL OR jsonb_typeof(v_doc->'agents') IS DISTINCT FROM 'array' THEN
-      v_doc := '{"agents": []}'::jsonb;
-    END IF;
-    RETURN v_doc;
+    RETURN p_value::timestamptz;
+  EXCEPTION WHEN others THEN
+    RETURN NULL;
   END $$`,
 
-  `CREATE OR REPLACE FUNCTION oact_write_agents_doc(p_agents JSONB) RETURNS VOID LANGUAGE plpgsql AS $$
+  // Per-member lock: serialises every change to one member's agent status across supervisors.
+  `CREATE OR REPLACE FUNCTION oact_lock_user(p_user TEXT) RETURNS VOID LANGUAGE plpgsql AS $$
   BEGIN
-    UPDATE kristo_offline_activation_store
-    SET data = jsonb_build_object('agents', p_agents), updated_at = NOW(), version = version + 1
-    WHERE key = 'offline_activation_agents.json';
+    PERFORM pg_advisory_xact_lock(hashtext('kristo_oact_user:' || p_user));
   END $$`,
 
   // Agents holding a slot with a supervisor: pending or accepted, not revoked.
-  `CREATE OR REPLACE FUNCTION oact_used_slots(p_doc JSONB, p_sup TEXT, p_exclude_user TEXT DEFAULT NULL)
+  // Agents holding a slot with a supervisor: pending or accepted, not revoked.
+  `CREATE OR REPLACE FUNCTION oact_used_slots(p_sup TEXT, p_exclude_user TEXT DEFAULT NULL)
   RETURNS INT LANGUAGE sql STABLE AS $$
-    SELECT count(DISTINCT coalesce(nullif(e->>'linkedUserId', ''), nullif(e->>'kristoId', ''), e->>'id'))::int
-    FROM jsonb_array_elements(coalesce(p_doc->'agents', '[]'::jsonb)) e
-    WHERE e->>'supervisorUserId' = p_sup
-      AND coalesce(nullif(e->>'status', ''), 'accepted') NOT IN ('declined', 'inactive')
-      AND (p_exclude_user IS NULL OR coalesce(e->>'linkedUserId', '') <> p_exclude_user)
+    SELECT count(DISTINCT coalesce(nullif(a.linked_user_id, ''), nullif(a.kristo_id, ''), a.id))::int
+    FROM kristo_oact_agents a
+    WHERE a.supervisor_user_id = p_sup
+      AND a.status IN ('pending', 'accepted')
+      AND (p_exclude_user IS NULL OR coalesce(a.linked_user_id, '') <> p_exclude_user)
       AND NOT EXISTS (
         SELECT 1 FROM kristo_oact_members m
-        WHERE m.user_id = coalesce(nullif(e->>'linkedUserId', ''), e->>'id') AND m.status = 'revoked')
+        WHERE m.user_id = coalesce(nullif(a.linked_user_id, ''), a.id) AND m.status = 'revoked')
+  $$`,
+  `CREATE OR REPLACE FUNCTION oact_current_supervisor(p_user TEXT, p_except_sup TEXT DEFAULT NULL)
+  RETURNS TEXT LANGUAGE sql STABLE AS $$
+    SELECT supervisor_user_id FROM kristo_oact_agents
+    WHERE linked_user_id = p_user AND status = 'accepted'
+      AND (p_except_sup IS NULL OR supervisor_user_id <> p_except_sup)
+    ORDER BY updated_at DESC LIMIT 1
   $$`,
 
   `CREATE OR REPLACE FUNCTION oact_open_code_slots(p_sup TEXT) RETURNS INT LANGUAGE sql STABLE AS $$
@@ -192,15 +223,14 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
   `CREATE OR REPLACE FUNCTION oact_create_invite_code(p_sup TEXT, p_id TEXT, p_hash TEXT, p_preview TEXT,
     p_max_uses INT, p_expires_at TIMESTAMPTZ, p_default_limit INT)
   RETURNS JSONB LANGUAGE plpgsql AS $$
-  DECLARE v_m kristo_oact_members; v_used INT; v_reserved INT; v_limit INT; v_doc JSONB;
+  DECLARE v_m kristo_oact_members; v_used INT; v_reserved INT; v_limit INT;
   BEGIN
     IF (SELECT platform_role FROM kristo_platform_roles WHERE user_id = p_sup) IS DISTINCT FROM 'Supervisor' THEN
       PERFORM oact_fail(403, 'Forbidden (platform role)');
     END IF;
     v_m := oact_lock_supervisor(p_sup);
     IF v_m.status <> 'active' THEN PERFORM oact_fail(403, 'Access ' || v_m.status); END IF;
-    SELECT data INTO v_doc FROM kristo_offline_activation_store WHERE key = 'offline_activation_agents.json';
-    v_used := oact_used_slots(v_doc, p_sup);
+    v_used := oact_used_slots(p_sup);
     v_reserved := oact_open_code_slots(p_sup);
     v_limit := oact_effective_limit(v_m, v_used, p_default_limit);
     IF v_used + v_reserved + p_max_uses > v_limit THEN
@@ -233,8 +263,7 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
     p_default_limit INT, p_now TEXT)
   RETURNS JSONB LANGUAGE plpgsql AS $$
   DECLARE v_c kristo_oact_invite_codes; v_sup TEXT; v_m kristo_oact_members; v_um kristo_oact_members;
-    v_sup_role TEXT; v_user_role TEXT; v_doc JSONB; v_current_sup TEXT; v_used INT; v_limit INT;
-    v_agents JSONB; v_reg TEXT;
+    v_sup_role TEXT; v_user_role TEXT; v_current_sup TEXT; v_used INT; v_limit INT; v_reg TEXT;
   BEGIN
     SELECT * INTO v_c FROM kristo_oact_invite_codes WHERE code_hash = p_hash FOR UPDATE;
     IF NOT FOUND THEN PERFORM oact_fail(404, 'Invite code not found'); END IF;
@@ -250,6 +279,7 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
       PERFORM oact_fail(410, 'Invite code is no longer valid');
     END IF;
 
+    PERFORM oact_lock_user(p_user);
     SELECT platform_role INTO v_user_role FROM kristo_platform_roles WHERE user_id = p_user FOR UPDATE;
     IF v_user_role IN ('System_Admin', 'Supervisor') THEN
       PERFORM oact_fail(409, 'You already have the ' || v_user_role || ' role');
@@ -260,17 +290,13 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
       PERFORM oact_fail(409, 'Invite code already redeemed by you');
     END IF;
 
-    v_doc := oact_lock_agents_doc();
-    SELECT e->>'supervisorUserId' INTO v_current_sup
-    FROM jsonb_array_elements(v_doc->'agents') e
-    WHERE e->>'linkedUserId' = p_user AND coalesce(nullif(e->>'status', ''), 'accepted') IN ('accepted', 'active')
-    ORDER BY e->>'updatedAt' DESC LIMIT 1;
+    v_current_sup := oact_current_supervisor(p_user);
     IF v_current_sup IS NOT NULL AND v_current_sup <> v_sup THEN
       PERFORM oact_fail(409, 'You already work with another supervisor');
     END IF;
     IF v_current_sup = v_sup THEN PERFORM oact_fail(409, 'You are already an agent of this supervisor'); END IF;
 
-    v_used := oact_used_slots(v_doc, v_sup, p_user);
+    v_used := oact_used_slots(v_sup, p_user);
     v_limit := oact_effective_limit(v_m, v_used, p_default_limit);
     IF v_used + 1 > v_limit THEN
       PERFORM oact_fail(409, format('Agent limit reached (%s/%s)', v_used, v_limit));
@@ -279,17 +305,17 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
     INSERT INTO kristo_oact_invite_code_uses (code_id, user_id) VALUES (v_c.id, p_user);
     UPDATE kristo_oact_invite_codes SET used_count = used_count + 1 WHERE id = v_c.id;
 
-    SELECT e->>'id' INTO v_reg FROM jsonb_array_elements(v_doc->'agents') e
-    WHERE e->>'supervisorUserId' = v_sup AND e->>'linkedUserId' = p_user AND e->>'churchId' = p_church LIMIT 1;
+    SELECT id INTO v_reg FROM kristo_oact_agents
+    WHERE supervisor_user_id = v_sup AND linked_user_id = p_user AND church_id = p_church AND status <> 'removed'
+    FOR UPDATE;
     IF v_reg IS NOT NULL THEN
-      SELECT coalesce(jsonb_agg(CASE WHEN e->>'id' = v_reg
-          THEN e || jsonb_build_object('status', 'accepted', 'updatedAt', p_now) ELSE e END ORDER BY o), '[]'::jsonb)
-      INTO v_agents FROM jsonb_array_elements(v_doc->'agents') WITH ORDINALITY t(e, o);
+      UPDATE kristo_oact_agents SET status = 'accepted', updated_at = NOW() WHERE id = v_reg;
     ELSE
       v_reg := p_agent->>'id';
-      v_agents := jsonb_build_array(p_agent || jsonb_build_object('supervisorUserId', v_sup)) || (v_doc->'agents');
+      INSERT INTO kristo_oact_agents (id, supervisor_user_id, kristo_id, church_id, full_name, phone, status, linked_user_id)
+      VALUES (v_reg, v_sup, upper(coalesce(p_agent->>'kristoId', '')), p_church, coalesce(p_agent->>'fullName', ''),
+        coalesce(p_agent->>'phone', ''), 'accepted', p_user);
     END IF;
-    PERFORM oact_write_agents_doc(v_agents);
 
     INSERT INTO kristo_oact_members (user_id, role, status, supervisor_user_id)
     VALUES (p_user, 'Agent', 'active', v_sup)
@@ -309,20 +335,21 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
   `CREATE OR REPLACE FUNCTION oact_invite_agent(p_sup TEXT, p_invitee TEXT, p_invitee_kristo TEXT, p_church TEXT,
     p_invitation_id TEXT, p_agent JSONB, p_default_limit INT)
   RETURNS JSONB LANGUAGE plpgsql AS $$
-  DECLARE v_m kristo_oact_members; v_doc JSONB; v_used INT; v_reserved INT; v_limit INT; v_existing TEXT;
+  DECLARE v_m kristo_oact_members; v_used INT; v_reserved INT; v_limit INT; v_existing TEXT;
   BEGIN
     v_m := oact_lock_supervisor(p_sup);
     IF v_m.status <> 'active' THEN PERFORM oact_fail(403, 'Access ' || v_m.status); END IF;
-    v_doc := oact_lock_agents_doc();
-    SELECT e->>'id' INTO v_existing FROM jsonb_array_elements(v_doc->'agents') e
-    WHERE e->>'supervisorUserId' = p_sup AND e->>'linkedUserId' = p_invitee AND e->>'churchId' = p_church LIMIT 1;
+    IF p_invitee = p_sup THEN PERFORM oact_fail(400, 'You cannot invite yourself'); END IF;
+    PERFORM oact_lock_user(p_invitee);
+    SELECT id INTO v_existing FROM kristo_oact_agents
+    WHERE supervisor_user_id = p_sup AND linked_user_id = p_invitee AND church_id = p_church AND status <> 'removed';
     IF v_existing IS NOT NULL THEN RETURN jsonb_build_object('outcome', 'exists'); END IF;
     SELECT id INTO v_existing FROM kristo_offline_activation_invitations
     WHERE invitee_user_id = p_invitee AND church_id = p_church AND role = 'Agent' AND status = 'pending';
     IF v_existing IS NOT NULL THEN
       RETURN jsonb_build_object('outcome', 'alreadyPending', 'invitationId', v_existing);
     END IF;
-    v_used := oact_used_slots(v_doc, p_sup);
+    v_used := oact_used_slots(p_sup);
     v_reserved := oact_open_code_slots(p_sup);
     v_limit := oact_effective_limit(v_m, v_used, p_default_limit);
     IF v_used + v_reserved + 1 > v_limit THEN
@@ -331,7 +358,9 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
     INSERT INTO kristo_offline_activation_invitations (id, invitee_user_id, invitee_kristo_id, church_id,
       invited_by_user_id, role, status, created_at, responded_at)
     VALUES (p_invitation_id, p_invitee, p_invitee_kristo, p_church, p_sup, 'Agent', 'pending', NOW(), NULL);
-    PERFORM oact_write_agents_doc(jsonb_build_array(p_agent) || (v_doc->'agents'));
+    INSERT INTO kristo_oact_agents (id, supervisor_user_id, kristo_id, church_id, full_name, phone, status, avatar_url, linked_user_id)
+    VALUES (p_agent->>'id', p_sup, upper(coalesce(p_agent->>'kristoId', '')), p_church, coalesce(p_agent->>'fullName', ''),
+      coalesce(p_agent->>'phone', ''), 'pending', nullif(p_agent->>'avatarUrl', ''), p_invitee);
     PERFORM oact_audit(p_sup, 'Supervisor', 'agent.invited', 'invitation', p_invitation_id,
       jsonb_build_object('inviteeUserId', p_invitee, 'churchId', p_church));
     RETURN jsonb_build_object('outcome', 'invited', 'invitationId', p_invitation_id);
@@ -340,41 +369,43 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
   /* ---------- legacy invitations: accept / decline (Supervisor or Agent) ---------- */
   `CREATE OR REPLACE FUNCTION oact_respond_invitation(p_invitation_id TEXT, p_user TEXT, p_action TEXT, p_now TEXT)
   RETURNS JSONB LANGUAGE plpgsql AS $$
-  DECLARE v_inv kristo_offline_activation_invitations; v_doc JSONB; v_agents JSONB; v_current_sup TEXT;
-    v_new_status TEXT; v_role TEXT; v_existing_role TEXT;
+  DECLARE v_inv kristo_offline_activation_invitations; v_new_status TEXT; v_role TEXT; v_existing_role TEXT;
+    v_member kristo_oact_members;
   BEGIN
-    SELECT * INTO v_inv FROM kristo_offline_activation_invitations WHERE id = p_invitation_id FOR UPDATE;
-    IF NOT FOUND THEN PERFORM oact_fail(404, 'Invitation not found'); END IF;
-    IF v_inv.invitee_user_id <> p_user THEN PERFORM oact_fail(403, 'Not authorized to respond to this invitation'); END IF;
-    IF v_inv.status <> 'pending' THEN PERFORM oact_fail(409, 'Invitation is already ' || v_inv.status); END IF;
     IF p_action NOT IN ('accept', 'decline') THEN PERFORM oact_fail(400, 'action must be accept or decline'); END IF;
-    v_new_status := CASE WHEN p_action = 'accept' THEN 'accepted' ELSE 'declined' END;
-    v_role := CASE WHEN v_inv.role = 'Agent' THEN 'Agent' ELSE 'Supervisor' END;
-
-    IF v_role = 'Agent' THEN
+    -- Lock order: supervisor first (read the invitation unlocked to find them), then the invitation.
+    SELECT * INTO v_inv FROM kristo_offline_activation_invitations WHERE id = p_invitation_id;
+    IF NOT FOUND THEN PERFORM oact_fail(404, 'Invitation not found'); END IF;
+    IF v_inv.role = 'Agent' THEN
       PERFORM oact_lock_supervisor(v_inv.invited_by_user_id);
     END IF;
+    PERFORM oact_lock_user(p_user);
+    SELECT * INTO v_inv FROM kristo_offline_activation_invitations WHERE id = p_invitation_id FOR UPDATE;
+    IF v_inv.invitee_user_id <> p_user THEN PERFORM oact_fail(403, 'Not authorized to respond to this invitation'); END IF;
+    IF v_inv.status <> 'pending' THEN PERFORM oact_fail(409, 'Invitation is already ' || v_inv.status); END IF;
+    v_new_status := CASE WHEN p_action = 'accept' THEN 'accepted' ELSE 'declined' END;
+    v_role := CASE WHEN v_inv.role = 'Agent' THEN 'Agent' ELSE 'Supervisor' END;
     SELECT platform_role INTO v_existing_role FROM kristo_platform_roles WHERE user_id = p_user FOR UPDATE;
+    SELECT * INTO v_member FROM kristo_oact_members WHERE user_id = p_user FOR UPDATE;
 
-    IF v_role = 'Agent' THEN
-      v_doc := oact_lock_agents_doc();
-      IF p_action = 'accept' THEN
+    IF p_action = 'accept' THEN
+      IF v_member.status IN ('suspended', 'revoked') THEN PERFORM oact_fail(403, 'Access ' || v_member.status); END IF;
+      IF v_role = 'Agent' THEN
         IF v_existing_role IN ('System_Admin', 'Supervisor') THEN
           PERFORM oact_fail(409, 'User already has the ' || v_existing_role || ' role');
         END IF;
-        SELECT e->>'supervisorUserId' INTO v_current_sup FROM jsonb_array_elements(v_doc->'agents') e
-        WHERE e->>'linkedUserId' = p_user AND coalesce(nullif(e->>'status', ''), 'accepted') IN ('accepted', 'active')
-          AND e->>'supervisorUserId' <> v_inv.invited_by_user_id
-        LIMIT 1;
-        IF v_current_sup IS NOT NULL THEN PERFORM oact_fail(409, 'You already work with another supervisor'); END IF;
+        IF oact_current_supervisor(p_user, v_inv.invited_by_user_id) IS NOT NULL THEN
+          PERFORM oact_fail(409, 'You already work with another supervisor');
+        END IF;
+      ELSIF v_existing_role IN ('System_Admin', 'Agent') THEN
+        PERFORM oact_fail(409, 'User already has the ' || v_existing_role || ' role');
       END IF;
-      SELECT coalesce(jsonb_agg(CASE WHEN e->>'supervisorUserId' = v_inv.invited_by_user_id
-            AND e->>'linkedUserId' = p_user AND e->>'churchId' = v_inv.church_id
-          THEN e || jsonb_build_object('status', v_new_status, 'updatedAt', p_now) ELSE e END ORDER BY o), '[]'::jsonb)
-      INTO v_agents FROM jsonb_array_elements(v_doc->'agents') WITH ORDINALITY t(e, o);
-      PERFORM oact_write_agents_doc(v_agents);
-    ELSIF p_action = 'accept' AND v_existing_role IN ('System_Admin', 'Agent') THEN
-      PERFORM oact_fail(409, 'User already has the ' || v_existing_role || ' role');
+    END IF;
+
+    IF v_role = 'Agent' THEN
+      UPDATE kristo_oact_agents SET status = v_new_status, updated_at = NOW()
+      WHERE supervisor_user_id = v_inv.invited_by_user_id AND linked_user_id = p_user
+        AND church_id = v_inv.church_id AND status = 'pending';
     END IF;
 
     UPDATE kristo_offline_activation_invitations SET status = v_new_status, responded_at = NOW()
@@ -411,14 +442,13 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
   `CREATE OR REPLACE FUNCTION oact_invite_supervisor(p_actor TEXT, p_invitee TEXT, p_invitee_kristo TEXT,
     p_church TEXT, p_invitation_id TEXT, p_limit INT)
   RETURNS JSONB LANGUAGE plpgsql AS $$
-  DECLARE v_existing TEXT; v_doc JSONB; v_used INT;
+  DECLARE v_existing TEXT; v_used INT;
   BEGIN
     INSERT INTO kristo_oact_members (user_id, role, status) VALUES (p_invitee, 'Supervisor', 'active')
     ON CONFLICT (user_id) DO NOTHING;
     PERFORM 1 FROM kristo_oact_members WHERE user_id = p_invitee FOR UPDATE;
     IF p_limit IS NOT NULL THEN
-      SELECT data INTO v_doc FROM kristo_offline_activation_store WHERE key = 'offline_activation_agents.json';
-      v_used := oact_used_slots(v_doc, p_invitee);
+      v_used := oact_used_slots(p_invitee);
       IF p_limit < v_used THEN
         PERFORM oact_fail(409, 'The limit cannot be lower than the agents this supervisor already has');
       END IF;
@@ -440,7 +470,7 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
 
   `CREATE OR REPLACE FUNCTION oact_set_supervisor_limit(p_actor TEXT, p_sup TEXT, p_limit INT, p_default_limit INT)
   RETURNS JSONB LANGUAGE plpgsql AS $$
-  DECLARE v_m kristo_oact_members; v_role TEXT; v_doc JSONB; v_used INT; v_previous INT;
+  DECLARE v_m kristo_oact_members; v_role TEXT; v_used INT; v_previous INT;
   BEGIN
     SELECT platform_role INTO v_role FROM kristo_platform_roles WHERE user_id = p_sup;
     IF v_role IS DISTINCT FROM 'Supervisor'
@@ -448,8 +478,7 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
       PERFORM oact_fail(404, 'Supervisor not found');
     END IF;
     v_m := oact_lock_supervisor(p_sup);
-    SELECT data INTO v_doc FROM kristo_offline_activation_store WHERE key = 'offline_activation_agents.json';
-    v_used := oact_used_slots(v_doc, p_sup);
+    v_used := oact_used_slots(p_sup);
     IF p_limit < v_used THEN
       PERFORM oact_fail(409, format('This supervisor already has %s agents; the limit cannot be lower than that', v_used));
     END IF;
@@ -461,35 +490,54 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
     RETURN jsonb_build_object('previous', v_previous, 'next', p_limit, 'used', v_used);
   END $$`,
 
-  `CREATE OR REPLACE FUNCTION oact_set_member_status(p_actor TEXT, p_user TEXT, p_status TEXT, p_reason TEXT)
+  `CREATE OR REPLACE FUNCTION oact_set_member_status(p_actor TEXT, p_user TEXT, p_status TEXT, p_reason TEXT,
+    p_default_limit INT DEFAULT 5)
   RETURNS JSONB LANGUAGE plpgsql AS $$
-  DECLARE v_role TEXT; v_m kristo_oact_members; v_member_role TEXT; v_previous TEXT;
+  DECLARE v_role TEXT; v_m kristo_oact_members; v_member_role TEXT; v_previous TEXT; v_sup TEXT;
+    v_sm kristo_oact_members; v_used INT; v_limit INT;
   BEGIN
     IF p_status NOT IN ('active', 'suspended', 'revoked') THEN
       PERFORM oact_fail(400, 'status must be active, suspended or revoked');
     END IF;
     IF p_user = p_actor THEN PERFORM oact_fail(400, 'Cannot change your own access'); END IF;
-    SELECT platform_role INTO v_role FROM kristo_platform_roles WHERE user_id = p_user FOR UPDATE;
+
+    SELECT platform_role INTO v_role FROM kristo_platform_roles WHERE user_id = p_user;
     IF v_role = 'System_Admin' THEN PERFORM oact_fail(400, 'System_Admin access is not managed here'); END IF;
-    SELECT * INTO v_m FROM kristo_oact_members WHERE user_id = p_user FOR UPDATE;
+    SELECT * INTO v_m FROM kristo_oact_members WHERE user_id = p_user;
     v_member_role := coalesce(CASE WHEN v_role IN ('Supervisor', 'Agent') THEN v_role END, v_m.role);
     IF v_member_role IS NULL THEN PERFORM oact_fail(404, 'Supervisor or agent not found'); END IF;
+
+    -- Lock order: supervisor -> member.
+    IF v_member_role = 'Agent' THEN
+      v_sup := coalesce(v_m.supervisor_user_id,
+        (SELECT supervisor_user_id FROM kristo_oact_agents WHERE linked_user_id = p_user ORDER BY updated_at DESC LIMIT 1));
+      IF v_sup IS NULL THEN PERFORM oact_fail(404, 'Supervisor or agent not found'); END IF;
+      v_sm := oact_lock_supervisor(v_sup);
+    ELSE
+      PERFORM oact_lock_supervisor(p_user);
+    END IF;
+    PERFORM oact_lock_user(p_user);
+    SELECT platform_role INTO v_role FROM kristo_platform_roles WHERE user_id = p_user FOR UPDATE;
+    SELECT * INTO v_m FROM kristo_oact_members WHERE user_id = p_user FOR UPDATE;
+
     IF v_m.user_id IS NULL THEN
-      IF v_member_role = 'Agent' THEN
-        SELECT e->>'supervisorUserId' INTO v_m.supervisor_user_id
-        FROM kristo_offline_activation_store s, jsonb_array_elements(s.data->'agents') e
-        WHERE s.key = 'offline_activation_agents.json' AND e->>'linkedUserId' = p_user
-        ORDER BY e->>'updatedAt' DESC LIMIT 1;
-        IF v_m.supervisor_user_id IS NULL THEN PERFORM oact_fail(404, 'Supervisor or agent not found'); END IF;
-      END IF;
       INSERT INTO kristo_oact_members (user_id, role, status, supervisor_user_id)
-      VALUES (p_user, v_member_role, 'active', v_m.supervisor_user_id);
+      VALUES (p_user, v_member_role, 'active', CASE WHEN v_member_role = 'Agent' THEN v_sup END);
       v_previous := 'active';
     ELSE
       v_previous := v_m.status;
     END IF;
 
     IF p_status = 'active' AND v_previous = 'revoked' THEN
+      IF v_member_role = 'Agent' THEN
+        -- A reinstated agent takes a slot again: the limit still applies.
+        v_used := oact_used_slots(v_sup, p_user);
+        v_limit := oact_effective_limit(v_sm, v_used, p_default_limit);
+        IF EXISTS (SELECT 1 FROM kristo_oact_agents WHERE linked_user_id = p_user AND supervisor_user_id = v_sup
+            AND status IN ('pending', 'accepted')) AND v_used + 1 > v_limit THEN
+          PERFORM oact_fail(409, format('Agent limit reached (%s/%s)', v_used, v_limit));
+        END IF;
+      END IF;
       INSERT INTO kristo_platform_roles (user_id, platform_role, note, created_at, updated_at)
       VALUES (p_user, v_member_role, 'Reinstated by ' || p_actor, NOW(), NOW())
       ON CONFLICT (user_id) DO UPDATE SET platform_role = EXCLUDED.platform_role, note = EXCLUDED.note, updated_at = NOW();
@@ -498,7 +546,8 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
     END IF;
 
     UPDATE kristo_oact_members SET role = v_member_role, status = p_status, status_reason = nullif(p_reason, ''),
-      status_changed_at = NOW(), status_changed_by = p_actor, updated_at = NOW()
+      status_changed_at = NOW(), status_changed_by = p_actor, updated_at = NOW(),
+      supervisor_user_id = CASE WHEN v_member_role = 'Agent' THEN coalesce(supervisor_user_id, v_sup) ELSE NULL END
     WHERE user_id = p_user;
 
     IF p_status = 'revoked' AND v_role IS NOT NULL THEN
@@ -509,6 +558,134 @@ export const PROGRAM_SCHEMA_SQL: string[] = [
     PERFORM oact_audit(p_actor, 'System_Admin', 'member.status_changed', 'user', p_user,
       jsonb_build_object('role', v_member_role, 'previous', v_previous, 'next', p_status, 'reason', nullif(p_reason, '')));
     RETURN jsonb_build_object('role', v_member_role, 'previous', v_previous, 'status', p_status);
+  END $$`,
+
+  /* ---------- legacy supervisor routes: update / remove an agent ---------- */
+  `CREATE OR REPLACE FUNCTION oact_update_agent(p_sup TEXT, p_agent_id TEXT, p_full_name TEXT, p_phone TEXT,
+    p_status TEXT, p_avatar TEXT, p_default_limit INT)
+  RETURNS JSONB LANGUAGE plpgsql AS $$
+  DECLARE v_m kristo_oact_members; v_a kristo_oact_agents; v_next TEXT; v_um kristo_oact_members;
+    v_used INT; v_limit INT; v_role TEXT;
+  BEGIN
+    IF (SELECT platform_role FROM kristo_platform_roles WHERE user_id = p_sup) IS DISTINCT FROM 'Supervisor' THEN
+      PERFORM oact_fail(403, 'Forbidden (platform role)');
+    END IF;
+    v_m := oact_lock_supervisor(p_sup);
+    IF v_m.status <> 'active' THEN PERFORM oact_fail(403, 'Access ' || v_m.status); END IF;
+    SELECT * INTO v_a FROM kristo_oact_agents
+    WHERE id = p_agent_id AND supervisor_user_id = p_sup AND status <> 'removed' FOR UPDATE;
+    IF NOT FOUND THEN PERFORM oact_fail(404, 'Agent not found.'); END IF;
+    IF v_a.linked_user_id IS NOT NULL THEN PERFORM oact_lock_user(v_a.linked_user_id); END IF;
+
+    v_next := v_a.status;
+    IF p_status IS NOT NULL AND (CASE WHEN p_status = 'active' THEN 'accepted' ELSE p_status END) <> v_a.status THEN
+      IF v_a.status IN ('pending', 'declined') THEN
+        PERFORM oact_fail(400, 'Cannot change status until the agent accepts or declines the invitation.');
+      END IF;
+      IF p_status = 'inactive' AND v_a.status = 'accepted' THEN
+        v_next := 'inactive';
+      ELSIF p_status IN ('accepted', 'active') AND v_a.status = 'inactive' THEN
+        IF v_a.linked_user_id IS NOT NULL THEN
+          SELECT * INTO v_um FROM kristo_oact_members WHERE user_id = v_a.linked_user_id FOR UPDATE;
+          IF v_um.status IN ('suspended', 'revoked') THEN
+            PERFORM oact_fail(403, 'Agent access is ' || v_um.status || ' by System Admin');
+          END IF;
+          SELECT platform_role INTO v_role FROM kristo_platform_roles WHERE user_id = v_a.linked_user_id;
+          IF v_role IN ('System_Admin', 'Supervisor') THEN
+            PERFORM oact_fail(409, 'User already has the ' || v_role || ' role');
+          END IF;
+          IF oact_current_supervisor(v_a.linked_user_id, p_sup) IS NOT NULL THEN
+            PERFORM oact_fail(409, 'This agent already works with another supervisor');
+          END IF;
+        END IF;
+        v_used := oact_used_slots(p_sup, v_a.linked_user_id);
+        v_limit := oact_effective_limit(v_m, v_used, p_default_limit);
+        IF v_used + oact_open_code_slots(p_sup) + 1 > v_limit THEN
+          PERFORM oact_fail(409, format('Agent limit reached (%s agents + %s open invite slots of %s)',
+            v_used, oact_open_code_slots(p_sup), v_limit));
+        END IF;
+        v_next := 'accepted';
+      ELSE
+        PERFORM oact_fail(400, 'Only accepted agents can be set inactive, or inactive agents reactivated.');
+      END IF;
+    END IF;
+
+    UPDATE kristo_oact_agents SET
+      full_name = coalesce(nullif(p_full_name, ''), full_name),
+      phone = coalesce(p_phone, phone),
+      avatar_url = CASE WHEN p_avatar IS NULL THEN avatar_url ELSE nullif(p_avatar, '') END,
+      status = v_next, updated_at = NOW()
+    WHERE id = p_agent_id
+    RETURNING * INTO v_a;
+    IF p_status IS NOT NULL THEN
+      PERFORM oact_audit(p_sup, 'Supervisor', 'agent.status_changed', 'user', coalesce(v_a.linked_user_id, v_a.id),
+        jsonb_build_object('agentRegistrationId', v_a.id, 'next', v_next));
+    END IF;
+    RETURN to_jsonb(v_a);
+  END $$`,
+
+  `CREATE OR REPLACE FUNCTION oact_remove_agent(p_sup TEXT, p_agent_id TEXT)
+  RETURNS JSONB LANGUAGE plpgsql AS $$
+  DECLARE v_m kristo_oact_members; v_a kristo_oact_agents;
+  BEGIN
+    IF (SELECT platform_role FROM kristo_platform_roles WHERE user_id = p_sup) IS DISTINCT FROM 'Supervisor' THEN
+      PERFORM oact_fail(403, 'Forbidden (platform role)');
+    END IF;
+    v_m := oact_lock_supervisor(p_sup);
+    IF v_m.status <> 'active' THEN PERFORM oact_fail(403, 'Access ' || v_m.status); END IF;
+    SELECT * INTO v_a FROM kristo_oact_agents
+    WHERE id = p_agent_id AND supervisor_user_id = p_sup AND status <> 'removed' FOR UPDATE;
+    IF NOT FOUND THEN PERFORM oact_fail(404, 'Agent not found.'); END IF;
+    IF v_a.linked_user_id IS NOT NULL THEN PERFORM oact_lock_user(v_a.linked_user_id); END IF;
+    IF v_a.status = 'pending' AND v_a.linked_user_id IS NOT NULL THEN
+      UPDATE kristo_offline_activation_invitations SET status = 'cancelled', responded_at = NOW()
+      WHERE invitee_user_id = v_a.linked_user_id AND church_id = v_a.church_id AND role = 'Agent'
+        AND invited_by_user_id = p_sup AND status = 'pending';
+    END IF;
+    -- Soft delete: the registration stays as history and no longer holds a slot.
+    UPDATE kristo_oact_agents SET status = 'removed', updated_at = NOW() WHERE id = p_agent_id;
+    PERFORM oact_audit(p_sup, 'Supervisor', 'agent.removed', 'user', coalesce(v_a.linked_user_id, v_a.id),
+      jsonb_build_object('agentRegistrationId', v_a.id, 'previous', v_a.status));
+    RETURN jsonb_build_object('removed', TRUE, 'previous', v_a.status);
+  END $$`,
+
+  /* ---------- one-time import of the agents document ---------- */
+  `CREATE OR REPLACE FUNCTION oact_migrate_agents_document() RETURNS JSONB LANGUAGE plpgsql AS $$
+  DECLARE v_count INT;
+  BEGIN
+    IF EXISTS (SELECT 1 FROM kristo_oact_migrations WHERE name = '${PROGRAM_AGENTS_MIGRATION}') THEN
+      RETURN jsonb_build_object('skipped', TRUE);
+    END IF;
+    WITH src AS (
+      SELECT e, o,
+        row_number() OVER (PARTITION BY e->>'supervisorUserId', nullif(e->>'linkedUserId', ''), coalesce(e->>'churchId', '')
+          ORDER BY oact_try_ts(e->>'updatedAt') DESC NULLS LAST, o DESC) AS dup_rank,
+        row_number() OVER (PARTITION BY coalesce(nullif(e->>'id', ''), md5(e::text)) ORDER BY o) AS id_rank
+      FROM kristo_offline_activation_store s,
+        jsonb_array_elements(CASE WHEN jsonb_typeof(s.data->'agents') = 'array' THEN s.data->'agents' ELSE '[]'::jsonb END)
+          WITH ORDINALITY t(e, o)
+      WHERE s.key = 'offline_activation_agents.json' AND coalesce(e->>'supervisorUserId', '') <> ''
+    )
+    INSERT INTO kristo_oact_agents (id, supervisor_user_id, kristo_id, church_id, full_name, phone, status, avatar_url,
+      linked_user_id, migrated_note, created_at, updated_at)
+    SELECT
+      coalesce(nullif(e->>'id', ''), 'oactagent_mig_' || md5(e::text)) || CASE WHEN id_rank > 1 THEN '_dup' || o ELSE '' END,
+      e->>'supervisorUserId', upper(coalesce(e->>'kristoId', '')), coalesce(e->>'churchId', ''),
+      coalesce(e->>'fullName', ''), coalesce(e->>'phone', ''),
+      CASE WHEN dup_rank > 1 AND nullif(e->>'linkedUserId', '') IS NOT NULL THEN 'removed'
+        ELSE CASE coalesce(nullif(e->>'status', ''), 'accepted')
+          WHEN 'active' THEN 'accepted' WHEN 'pending' THEN 'pending' WHEN 'declined' THEN 'declined'
+          WHEN 'inactive' THEN 'inactive' ELSE 'accepted' END END,
+      nullif(e->>'avatarUrl', ''),
+      CASE WHEN nullif(e->>'linkedUserId', '') = e->>'supervisorUserId' THEN NULL ELSE nullif(e->>'linkedUserId', '') END,
+      CASE WHEN dup_rank > 1 AND nullif(e->>'linkedUserId', '') IS NOT NULL
+        THEN 'duplicate registration kept as history; original status ' || coalesce(e->>'status', '') END,
+      coalesce(oact_try_ts(e->>'createdAt'), NOW()), coalesce(oact_try_ts(e->>'updatedAt'), oact_try_ts(e->>'createdAt'), NOW())
+    FROM src
+    ON CONFLICT (id) DO NOTHING;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    INSERT INTO kristo_oact_migrations (name) VALUES ('${PROGRAM_AGENTS_MIGRATION}');
+    RETURN jsonb_build_object('agents', v_count);
   END $$`,
 
   /* ---------- church onboarding, training, leader confirmation ---------- */
