@@ -102,6 +102,7 @@ import {
 } from "@/src/lib/homeFeedShare";
 import {
   fetchHomeFeedFromApi,
+  peekLastHomeFeedMediaFetchOutcome,
   fetchHomeFeedNextPage,
   getCachedHomeFeedBackendCount,
   getCachedHomeFeedBackendRows,
@@ -292,6 +293,9 @@ import {
   runAfterHomeFeedFirstCardMount,
 } from "@/src/lib/homeFeedStartupTiming";
 
+/** Longest the Home skeleton may stay up without any rows before showing an error + Retry. */
+const HOME_FEED_SKELETON_MAX_MS = 30_000;
+
 export default function HomeFeedScreen() {
   const router = useRouter();
   const { height: windowHeight } = useWindowDimensions();
@@ -445,6 +449,8 @@ export default function HomeFeedScreen() {
   const [youtubeShowSkeleton, setYoutubeShowSkeleton] = useState(() =>
     isHomeFeedYouTubeStyleVideo() ? youtubeSessionOnMount.rows.length === 0 : false
   );
+  /** Shown instead of rows when page 0 came back with nothing: empty feed or failed load. */
+  const [youtubeFeedStatus, setYoutubeFeedStatus] = useState<"ok" | "empty" | "error">("ok");
   const [youtubePageVisualReady, setYoutubePageVisualReady] = useState(
     () => youtubeSessionOnMount.pageVisualReady
   );
@@ -1401,6 +1407,18 @@ export default function HomeFeedScreen() {
         logHomeFeedNetworkTrace({ event: "load-feed-stale", reason });
         return;
       }
+      if (youtubeLayout && applyVisibleRows) {
+        const hasVideos = filterHomeFeedYoutubeStreamRows(rows).length > 0;
+        if (hasVideos) {
+          setYoutubeFeedStatus("ok");
+        } else if (!youtubeStreamRowsRef.current.length) {
+          // Nothing to reveal: end the mount-time skeleton instead of waiting for rows forever.
+          const status = peekLastHomeFeedMediaFetchOutcome() === "failed" ? "error" : "empty";
+          console.log("KRISTO_HOME_FEED_EMPTY_RESULT", { reason, status, rowCount: rows.length });
+          setYoutubeFeedStatus(status);
+          setYoutubeShowSkeleton(false);
+        }
+      }
       if (rows.length) {
         if (!isHomeFeedPosterPrewarmDisabled() && shouldReplaceHomeFeedYoutubeStreamUi(reason, forceFetch)) {
           const feedIdentity = describePosterFeedIdentity(rows);
@@ -1546,12 +1564,39 @@ export default function HomeFeedScreen() {
       }
     } catch {
       setBackendRows((prev) => prev);
+      if (
+        youtubeLayout &&
+        loadGeneration === loadFeedGenerationRef.current &&
+        !youtubeStreamRowsRef.current.length
+      ) {
+        console.log("KRISTO_HOME_FEED_EMPTY_RESULT", { reason, status: "error", rowCount: 0 });
+        setYoutubeFeedStatus("error");
+        setYoutubeShowSkeleton(false);
+      }
     } finally {
       if (loadGeneration === loadFeedGenerationRef.current) {
         setLoading(false);
       }
     }
   }, []);
+
+  const handleFeedRetry = useCallback(() => {
+    setYoutubeFeedStatus("ok");
+    if (!youtubeStreamRowsRef.current.length) setYoutubeShowSkeleton(true);
+    void loadFeed("load", { force: true });
+  }, [loadFeed]);
+
+  // Loading must end: if the first page never arrives, swap the skeleton for an error with Retry.
+  useEffect(() => {
+    if (!youtubeLayout || !youtubeShowSkeleton) return;
+    const timer = setTimeout(() => {
+      if (youtubeStreamRowsRef.current.length) return;
+      console.log("KRISTO_HOME_FEED_SKELETON_WATCHDOG", { afterMs: HOME_FEED_SKELETON_MAX_MS });
+      setYoutubeFeedStatus("error");
+      setYoutubeShowSkeleton(false);
+    }, HOME_FEED_SKELETON_MAX_MS);
+    return () => clearTimeout(timer);
+  }, [youtubeLayout, youtubeShowSkeleton]);
 
   const forceReloadAfterSchedule = useCallback(
     (source: string, backendFeedId?: string | null) => {
@@ -2479,6 +2524,12 @@ export default function HomeFeedScreen() {
   );
 
   const feedEmptyCopy = useMemo(() => {
+    if (youtubeLayout && youtubeFeedStatus === "error") {
+      return {
+        title: "Couldn't load your feed",
+        body: "Check your connection and try again.",
+      };
+    }
     if (feedPostFilter === "testimony") {
       return {
         title: "No testimonies yet",
@@ -2495,7 +2546,7 @@ export default function HomeFeedScreen() {
       title: "Your feed is quiet",
       body: "Posts from your church and community will appear here.",
     };
-  }, [feedPostFilter]);
+  }, [feedPostFilter, youtubeLayout, youtubeFeedStatus]);
 
   useEffect(() => {
     visibleRowCountRef.current = visibleData.length;
@@ -3802,6 +3853,8 @@ export default function HomeFeedScreen() {
           onVideoPress={handleVideoPress}
           emptyTitle={feedEmptyCopy.title}
           emptyBody={feedEmptyCopy.body}
+          emptyActionLabel={youtubeLayout && youtubeFeedStatus !== "ok" ? "Retry" : undefined}
+          onEmptyAction={handleFeedRetry}
           youtubeInitialScrollOffset={youtubeSessionOnMount.scrollY}
         />
       </View>

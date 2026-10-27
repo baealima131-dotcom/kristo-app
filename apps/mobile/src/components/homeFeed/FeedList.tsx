@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   FlatList,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
@@ -135,6 +136,9 @@ type Props = {
   onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
   emptyTitle?: string;
   emptyBody?: string;
+  /** Optional button under the empty/error message (e.g. Retry). */
+  emptyActionLabel?: string;
+  onEmptyAction?: () => void;
   youtubeInitialScrollOffset?: number;
 };
 
@@ -162,6 +166,8 @@ export const FeedList = memo(
       onVideoPress,
       emptyTitle,
       emptyBody,
+      emptyActionLabel,
+      onEmptyAction,
       youtubeInitialScrollOffset = 0,
     },
     ref
@@ -879,6 +885,11 @@ export const FeedList = memo(
         <Text style={styles.emptyBody}>
           {emptyBody || "Posts from your church and community will appear here."}
         </Text>
+        {emptyActionLabel && onEmptyAction ? (
+          <Pressable onPress={onEmptyAction} style={styles.emptyAction} accessibilityRole="button" hitSlop={8}>
+            <Text style={styles.emptyActionText}>{emptyActionLabel}</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   }
@@ -983,6 +994,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     textAlign: "center",
+  },
+  emptyAction: {
+    marginTop: 8,
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: HOME_FEED_GOLD_SOFT,
+  },
+  emptyActionText: {
+    color: HOME_FEED_GOLD_SOFT,
+    fontSize: 15,
+    fontWeight: "700",
   },
   footer: {
     alignItems: "center",

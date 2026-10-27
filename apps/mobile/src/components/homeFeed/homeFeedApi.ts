@@ -744,6 +744,12 @@ function parseFeedRows(res: any): any[] {
   return filterActiveHomeFeedRows(filtered);
 }
 
+/** Outcome of the last global media page request: lets Home tell an empty feed from a failed load. */
+let lastHomeFeedMediaFetchOutcome: "ok" | "failed" | null = null;
+export function peekLastHomeFeedMediaFetchOutcome(): "ok" | "failed" | null {
+  return lastHomeFeedMediaFetchOutcome;
+}
+
 async function fetchYoutubeMediaApiPage(
   cursor: string,
   limit: number,
@@ -775,9 +781,11 @@ async function fetchYoutubeMediaApiPage(
     { screen: "HomeFeed", throttleMs, dedupe: false }
   );
 
-  if (!isAuthoritativeFeedPageResponse(res)) {
+  if (!isAuthoritativeFeedPageResponse(res) || res?.degraded === true) {
+    lastHomeFeedMediaFetchOutcome = "failed";
     return { rawRows: [], res };
   }
+  lastHomeFeedMediaFetchOutcome = "ok";
   return { rawRows: parseFeedRows(res), res };
 }
 

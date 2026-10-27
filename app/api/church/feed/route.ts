@@ -2757,12 +2757,21 @@ async function buildCommentTree(
   );
 }
 
-function emptyFeedListResponse(churchId: string) {
-  return feedListOk(churchId, []);
+/** Fallback after a timeout/failure: still an empty list for older apps, flagged so newer ones can offer Retry. */
+function degradedFeedListResponse(churchId: string) {
+  const sync = getMediaScheduleSync(churchId);
+  return NextResponse.json({
+    ok: true,
+    data: [],
+    degraded: true,
+    mediaScheduleVersion: sync.version,
+    mediaScheduleUpdatedAt: sync.updatedAt,
+  });
 }
 
 export async function GET(req: NextRequest) {
   let churchIdForFallback = String(req.headers.get("x-kristo-church-id") || "").trim();
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   try {
     return await Promise.race([
@@ -2770,9 +2779,9 @@ export async function GET(req: NextRequest) {
         churchIdForFallback = next;
       }),
       new Promise<NextResponse>((resolve) => {
-        setTimeout(() => {
+        timer = setTimeout(() => {
           console.error("[church/feed] GET timed out", { churchId: churchIdForFallback });
-          resolve(emptyFeedListResponse(churchIdForFallback));
+          resolve(degradedFeedListResponse(churchIdForFallback));
         }, FEED_GET_TIMEOUT_MS);
       }),
     ]);
@@ -2782,7 +2791,10 @@ export async function GET(req: NextRequest) {
       message: error?.message,
       stack: error?.stack,
     });
-    return emptyFeedListResponse(churchIdForFallback);
+    return degradedFeedListResponse(churchIdForFallback);
+  } finally {
+    // The race winner is already decided; without this the timer still fires and logs a false timeout.
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -2801,7 +2813,7 @@ async function handleFeedGet(
         console.error("[church/feed] GET feed store unavailable", {
           error: error instanceof Error ? error.message : String(error),
         });
-        return emptyFeedListResponse(getFallbackChurchId());
+        return degradedFeedListResponse(getFallbackChurchId());
       }
       throw error;
     }
@@ -3269,7 +3281,7 @@ async function handleFeedGet(
       message: error?.message,
       stack: error?.stack,
     });
-    return emptyFeedListResponse(getFallbackChurchId());
+    return degradedFeedListResponse(getFallbackChurchId());
   }
 }
 
