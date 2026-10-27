@@ -3,7 +3,7 @@
     "name": "Kristo App",
     "slug": "mobile",
     "version": "1.0.2",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "mobile",
     "userInterfaceStyle": "automatic",
@@ -67,7 +67,13 @@
       ],
       "expo-video",
       "@livekit/react-native-expo-plugin",
-      "react-native-compressor"
+      "react-native-compressor",
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "PORTRAIT_UP"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

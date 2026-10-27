@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import {
   feedRemoveOptimisticVideoUpload,
   feedUpdateOptimisticVideoUpload,
@@ -47,6 +48,14 @@ import {
   startKristoNetworkMonitor,
   subscribeKristoNetworkStatus,
 } from "@/src/lib/networkMonitor";
+import { loadVideoThumbnails } from "@/src/lib/nativeModuleLoaders";
+import { localFileByteSize } from "@/src/lib/localFileSize";
+import { persistMediaVideoPosterToFeed } from "@/src/lib/mediaVideoPoster";
+import {
+  ensureUploadPoster,
+  realPosterUriOrNull,
+  type UploadPosterEnsureResult,
+} from "@/src/lib/uploadPosterEnsure";
 
 export type MediaVideoUploadStatus =
   | "preparing"
@@ -292,6 +301,43 @@ async function uploadPosterIfAvailable(job: MediaVideoUploadJob, uploadHeaders: 
     });
     return "";
   }
+}
+
+/** Android: validate/generate the poster and upload it with bounded attempts (never throws). */
+async function ensureAndroidUploadPoster(
+  job: MediaVideoUploadJob,
+  jobId: string,
+  uploadHeaders: Record<string, string>
+): Promise<UploadPosterEnsureResult> {
+  return ensureUploadPoster(
+    {
+      localPosterUri: job.localPosterUri,
+      videoUri: job.fileUri,
+      durationMs: job.durationMs,
+    },
+    {
+      fileSize: (uri) => localFileByteSize(uri),
+      generateFromVideo: async (videoUri, timeMs) => {
+        const VideoThumbnails = await loadVideoThumbnails();
+        const thumb = await VideoThumbnails.getThumbnailAsync(videoUri, { time: timeMs, quality: 0.7 });
+        return String(thumb?.uri || "");
+      },
+      uploadOnce: async (posterUri) => {
+        const posterSize = await resolveUploadFileSize(posterUri);
+        const posterFileName = fileNameFromUri(posterUri, `poster-${Date.now()}.jpg`);
+        const signed = await uploadPosterToStorageWithRetry({
+          fileUri: posterUri,
+          fileName: posterFileName,
+          contentType: guessPosterContentType(posterFileName),
+          fileSize: posterSize,
+          headers: uploadHeaders,
+          maxRetries: 0,
+        });
+        return String(signed.publicUrl || signed.videoUrl || "");
+      },
+      log: (event, payload) => console.log(event, { jobId, ...payload }),
+    }
+  );
 }
 
 function isRetryableUploadError(error: unknown) {
@@ -642,6 +688,7 @@ async function runMediaVideoUpload(
   let publishConfirmedFeedId = "";
   let uploadedVideoUrl = "";
   let posterPublicUrl = "";
+  let androidPosterOutcome: UploadPosterEnsureResult | null = null;
   let publishPosterUri = "";
   let publishMetadata: Awaited<ReturnType<typeof uploadVideoWithResume>>["publishMetadata"] | null =
     null;
@@ -687,7 +734,12 @@ async function runMediaVideoUpload(
 
     await markJobPatch(jobId, { phase: uploadPhase, uploadProgress, error: "" }, callbacks);
 
-    posterPublicUrl = await uploadPosterIfAvailable(job, uploadHeaders);
+    if (Platform.OS === "android") {
+      androidPosterOutcome = await ensureAndroidUploadPoster(job, jobId, uploadHeaders);
+      posterPublicUrl = androidPosterOutcome.status === "uploaded" ? androidPosterOutcome.posterUrl : "";
+    } else {
+      posterPublicUrl = await uploadPosterIfAvailable(job, uploadHeaders);
+    }
     const uploadResult = await uploadVideoWithResume(job, jobId, callbacks);
     const signed = uploadResult.signed;
     publishMetadata = uploadResult.publishMetadata;
@@ -769,13 +821,30 @@ async function runMediaVideoUpload(
 
     const published = publishedFromRetry;
     publishConfirmedFeedId = published.backendFeedId;
-    const savedPosterUri = String(
-      published.item?.posterUri ||
-        published.item?.videoPosterUri ||
-        published.item?.thumbnailUri ||
-        publishPosterUri ||
-        ""
-    ).trim();
+    // Android: never report the branded placeholder as a saved poster.
+    const savedPosterUri =
+      Platform.OS === "android"
+        ? realPosterUriOrNull(published.item?.posterUri) ||
+          realPosterUriOrNull(published.item?.videoPosterUri) ||
+          realPosterUriOrNull(published.item?.thumbnailUri) ||
+          realPosterUriOrNull(publishPosterUri) ||
+          ""
+        : String(
+            published.item?.posterUri ||
+              published.item?.videoPosterUri ||
+              published.item?.thumbnailUri ||
+              publishPosterUri ||
+              ""
+          ).trim();
+
+    if (Platform.OS === "android" && !savedPosterUri) {
+      console.log("KRISTO_UPLOAD_PUBLISHED_WITHOUT_POSTER", {
+        jobId,
+        backendFeedId: published.backendFeedId,
+        reason: androidPosterOutcome?.status === "missing" ? androidPosterOutcome.reason : "server-branded",
+        posterAttempts: androidPosterOutcome?.attempts ?? 0,
+      });
+    }
 
     console.log("KRISTO_MEDIA_STATUS_PROCESSING", {
       jobId,
@@ -795,6 +864,30 @@ async function runMediaVideoUpload(
       },
       callbacks
     );
+
+    // Android: the video is published; if only the poster upload failed, try the existing
+    // persist_video_poster backfill once with the poster we already have on the device.
+    if (
+      Platform.OS === "android" &&
+      !savedPosterUri &&
+      androidPosterOutcome?.status === "missing" &&
+      androidPosterOutcome.localPosterUri
+    ) {
+      const backfillPosterUri = androidPosterOutcome.localPosterUri;
+      void persistMediaVideoPosterToFeed({
+        postId: published.backendFeedId,
+        videoUrl: uploadedVideoUrl,
+        localPosterUri: backfillPosterUri,
+      })
+        .then((remote) => {
+          console.log("KRISTO_UPLOAD_POSTER_BACKFILL_RESULT", {
+            jobId,
+            backendFeedId: published.backendFeedId,
+            ok: Boolean(remote),
+          });
+        })
+        .catch(() => {});
+    }
   } catch (error) {
     const message = String((error as any)?.message || error || "Upload failed");
     const stored = await getMediaUploadJob(jobId);

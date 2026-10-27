@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import { feedRenderKey } from "./homeFeedRowKeys";
 import {
   isFeedVideoItem,
@@ -16,6 +17,7 @@ import {
   resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
+import { shouldRequestInferredPosterGuess } from "@/src/lib/posterGuessPolicy";
 import { resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
 import { homeFeedAvatarUrlCacheKey } from "@/src/lib/homeFeedAvatarCache";
 import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
@@ -2189,7 +2191,7 @@ function resolvePosterSeedForVideo(videoUrl: string): string {
   }
 }
 
-/** Ordered poster candidates for Home Feed — cache + metadata + inferred, never branded. */
+/** Ordered poster candidates for Home Feed — cache + metadata (+ inferred off Android), never branded. */
 export function collectFeedVideoPosterCandidates(item: any, postId = ""): string[] {
   const video = resolveVideoUri(item);
   if (!video) return [];
@@ -2230,7 +2232,9 @@ export function collectFeedVideoPosterCandidates(item: any, postId = ""): string
   }
 
   push(resolvePosterSeedForVideo(video));
-  push(inferPosterUriFromVideoUrl(video));
+  if (shouldRequestInferredPosterGuess(Platform.OS)) {
+    push(inferPosterUriFromVideoUrl(video));
+  }
 
   return out;
 }

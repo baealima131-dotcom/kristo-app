@@ -9,10 +9,12 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Platform,
   Text,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   DEFAULT_TERMS_LOCALE,
   getTermsTranslation,
@@ -35,6 +37,9 @@ const CONTACT_SECTION_ID = 23;
 
 export default function TermsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  // KRISTO_TERMS_ANDROID_SAFEAREA_REVIEW_V1: protect consent controls from 3-button nav.
+  const androidBottomInset = Platform.OS === "android" ? Math.max(insets.bottom, 24) : 0;
   const scrollRef = useRef<ScrollView>(null);
   const [locale, setLocale] = useState<TermsLocale>(DEFAULT_TERMS_LOCALE);
   const [localeReady, setLocaleReady] = useState(false);
@@ -104,7 +109,7 @@ export default function TermsScreen() {
   const rtlBody = isRtl ? s.rtlBody : null;
 
   return (
-    <View style={s.wrap}>
+    <View style={[s.wrap, androidBottomInset > 0 ? { paddingBottom: 28 + androidBottomInset } : null]}>
       <Text style={[s.title, rtlText]}>{copy.title}</Text>
       <View style={[s.metaRow, isRtl ? s.metaRowRtl : null]}>
         <Text style={[s.metaLine, rtlText]} numberOfLines={2}>

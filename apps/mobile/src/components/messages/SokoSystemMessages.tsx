@@ -70,7 +70,7 @@ export default function SokoSystemMessages() {
       setError("");
       setVisible(false);
     }
-    if (!key) { setBusy(false); return; }
+    if (!session || !key) { setBusy(false); return; }
     const base = String(process.env.EXPO_PUBLIC_API_BASE || "").trim().replace(/\/+$/, "");
     if (!base) {
       setMessages([]);

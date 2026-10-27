@@ -1257,7 +1257,19 @@ export default function HomeFeedScreen() {
     youtubeStreamRowsRef.current = fullVisible;
     replaceHomeFeedYoutubeStreamRows(fullVisible);
     setBackendRows(fullVisible);
+    setYoutubeShowSkeleton(false);
+    setLoading(false);
     bumpYoutubeRows();
+
+    if (current.length === 0) {
+      // First visible commit for this screen instance (e.g. Home remounted after
+      // Church Profile with an empty session). Finish page-0 reveal the same way
+      // revealYoutubePage0 does; otherwise the mount-time skeleton stays up with
+      // rows behind it, and later reveals return early on pageRevealComplete.
+      hadCacheOnMountRef.current = true;
+      youtubePageRevealCompleteRef.current = true;
+      void runYoutubePageVisualReadyGate(fullVisible);
+    }
 
     if (fullVisible.length > current.length) {
       const currentIdSet = new Set(currentIds);
@@ -1276,7 +1288,7 @@ export default function HomeFeedScreen() {
       pageRevealComplete: true,
       pageVisualReady: youtubePageVisualReadyRef.current,
     });
-  }, [bumpYoutubeRows]);
+  }, [bumpYoutubeRows, runYoutubePageVisualReadyGate]);
 
   const loadFeed = useCallback(async (reason = "load", opts?: { force?: boolean }) => {
     if (isHomeFeedRenderPaused()) return;

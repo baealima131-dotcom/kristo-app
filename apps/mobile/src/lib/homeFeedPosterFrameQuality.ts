@@ -1,4 +1,5 @@
 import * as ImageManipulator from "expo-image-manipulator";
+import { loadFileSystemLegacy } from "@/src/lib/nativeModuleLoaders";
 
 const MIN_CAPTURE_MS = 500;
 const SHORT_VIDEO_THRESHOLD_MS = 12_000;
@@ -59,7 +60,7 @@ export function computeHomeFeedPosterCaptureTimeMs(durationMs?: number): number 
 
 async function fileByteSize(uri: string): Promise<number> {
   try {
-    const FileSystem = await import("expo-file-system/legacy");
+    const FileSystem = await loadFileSystemLegacy();
     const info = await FileSystem.getInfoAsync(uri, { size: true } as any);
     return Number((info as { size?: number })?.size || 0);
   } catch {
@@ -95,7 +96,7 @@ async function estimateBrightnessScore(uri: string): Promise<number> {
       [{ resize: { width: 32 } }],
       { compress: 0.72, format: ImageManipulator.SaveFormat.JPEG }
     );
-    const FileSystem = await import("expo-file-system/legacy");
+    const FileSystem = await loadFileSystemLegacy();
     const base64 = await FileSystem.readAsStringAsync(tiny.uri, {
       encoding: FileSystem.EncodingType.Base64,
     });

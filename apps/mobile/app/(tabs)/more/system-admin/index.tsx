@@ -876,7 +876,7 @@ function ChurchActivityRow({
               </View>
               <View style={styles.activationDetailRow}>
                 <Text style={styles.activationDetailLabel}>Code type</Text>
-                <Text style={styles.activationDetailValue}>{activation.durationLabel}</Text>
+                <Text style={styles.activationDetailValue}>{activation.durationLabel || "—"}</Text>
               </View>
               <View style={styles.activationDetailRow}>
                 <Text style={styles.activationDetailLabel}>Status</Text>

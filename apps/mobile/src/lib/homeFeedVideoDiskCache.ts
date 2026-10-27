@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
 import {
@@ -169,7 +170,12 @@ export async function hydrateAndCacheWatchVideo(args: {
 
   const normalized = normalizeUrl(remote);
   const hadEntry = memory.has(normalized);
-  const localUri = await cacheVideoUrl(remote, { allowDuringWatch: true });
+  // Android: inspect existing cache only. The foreground player already streams
+  // this URL; starting a second full download competes with its audio/video data.
+  const localUri = await cacheVideoUrl(remote, {
+    allowDuringWatch: true,
+    cacheOnly: Platform.OS === "android",
+  });
   const added = localUri && !hadEntry ? 1 : localUri ? 0 : 0;
 
   console.log("KRISTO_VIDEO_DISK_CACHE_HYDRATED", { postId, added });
@@ -309,7 +315,7 @@ async function deleteCachedEntry(key: string, entry: DiskCacheEntry) {
 
 export async function cacheVideoUrl(
   url: string,
-  opts?: { allowDuringWatch?: boolean }
+  opts?: { allowDuringWatch?: boolean; cacheOnly?: boolean }
 ): Promise<string | null> {
   if (!opts?.allowDuringWatch && shouldDeferBackgroundMediaJobs()) return null;
 
@@ -317,11 +323,31 @@ export async function cacheVideoUrl(
   const normalized = normalizeUrl(remote);
   if (!normalized || !isNetworkUrl(remote)) return null;
 
-  const existing = getCachedVideoUri(remote);
+  const existing = opts?.cacheOnly
+    ? await getVerifiedCachedVideoUri(remote)
+    : getCachedVideoUri(remote);
   if (existing) return existing;
 
   const pending = inflight.get(normalized);
-  if (pending) return pending;
+  // Never treat an in-progress download's destination as a complete cached file.
+  if (pending) return opts?.cacheOnly ? null : pending;
+
+  if (opts?.cacheOnly) {
+    // Read only the persisted entry for this URL. A bare file at the download
+    // destination could be partial after an interrupted download.
+    const index = await readPersistedIndex();
+    const entry = index?.entries?.[normalized];
+    if (!entry?.localUri || normalizeUrl(entry.remoteUrl) !== normalized) return null;
+    try {
+      const info = await FileSystem.getInfoAsync(entry.localUri);
+      if (!info.exists || info.isDirectory ||
+          (typeof info.size === "number" && info.size <= 0)) return null;
+      memory.set(normalized, entry);
+      return entry.localUri;
+    } catch {
+      return null;
+    }
+  }
 
   const job = (async () => {
     await ensureVideoDiskDir();

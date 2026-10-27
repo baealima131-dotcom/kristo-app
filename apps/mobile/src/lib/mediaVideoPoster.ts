@@ -24,6 +24,7 @@ import {
 import { markPosterPostIdSessionGenerated } from "@/src/lib/homeFeedPosterSession";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 import { resolveVideoDurationMs } from "@/src/lib/homeFeedVideoDuration";
+import { loadFileSystemLegacy, loadVideoThumbnails } from "@/src/lib/nativeModuleLoaders";
 
 export { resolveVideoDurationMs } from "@/src/lib/homeFeedVideoDuration";
 
@@ -128,7 +129,7 @@ export async function releaseUploadStudioCoverUris(uris: string[]): Promise<void
   if (!unique.length) return;
 
   try {
-    const FileSystem = await import("expo-file-system/legacy");
+    const FileSystem = await loadFileSystemLegacy();
     await Promise.all(
       unique.map((uri) => {
         if (!uri.startsWith("file://")) return Promise.resolve();
@@ -144,7 +145,7 @@ async function capturePosterFrameCandidates(
   videoUrl: string,
   captureTimesMs: number[]
 ): Promise<PosterFrameCandidate[]> {
-  const VideoThumbnails = await import("expo-video-thumbnails");
+  const VideoThumbnails = await loadVideoThumbnails();
   const captured: PosterFrameCandidate[] = [];
 
   await Promise.all(
@@ -307,7 +308,7 @@ export async function generateVideoPosterFrame(params: {
         const uniqueCaptureTimes = [
           ...new Set(captureTimes.map((ms) => Math.max(MIN_CAPTURE_MS, ms))),
         ];
-        const VideoThumbnails = await import("expo-video-thumbnails");
+        const VideoThumbnails = await loadVideoThumbnails();
 
         for (const captureTimeMs of uniqueCaptureTimes) {
           try {

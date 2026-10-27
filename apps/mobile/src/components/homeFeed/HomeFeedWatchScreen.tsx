@@ -3,6 +3,7 @@ import {
   AppState,
   Image,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StatusBar,
@@ -28,7 +29,7 @@ import {
   resolveHomeFeedPlaybackUri,
   scheduleWatchNextVideoDiskCache,
 } from "@/src/lib/homeFeedVideoDiskCache";
-import { hydrateMediaPosterCacheForPlayback } from "@/src/lib/mediaPosterCache";
+import { resolveCachedMediaPoster, hydrateMediaPosterCacheForPlayback } from "@/src/lib/mediaPosterCache";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import {
   notifyWatchPlaybackActive,
@@ -49,12 +50,18 @@ import {
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import {
+  allowWatchRotation,
+  isScreenLandscapeNow,
+  restoreAppPortrait,
+} from "@/src/lib/watchOrientation";
+import {
   formatFeedTimestamp,
   isChurchRoomMemberFeedPost,
   resolveChurchName,
   resolveFeedPostTypeTitle,
   resolveHomeFeedVideoTitle,
   resolveVideoUri,
+  resolveYouTubeFeedMetadataPosterUri,
 } from "./homeFeedUtils";
 import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
@@ -232,6 +239,22 @@ function WatchVideoEngagementActions({
   );
 }
 
+// Fullscreen is landscape; rotating back to portrait exits it. Both platforms skip
+// the auto-exit while the system rotation lock is on.
+const WATCH_FULLSCREEN_OPTIONS: NonNullable<React.ComponentProps<typeof VideoView>["fullscreenOptions"]> = {
+  enable: true,
+  orientation: "landscape",
+  autoExitOnRotate: true,
+};
+const WATCH_MODAL_ORIENTATIONS: React.ComponentProps<typeof Modal>["supportedOrientations"] = [
+  "portrait",
+  "landscape-left",
+  "landscape-right",
+];
+// Android fullscreen is a separate activity, so the React host reports
+// "background" around the same time onFullscreenEnter arrives.
+const ANDROID_FULLSCREEN_BACKGROUND_GRACE_MS = 350;
+
 function resolveWatchScreenPlaybackUri(payload: HomeFeedVideoOpenPayload): string {
   const fromPayload = String(payload.videoUri || "").trim();
   const remoteUri =
@@ -252,15 +275,32 @@ function buildWatchVideoPlayerSource(uri: string) {
 function WatchVideoSurface({
   payload,
   isTikTokLayout = false,
+  isLandscape = false,
   onPlaybackStarted,
 }: {
   payload: HomeFeedVideoOpenPayload;
   isTikTokLayout?: boolean;
+  isLandscape?: boolean;
   onPlaybackStarted?: () => void;
 }) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
-  const playbackUri = resolveWatchScreenPlaybackUri(payload);
+  const requestedUri = String(payload.videoUri || "").trim() ||
+    (item ? resolveHomeFeedVideoUri(item) : "");
+  // Keep the selected source stable during this playback session. A cache update
+  // must not replace a streaming source mid-video and reset playback.
+  const androidPlaybackUri = useMemo(
+    () => resolveHomeFeedPlaybackUri(requestedUri) || requestedUri,
+    [postId, requestedUri]
+  );
+  const playbackUri = Platform.OS === "android"
+    ? androidPlaybackUri
+    : resolveWatchScreenPlaybackUri(payload);
+  const useVideoBackdrop = Platform.OS !== "android" && isTikTokLayout;
+  const backdropPosterUri = Platform.OS === "android"
+    ? resolveCachedMediaPoster(postId, requestedUri) ||
+      (item ? resolveYouTubeFeedMetadataPosterUri(item, postId, requestedUri) : "")
+    : "";
   const durationSec = useMemo(() => {
     const ms =
       payload.videoDurationMs ??
@@ -274,6 +314,21 @@ function WatchVideoSurface({
   const backgroundPausedRef = useRef(false);
   const onPlaybackStartedRef = useRef(onPlaybackStarted);
   onPlaybackStartedRef.current = onPlaybackStarted;
+  const videoViewRef = useRef<VideoView | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const fullscreenRef = useRef(false);
+  const isLandscapeRef = useRef(isLandscape);
+  isLandscapeRef.current = isLandscape;
+  // Set when fullscreen is left while the screen is still landscape (Back, Done,
+  // video end). Cleared once the screen is portrait again, so auto-rotate re-arms.
+  const autoFullscreenSuppressedRef = useRef(false);
+  // Bumped after fullscreen closes so auto-enter re-checks the real orientation
+  // even when window dimensions did not change in between (quick rotations).
+  const [autoFullscreenRecheck, setAutoFullscreenRecheck] = useState(0);
+  // Last screen orientation read from native. On Android, window dimension
+  // events can be missed after quick rotations around fullscreen, so this is
+  // the fallback source of truth for auto-enter.
+  const nativeLandscapeRef = useRef<boolean | null>(null);
 
   const isWatchAutoPlayBlocked = useCallback(
     () => userPausedRef.current || backgroundPausedRef.current,
@@ -310,7 +365,7 @@ function WatchVideoSurface({
   );
 
   const backdropPlayer = useVideoPlayer(
-    playbackUri ? buildWatchVideoPlayerSource(playbackUri) : null,
+    useVideoBackdrop && playbackUri ? buildWatchVideoPlayerSource(playbackUri) : null,
     (p) => {
       p.loop = true;
       p.muted = true;
@@ -323,8 +378,8 @@ function WatchVideoSurface({
   backdropPlayerRef.current = backdropPlayer;
 
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (next) => {
-      if (next === "active") return;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    const pauseForBackground = () => {
       backgroundPausedRef.current = true;
       const uri = playbackUri;
       safePauseVideoPlayer(backdropPlayerRef.current, {
@@ -333,8 +388,25 @@ function WatchVideoSurface({
       });
       safePauseVideoPlayer(playerRef.current, { source: "home-feed-watch", uri });
       notifyWatchPlaybackPaused(postId);
+    };
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") return;
+      if (Platform.OS === "android") {
+        if (fullscreenRef.current) return;
+        if (graceTimer) clearTimeout(graceTimer);
+        graceTimer = setTimeout(() => {
+          graceTimer = null;
+          if (fullscreenRef.current || AppState.currentState === "active") return;
+          pauseForBackground();
+        }, ANDROID_FULLSCREEN_BACKGROUND_GRACE_MS);
+        return;
+      }
+      pauseForBackground();
     });
-    return () => sub.remove();
+    return () => {
+      if (graceTimer) clearTimeout(graceTimer);
+      sub.remove();
+    };
   }, [playbackUri, postId]);
 
   useEffect(() => {
@@ -342,6 +414,9 @@ function WatchVideoSurface({
   }, [ended]);
 
   useEventListener(player, "playToEnd", () => {
+    if (fullscreenRef.current) {
+      void videoViewRef.current?.exitFullscreen().catch(() => {});
+    }
     endedRef.current = true;
     clearHomeFeedVideoProgress(postId);
     setEnded(true);
@@ -403,7 +478,7 @@ function WatchVideoSurface({
           return;
         }
 
-        if (isTikTokLayout && activeBackdrop) {
+        if (useVideoBackdrop && activeBackdrop) {
           const backdropCurrentUri = String((activeBackdrop as any)?.source?.uri || "").trim();
           const backdropNeedsReplace = !backdropCurrentUri || backdropCurrentUri !== playbackUri;
           if (backdropNeedsReplace) {
@@ -437,7 +512,7 @@ function WatchVideoSurface({
       });
       safePauseVideoPlayer(playerRef.current, { source: "home-feed-watch", uri: playbackUri });
     };
-  }, [playbackUri, postId, isTikTokLayout, tryWatchAutoPlay, isWatchAutoPlayBlocked]);
+  }, [playbackUri, postId, useVideoBackdrop, tryWatchAutoPlay, isWatchAutoPlayBlocked]);
 
   useEffect(() => {
     let lastPlaying: boolean | null = null;
@@ -535,6 +610,125 @@ function WatchVideoSurface({
     };
   }, [player, postId, durationSec]);
 
+  useEffect(() => {
+    console.log("KRISTO_WATCH_ORIENTATION_STATE", {
+      postId,
+      isLandscape,
+      ended,
+      fullscreen: fullscreenRef.current,
+      suppressed: autoFullscreenSuppressedRef.current,
+      recheck: autoFullscreenRecheck,
+      nativeLandscape: nativeLandscapeRef.current,
+    });
+    if (!isLandscape && nativeLandscapeRef.current !== true) {
+      autoFullscreenSuppressedRef.current = false;
+      return;
+    }
+    if (ended || fullscreenRef.current || autoFullscreenSuppressedRef.current) return;
+    let cancelled = false;
+    // Let the rotated layout settle before presenting fullscreen.
+    const timer = setTimeout(async () => {
+      if (cancelled) return;
+      // Window dimensions can lag or miss a real rotation; the native screen
+      // orientation decides, so a quick rotation back does not enter fullscreen.
+      const nativeLandscape = await isScreenLandscapeNow();
+      if (nativeLandscape !== null) nativeLandscapeRef.current = nativeLandscape;
+      const landscapeNow = nativeLandscape ?? isLandscapeRef.current;
+      if (cancelled || !landscapeNow) {
+        console.log("KRISTO_WATCH_AUTO_FULLSCREEN_SKIPPED", { postId, reason: "no-longer-landscape" });
+        return;
+      }
+      const view = videoViewRef.current;
+      if (!view || fullscreenRef.current || endedRef.current) return;
+      if (autoFullscreenSuppressedRef.current) return;
+      fullscreenRef.current = true;
+      console.log("KRISTO_WATCH_AUTO_FULLSCREEN_ENTER", { postId });
+      view.enterFullscreen().catch((error: any) => {
+        fullscreenRef.current = false;
+        console.log("KRISTO_WATCH_AUTO_FULLSCREEN_FAILED", {
+          postId,
+          error: String(error?.message || error || "unknown"),
+        });
+      });
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isLandscape, ended, postId, autoFullscreenRecheck]);
+
+  // Reconcile with the native screen orientation while Watch is inline. Any
+  // native change re-runs auto-enter, because JS window dimensions may be stale.
+  useEffect(() => {
+    if (isFullscreen || ended) return;
+    let stopped = false;
+    const interval = setInterval(async () => {
+      const nativeLandscape = await isScreenLandscapeNow();
+      if (stopped || nativeLandscape === null) return;
+      const previous = nativeLandscapeRef.current;
+      nativeLandscapeRef.current = nativeLandscape;
+      if (!nativeLandscape) {
+        autoFullscreenSuppressedRef.current = false;
+      }
+      if (nativeLandscape !== previous) {
+        console.log("KRISTO_WATCH_ORIENTATION_RECONCILE", { postId, nativeLandscape });
+        setAutoFullscreenRecheck((n) => n + 1);
+      }
+    }, 1000);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }, [isFullscreen, ended, postId]);
+
+  // Android fullscreen pauses the React host, which stops the 1s progress timer
+  // above. timeUpdate is emitted natively by the same player, so it keeps the
+  // saved position current while fullscreen.
+  useEffect(() => {
+    if (!player) return;
+    try {
+      player.timeUpdateEventInterval = isFullscreen ? 1 : 0;
+    } catch {}
+  }, [player, isFullscreen]);
+
+  useEventListener(player, "timeUpdate", ({ currentTime }) => {
+    if (!fullscreenRef.current || endedRef.current || !postId) return;
+    if (Number.isFinite(currentTime) && currentTime > 0.5) {
+      saveHomeFeedVideoProgress(postId, currentTime, durationSec);
+    }
+  });
+
+  const handleFullscreenEnter = useCallback(() => {
+    fullscreenRef.current = true;
+    setIsFullscreen(true);
+    console.log("KRISTO_WATCH_FULLSCREEN_ENTER", { postId, landscape: isLandscapeRef.current });
+  }, [postId]);
+
+  const handleFullscreenExit = useCallback(
+    (event?: { nativeEvent?: { autoExited?: boolean } }) => {
+      fullscreenRef.current = false;
+      setIsFullscreen(false);
+      // Android reports autoExited when fullscreen closed because the device was
+      // rotated back to portrait. Only a manual exit (Back, button, Done) while the
+      // screen is landscape should hold off auto-enter until portrait is seen.
+      const autoExited = event?.nativeEvent?.autoExited === true;
+      void (async () => {
+        const nativeLandscape = autoExited ? false : await isScreenLandscapeNow();
+        const landscape = nativeLandscape ?? isLandscapeRef.current;
+        if (nativeLandscape !== null) nativeLandscapeRef.current = nativeLandscape;
+        autoFullscreenSuppressedRef.current = !autoExited && landscape;
+        console.log("KRISTO_WATCH_FULLSCREEN_EXIT", {
+          postId,
+          autoExited,
+          landscape,
+          suppressed: autoFullscreenSuppressedRef.current,
+        });
+        setAutoFullscreenRecheck((n) => n + 1);
+      })();
+    },
+    [postId]
+  );
+
   const handleReplay = useCallback(() => {
     clearHomeFeedVideoProgress(postId);
     console.log("KRISTO_WATCH_VIDEO_REPLAY_FROM_START", { postId });
@@ -565,21 +759,35 @@ function WatchVideoSurface({
     <View style={styles.playerSurface}>
       {!ended && isTikTokLayout ? (
         <>
-          <VideoView
-            player={backdropPlayer}
-            style={styles.tikTokVideoBackdrop}
-            contentFit="cover"
-            pointerEvents="none"
-          />
+          {useVideoBackdrop ? (
+            <VideoView
+              player={backdropPlayer}
+              style={styles.tikTokVideoBackdrop}
+              contentFit="cover"
+              pointerEvents="none"
+            />
+          ) : backdropPosterUri ? (
+            <View style={styles.tikTokVideoBackdrop} pointerEvents="none">
+              <Image
+                source={{ uri: backdropPosterUri }}
+                style={StyleSheet.absoluteFillObject}
+                resizeMode="cover"
+              />
+            </View>
+          ) : null}
           <View style={styles.tikTokBackdropOverlay} pointerEvents="none" />
         </>
       ) : null}
-      {!ended ? (
+      {!ended || isFullscreen ? (
         <VideoView
+          ref={videoViewRef}
           player={player}
           style={isTikTokLayout ? styles.videoOverBackdrop : styles.video}
           contentFit="contain"
           nativeControls
+          fullscreenOptions={WATCH_FULLSCREEN_OPTIONS}
+          onFullscreenEnter={handleFullscreenEnter}
+          onFullscreenExit={handleFullscreenExit}
         />
       ) : null}
       {ended ? (
@@ -681,6 +889,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const { width, height: windowHeight } = useWindowDimensions();
   const displayType = resolveHomeFeedVideoDisplayType(payload?.item);
   const isTikTokLayout = displayType === "tiktok";
+  const isLandscape = width > windowHeight;
   const playerHeight = useMemo(
     () =>
       resolveWatchPlayerHeight({
@@ -795,6 +1004,15 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     return () => notifyWatchScreenClosed();
   }, []);
 
+  // Rotation is allowed only while Watch is open; everything else stays portrait.
+  useEffect(() => {
+    if (!visible) return;
+    void allowWatchRotation();
+    return () => {
+      void restoreAppPortrait();
+    };
+  }, [visible]);
+
   useEffect(() => {
     if (!visible || !payload) return;
     setPlaybackStarted(false);
@@ -825,8 +1043,18 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   if (!payload) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={styles.screen}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={onClose}
+      supportedOrientations={WATCH_MODAL_ORIENTATIONS}
+    >
+      <View
+        style={[
+          styles.screen,
+          isLandscape ? { paddingLeft: insets.left, paddingRight: insets.right } : null,
+        ]}
+      >
         <StatusBar barStyle="light-content" />
         <View style={styles.headerChrome}>
           <LinearGradient
@@ -871,6 +1099,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           <WatchVideoSurface
             payload={payload}
             isTikTokLayout={isTikTokLayout}
+            isLandscape={isLandscape}
             onPlaybackStarted={handlePlaybackStarted}
           />
         </View>

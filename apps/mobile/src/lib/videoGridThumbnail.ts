@@ -1,3 +1,5 @@
+import { loadVideoThumbnails } from "@/src/lib/nativeModuleLoaders";
+
 const PREVIEW_LOAD_TIMEOUT_MS = 3500;
 const CLIENT_THUMB_TIMEOUT_MS = 4000;
 const HOME_FEED_POSTER_LOAD_TIMEOUT_MS = 5000;
@@ -139,7 +141,7 @@ export async function resolveClientVideoThumbnailUri(videoUrl: string): Promise<
   const promise = withPreviewTimeout(
     (async () => {
       try {
-        const VideoThumbnails = await import("expo-video-thumbnails");
+        const VideoThumbnails = await loadVideoThumbnails();
         const result = await VideoThumbnails.getThumbnailAsync(key, {
           time: 500,
           quality: 0.55,

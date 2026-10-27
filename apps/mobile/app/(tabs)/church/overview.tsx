@@ -1254,7 +1254,13 @@ setMediaTargets(
         style={s.vignetteBottom}
       />
 
-      <View style={[s.wrap, { paddingTop: insets.top + 4, paddingBottom: insets.bottom + 14 }]}>
+      {/* Android tab bar already reserves the system-nav inset; padding here would clip the cards. */}
+      <View
+        style={[
+          s.wrap,
+          { paddingTop: insets.top + 4, paddingBottom: Platform.OS === "android" ? 0 : insets.bottom + 14 },
+        ]}
+      >
         <View style={s.heroHeader}>
           <LinearGradient
             pointerEvents="none"
@@ -1329,7 +1335,7 @@ setMediaTargets(
       ) : (
         <Animated.ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}
+          contentContainerStyle={{ paddingBottom: Platform.OS === "android" ? 24 : insets.bottom + 140 }}
           style={{ opacity: contentOpacity }}
         >
           <View style={s.profileCardOuter}>

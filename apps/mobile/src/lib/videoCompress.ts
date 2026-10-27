@@ -1,5 +1,6 @@
 import { NativeModules, Platform, TurboModuleRegistry } from "react-native";
 import { probeMp4FaststartFromLocalUri } from "@/src/lib/mp4FaststartProbeLocal";
+import { loadVideoThumbnails } from "@/src/lib/nativeModuleLoaders";
 
 export type VideoCompressResult = {
   uri: string;
@@ -95,7 +96,7 @@ async function probeVideoDimensions(
   uri: string
 ): Promise<{ width: number | null; height: number | null }> {
   try {
-    const VideoThumbnails = await import("expo-video-thumbnails");
+    const VideoThumbnails = await loadVideoThumbnails();
     const thumb = await VideoThumbnails.getThumbnailAsync(uri, {
       time: 0,
       quality: 0.2,

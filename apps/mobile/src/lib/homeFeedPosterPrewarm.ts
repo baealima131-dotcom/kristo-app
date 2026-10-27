@@ -1687,6 +1687,16 @@ export function pauseHomeFeedPosterWork(reason = "live-navigation") {
   });
 }
 
+const posterWorkResumeListeners = new Set<() => void>();
+
+/** Notified when Home poster work fully resumes (no pause reasons left). */
+export function subscribeHomeFeedPosterWorkResume(listener: () => void) {
+  posterWorkResumeListeners.add(listener);
+  return () => {
+    posterWorkResumeListeners.delete(listener);
+  };
+}
+
 export function resumeHomeFeedPosterWork(reason = "home-blur") {
   const token = canonicalizePosterPauseReason(reason);
   const reasons = posterWorkPauseReasonMap();
@@ -1701,6 +1711,13 @@ export function resumeHomeFeedPosterWork(reason = "home-blur") {
     stillPaused: isHomeFeedPosterWorkPaused(),
     remainingReasons: listPosterPauseReasons(),
   });
+  if (!isHomeFeedPosterWorkPaused()) {
+    for (const listener of [...posterWorkResumeListeners]) {
+      try {
+        listener();
+      } catch {}
+    }
+  }
 }
 
 /** Stop visible/background poster generation when Live Room navigation starts. */

@@ -8181,6 +8181,12 @@ export default function MessageThreadScreen() {
   // COMPOSER_KEYBOARD_SPACING_V4
   // COMPOSER_SAFE_AREA_V6
   const [composerKeyboardVisible, setComposerKeyboardVisible] = useState(false);
+  // ANDROID_COMPOSER_KEYBOARD_INSET_V1
+  // Android edge-to-edge does not resize the window for the IME, so the composer
+  // wrapper (which reaches the screen bottom) is lifted by the IME overlap.
+  // RN reports the keyboard height without the system nav bar, so the overlap
+  // is that height plus the bottom safe-area inset.
+  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
 
   // SMART_EXPANDING_COMPOSER_V5
   const [composerExpanded, setComposerExpanded] = useState(false);
@@ -8193,11 +8199,15 @@ export default function MessageThreadScreen() {
     const hideEvent =
       Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
-    const showSubscription = Keyboard.addListener(showEvent, () => {
+    const showSubscription = Keyboard.addListener(showEvent, (e) => {
       setComposerKeyboardVisible(true);
+      if (Platform.OS === "android") {
+        setAndroidKeyboardHeight(Math.max(0, Number(e?.endCoordinates?.height || 0)));
+      }
     });
     const hideSubscription = Keyboard.addListener(hideEvent, () => {
       setComposerKeyboardVisible(false);
+      if (Platform.OS === "android") setAndroidKeyboardHeight(0);
     });
 
     return () => {
@@ -14262,7 +14272,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       </View>
 
       {/* Composer */}
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}>
+      <KeyboardAvoidingView
+        style={
+          Platform.OS === "android" && androidKeyboardHeight > 0
+            ? { paddingBottom: androidKeyboardHeight + insets.bottom }
+            : undefined
+        }
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
+      >
         {messageSelectionMode ? (() => {
           const selectedMessages = messages.filter((m) => selectedMessageIds.has(m.id));
           const canDeleteEveryoneSelection =
@@ -14513,9 +14531,12 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             style={[
               s.composer,
               {
-                marginBottom: composerKeyboardVisible
-                  ? 6
-                  : Math.max(tabBarH, insets.bottom + 10),
+                // Android: a hardware/floating keyboard reports height 0 and does not cover
+                // the nav bar, so keep the resting inset unless a docked keyboard lifts us.
+                marginBottom:
+                  composerKeyboardVisible && (Platform.OS !== "android" || androidKeyboardHeight > 0)
+                    ? 6
+                    : Math.max(tabBarH, insets.bottom + 10),
               },
             ]}
           >

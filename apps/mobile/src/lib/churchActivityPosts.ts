@@ -10,9 +10,11 @@ import {
   resolvePostImageUris,
   resolveVideoUri,
 } from "@/src/components/homeFeed/homeFeedUtils";
+import { Platform } from "react-native";
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
 import { isFeedVideoItem } from "@/src/lib/homeFeedStore";
 import { peekCachedMediaPoster } from "@/src/lib/mediaPosterCache";
+import { shouldRequestInferredPosterGuess } from "@/src/lib/posterGuessPolicy";
 
 export type ChurchActivityLabel =
   | "TESTIMONY"
@@ -187,9 +189,9 @@ export function computeActivityGridPreviewTrace(
       activityRawField(row, "coverImageUrl")
   );
   const previewUrl = resolve(activityRawField(row, "previewUrl"));
-  const inferredPosterUri = resolve(
-    inferPosterUriFromVideoUrl(resolvedVideoUri || videoUrl || mediaUrl)
-  );
+  const inferredPosterUri = shouldRequestInferredPosterGuess(Platform.OS)
+    ? resolve(inferPosterUriFromVideoUrl(resolvedVideoUri || videoUrl || mediaUrl))
+    : "";
 
   const storedPosterUri = activityRawField(row, "posterUri");
   const storedVideoPosterUri = activityRawField(row, "videoPosterUri");

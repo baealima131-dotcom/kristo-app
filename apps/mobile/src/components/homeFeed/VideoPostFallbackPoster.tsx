@@ -25,6 +25,7 @@ import {
   prefetchHomeFeedPosterMetadata,
   queueHomeFeedPosterPrewarm,
   isHomeFeedPosterWorkPaused,
+  subscribeHomeFeedPosterWorkResume,
 } from "@/src/lib/homeFeedPosterPrewarm";
 import { isHomeFeedYoutubePosterMetadataEnabled } from "@/src/lib/homeFeedVideoMode";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
@@ -387,12 +388,34 @@ function YouTubeFeedVideoPoster({
   const loadedSourceRef = React.useRef("");
   const coverReadyRef = React.useRef(false);
 
+  // A parent may pass an inline callback. Its identity must not restart poster
+  // loading effects, which notify the parent and can otherwise form a render loop.
+  const onPosterCoverReadyRef = React.useRef(onPosterCoverReady);
+  React.useLayoutEffect(() => {
+    onPosterCoverReadyRef.current = onPosterCoverReady;
+  }, [onPosterCoverReady]);
+  const lastCoverNotificationRef = React.useRef<{
+    postId: string;
+    videoUrl: string;
+    ready: boolean;
+  } | null>(null);
+
   const notifyCoverReady = React.useCallback(
     (ready: boolean) => {
       coverReadyRef.current = ready;
-      onPosterCoverReady?.(ready);
+      const callback = onPosterCoverReadyRef.current;
+      if (!callback) return;
+      const previous = lastCoverNotificationRef.current;
+      if (
+        previous?.postId === postId &&
+        previous.videoUrl === resolvedVideoUrl &&
+        previous.ready === ready
+      ) return;
+      // Record before invoking the parent so a re-render cannot notify twice.
+      lastCoverNotificationRef.current = { postId, videoUrl: resolvedVideoUrl, ready };
+      callback(ready);
     },
-    [onPosterCoverReady]
+    [postId, resolvedVideoUrl]
   );
 
   const restoreLoadedPoster = React.useCallback(() => {
@@ -514,6 +537,12 @@ function YouTubeFeedVideoPoster({
     if (cancelledRef.current) return;
     if (generated) {
       beginPosterLoad(generated, "generated-frame");
+      return;
+    }
+    if (Platform.OS === "android" && isHomeFeedPosterWorkPaused()) {
+      // Generation is skipped while Home poster work is paused (e.g. Home not focused);
+      // keep the gradient and retry on resume instead of settling for good.
+      frameGenAttemptedRef.current = false;
       return;
     }
     settleOnPlaceholder("frame-generation-failed");
@@ -668,7 +697,9 @@ function YouTubeFeedVideoPoster({
       };
     }
 
-    if (!isHomeFeedYoutubePosterMetadataEnabled()) {
+    // Android has no guessed-URL candidate (whose 404 used to reach tryGenerateFrame via
+    // handleImageError), so a post without cache/saved poster goes straight to local generation.
+    if (!isHomeFeedYoutubePosterMetadataEnabled() || Platform.OS === "android") {
       void tryGenerateFrame();
     }
 
@@ -686,6 +717,14 @@ function YouTubeFeedVideoPoster({
     restoreLoadedPoster,
     tryGenerateFrame,
   ]);
+
+  React.useEffect(() => {
+    if (Platform.OS !== "android" || !allowImageLoad || !postId || !resolvedVideoUrl) return undefined;
+    return subscribeHomeFeedPosterWorkResume(() => {
+      if (cancelledRef.current || loadedUriRef.current || frameGenAttemptedRef.current) return;
+      void tryGenerateFrame();
+    });
+  }, [allowImageLoad, postId, resolvedVideoUrl, tryGenerateFrame]);
 
   React.useEffect(() => {
     if (!allowImageLoad || !postId || !resolvedVideoUrl) return undefined;

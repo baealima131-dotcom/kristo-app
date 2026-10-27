@@ -48,6 +48,11 @@ import {
   type AgentInvitationRecord,
 } from "@/src/lib/offlineActivationAgentApi";
 import {
+  fetchProgramCards,
+  NO_PROGRAM_CARDS,
+  type ProgramCards,
+} from "@/src/lib/offlineActivationProgramApi";
+import {
   fetchSafetyAccess,
   type SafetyAccessResponse,
 } from "@/src/lib/safetyAdminApi";
@@ -274,6 +279,7 @@ function getMoreCardToneKey(key: string): string {
   if (key === "system_admin") return "church";
   if (key === "supervisor") return "notifications";
   if (key === "agent" || key === "agent_invitation") return "notifications";
+  if (key.startsWith("uvumbuzi_")) return "notifications";
   return key;
 }
 
@@ -401,11 +407,37 @@ export default function MoreScreen() {
     SafetyAccessResponse | null
   >(null);
 
+  // Uvumbuzi program permissions, as decided by the server (/api/offline-activation/program/me).
+  const [programCards, setProgramCards] = React.useState<ProgramCards>(NO_PROGRAM_CARDS);
+
   const offlineActivationItems = React.useMemo((): Item[] => {
     const platformRole = String(
       (session as any)?.platformRole || (session as any)?.offlineActivationRole || ""
     );
     let items = getOfflineActivationMoreItems(platformRole).map(({ requiredRole: _ignored, ...item }) => item);
+    // One Supervisor card and one Agent card. When the server has the program API it decides
+    // visibility, and the card opens the combined screen (which links to the legacy tools).
+    // Cards are replaced IN PLACE (same position/column) so that nothing shifts between the
+    // two columns when the server answer arrives (moving views across parents crashed Fabric).
+    if (programCards.available) {
+      const supervisorCard: Item = {
+        key: "supervisor",
+        title: "Supervisor",
+        sub: "Timu • codes • maendeleo",
+        iconLib: "ion",
+        icon: "people-outline",
+        href: "/more/uvumbuzi-program/supervisor",
+      };
+      const agentCard: Item = { ...AGENT_MORE_ITEM, sub: "Makanisa • mafunzo • codes", href: "/more/uvumbuzi-program/agent" };
+      items = items
+        .map((item) => (item.key === "supervisor" ? supervisorCard : item.key === "agent" ? agentCard : item))
+        .filter((item) =>
+          item.key === "supervisor" ? programCards.supervisor : item.key === "agent" ? programCards.agent : true
+        );
+      if (programCards.supervisor && !items.some((item) => item.key === "supervisor")) items.push(supervisorCard);
+      if (programCards.agent && !items.some((item) => item.key === "agent")) items.push(agentCard);
+      return items;
+    }
 
     if (shouldShowAgentMoreCard(platformRole, agentAccess)) {
       if (!items.some((item) => item.key === "agent")) {
@@ -416,7 +448,33 @@ export default function MoreScreen() {
     }
 
     return items;
-  }, [session?.platformRole, (session as any)?.offlineActivationRole, agentAccess]);
+  }, [session?.platformRole, (session as any)?.offlineActivationRole, agentAccess, programCards]);
+
+  // Uvumbuzi program cards: shown only when the server says this user holds the permission.
+  const programItems = React.useMemo((): Item[] => {
+    const items: Item[] = [];
+    if (programCards.labAdminSignIn) {
+      items.push({
+        key: "uvumbuzi_lab_admin",
+        title: "Lab Admin",
+        sub: "System Admin • code ya kuingia Lab",
+        iconLib: "ion",
+        icon: "flask-outline",
+        href: "/more/uvumbuzi-program/lab-code",
+      });
+    }
+    if (programCards.leaderConfirmations > 0) {
+      items.push({
+        key: "uvumbuzi_leader",
+        title: "Thibitisha mafunzo",
+        sub: `Maombi ${programCards.leaderConfirmations} yanasubiri jibu lako`,
+        iconLib: "ion",
+        icon: "checkmark-done-outline",
+        href: "/more/uvumbuzi-program/leader",
+      });
+    }
+    return items;
+  }, [programCards]);
 
   const agentInvitationItem = React.useMemo((): Item | null => {
     if (!agentInvitations.length) return null;
@@ -461,6 +519,7 @@ export default function MoreScreen() {
       ...base,
       ...offlineActivationItems,
       ...safetyItems,
+      ...programItems,
       ...(agentInvitationItem
         ? [agentInvitationItem]
         : []),
@@ -470,6 +529,7 @@ export default function MoreScreen() {
     isPastor,
     canShowMediaCard,
     offlineActivationItems,
+    programItems,
     agentInvitationItem,
     safetyAccess?.isSafetySupervisor,
     safetyAccess?.isSafetyAgent,
@@ -546,8 +606,10 @@ export default function MoreScreen() {
       if (!userId) {
         setAgentAccess(null);
         setAgentInvitations([]);
+        setProgramCards(NO_PROGRAM_CARDS);
         return;
       }
+      void fetchProgramCards().then(setProgramCards);
       void fetchAgentAccess()
         .then((res) => setAgentAccess(res))
         .catch(() => setAgentAccess(null));
@@ -1188,6 +1250,16 @@ export default function MoreScreen() {
           style={s.columnScroll}
         >
           {leftItems.map(renderCard)}
+          {programCards.canJoinAsAgent ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.push("/more/uvumbuzi-program/join" as any)}
+              style={({ pressed }) => [s.inviteCodeRow, pressed && { opacity: 0.7 }]}
+            >
+              <Ionicons name="key-outline" size={14} color="rgba(255,255,255,0.72)" />
+              <Text style={s.inviteCodeText}>Ingiza code ya mwaliko</Text>
+            </Pressable>
+          ) : null}
         </ScrollView>
 
         <ScrollView
@@ -1280,6 +1352,15 @@ export default function MoreScreen() {
 }
 
 const s = StyleSheet.create<any>({
+  inviteCodeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    marginTop: 4,
+  },
+  inviteCodeText: { color: "rgba(255,255,255,0.72)", fontSize: 13, fontWeight: "600" },
   screen: {
     flex: 1,
     backgroundColor: "#0B0F17",

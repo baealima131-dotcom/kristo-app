@@ -34,6 +34,7 @@ module.exports = {
         },
       ],
       "./plugins/withDevClientMetroPort",
+      "./plugins/withAndroidPortraitMainActivity",
       ...(isProductionEasBuild ? ["./plugins/withAndroidProductionAbis"] : []),
     ],
   },
