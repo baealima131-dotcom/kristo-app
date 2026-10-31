@@ -11,6 +11,17 @@ import {
   writeRoomMessagesJsonFile,
 } from "@/app/api/_lib/store/roomMessageDb";
 import { purgeFeedSchedulesForDeletedRoomCards } from "@/app/api/_lib/reconcileMediaScheduleFeed";
+import { getActiveMembership } from "@/app/api/_lib/memberships";
+import {
+  VOICE_NOTE_MAX_DURATION_MS,
+  deleteVoiceNoteFiles,
+  isAudioAttachment,
+  isChurchMembersRoom,
+  isExpiredVoiceNote,
+  isVisibleUnderHistoryWindow,
+  memberHistoryCutoffMs,
+  voiceNoteExpiresAt,
+} from "@/app/api/_lib/churchMembersRoomPolicy";
 import {
   assertDirectMessageSendAllowed,
   getDirectMessageConversationSettings,
@@ -80,6 +91,8 @@ type RoomMessage = {
   metadata?: any;
   sharedContent?: any;
   createdAt: number;
+  /** Voice notes in the Church Members room: deleted (with their file) at this time. */
+  expiresAt?: number;
   deletedFor?: string[];
   storageDeletedFor?: Record<
     string,
@@ -130,6 +143,41 @@ async function writeStore(data: Record<string, RoomMessage[]>) {
   // so room messages, attachments, cards and schedule slots are never lost
   // across instances, redeploys or devices.
   await writeRoomMessagesJsonFile(ROOM_MESSAGES_STORE_FILE, data);
+}
+
+/**
+ * Church Members room: drop expired voice notes and delete their audio files. Messages whose
+ * file could not be deleted stay stored (but hidden) so the next request retries them.
+ */
+async function purgeExpiredChurchMembersVoiceNotes(
+  store: Record<string, RoomMessage[]>,
+  key: string,
+  nowMs: number
+) {
+  const rows = store[key] || [];
+  const expired = rows.filter((m) => isExpiredVoiceNote(m, nowMs));
+  if (!expired.length) return 0;
+  const deletedIds = await deleteVoiceNoteFiles(expired);
+  if (!deletedIds.size) return 0;
+  store[key] = rows.filter((m) => !deletedIds.has(String(m.id)));
+  await writeStore(store);
+  console.log("KRISTO_CHURCH_MEMBERS_VOICE_NOTES_PURGED", {
+    key,
+    purged: deletedIds.size,
+    pendingRetry: expired.length - deletedIds.size,
+  });
+  return deletedIds.size;
+}
+
+/** The viewer's role in this church (durable memberships first, legacy file as fallback). */
+async function viewerChurchRole(churchId: string, userId: string) {
+  try {
+    const membership = await getActiveMembership(userId);
+    if (membership && String(membership.churchId || "").trim() === String(churchId || "").trim()) {
+      return String(membership.churchRole || "").trim();
+    }
+  } catch {}
+  return churchRoleForUser(churchId, userId);
 }
 
 function getHeaders(req: Request) {
@@ -389,7 +437,25 @@ export async function GET(req: Request) {
     docKeys: Object.keys(store || {}).slice(0, 30),
   });
 
+  // Church Members room: server time decides voice-note expiry and the members' 7-day window.
+  const serverNowMs = Date.now();
+  let historyCutoffMs: number | null = null;
+  if (isChurchMembersRoom(roomId)) {
+    try {
+      await purgeExpiredChurchMembersVoiceNotes(store, getStoreKey, serverNowMs);
+    } catch (e) {
+      console.log("KRISTO_CHURCH_MEMBERS_VOICE_PURGE_FAILED", { error: String((e as any)?.message || e) });
+    }
+    historyCutoffMs = memberHistoryCutoffMs(
+      await viewerChurchRole(effectiveChurchId, userId),
+      serverNowMs
+    );
+  }
+
   const rows = (store[getStoreKey] || []).filter((m: any) => {
+    if (isExpiredVoiceNote(m, serverNowMs)) return false;
+    if (!isVisibleUnderHistoryWindow(m, historyCutoffMs)) return false;
+
     const deletedFor = Array.isArray(m?.deletedFor)
       ? m.deletedFor.map(String)
       : [];
@@ -498,6 +564,7 @@ export async function GET(req: Request) {
   return NextResponse.json({
     ok: true,
     data: enriched,
+    ...(isChurchMembersRoom(roomId) ? { serverNowMs, historyCutoffMs } : {}),
   });
 }
 
@@ -804,6 +871,24 @@ export async function POST(req: Request) {
   }
   const key = keyOf(effectiveChurchId, roomId);
 
+  if (kind === "voice_note") {
+    const audio = attachments.length === 1 ? attachments[0] : null;
+    if (!isChurchMembersRoom(roomId) || !audio || !isAudioAttachment(audio)) {
+      return NextResponse.json(
+        { ok: false, error: "Voice notes are only available in the Church Members room." },
+        { status: 400 }
+      );
+    }
+    if (Number(audio?.durationMs || 0) > VOICE_NOTE_MAX_DURATION_MS) {
+      return NextResponse.json({ ok: false, error: "Voice note is too long." }, { status: 400 });
+    }
+  }
+  if (isChurchMembersRoom(roomId)) {
+    try {
+      await purgeExpiredChurchMembersVoiceNotes(store, key, Date.now());
+    } catch {}
+  }
+
   const identity = await resolveSenderIdentity(userId);
   const senderRole = await churchRoleForUser(effectiveChurchId, userId);
   const senderName = String(identity.name || body?.senderName || name || "Member").trim();
@@ -825,6 +910,7 @@ export async function POST(req: Request) {
     ...optionalFields,
     createdAt: Date.now(),
   };
+  if (kind === "voice_note") msg.expiresAt = voiceNoteExpiresAt(msg.createdAt);
 
   store[key] = [msg, ...(store[key] || [])].slice(0, 500);
 

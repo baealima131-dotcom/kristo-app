@@ -8,6 +8,8 @@ export type MsgAttachment = {
   name: string;
   mime: string;
   size?: number;
+  /** Voice notes (Church Members room). */
+  durationMs?: number;
   imageUri?: string;
   fileUri?: string;
   fileName?: string;
@@ -119,7 +121,10 @@ export type MsgItem = {
     | "appointment_request"
     | "appointment_response"
     | "appointment_time_proposed"
-    | "appointment_confirmed";
+    | "appointment_confirmed"
+    | "voice_note";
+  /** Church Members voice notes: server deletes the message (and file) at this time. */
+  expiresAt?: number;
   /**
    * Room messages support multiple rich-card schemas.
    * Narrow by `kind` / `card.type` before rendering or mutating.

@@ -115,6 +115,7 @@ export function normalizeMsgAttachment(raw: any): MsgAttachment {
     fileUri: kind === "file" ? uri : raw?.fileUri ? resolveMessageAttachmentUrl(raw.fileUri) : undefined,
     fileName: name,
     mimeType: mime,
+    ...(Number(raw?.durationMs || 0) > 0 ? { durationMs: Number(raw.durationMs) } : {}),
   };
 }
 

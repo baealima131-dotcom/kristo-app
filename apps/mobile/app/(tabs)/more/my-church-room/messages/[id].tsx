@@ -158,6 +158,13 @@ import {
 } from "@/src/lib/ministryLiveActivation";
 import { pushLiveRoomWithSilentPreflight } from "@/src/lib/liveSilentPreflight";
 import { parseLiveAllScheduleSlotsJson } from "@/src/lib/scheduleSlotUtils";
+import {
+  ChatDateSeparator,
+  ChurchVoiceNoteBubble,
+  ChurchVoiceNoteButton,
+  chatDayKey,
+  chatDayLabel,
+} from "@/src/components/churchRoom/ChurchVoiceNote";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
 import ImageViewing from "react-native-image-viewing";
@@ -2026,6 +2033,7 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, _api
       ? x.attachments.map((att: any) => normalizeMsgAttachment(att))
       : undefined,
     createdAt: Number(x.createdAt || Date.now()),
+    ...(Number(x.expiresAt || 0) > 0 ? { expiresAt: Number(x.expiresAt) } : {}),
     kind,
     sharedContent,
     card: x.card || undefined,
@@ -5077,11 +5085,10 @@ function AppointmentRequestVipCard({
   );
 }
 
-/** Church Members room (church-media-room) only: live slots sit in one horizontal carousel. */
-const CHURCH_SLOT_CAROUSEL_SCALE = 0.62;
-const CHURCH_SLOT_CAROUSEL_GAP = 10;
+/** Church Members room: slot cards show as smaller messages inside the chat (scaled uniformly). */
+const CHURCH_SLOT_INLINE_SCALE = 0.72;
 
-/** Width a slot card gets in the chat list (list padding 14 + 14); the carousel shrinks it from there. */
+/** Width a slot card gets in the chat list (list padding 14 + 14). */
 function churchSlotCardNaturalWidth(windowWidth: number) {
   return Math.max(280, windowWidth - 28);
 }
@@ -5134,7 +5141,6 @@ function Bubble({
   onOpenSharedPost,
   claimingAssignmentMessageIds,
   isChurchLiveControlRoom,
-  inSlotCarousel,
   churchLiveControlScheduleModel,
   liveScheduleNowMs,
   profileName,
@@ -5160,8 +5166,6 @@ function Bubble({
   onPreviewImage?: (uri: string) => void;
   onOpenSharedPost?: (shared: SharedContentPayload) => void;
   isChurchLiveControlRoom?: boolean;
-  /** Church Members slot carousel: render the slot card scaled down, without the timestamp. */
-  inSlotCarousel?: boolean;
   churchLiveControlScheduleModel?: ChurchLiveControlHomeFeedScheduleModel | null;
   liveScheduleNowMs?: number;
   profileName?: string;
@@ -6384,6 +6388,37 @@ function Bubble({
     );
   }
 
+  if (m.kind === "voice_note") {
+    const audio: any = (m.attachments || [])[0];
+    const mine = m.sender === "me";
+    return (
+      <Pressable
+        onPress={onPress}
+        onLongPress={onLongPress}
+        delayLongPress={280}
+        style={[
+          s.voiceNoteRow,
+          mine ? s.voiceNoteRowMine : null,
+          selected || actionHighlighted ? s.bubbleSelectedGlow : null,
+        ]}
+      >
+        {!mine ? (
+          <Text style={s.voiceNoteSender} numberOfLines={1}>
+            {m.displayName || "Member"}
+          </Text>
+        ) : null}
+        <ChurchVoiceNoteBubble
+          url={resolveMessageAttachmentUrl(audio?.url || audio?.uri || "")}
+          durationMs={Number(audio?.durationMs || 0)}
+          mine={mine}
+          expiresAt={Number((m as any).expiresAt || 0) || undefined}
+          nowMs={Number(liveScheduleNowMs || Date.now())}
+        />
+        <Text style={[t.msgTime, mine ? s.voiceNoteTimeMine : null]}>{formatTime(m.createdAt)}</Text>
+      </Pressable>
+    );
+  }
+
   if (m.kind === "assignment_card") {
     const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
 
@@ -6411,50 +6446,35 @@ function Bubble({
         },
       });
 
-      const scheduleCard = (
-        <HomeLiveScheduleCard
-          item={item}
-          activeSlot={activeSlot}
-          slotFeedIndex={slotFeedIndex}
-          slotFeedTotal={slotFeedTotal}
-          nowMs={cardNowMs}
-          isActive
-          fullBleed
-          embeddedInRoom
-          disableSlotCarousel
-          profileName={profileName}
-          profileAvatarUri={profileAvatarUri}
-          onOpenLiveRoom={() => onEnterLiveFromScheduleCard?.(item, activeSlot)}
-          onClaimPress={
-            canClaimAssignmentCard &&
-            String(m.card?.status || "open").toLowerCase() === "open"
-              ? () => onClaimAssignmentCard?.(m.id)
-              : undefined
-          }
-        />
-      );
-
-      if (inSlotCarousel) {
-        return (
-          <Pressable
-            onPress={onPress}
-            onLongPress={onLongPress}
-            delayLongPress={280}
-            style={[s.churchSlotCarouselItem, highlightStyle]}
-          >
-            <ScaledSlotCard scale={CHURCH_SLOT_CAROUSEL_SCALE}>{scheduleCard}</ScaledSlotCard>
-          </Pressable>
-        );
-      }
-
       return (
         <Pressable
           onPress={onPress}
           onLongPress={onLongPress}
           delayLongPress={280}
-          style={[s.churchLiveScheduleCardWrap, highlightStyle]}
+          style={[s.churchSlotInlineWrap, highlightStyle]}
         >
-          <View style={s.churchLiveScheduleCardShell}>{scheduleCard}</View>
+          <ScaledSlotCard scale={CHURCH_SLOT_INLINE_SCALE}>
+            <HomeLiveScheduleCard
+              item={item}
+              activeSlot={activeSlot}
+              slotFeedIndex={slotFeedIndex}
+              slotFeedTotal={slotFeedTotal}
+              nowMs={cardNowMs}
+              isActive
+              fullBleed
+              embeddedInRoom
+              disableSlotCarousel
+              profileName={profileName}
+              profileAvatarUri={profileAvatarUri}
+              onOpenLiveRoom={() => onEnterLiveFromScheduleCard?.(item, activeSlot)}
+              onClaimPress={
+                canClaimAssignmentCard &&
+                String(m.card?.status || "open").toLowerCase() === "open"
+                  ? () => onClaimAssignmentCard?.(m.id)
+                  : undefined
+              }
+            />
+          </ScaledSlotCard>
           <Text style={[t.msgTime, s.assignmentTime]}>{formatTime(m.createdAt)}</Text>
         </Pressable>
       );
@@ -7715,26 +7735,26 @@ export default function MessageThreadScreen() {
     ]
   );
 
-  // Church Members room only: slot cards leave the vertical chat and sit in one horizontal carousel.
-  const churchSlotCarouselMessages = useMemo(() => {
-    if (!isChurchLiveControlRoom) return [];
-    return visibleMessages
-      .filter((m: any) => m?.kind === "assignment_card" && churchLiveControlScheduleRenderById[m.id])
-      .sort(
-        (a: any, b: any) =>
-          Number(churchLiveControlScheduleRenderById[a.id]?.slotFeedIndex ?? 0) -
-          Number(churchLiveControlScheduleRenderById[b.id]?.slotFeedIndex ?? 0)
-      );
-  }, [isChurchLiveControlRoom, visibleMessages, churchLiveControlScheduleRenderById]);
-  const chatListMessages = useMemo(() => {
-    if (!churchSlotCarouselMessages.length) return visibleMessages;
-    const slotIds = new Set(churchSlotCarouselMessages.map((m: any) => m.id));
-    return visibleMessages.filter((m: any) => !slotIds.has(m.id));
-  }, [visibleMessages, churchSlotCarouselMessages]);
-  const churchSlotCarouselRef = useRef<FlatList<any> | null>(null);
-  const { width: windowWidth } = useWindowDimensions();
-  const churchSlotCarouselStep =
-    churchSlotCardNaturalWidth(windowWidth) * CHURCH_SLOT_CAROUSEL_SCALE + CHURCH_SLOT_CAROUSEL_GAP;
+  // Church Members room: slot cards that have not started yet, and whether a slot is live now.
+  const churchSlotTiming = useMemo(() => {
+    const upcoming: { id: string; startMs: number }[] = [];
+    let liveNow = false;
+    if (!isChurchLiveControlRoom) return { upcoming, liveNow };
+    for (const m of visibleMessages) {
+      const model = churchLiveControlScheduleRenderById[m.id];
+      if (!model?.activeSlot) continue;
+      const startMs = parseSlotStartMs(model.activeSlot);
+      if (!startMs) continue;
+      const endMs = parseSlotEndMs(model.activeSlot, startMs);
+      if (liveCountdownNow < startMs) upcoming.push({ id: m.id, startMs });
+      else if (!endMs || liveCountdownNow < endMs) liveNow = true;
+    }
+    upcoming.sort((a, b) => a.startMs - b.startMs);
+    return { upcoming, liveNow };
+  }, [isChurchLiveControlRoom, visibleMessages, churchLiveControlScheduleRenderById, liveCountdownNow]);
+  const showChurchUpcomingSlotsLive =
+    isChurchLiveControlRoom && churchSlotTiming.upcoming.length > 0 && !churchSlotTiming.liveNow;
+  const [flashSlotMessageId, setFlashSlotMessageId] = useState("");
 
   const liveScheduleProfileName = String(
     auth?.displayName || auth?.name || auth?.fullName || "You"
@@ -8811,6 +8831,25 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
   const livePulse = useRef(new Animated.Value(1)).current;
 
+  // Church Members room: the LIVE waves pulse while slots are scheduled but not yet started.
+  useEffect(() => {
+    if (!showChurchUpcomingSlotsLive) {
+      livePulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(livePulse, { toValue: 1.25, duration: 650, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(livePulse, { toValue: 1, duration: 650, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+      livePulse.setValue(1);
+    };
+  }, [showChurchUpcomingSlotsLive, livePulse]);
+
   const meetingScheduleKey = String(
     resolvedMinistryId ||
     (params as any)?.assignmentId ||
@@ -9817,6 +9856,43 @@ const displayHeaderTitle = assignmentDisplayTitle;
     [draft, pending, attachUploading, dmComposerLocked]
   );
 
+  /** Church Members room: upload a recorded voice note and post it (server deletes it after 7 days). */
+  async function sendChurchVoiceNote(uri: string, durationMs: number, mime: string) {
+    const sendHeaders: any = getKristoHeaders();
+    const senderName = String(
+      sendHeaders?.["x-kristo-user-name"] ||
+      sendHeaders?.["x-kristo-display-name"] ||
+      sendHeaders?.["x-kristo-name"] ||
+      "Member"
+    ).trim();
+    const uploaded = await uploadMessageAttachment(
+      {
+        id: `voice_${Date.now()}`,
+        kind: "file",
+        localUri: uri,
+        name: `voice-note-${Date.now()}.m4a`,
+        mime,
+      } as any,
+      sendHeaders
+    );
+    const postRes: any = await apiPost(
+      "/api/church/room-messages",
+      {
+        roomId: backendRoomId,
+        roomKind: resolvedSendRoomKind,
+        senderName,
+        text: "",
+        kind: "voice_note",
+        attachments: [{ ...uploaded, mime: uploaded.mime || mime, durationMs: Math.round(durationMs) }],
+        clientId: `local_voice_${Date.now()}`,
+      },
+      { headers: sendHeaders }
+    );
+    if (!postRes?.ok) throw new Error(String(postRes?.error || "Failed to send voice note"));
+    forceReloadRoomMessages();
+    setTimeout(() => listRef.current?.scrollToOffset?.({ offset: 0, animated: true }), 0);
+  }
+
   async function onSend() {
     if (attachUploading) return;
     if (isMessagingDisabledV1) return;
@@ -10304,7 +10380,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
         const query = String(value || "").trim().toLowerCase();
         if (!query) return;
 
-        const matchesQuery = (message: any) => {
+        const index = visibleMessages.findIndex((message: any) => {
           const searchable = [
             message?.text,
             message?.displayName,
@@ -10316,13 +10392,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
             .join(" ");
 
           return searchable.includes(query);
-        };
-        const index = chatListMessages.findIndex(matchesQuery);
-        const slotIndex = index < 0 ? churchSlotCarouselMessages.findIndex(matchesQuery) : -1;
-        if (slotIndex >= 0) {
-          churchSlotCarouselRef.current?.scrollToIndex?.({ index: slotIndex, animated: true });
-          return;
-        }
+        });
 
         if (index < 0) {
           Alert.alert(
@@ -12278,7 +12348,23 @@ function saveAssignmentVideoTrim() {
     );
   }
 
+  const liveHeaderTone = showChurchUpcomingSlotsLive ? "scheduled" : liveAssignmentCtaMeta.tone;
+  const liveHeaderSublabel = showChurchUpcomingSlotsLive
+    ? `${churchSlotTiming.upcoming.length} slot${churchSlotTiming.upcoming.length === 1 ? "" : "s"} scheduled`
+    : liveAssignmentCtaMeta.sublabel;
+
   function handleSmartLivePress() {
+    // Church Members room: slots scheduled but not started yet -> bring the next one into view.
+    if (showChurchUpcomingSlotsLive) {
+      const target = churchSlotTiming.upcoming[0];
+      const index = visibleMessages.findIndex((m) => m.id === target.id);
+      if (index >= 0) {
+        listRef.current?.scrollToIndex?.({ index, animated: true, viewPosition: 0.5 });
+        setFlashSlotMessageId(target.id);
+        setTimeout(() => setFlashSlotMessageId((cur) => (cur === target.id ? "" : cur)), 2400);
+      }
+      return;
+    }
     // Evaluate eligibility FIRST: a claimed/active/live slot (or a pastor instant
     // start) already reports canOpenLive === true and must always be able to enter,
     // regardless of tone. Gating on tone before this caused LIVE NOW slots to be
@@ -12396,13 +12482,6 @@ function saveAssignmentVideoTrim() {
     // If scheduled time is open, allow the scheduled/claimed member to enter.
     // If there is no scheduled live flow, only pastor can start Church Live.
     if (liveAssignmentCtaMeta.tone === "scheduled") {
-      if (churchSlotCarouselMessages.length) {
-        const lastSlotIndex = churchSlotCarouselMessages.length - 1;
-        requestAnimationFrame(() => {
-          churchSlotCarouselRef.current?.scrollToIndex?.({ index: lastSlotIndex, animated: true });
-        });
-        return;
-      }
       const scheduleCardIndexes = Array.isArray(messages)
         ? messages
             .map((m: any, index: number) => {
@@ -14102,11 +14181,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 onPress={handleSmartLivePress}
                 style={({ pressed }) => [
                   s.liveBtn,
-                  liveAssignmentCtaMeta.tone === "scheduled"
+                  liveHeaderTone === "scheduled"
                     ? s.liveBtnScheduled
-                    : liveAssignmentCtaMeta.tone === "preview"
+                    : liveHeaderTone === "preview"
                       ? s.liveBtnPreview
-                      : liveAssignmentCtaMeta.tone === "live"
+                      : liveHeaderTone === "live"
                         ? s.liveBtnLive
                         : s.liveBtnIdle,
                   pressed ? ({ opacity: 0.82, transform: [{ scale: 0.98 }] } as ViewStyle) : null,
@@ -14115,9 +14194,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 <LinearGradient
                   pointerEvents="none"
                   colors={
-                    liveAssignmentCtaMeta.tone === "live" || liveAssignmentCtaMeta.tone === "preview"
+                    liveHeaderTone === "live" || liveHeaderTone === "preview"
                       ? ["rgba(34,197,94,0.22)", "rgba(34,197,94,0.08)", "rgba(255,255,255,0.04)"]
-                      : liveAssignmentCtaMeta.tone === "scheduled"
+                      : liveHeaderTone === "scheduled"
                         ? ["rgba(245,215,128,0.18)", "rgba(245,215,128,0.06)", "rgba(255,255,255,0.03)"]
                         : ["rgba(255,255,255,0.08)", "rgba(255,255,255,0.03)", "transparent"]
                   }
@@ -14136,11 +14215,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     style={{ opacity: 0.95 }}
                     size={13}
                     color={
-                      liveAssignmentCtaMeta.tone === "scheduled"
+                      liveHeaderTone === "scheduled"
                         ? "#F5D780"
-                        : liveAssignmentCtaMeta.tone === "preview"
+                        : liveHeaderTone === "preview"
                           ? "#22c55e"
-                          : liveAssignmentCtaMeta.tone === "live"
+                          : liveHeaderTone === "live"
                             ? "#22c55e"
                             : "rgba(255,255,255,0.72)"
                     }
@@ -14150,9 +14229,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 <Text
                   style={[
                     t.liveBtnText,
-                    liveAssignmentCtaMeta.tone === "scheduled"
+                    liveHeaderTone === "scheduled"
                       ? t.liveBtnTextScheduled
-                      : liveAssignmentCtaMeta.tone === "preview" || liveAssignmentCtaMeta.tone === "live"
+                      : liveHeaderTone === "preview" || liveHeaderTone === "live"
                         ? t.liveBtnTextLive
                         : t.liveBtnTextIdle,
                   ]}
@@ -14161,7 +14240,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 </Text>
               </Pressable>
 
-              {liveAssignmentCtaMeta.tone === "scheduled" ? (
+              {liveHeaderTone === "scheduled" ? (
                 <Text
                   numberOfLines={1}
                   style={{
@@ -14174,9 +14253,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     maxWidth: 84,
                   }}
                 >
-                  {liveAssignmentCtaMeta.sublabel || "Live starts soon"}
+                  {liveHeaderSublabel || "Live starts soon"}
                 </Text>
-              ) : liveAssignmentCtaMeta.tone === "preview" ? (
+              ) : liveHeaderTone === "preview" ? (
                 <Text
                   numberOfLines={1}
                   style={{
@@ -14191,7 +14270,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 >
                   {liveAssignmentCtaMeta.sublabel || "Ready room open"}
                 </Text>
-              ) : liveAssignmentCtaMeta.tone === "live" ? (
+              ) : liveHeaderTone === "live" ? (
                 <Text
                   numberOfLines={1}
                   style={{
@@ -14275,57 +14354,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         {!visibleMessages.length ? (
           <ChatEmptyWatermark title={headerTitle} isAssignment={isAssignmentThread} />
         ) : null}
-        {churchSlotCarouselMessages.length ? (
-          <View style={s.churchSlotCarouselStrip}>
-            <Text style={s.churchSlotCarouselLabel}>
-              Live Slots · {churchSlotCarouselMessages.length}
-            </Text>
-            <FlatList
-              ref={(r) => { churchSlotCarouselRef.current = r; }}
-              horizontal
-              data={churchSlotCarouselMessages}
-              keyExtractor={(m: any) => `slot-${m.id}`}
-              showsHorizontalScrollIndicator={false}
-              snapToInterval={churchSlotCarouselStep}
-              snapToAlignment="start"
-              decelerationRate="fast"
-              contentContainerStyle={s.churchSlotCarouselContent}
-              getItemLayout={(_, index) => ({
-                length: churchSlotCarouselStep,
-                offset: churchSlotCarouselStep * index,
-                index,
-              })}
-              renderItem={({ item }) => (
-                <Bubble
-                  m={item}
-                  showAvatar={false}
-                  inSlotCarousel
-                  selected={selectedMessageIds.has(item.id)}
-                  actionHighlighted={messageActionsOpen && messageActionsTarget?.id === item.id}
-                  churchPastorUserId={churchPastorUserId}
-                  onPress={
-                    messageSelectionMode && isSelectableMessage(item)
-                      ? () => toggleMessageSelection(item.id)
-                      : undefined
-                  }
-                  onLongPress={() => openMessageActions(item)}
-                  canClaimAssignmentCard={canViewerClaimAssignmentCard}
-                  claimingAssignmentMessageIds={claimingAssignmentMessageIds}
-                  onClaimAssignmentCard={handleClaimAssignmentMessage}
-                  isChurchLiveControlRoom={isChurchLiveControlRoom}
-                  churchLiveControlScheduleModel={churchLiveControlScheduleRenderById[item.id] || null}
-                  liveScheduleNowMs={liveCountdownNow}
-                  profileName={liveScheduleProfileName}
-                  profileAvatarUri={liveScheduleProfileAvatarUri}
-                  onEnterLiveFromScheduleCard={handleEnterLiveFromChurchScheduleCard}
-                />
-              )}
-            />
-          </View>
-        ) : null}
         <FlatList
           ref={(r) => { listRef.current = r; }}
-          data={chatListMessages}
+          data={visibleMessages}
           inverted
           keyExtractor={(m) => m.id}
           onScrollToIndexFailed={({ index }) => {
@@ -14342,12 +14373,19 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 }}
           renderItem={({ item, index }) => {
-            const prev = chatListMessages[index + 1];
+            const prev = visibleMessages[index + 1];
             const showAvatar = true;
             const isSelected = selectedMessageIds.has(item.id);
-            const isActionHighlighted = messageActionsOpen && messageActionsTarget?.id === item.id;
+            const isActionHighlighted =
+              (messageActionsOpen && messageActionsTarget?.id === item.id) || flashSlotMessageId === item.id;
+            // Church Members room: day separator above the first message of each day (list is inverted).
+            const dayLabel =
+              isChurchLiveControlRoom &&
+              (!prev || chatDayKey(Number(prev.createdAt || 0)) !== chatDayKey(Number(item.createdAt || 0)))
+                ? chatDayLabel(Number(item.createdAt || 0), liveCountdownNow)
+                : "";
 
-            return (
+            const bubble = (
               <Bubble
                 m={item}
                 showAvatar={showAvatar}
@@ -14391,6 +14429,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                       : undefined
                 }
               />
+            );
+            return dayLabel ? (
+              <View>
+                <ChatDateSeparator label={dayLabel} />
+                {bubble}
+              </View>
+            ) : (
+              bubble
             );
           }}
           ListEmptyComponent={
@@ -14828,6 +14874,12 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 </>
               ) : null}
 
+              {isChurchLiveControlRoom && !canSend && !attachUploading ? (
+                <ChurchVoiceNoteButton
+                  disabled={isMessagingDisabledV1 || dmComposerLocked}
+                  onSend={sendChurchVoiceNote}
+                />
+              ) : (
               <Pressable
                 onPress={onSend}
                 disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading || dmComposerLocked}
@@ -14852,6 +14904,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   }
                 />
               </Pressable>
+              )}
             </View>
           </View>
         )}
@@ -19702,38 +19755,37 @@ videoEditorSplitTimelineBadgeText: {
     overflow: "visible",
   } as ViewStyle,
 
+  churchSlotInlineWrap: {
+    alignSelf: "flex-start",
+    marginTop: 4,
+    marginBottom: 10,
+  } as ViewStyle,
+
+  voiceNoteRow: {
+    alignSelf: "flex-start",
+    maxWidth: "86%",
+    marginVertical: 6,
+    gap: 4,
+  } as ViewStyle,
+
+  voiceNoteRowMine: {
+    alignSelf: "flex-end",
+  } as ViewStyle,
+
+  voiceNoteSender: {
+    color: "rgba(245,215,128,0.9)",
+    fontSize: 12,
+    fontWeight: "700",
+    marginLeft: 4,
+  } as TextStyle,
+
+  voiceNoteTimeMine: {
+    alignSelf: "flex-end",
+  } as TextStyle,
+
   churchLiveScheduleCardShell: {
     width: "100%",
     alignSelf: "stretch",
-    overflow: "visible",
-  } as ViewStyle,
-
-  churchSlotCarouselStrip: {
-    paddingTop: 10,
-    paddingBottom: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(217,179,95,0.16)",
-    backgroundColor: "rgba(4,8,16,0.72)",
-  } as ViewStyle,
-
-  churchSlotCarouselLabel: {
-    marginHorizontal: 16,
-    marginBottom: 6,
-    color: "rgba(244,224,177,0.92)",
-    fontSize: 12,
-    fontWeight: "800",
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-  } as TextStyle,
-
-  churchSlotCarouselContent: {
-    paddingHorizontal: 14,
-    // Each card keeps its own height (stretching would collapse the card's flex layout to 0).
-    alignItems: "flex-start",
-  } as ViewStyle,
-
-  churchSlotCarouselItem: {
-    marginRight: CHURCH_SLOT_CAROUSEL_GAP,
     overflow: "visible",
   } as ViewStyle,
 
