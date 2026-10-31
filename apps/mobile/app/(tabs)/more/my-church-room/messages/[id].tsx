@@ -23,6 +23,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
   type TextStyle,
   type ViewStyle
 } from "react-native";
@@ -5076,6 +5077,44 @@ function AppointmentRequestVipCard({
   );
 }
 
+/** Church Members room (church-media-room) only: live slots sit in one horizontal carousel. */
+const CHURCH_SLOT_CAROUSEL_SCALE = 0.62;
+const CHURCH_SLOT_CAROUSEL_GAP = 10;
+
+/** Width a slot card gets in the chat list (list padding 14 + 14); the carousel shrinks it from there. */
+function churchSlotCardNaturalWidth(windowWidth: number) {
+  return Math.max(280, windowWidth - 28);
+}
+
+/** Same container height the Live Slots screen gives this card: it fills it with `flex: 1`. */
+function churchSlotCardNaturalHeight(windowHeight: number) {
+  return Math.min(520, Math.round(windowHeight * 0.62));
+}
+
+/**
+ * Lays a slot card out at its normal width and Live Slots height, then scales it down uniformly
+ * so its text, avatars and buttons all stay visible and tappable at a smaller size.
+ */
+function ScaledSlotCard({ scale, children }: { scale: number; children: React.ReactNode }) {
+  const { width, height } = useWindowDimensions();
+  const naturalWidth = churchSlotCardNaturalWidth(width);
+  const naturalHeight = churchSlotCardNaturalHeight(height);
+  return (
+    <View style={{ width: naturalWidth * scale, height: naturalHeight * scale }}>
+      <View
+        style={{
+          width: naturalWidth,
+          height: naturalHeight,
+          transformOrigin: "top left",
+          transform: [{ scale }],
+        }}
+      >
+        {children}
+      </View>
+    </View>
+  );
+}
+
 function Bubble({
   m,
   showAvatar,
@@ -5095,6 +5134,7 @@ function Bubble({
   onOpenSharedPost,
   claimingAssignmentMessageIds,
   isChurchLiveControlRoom,
+  inSlotCarousel,
   churchLiveControlScheduleModel,
   liveScheduleNowMs,
   profileName,
@@ -5120,6 +5160,8 @@ function Bubble({
   onPreviewImage?: (uri: string) => void;
   onOpenSharedPost?: (shared: SharedContentPayload) => void;
   isChurchLiveControlRoom?: boolean;
+  /** Church Members slot carousel: render the slot card scaled down, without the timestamp. */
+  inSlotCarousel?: boolean;
   churchLiveControlScheduleModel?: ChurchLiveControlHomeFeedScheduleModel | null;
   liveScheduleNowMs?: number;
   profileName?: string;
@@ -6369,6 +6411,42 @@ function Bubble({
         },
       });
 
+      const scheduleCard = (
+        <HomeLiveScheduleCard
+          item={item}
+          activeSlot={activeSlot}
+          slotFeedIndex={slotFeedIndex}
+          slotFeedTotal={slotFeedTotal}
+          nowMs={cardNowMs}
+          isActive
+          fullBleed
+          embeddedInRoom
+          disableSlotCarousel
+          profileName={profileName}
+          profileAvatarUri={profileAvatarUri}
+          onOpenLiveRoom={() => onEnterLiveFromScheduleCard?.(item, activeSlot)}
+          onClaimPress={
+            canClaimAssignmentCard &&
+            String(m.card?.status || "open").toLowerCase() === "open"
+              ? () => onClaimAssignmentCard?.(m.id)
+              : undefined
+          }
+        />
+      );
+
+      if (inSlotCarousel) {
+        return (
+          <Pressable
+            onPress={onPress}
+            onLongPress={onLongPress}
+            delayLongPress={280}
+            style={[s.churchSlotCarouselItem, highlightStyle]}
+          >
+            <ScaledSlotCard scale={CHURCH_SLOT_CAROUSEL_SCALE}>{scheduleCard}</ScaledSlotCard>
+          </Pressable>
+        );
+      }
+
       return (
         <Pressable
           onPress={onPress}
@@ -6376,28 +6454,7 @@ function Bubble({
           delayLongPress={280}
           style={[s.churchLiveScheduleCardWrap, highlightStyle]}
         >
-          <View style={s.churchLiveScheduleCardShell}>
-            <HomeLiveScheduleCard
-              item={item}
-              activeSlot={activeSlot}
-              slotFeedIndex={slotFeedIndex}
-              slotFeedTotal={slotFeedTotal}
-              nowMs={cardNowMs}
-              isActive
-              fullBleed
-              embeddedInRoom
-              disableSlotCarousel
-              profileName={profileName}
-              profileAvatarUri={profileAvatarUri}
-              onOpenLiveRoom={() => onEnterLiveFromScheduleCard?.(item, activeSlot)}
-              onClaimPress={
-                canClaimAssignmentCard &&
-                String(m.card?.status || "open").toLowerCase() === "open"
-                  ? () => onClaimAssignmentCard?.(m.id)
-                  : undefined
-              }
-            />
-          </View>
+          <View style={s.churchLiveScheduleCardShell}>{scheduleCard}</View>
           <Text style={[t.msgTime, s.assignmentTime]}>{formatTime(m.createdAt)}</Text>
         </Pressable>
       );
@@ -7657,6 +7714,27 @@ export default function MessageThreadScreen() {
       liveCountdownNow,
     ]
   );
+
+  // Church Members room only: slot cards leave the vertical chat and sit in one horizontal carousel.
+  const churchSlotCarouselMessages = useMemo(() => {
+    if (!isChurchLiveControlRoom) return [];
+    return visibleMessages
+      .filter((m: any) => m?.kind === "assignment_card" && churchLiveControlScheduleRenderById[m.id])
+      .sort(
+        (a: any, b: any) =>
+          Number(churchLiveControlScheduleRenderById[a.id]?.slotFeedIndex ?? 0) -
+          Number(churchLiveControlScheduleRenderById[b.id]?.slotFeedIndex ?? 0)
+      );
+  }, [isChurchLiveControlRoom, visibleMessages, churchLiveControlScheduleRenderById]);
+  const chatListMessages = useMemo(() => {
+    if (!churchSlotCarouselMessages.length) return visibleMessages;
+    const slotIds = new Set(churchSlotCarouselMessages.map((m: any) => m.id));
+    return visibleMessages.filter((m: any) => !slotIds.has(m.id));
+  }, [visibleMessages, churchSlotCarouselMessages]);
+  const churchSlotCarouselRef = useRef<FlatList<any> | null>(null);
+  const { width: windowWidth } = useWindowDimensions();
+  const churchSlotCarouselStep =
+    churchSlotCardNaturalWidth(windowWidth) * CHURCH_SLOT_CAROUSEL_SCALE + CHURCH_SLOT_CAROUSEL_GAP;
 
   const liveScheduleProfileName = String(
     auth?.displayName || auth?.name || auth?.fullName || "You"
@@ -10226,7 +10304,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
         const query = String(value || "").trim().toLowerCase();
         if (!query) return;
 
-        const index = visibleMessages.findIndex((message: any) => {
+        const matchesQuery = (message: any) => {
           const searchable = [
             message?.text,
             message?.displayName,
@@ -10238,7 +10316,13 @@ const displayHeaderTitle = assignmentDisplayTitle;
             .join(" ");
 
           return searchable.includes(query);
-        });
+        };
+        const index = chatListMessages.findIndex(matchesQuery);
+        const slotIndex = index < 0 ? churchSlotCarouselMessages.findIndex(matchesQuery) : -1;
+        if (slotIndex >= 0) {
+          churchSlotCarouselRef.current?.scrollToIndex?.({ index: slotIndex, animated: true });
+          return;
+        }
 
         if (index < 0) {
           Alert.alert(
@@ -12312,6 +12396,13 @@ function saveAssignmentVideoTrim() {
     // If scheduled time is open, allow the scheduled/claimed member to enter.
     // If there is no scheduled live flow, only pastor can start Church Live.
     if (liveAssignmentCtaMeta.tone === "scheduled") {
+      if (churchSlotCarouselMessages.length) {
+        const lastSlotIndex = churchSlotCarouselMessages.length - 1;
+        requestAnimationFrame(() => {
+          churchSlotCarouselRef.current?.scrollToIndex?.({ index: lastSlotIndex, animated: true });
+        });
+        return;
+      }
       const scheduleCardIndexes = Array.isArray(messages)
         ? messages
             .map((m: any, index: number) => {
@@ -14184,9 +14275,57 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         {!visibleMessages.length ? (
           <ChatEmptyWatermark title={headerTitle} isAssignment={isAssignmentThread} />
         ) : null}
+        {churchSlotCarouselMessages.length ? (
+          <View style={s.churchSlotCarouselStrip}>
+            <Text style={s.churchSlotCarouselLabel}>
+              Live Slots · {churchSlotCarouselMessages.length}
+            </Text>
+            <FlatList
+              ref={(r) => { churchSlotCarouselRef.current = r; }}
+              horizontal
+              data={churchSlotCarouselMessages}
+              keyExtractor={(m: any) => `slot-${m.id}`}
+              showsHorizontalScrollIndicator={false}
+              snapToInterval={churchSlotCarouselStep}
+              snapToAlignment="start"
+              decelerationRate="fast"
+              contentContainerStyle={s.churchSlotCarouselContent}
+              getItemLayout={(_, index) => ({
+                length: churchSlotCarouselStep,
+                offset: churchSlotCarouselStep * index,
+                index,
+              })}
+              renderItem={({ item }) => (
+                <Bubble
+                  m={item}
+                  showAvatar={false}
+                  inSlotCarousel
+                  selected={selectedMessageIds.has(item.id)}
+                  actionHighlighted={messageActionsOpen && messageActionsTarget?.id === item.id}
+                  churchPastorUserId={churchPastorUserId}
+                  onPress={
+                    messageSelectionMode && isSelectableMessage(item)
+                      ? () => toggleMessageSelection(item.id)
+                      : undefined
+                  }
+                  onLongPress={() => openMessageActions(item)}
+                  canClaimAssignmentCard={canViewerClaimAssignmentCard}
+                  claimingAssignmentMessageIds={claimingAssignmentMessageIds}
+                  onClaimAssignmentCard={handleClaimAssignmentMessage}
+                  isChurchLiveControlRoom={isChurchLiveControlRoom}
+                  churchLiveControlScheduleModel={churchLiveControlScheduleRenderById[item.id] || null}
+                  liveScheduleNowMs={liveCountdownNow}
+                  profileName={liveScheduleProfileName}
+                  profileAvatarUri={liveScheduleProfileAvatarUri}
+                  onEnterLiveFromScheduleCard={handleEnterLiveFromChurchScheduleCard}
+                />
+              )}
+            />
+          </View>
+        ) : null}
         <FlatList
           ref={(r) => { listRef.current = r; }}
-          data={visibleMessages}
+          data={chatListMessages}
           inverted
           keyExtractor={(m) => m.id}
           onScrollToIndexFailed={({ index }) => {
@@ -14203,7 +14342,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 }}
           renderItem={({ item, index }) => {
-            const prev = visibleMessages[index + 1];
+            const prev = chatListMessages[index + 1];
             const showAvatar = true;
             const isSelected = selectedMessageIds.has(item.id);
             const isActionHighlighted = messageActionsOpen && messageActionsTarget?.id === item.id;
@@ -19566,6 +19705,35 @@ videoEditorSplitTimelineBadgeText: {
   churchLiveScheduleCardShell: {
     width: "100%",
     alignSelf: "stretch",
+    overflow: "visible",
+  } as ViewStyle,
+
+  churchSlotCarouselStrip: {
+    paddingTop: 10,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(217,179,95,0.16)",
+    backgroundColor: "rgba(4,8,16,0.72)",
+  } as ViewStyle,
+
+  churchSlotCarouselLabel: {
+    marginHorizontal: 16,
+    marginBottom: 6,
+    color: "rgba(244,224,177,0.92)",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  } as TextStyle,
+
+  churchSlotCarouselContent: {
+    paddingHorizontal: 14,
+    // Each card keeps its own height (stretching would collapse the card's flex layout to 0).
+    alignItems: "flex-start",
+  } as ViewStyle,
+
+  churchSlotCarouselItem: {
+    marginRight: CHURCH_SLOT_CAROUSEL_GAP,
     overflow: "visible",
   } as ViewStyle,
 
