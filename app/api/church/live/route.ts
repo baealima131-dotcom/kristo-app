@@ -10,9 +10,7 @@ import {
 } from "@/app/api/_lib/churchPastor";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { endChurchLiveSessionsForSchedule } from "@/app/api/_lib/churchLiveControl";
-import {
-  assertSafetyEnforcementAllows,
-} from "@/app/api/_lib/rbac";
+import { resolveVerifiedChurchActor } from "@/app/api/_lib/verifiedChurchActor";
 
 import { evaluateLiveMediaAuthority } from "@/lib/liveMediaAuthority";
 import {
@@ -32,13 +30,38 @@ export const runtime = "nodejs";
 const STORE_FILE = "church-live.json";
 const LIVE_STALE_MS = 20000;
 
-function auth(req: Request) {
-  return {
-    userId: String(req.headers.get("x-kristo-user-id") || "").trim(),
-    role: String(req.headers.get("x-kristo-role") || "").trim(),
-    churchId: String(req.headers.get("x-kristo-church-id") || "").trim(),
-  };
+/**
+ * Caller identity: user from the verified session token, church and role from the active
+ * membership. x-kristo-user-id / x-kristo-church-id / x-kristo-role are not trusted.
+ */
+async function auth(req: Request): Promise<{ userId: string; role: string; churchId: string } | NextResponse> {
+  const actor = await resolveVerifiedChurchActor(req, "church-live");
+  if (actor instanceof NextResponse) return actor;
+  return { userId: actor.userId, role: actor.churchRole, churchId: actor.churchId };
 }
+
+/** Church roles that manage Church Live Control schedules (as live-control-members PATCH). */
+const LIVE_SCHEDULE_MANAGER_ROLES = new Set(["Pastor", "Church_Admin", "Leader", "System_Admin"]);
+
+/** PATCH actions the app sends; anything else is refused before the store is touched. */
+const KNOWN_PATCH_ACTIONS = new Set([
+  "end-live",
+  "clear-schedule-live",
+  "set-policy",
+  "claim-schedule-request",
+  "clear-claim-request",
+  "request-join",
+  "approve-request",
+  "move-upper",
+  "reject-request",
+  "drop-guest",
+  "comment",
+  "sync-slot-schedule",
+  "slot-transition-tick",
+  "slot-transition-begin",
+  "slot-transition-progress",
+  "presence",
+]);
 
 function isPastor(role: string) {
   return String(role || "").toLowerCase().includes("pastor");
@@ -367,19 +390,8 @@ function upsertWaitingRequest(
 }
 
 export async function GET(req: Request) {
-  const a = auth(req);
-  if (!a.userId || !a.churchId) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      a.userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
+  const a = await auth(req);
+  if (a instanceof NextResponse) return a;
 
   const url = new URL(req.url);
   const lite = url.searchParams.get("lite") === "1";
@@ -458,19 +470,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const a = auth(req);
-  if (!a.userId || !a.churchId) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      a.userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
+  const a = await auth(req);
+  if (a instanceof NextResponse) return a;
 
   if (!isPastor(a.role)) {
     return NextResponse.json({ ok: false, error: "Pastor only" }, { status: 403 });
@@ -556,23 +557,16 @@ const body = await req.json().catch(() => ({}));
 }
 
 export async function PATCH(req: Request) {
-  const a = auth(req);
-  if (!a.userId || !a.churchId) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      a.userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
+  const a = await auth(req);
+  if (a instanceof NextResponse) return a;
 
   const body = await req.json().catch(() => ({}));
   const action = String(body.action || "").trim();
   const liveId = String(body.liveId || "").trim();
+
+  if (!KNOWN_PATCH_ACTIONS.has(action)) {
+    return NextResponse.json({ ok: false, error: "Unknown action" }, { status: 400 });
+  }
 
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
@@ -591,8 +585,14 @@ export async function PATCH(req: Request) {
   const isMemberJoinAction =
     memberJoinActions.has(action) || (action === "presence" && !isPastor(a.role));
 
-  if (!existingSession.live && !isMemberJoinAction) {
-}
+  // Only join/schedule actions may open a session; moderation needs an existing live.
+  if (!existingSession.live && !isMemberJoinAction && action !== "clear-schedule-live") {
+    return NextResponse.json({ ok: false, error: "Live not found" }, { status: 404 });
+  }
+
+  // Requests are made for the caller; only a live moderator may act on another user's request.
+  const bodyUserId = String(body.userId || "").trim();
+  const actsForOtherUser = !!bodyUserId && bodyUserId !== a.userId;
 
   const session = ensureLiveSession(store, a.churchId, resolvedLiveId, now);
   const live = session.live;
@@ -617,6 +617,9 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "clear-schedule-live") {
+    if (!LIVE_SCHEDULE_MANAGER_ROLES.has(a.role) && !canModerateLive(a, live)) {
+      return NextResponse.json({ ok: false, error: "Schedule manager only" }, { status: 403 });
+    }
     const targetLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     const ended = await endChurchLiveSessionsForSchedule({
       churchId: a.churchId,
@@ -653,6 +656,9 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "claim-schedule-request") {
+    if (actsForOtherUser && !canModerateLive(a, live)) {
+      return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
+    }
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     if (!requestLiveId) {
       return NextResponse.json({ ok: false, error: "liveId is required" }, { status: 400 });
@@ -693,6 +699,9 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "clear-claim-request") {
+    if (actsForOtherUser && !canModerateLive(a, live)) {
+      return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
+    }
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     if (requestLiveId) live.liveId = requestLiveId;
 
@@ -721,6 +730,9 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "request-join") {
+    if (actsForOtherUser && !canModerateLive(a, live)) {
+      return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
+    }
     const requestUserId = String(body.userId || a.userId || "").trim();
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     if (requestLiveId) live.liveId = requestLiveId;

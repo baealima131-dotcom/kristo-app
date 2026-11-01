@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
-import {
-  assertSafetyEnforcementAllows,
-} from "@/app/api/_lib/rbac";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import {
@@ -12,7 +9,11 @@ import {
 } from "@/app/api/_lib/store/roomMessageDb";
 import { purgeFeedSchedulesForDeletedRoomCards } from "@/app/api/_lib/reconcileMediaScheduleFeed";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
-import { getCheckoutViewer } from "@/app/api/_lib/auth";
+import {
+  resolveVerifiedChurchActor,
+  resolveVerifiedUserId,
+  type VerifiedChurchActor,
+} from "@/app/api/_lib/verifiedChurchActor";
 import { getStoredMediaHosts } from "@/app/api/_lib/churchMediaAccess";
 import { canCreateOrEditScheduleSlots } from "@/app/api/_lib/ministryAuthority";
 import {
@@ -994,43 +995,24 @@ function isClaimField(key: string) {
 async function resolveVerifiedRoomActor(
   req: Request,
   roomId: string
-): Promise<{ userId: string; churchId: string; churchRole: string } | NextResponse> {
-  const viewer = await getCheckoutViewer(req as any);
-  const userId = String(viewer.userId || "").trim();
-  if (!userId) {
-    return NextResponse.json(
-      { ok: false, error: "Unauthorized", code: viewer.kind === "expired_session" ? "SESSION_EXPIRED" : "UNAUTHENTICATED" },
-      { status: 401 }
-    );
-  }
+): Promise<VerifiedChurchActor | NextResponse> {
+  if (!isDirectRoomId(roomId)) return resolveVerifiedChurchActor(req, "room-messages");
 
-  const safetyBlocked = await assertSafetyEnforcementAllows(userId, req.method);
-  if (safetyBlocked) return safetyBlocked;
+  const userIdOrRes = await resolveVerifiedUserId(req);
+  if (userIdOrRes instanceof NextResponse) return userIdOrRes;
+  const userId = userIdOrRes;
 
-  if (isDirectRoomId(roomId)) {
-    if (!isParticipantInDirectRoom(roomId, userId)) {
-      return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
-    }
-    const storageChurchId = await resolveDirectMessageStorageChurchId({ roomId, fallbackChurchId: "" });
-    if (storageChurchId) return { userId, churchId: storageChurchId, churchRole: "" };
-    // A new conversation has no storage church yet: use the sender's own church.
-    const own = await getActiveMembership(userId);
-    if (!own?.churchId) {
-      return NextResponse.json({ ok: false, error: "Room not found" }, { status: 404 });
-    }
-    return { userId, churchId: own.churchId, churchRole: "" };
+  if (!isParticipantInDirectRoom(roomId, userId)) {
+    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
-
-  const membership = await getActiveMembership(userId);
-  if (!membership?.churchId) {
-    return NextResponse.json({ ok: false, error: "No active church membership" }, { status: 403 });
+  const storageChurchId = await resolveDirectMessageStorageChurchId({ roomId, fallbackChurchId: "" });
+  if (storageChurchId) return { userId, churchId: storageChurchId, churchRole: "" };
+  // A new conversation has no storage church yet: use the sender's own church.
+  const own = await getActiveMembership(userId);
+  if (!own?.churchId) {
+    return NextResponse.json({ ok: false, error: "Room not found" }, { status: 404 });
   }
-  const headerChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
-  if (headerChurchId && headerChurchId !== membership.churchId) {
-    console.log("KRISTO_ROOM_PATCH_CHURCH_MISMATCH", { userId, headerChurchId, roomId });
-    return NextResponse.json({ ok: false, error: "Forbidden (church)" }, { status: 403 });
-  }
-  return { userId, churchId: membership.churchId, churchRole: String(membership.churchRole || "") };
+  return { userId, churchId: own.churchId, churchRole: "" };
 }
 
 /**

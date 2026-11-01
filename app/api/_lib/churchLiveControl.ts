@@ -17,7 +17,8 @@ function liveKeyMatchesSchedule(key: string, churchId: string, liveId: string) {
   if (!cid) return false;
   if (key === cid) return true;
   if (!lid) return key.startsWith(`${cid}|`);
-  return key === liveStoreKey(cid, lid) || key.endsWith(`|${lid}`);
+  // Same church only: another church's session with the same liveId must not match.
+  return key === liveStoreKey(cid, lid) || (key.startsWith(`${cid}|`) && key.endsWith(`|${lid}`));
 }
 
 /** End church live session(s) tied to a schedule when slots are cleared. */
