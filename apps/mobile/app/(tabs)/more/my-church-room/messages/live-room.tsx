@@ -11821,7 +11821,9 @@ export default function LiveRoomScreen() {
     }
     if (!isFocused) return;
 
-    const slots = boundaryScheduleSlots;
+    // Read slots via the ref and re-run on boundaryScheduleSig (content), not the array identity:
+    // every PATCH response re-derives the array, which re-ran this effect and sent another PATCH.
+    const slots = boundaryScheduleSlotsRef.current;
     const scheduleVersion =
       boundaryScheduleSig ||
       `${slots.length}:${slots
@@ -11875,7 +11877,6 @@ export default function LiveRoomScreen() {
     liveBridgeId,
     isFocused,
     boundaryScheduleSig,
-    boundaryScheduleSlots,
     currentUserId,
     liveKitApiHeaders,
   ]);
@@ -12861,11 +12862,11 @@ export default function LiveRoomScreen() {
           source
         );
         if (patch.isLive === true || patch.removedFromLive || patch.explicitlyEnded) {
-          applyBackendLivePatch(patch, `${source}-prefetch`);
+          applyBackendLivePatchRef.current(patch, `${source}-prefetch`);
           return;
         }
         if (!patch.noBridgeSession && !patch.routeFailed) {
-          applyBackendLivePatch(patch, `${source}-sync`);
+          applyBackendLivePatchRef.current(patch, `${source}-sync`);
           return;
         }
 
@@ -12919,7 +12920,7 @@ export default function LiveRoomScreen() {
         });
 
         if (res?.live) {
-          applyBackendLivePatch(
+          applyBackendLivePatchRef.current(
             extractLightLivePayload({ ok: true, live: res.live }),
             `${source}-bridge-create`
           );
@@ -12932,7 +12933,7 @@ export default function LiveRoomScreen() {
           liveBridgeId,
           `${source}-bridge-refetch`
         );
-        applyBackendLivePatch(refetch, `${source}-bridge-create-refetch`);
+        applyBackendLivePatchRef.current(refetch, `${source}-bridge-create-refetch`);
       } catch (e: any) {
         console.log("KRISTO_LIVE_BRIDGE_ENSURE_ERROR", {
           source,
@@ -12955,14 +12956,18 @@ export default function LiveRoomScreen() {
       liveApiHeaders,
       liveProfileAvatarUri,
       session,
-      applyBackendLivePatch,
       fetchLightLiveStateCoalesced,
     ]
   );
 
+  // Re-run only when the bridge, viewer or eligibility changes. Depending on the callback itself
+  // re-ran this on every liveNowMs tick / patch apply, so each fetch result triggered another fetch.
+  const ensureLiveBridgeSessionRef = useRef(ensureLiveBridgeSession);
+  ensureLiveBridgeSessionRef.current = ensureLiveBridgeSession;
+  const bridgeEnsureEligible = !!(scheduleWindowStillLive || myClaimedStageSlot || currentMainStageSlot);
   useEffect(() => {
-    void ensureLiveBridgeSession("bridge-ensure-mount");
-  }, [ensureLiveBridgeSession]);
+    void ensureLiveBridgeSessionRef.current("bridge-ensure-mount");
+  }, [liveBridgeId, currentUserId, isMediaInstantLive, bridgeEnsureEligible]);
 
   useEffect(() => {
     (globalThis as any).__KRISTO_ENSURE_LIVE_BRIDGE_SESSION__ = (bridgeId: string, source?: string) => {
@@ -12982,7 +12987,7 @@ export default function LiveRoomScreen() {
 
     void fetchLightLiveStateCoalesced(liveApiHeaders as any, "LiveRoomImmediate", liveBridgeId, "immediate")
       .then((patch) => {
-        if (!cancelled) applyBackendLivePatch(patch, "immediate");
+        if (!cancelled) applyBackendLivePatchRef.current(patch, "immediate");
       })
       .catch((e: any) => {
         const status = Number(e?.status || e?.response?.status || 0);
@@ -12998,7 +13003,7 @@ export default function LiveRoomScreen() {
     return () => {
       cancelled = true;
     };
-  }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, applyBackendLivePatch, fetchLightLiveStateCoalesced]);
+  }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, fetchLightLiveStateCoalesced]);
 
   useEffect(() => {
     const unsubClaim = onClaimUpdated(() => {
@@ -13008,10 +13013,10 @@ export default function LiveRoomScreen() {
         "LiveRoomClaimRefresh",
         liveBridgeId,
         "claim-refresh"
-      ).then((patch) => applyBackendLivePatch(patch, "claim-refresh"));
+      ).then((patch) => applyBackendLivePatchRef.current(patch, "claim-refresh"));
     });
     return unsubClaim;
-  }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, applyBackendLivePatch]);
+  }, [liveBridgeId, liveApiHeaders, isMediaInstantLive]);
 
   useEffect(() => {
     if (isMediaInstantLive) return;
@@ -13158,7 +13163,7 @@ export default function LiveRoomScreen() {
               liveBridgeId,
               "silent-refresh"
             )
-              .then((patch) => applyBackendLivePatch(patch, "silent-refresh"))
+              .then((patch) => applyBackendLivePatchRef.current(patch, "silent-refresh"))
               .catch((e: any) => {
                 console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_PARTIAL_ERROR", {
                   stage: "live-state",
@@ -13321,7 +13326,6 @@ export default function LiveRoomScreen() {
       assignmentThreadId,
       liveApiHeaders,
       isMediaInstantLive,
-      applyBackendLivePatch,
       liveRouteChurchId,
       session?.userId,
       params,
@@ -14714,9 +14718,9 @@ export default function LiveRoomScreen() {
       liveBridgeId,
       "pastor-fast"
     ).then((patch) => {
-      applyBackendLivePatch(patch, "pastor-fast");
+      applyBackendLivePatchRef.current(patch, "pastor-fast");
     });
-  }, [canManageLive, isFocused, feedScheduleTick, liveApiHeaders, isMediaInstantLive, liveBridgeId, applyBackendLivePatch, fetchLightLiveStateCoalesced]);
+  }, [canManageLive, isFocused, feedScheduleTick, liveApiHeaders, isMediaInstantLive, liveBridgeId, fetchLightLiveStateCoalesced]);
 
   const canUseAuthorityControls = isMediaInstantLive || (canManageLive && (canEnterBackstage || liveStillActive));
   const canSeeAuthorityBar =

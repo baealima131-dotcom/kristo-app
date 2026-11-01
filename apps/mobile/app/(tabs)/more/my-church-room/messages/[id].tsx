@@ -7330,6 +7330,12 @@ export default function MessageThreadScreen() {
           ? "Host"
           : String(effectiveAuthRole || assignmentRole || "Member");
 
+  // Church Members is opened with `role` (not `assignmentRole`), so the header fell back to
+  // "MEMBER" for pastors; show the viewer's resolved role there instead.
+  const headerAssignmentRoleLabel = isChurchLiveControlRoom
+    ? resolvedLiveRole.replace(/_/g, " ").toUpperCase()
+    : assignmentRoleParam;
+
   const canManageAssignmentMembers = ministryAuthority.canManageMembers;
   const canScheduleStructuredMeeting = ministryAuthority.canCreateMeeting;
   const canManageMcHosts = ministryAuthority.canManageHosts;
@@ -14175,8 +14181,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             >
               {isAssignmentThread
                 ? assignmentStatusParam
-                  ? `${assignmentRoleParam} • ${assignmentStatusParam}`
-                  : assignmentRoleParam
+                  ? `${headerAssignmentRoleLabel} • ${assignmentStatusParam}`
+                  : headerAssignmentRoleLabel
                 : isMinistryThread
                   ? isSuspended ? `${currentRole.toUpperCase()} • suspended` : currentRole.toUpperCase()
                   : ""}
