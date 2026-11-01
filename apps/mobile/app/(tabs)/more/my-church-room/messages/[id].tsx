@@ -54,7 +54,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
-import { ensureThread, sendMessage, setThreadMessages, clearThreadMessages, clearThreadTextMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
+import { ensureThread, sendMessage, setThreadMessages, clearThreadMessages, clearThreadTextMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, getMessagesStoreScope, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
 import { HomeLiveScheduleCard, ScheduleClaimAvatarRing } from "@/src/components/HomeLiveScheduleCard";
 import {
@@ -7817,13 +7817,24 @@ export default function MessageThreadScreen() {
   }, []);
 
   const applyVisibleRoomMessageRows = useCallback(
-    (visibleRows: any[]): boolean => {
+    (visibleRows: any[], requestScope?: string): boolean => {
       if (!threadId) return false;
+      // A response for the previous account (request started before logout/login) must not
+      // land in the new account's store.
+      if (requestScope !== undefined && requestScope !== getMessagesStoreScope()) {
+        console.log("KRISTO_ROOM_MESSAGES_STALE_SESSION_DROPPED", { threadId });
+        return false;
+      }
 
       const headers: any = getKristoHeaders();
       const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+      const viewerChurchId = String(headers?.["x-kristo-church-id"] || "").trim();
       const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
       const mapped: MsgItem[] = filterVisibleRoomMessageRows(visibleRows)
+        .filter((x: any) => {
+          const rowChurchId = String(x?.churchId || "").trim();
+          return !rowChurchId || !viewerChurchId || rowChurchId === viewerChurchId;
+        })
         .map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase))
         .map((m) => enrichMessageSenderAvatar(m, memberAvatarByUserIdRef.current));
 
@@ -7869,7 +7880,12 @@ export default function MessageThreadScreen() {
 
       roomMessagesSigRef.current = sig;
       if (merged.length > 0 || messages.length === 0 || allowEmptyRoomOverwriteRef.current) {
-        setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+        setThreadMessages(
+          threadId,
+          merged,
+          { title: roomTitle, sub: String(sub || "") },
+          requestScope !== undefined ? { expectedScope: requestScope } : undefined
+        );
         if (allowEmptyRoomOverwriteRef.current && merged.length === 0) {
           allowEmptyRoomOverwriteRef.current = false;
         }
@@ -7926,6 +7942,7 @@ export default function MessageThreadScreen() {
       Boolean(hostsPeek && isChurchMediaRoomCacheFresh(hostsPeek.updatedAt));
 
     let alive = true;
+    const requestScope = getMessagesStoreScope();
 
     (async () => {
       const [msgsCache, liveCache, hostsCache] = await Promise.all([
@@ -7937,7 +7954,7 @@ export default function MessageThreadScreen() {
       if (!alive) return;
 
       if (msgsCache?.rawRows?.length) {
-        applyVisibleRoomMessageRows(msgsCache.rawRows as any[]);
+        applyVisibleRoomMessageRows(msgsCache.rawRows as any[], requestScope);
       }
 
       if (liveCache?.rawRows) {
@@ -7982,7 +7999,7 @@ export default function MessageThreadScreen() {
         // Apply even an empty result. applyVisibleRoomMessageRows itself guards
         // against wiping existing local messages with an empty cache, so a
         // cache:0 hydrate cannot erase a just-sent image/card.
-        applyVisibleRoomMessageRows(refresh.rawRows || []);
+        applyVisibleRoomMessageRows(refresh.rawRows || [], requestScope);
         if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
       });
 
@@ -8088,6 +8105,7 @@ export default function MessageThreadScreen() {
       }
       if (!roomId) return false;
 
+      const requestScope = getMessagesStoreScope();
       const headers: any = getKristoHeaders();
       const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
 
@@ -8134,7 +8152,7 @@ export default function MessageThreadScreen() {
               mediaRoomCacheFreshRef.current = true;
             } catch {}
 
-            updated = applyVisibleRoomMessageRows(visibleRows);
+            updated = applyVisibleRoomMessageRows(visibleRows, requestScope);
             console.log("[RoomMessagesFreshGET] done", {
               roomId: CHURCH_MEDIA_ROOM_ID,
               rawCount: rawRows.length,
@@ -8159,7 +8177,7 @@ export default function MessageThreadScreen() {
           const visibleRows = filterVisibleRoomMessageRows(refresh.rawRows);
           count = visibleRows.length;
           if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
-          updated = applyVisibleRoomMessageRows(visibleRows);
+          updated = applyVisibleRoomMessageRows(visibleRows, requestScope);
           return updated;
         } finally {
           roomMessagesInflightRef.current = false;
@@ -8187,7 +8205,7 @@ export default function MessageThreadScreen() {
 
         const visibleRows = filterVisibleRoomMessageRows(rows);
         count = visibleRows.length;
-        updated = applyVisibleRoomMessageRows(visibleRows);
+        updated = applyVisibleRoomMessageRows(visibleRows, requestScope);
         return updated;
       } finally {
         roomMessagesInflightRef.current = false;

@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React from "react";
+import { getSessionScopeSync, onSessionScopeChange } from "./kristoSessionSync";
 
 export type MsgAttachment = {
   id: string;
@@ -159,6 +160,24 @@ type StoreState = {
 
 const KEY = "kristo_messages_store_real_schedule_only_20260416_runtime_meetingDate_fix_04";
 
+/**
+ * The store is per signed-in user + church. Thread ids such as "church-media-room" are the
+ * same in every church, so one shared bucket showed the previous account's schedule cards
+ * after switching accounts. Each scope gets its own state and storage key; the previous
+ * user's cache is dropped on logout.
+ */
+let scope = getSessionScopeSync();
+let scopeEpoch = 0;
+
+function storageKey(forScope: string) {
+  return `${KEY}::${forScope || "signed-out"}`;
+}
+
+/** Scope token for async work: compare before writing a late response into the store. */
+export function getMessagesStoreScope() {
+  return scope;
+}
+
 let state: StoreState = {
   threads: {},
   messages: {},
@@ -166,6 +185,23 @@ let state: StoreState = {
 
 let loaded = false;
 const listeners = new Set<() => void>();
+
+onSessionScopeChange((nextScope, prevScope) => {
+  if (nextScope === scope) return;
+  scope = nextScope;
+  scopeEpoch += 1;
+  state = { threads: {}, messages: {} };
+  loaded = false;
+  if (!nextScope && prevScope) {
+    void AsyncStorage.removeItem(storageKey(prevScope)).catch(() => {});
+  }
+  console.log("KRISTO_MESSAGES_STORE_SCOPE_SWITCH", {
+    signedOut: !nextScope,
+    clearedPrevious: !nextScope && !!prevScope,
+  });
+  if (listeners.size) void ensureLoaded();
+  emit();
+});
 
 function emit() {
   if (emitScheduled) return;
@@ -179,8 +215,10 @@ function emit() {
 let emitScheduled = false;
 
 async function persist() {
+  const key = storageKey(scope);
+  const json = JSON.stringify(state);
   try {
-    await AsyncStorage.setItem(KEY, JSON.stringify(state));
+    await AsyncStorage.setItem(key, json);
   } catch {
     // ignore
   }
@@ -189,16 +227,27 @@ async function persist() {
 async function ensureLoaded() {
   if (loaded) return;
   loaded = true;
+  const epoch = scopeEpoch;
 
   try {
-    const raw = await AsyncStorage.getItem(KEY);
+    // Pre-scope builds kept every account in one bucket; that data cannot be attributed.
+    await AsyncStorage.removeItem(KEY);
+    const raw = await AsyncStorage.getItem(storageKey(scope));
+    if (epoch !== scopeEpoch) return;
     if (raw) {
       const parsed = JSON.parse(raw) as StoreState;
-      if (parsed && typeof parsed === "object") state = parsed;
+      if (parsed && typeof parsed === "object") {
+        // Keep anything written while the read was in flight.
+        state = {
+          threads: { ...(parsed.threads || {}), ...state.threads },
+          messages: { ...(parsed.messages || {}), ...state.messages },
+        };
+      }
     }
   } catch {
     // ignore
   }
+  if (epoch !== scopeEpoch) return;
 
   if (!Object.keys(state.threads).length) {
     ensureThread("g3", { title: "Pastor Desk", sub: "Private • counsel" });
@@ -906,8 +955,17 @@ export function useThread(threadId: string): { messages: MsgItem[]; meta?: Threa
   return { meta: snap.threads[threadId], messages: snap.messages[threadId] || [] };
 }
 
-export function setThreadMessages(threadId: string, items: MsgItem[], meta?: { title?: string; sub?: string }) {
+export function setThreadMessages(
+  threadId: string,
+  items: MsgItem[],
+  meta?: { title?: string; sub?: string },
+  opts?: { expectedScope?: string }
+) {
   if (!threadId) return;
+  if (opts?.expectedScope !== undefined && opts.expectedScope !== scope) {
+    console.log("KRISTO_MESSAGES_STORE_STALE_WRITE_DROPPED", { threadId });
+    return;
+  }
   if (!state.threads[threadId]) {
     state.threads[threadId] = { id: threadId, title: meta?.title || "Thread", sub: meta?.sub || "" };
   }
