@@ -11,15 +11,22 @@ import {
 import { createNotification } from "@/app/api/_lib/notifications";
 import { endChurchLiveSessionsForSchedule } from "@/app/api/_lib/churchLiveControl";
 import { resolveVerifiedChurchActor } from "@/app/api/_lib/verifiedChurchActor";
+import { resolvePublicDisplayName } from "@/app/api/_lib/publicDisplayName";
+import { getStoredMediaHosts } from "@/app/api/_lib/churchMediaAccess";
+import { canCreateOrEditScheduleSlots, isPastorAppRole } from "@/app/api/_lib/ministryAuthority";
+import { readRoomMessagesJsonFile } from "@/app/api/_lib/store/roomMessageDb";
+import { getFeedItemById } from "@/app/api/_lib/store/feedDb";
 
 import { evaluateLiveMediaAuthority } from "@/lib/liveMediaAuthority";
 import {
   applySlotTransitionProgress,
   beginSlotTransitionFromClient,
   isSlotTransitionActive,
+  normalizeSlotScheduleEntries,
   readSlotClock,
   readSlotTransition,
   reconcileLiveSlotTransition,
+  resolveActiveScheduleSlot,
   slotClockLitePayload,
   slotTransitionLitePayload,
   upsertSlotScheduleSnapshot,
@@ -67,11 +74,11 @@ function isPastor(role: string) {
   return String(role || "").toLowerCase().includes("pastor");
 }
 
-function isCoHostRole(role: string) {
-  const r = String(role || "").toLowerCase();
-  return r.includes("co-host") || r.includes("cohost");
-}
-
+/**
+ * Live moderator: the church's pastor-level role (from the verified membership) or the live's
+ * recorded owner, schedule creator or media host. There is no header-based co-host role any more;
+ * MC hosts (mc-hosts.json) are not moderators.
+ */
 function canModerateLive(
   auth: { userId: string; role: string },
   live: {
@@ -81,7 +88,7 @@ function canModerateLive(
     mediaHostIds?: string | string[];
   }
 ) {
-  if (isCoHostRole(auth.role)) return false;
+  if (isPastorAppRole(auth.role)) return true;
 
   const authority = evaluateLiveMediaAuthority({
     currentUserId: auth.userId,
@@ -91,6 +98,74 @@ function canModerateLive(
   });
 
   return authority.isMediaOwnerHost;
+}
+
+function ministryRoomIdFromLiveId(liveId: string) {
+  const lid = String(liveId || "").trim();
+  return lid.startsWith("ministry_") ? lid.slice("ministry_".length).trim() : "";
+}
+
+/**
+ * May write the server slot schedule and open/revive sessions: schedule-manager roles, live
+ * moderators, church media hosts, and for a ministry live the ministry Leader/Assistant/Host.
+ */
+async function canDriveLiveSchedule(
+  a: { userId: string; role: string; churchId: string },
+  live: any,
+  liveId: string
+) {
+  if (LIVE_SCHEDULE_MANAGER_ROLES.has(a.role) || canModerateLive(a, live || {})) return true;
+  const hosts = await getStoredMediaHosts(a.churchId).catch(() => []);
+  if (hosts.some((host) => host.userId === a.userId)) return true;
+  const ministryRoomId = ministryRoomIdFromLiveId(liveId);
+  if (!ministryRoomId) return false;
+  return canCreateOrEditScheduleSlots({
+    churchId: a.churchId,
+    viewerUserId: a.userId,
+    viewerAppRole: a.role,
+    ministryId: ministryRoomId,
+  });
+}
+
+/**
+ * Server record of a schedule in this church: its slot cards (room messages), a church feed
+ * schedule with this id, or the ministry room of a ministry live.
+ */
+async function readChurchSchedule(churchId: string, liveId: string) {
+  const lid = String(liveId || "").trim();
+  const rooms = await readRoomMessagesJsonFile<Record<string, any[]>>("room-messages.json", {}).catch(
+    () => ({} as Record<string, any[]>)
+  );
+  const ministryRoomId = ministryRoomIdFromLiveId(lid);
+  const cards: any[] = [];
+  let roomExists = false;
+  for (const [key, rows] of Object.entries(rooms || {})) {
+    if (!key.startsWith(`${churchId}::`) || !Array.isArray(rows)) continue;
+    const roomId = key.slice(churchId.length + 2);
+    if (ministryRoomId && roomId === ministryRoomId) roomExists = true;
+    for (const m of rows) {
+      if (String(m?.kind || "") !== "assignment_card") continue;
+      const card = m?.card || {};
+      const sameSchedule =
+        String(card.sourceScheduleId || "") === lid || String(card.sourceFeedId || "") === lid;
+      if (sameSchedule || (ministryRoomId && roomId === ministryRoomId)) cards.push(card);
+    }
+  }
+  let known = cards.length > 0 || roomExists;
+  if (!known && lid) {
+    const feedItem: any = await getFeedItemById(lid).catch(() => null);
+    known = String(feedItem?.churchId || "") === churchId;
+  }
+  return { known, cards };
+}
+
+/** Owner of the slot that is active now according to the server's own schedule/clock. */
+function isServerActiveSlotOwner(live: any, userId: string, nowMs: number) {
+  const uid = String(userId || "").trim();
+  if (!uid) return false;
+  if (String(readSlotClock(live)?.activeOwnerUserId || "").trim() === uid) return true;
+  const active = resolveActiveScheduleSlot(normalizeSlotScheduleEntries(live?.slotSchedule?.slots), nowMs);
+  return String(active?.ownerUserId || "").trim() === uid;
 }
 
 function liveStoreKey(churchId: string, liveId: string) {
@@ -582,13 +657,23 @@ export async function PATCH(req: Request) {
     "slot-transition-progress",
     "slot-transition-tick",
   ]);
-  const isMemberJoinAction =
-    memberJoinActions.has(action) || (action === "presence" && !isPastor(a.role));
+  const isMemberJoinAction = memberJoinActions.has(action) || action === "presence";
 
   // Only join/schedule actions may open a session; moderation needs an existing live.
   if (!existingSession.live && !isMemberJoinAction && action !== "clear-schedule-live") {
     return NextResponse.json({ ok: false, error: "Live not found" }, { status: 404 });
   }
+
+  const canDrive = await canDriveLiveSchedule(a, existingSession.live, resolvedLiveId);
+  let scheduleRecord: Awaited<ReturnType<typeof readChurchSchedule>> | null = null;
+  const churchSchedule = async () => (scheduleRecord ||= await readChurchSchedule(a.churchId, resolvedLiveId));
+
+  // A member may join a live only for a real schedule of their church; they cannot invent one.
+  if (!existingSession.live && action !== "clear-schedule-live" && !canDrive && !(await churchSchedule()).known) {
+    return NextResponse.json({ ok: false, error: "Live not found" }, { status: 404 });
+  }
+  const holdsClaimInSchedule = async () =>
+    (await churchSchedule()).cards.some((card: any) => String(card?.claimedByUserId || "").trim() === a.userId);
 
   // Requests are made for the caller; only a live moderator may act on another user's request.
   const bodyUserId = String(body.userId || "").trim();
@@ -668,7 +753,7 @@ export async function PATCH(req: Request) {
 
     const requestUserId = String(body.userId || a.userId || "").trim();
     const slotId = String(body.slotId || "").trim();
-    const name = String(body.name || "Member").trim() || "Member";
+    const name = await resolvePublicDisplayName(requestUserId, "Member");
     const avatar = String(body.avatar || body.avatarUri || "M").trim() || "M";
 
     const { slot, request } = upsertWaitingRequest(live, {
@@ -682,7 +767,8 @@ export async function PATCH(req: Request) {
       now,
     });
 
-    if (isMinistryScheduledLiveId(requestLiveId)) {
+    // Reviving a ministry live: schedule drivers, or a member holding a slot in that schedule.
+    if (isMinistryScheduledLiveId(requestLiveId) && (canDrive || (await holdsClaimInSchedule()))) {
       reactivateMinistryScheduledLiveBridge(live, now);
     }
 
@@ -742,7 +828,7 @@ export async function PATCH(req: Request) {
       slotId: String(body.slotId || "").trim(),
       slot: Number(body.slot || 0),
       userId: requestUserId,
-      name: String(body.name || "Guest"),
+      name: await resolvePublicDisplayName(requestUserId, "Guest"),
       avatar: String(body.avatar || body.avatarUri || "G"),
       status: "waiting",
       now,
@@ -845,7 +931,7 @@ export async function PATCH(req: Request) {
     if (text) {
       live.comments.unshift({
         id: `c_${now}_${Math.random().toString(16).slice(2)}`,
-        name: String(body.name || "Viewer"),
+        name: await resolvePublicDisplayName(a.userId, "Viewer"),
         text,
         userId: a.userId,
         createdAt: now,
@@ -854,17 +940,21 @@ export async function PATCH(req: Request) {
     }
   }
 
+  // Members' clients keep the server clock ticking, but only schedule drivers may change the
+  // schedule itself; a member's slots/version are ignored.
   if (action === "sync-slot-schedule") {
-    upsertSlotScheduleSnapshot(live, {
-      scheduleVersion: String(body.scheduleVersion || ""),
-      slots: body.slots,
-      nowMs: now,
-    });
+    if (canDrive) {
+      upsertSlotScheduleSnapshot(live, {
+        scheduleVersion: String(body.scheduleVersion || ""),
+        slots: body.slots,
+        nowMs: now,
+      });
+    }
     applyReconcileAndLog(live, now, "sync-slot-schedule");
   }
 
   if (action === "slot-transition-tick") {
-    if (body.scheduleVersion || body.slots) {
+    if (canDrive && (body.scheduleVersion || body.slots)) {
       upsertSlotScheduleSnapshot(live, {
         scheduleVersion: String(body.scheduleVersion || live?.slotSchedule?.scheduleVersion || ""),
         slots: body.slots ?? live?.slotSchedule?.slots,
@@ -875,7 +965,16 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "slot-transition-begin") {
-    const begin = beginSlotTransitionFromClient(live, body, now);
+    // Non-drivers cannot send a schedule or name an outgoing slot the server does not know.
+    const knownSlotIds = new Set(normalizeSlotScheduleEntries(live?.slotSchedule?.slots).map((slot) => slot.slotId));
+    const beginBody = canDrive
+      ? body
+      : {
+          incomingSlotId: String(body.incomingSlotId || ""),
+          outgoingSlotId: knownSlotIds.has(String(body.outgoingSlotId || "")) ? String(body.outgoingSlotId) : "",
+          boundaryTimestamp: Number(body.boundaryTimestamp || 0) || undefined,
+        };
+    const begin = beginSlotTransitionFromClient(live, beginBody, now);
     if (begin.created) {
       logSlotTransitionServer("KRISTO_SLOT_TRANSITION_START", live, {
         source: "slot-transition-begin",
@@ -904,7 +1003,8 @@ export async function PATCH(req: Request) {
         phase: body.phase,
         videoReady: body.videoReady === true,
         avatarFallback: body.avatarFallback === true,
-        role: body.role,
+        // incoming/outgoing/remote is derived from the transition, not taken from the body.
+        role: undefined,
       },
       now
     );
@@ -947,9 +1047,20 @@ export async function PATCH(req: Request) {
       scheduleCreatedByUserId: live.scheduleCreatedByUserId,
       mediaHostIds: live.mediaHostIds,
     }).isMediaOwnerHost;
-    const role = String(body.role || "").toLowerCase();
+    const requestedRole = String(body.role || "").toLowerCase();
+    const explicitlyEnded = !!live.endedAt && String(live.endedReason || "") !== "heartbeat-timeout";
+    const stageAllowed =
+      requestedRole === "stage" &&
+      (canDrive ||
+        // A live ended on purpose stays ended for everyone but schedule drivers.
+        (!explicitlyEnded &&
+          (isServerActiveSlotOwner(live, a.userId, now) || (await holdsClaimInSchedule()))));
+    if (requestedRole === "stage" && !stageAllowed) {
+      console.log("KRISTO_LIVE_STAGE_PRESENCE_REFUSED", { churchId: a.churchId, liveId: resolvedLiveId, userId: a.userId });
+    }
+    const role = requestedRole === "stage" && !stageAllowed ? "viewer" : requestedRole;
 
-    if (isLiveOwner || isPastor(a.role) || role === "stage") {
+    if (isLiveOwner || isPastor(a.role) || stageAllowed) {
       live.isLive = true;
       delete live.endedAt;
       delete live.endedReason;
@@ -982,7 +1093,7 @@ export async function PATCH(req: Request) {
       live.lastPresenceAt = now;
     }
 
-    if (body.scheduleVersion || body.slots) {
+    if (canDrive && (body.scheduleVersion || body.slots)) {
       upsertSlotScheduleSnapshot(live, {
         scheduleVersion: String(body.scheduleVersion || live?.slotSchedule?.scheduleVersion || ""),
         slots: body.slots ?? live?.slotSchedule?.slots,
