@@ -7581,6 +7581,16 @@ export default function MessageThreadScreen() {
           return false;
         }
 
+        // Church Members voice notes disappear at expiry even if a copy is still cached locally.
+        const voiceNoteExpiresAt = Number(message.expiresAt || 0);
+        if (
+          String(message.kind || "") === "voice_note" &&
+          voiceNoteExpiresAt > 0 &&
+          voiceNoteExpiresAt <= liveCountdownNow
+        ) {
+          return false;
+        }
+
         const hasAttachments =
           Array.isArray(
             message.attachments

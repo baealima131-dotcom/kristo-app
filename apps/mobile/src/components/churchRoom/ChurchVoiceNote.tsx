@@ -3,6 +3,7 @@ import { ActivityIndicator, Alert, Animated, Modal, Platform, Pressable, StyleSh
 import { Ionicons } from "@expo/vector-icons";
 import {
   RecordingPresets,
+  createAudioPlayer,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   useAudioPlayer,
@@ -17,6 +18,29 @@ export const CHURCH_VOICE_NOTE_MIME = Platform.OS === "ios" ? "audio/mp4" : "aud
 
 const GOLD = "#F5D780";
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Length of the recorded file itself, so the bubble shows the same duration before and after
+ * the audio loads. Falls back to the recording timer if the file cannot be read in time.
+ */
+async function recordedFileDurationMs(uri: string, fallbackMs: number) {
+  let player: ReturnType<typeof createAudioPlayer> | null = null;
+  try {
+    player = createAudioPlayer({ uri });
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const seconds = Number(player.duration || 0);
+      if (player.isLoaded && seconds > 0) return Math.round(seconds * 1000);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } catch {
+  } finally {
+    try {
+      player?.remove();
+    } catch {}
+  }
+  return fallbackMs;
+}
 
 function formatClock(ms: number) {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -92,7 +116,7 @@ export function ChurchVoiceNoteButton({
     async (send: boolean) => {
       if (autoStopRef.current) clearTimeout(autoStopRef.current);
       autoStopRef.current = null;
-      const durationMs = Math.min(
+      const timerMs = Math.min(
         CHURCH_VOICE_NOTE_MAX_MS,
         startedAtRef.current ? Date.now() - startedAtRef.current : Number(recorderState.durationMillis || 0)
       );
@@ -104,12 +128,13 @@ export function ChurchVoiceNoteButton({
       startedAtRef.current = 0;
       const uri = String(recorder.uri || "").trim();
       if (!send) return;
-      if (!uri || durationMs < 700) {
+      if (!uri || timerMs < 700) {
         Alert.alert("Voice note too short", "Hold on a little longer before sending.");
         return;
       }
       setSending(true);
       try {
+        const durationMs = Math.min(CHURCH_VOICE_NOTE_MAX_MS, await recordedFileDurationMs(uri, timerMs));
         await onSend(uri, durationMs, CHURCH_VOICE_NOTE_MIME);
       } catch (e: any) {
         Alert.alert("Voice note not sent", String(e?.message || "Please try again."));

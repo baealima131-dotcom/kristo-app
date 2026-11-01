@@ -1,4 +1,10 @@
 {
+  "crons": [
+    {
+      "path": "/api/cron/church-voice-notes",
+      "schedule": "0 * * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/.well-known/apple-app-site-association",

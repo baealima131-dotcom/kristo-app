@@ -5,10 +5,18 @@ import {
   getVideoStorageConfig,
   storageKeyFromPublicUrl,
 } from "@/app/api/_lib/media/objectStorage";
+import {
+  readRoomMessagesJsonFile,
+  writeRoomMessagesJsonFile,
+} from "@/app/api/_lib/store/roomMessageDb";
+
+/** Same store document the room-messages route reads and writes. */
+const ROOM_MESSAGES_STORE_FILE = "room-messages.json";
 
 /**
  * Church Members room (Church Live Control, roomId "church-media-room") policy:
  * - Voice notes expire 7 days after they are sent; the message and its audio file are deleted.
+ *   They are hidden from the expiry moment, and removed by an hourly cron (and on room access).
  * - Members see only the last 7 days of messages (server time). Older text messages are hidden
  *   from members, not deleted; leaders keep the full history. Live slot cards are schedule
  *   items, not chat history, so they are never hidden by this window.
@@ -109,4 +117,39 @@ export async function deleteVoiceNoteFiles(messages: any[]): Promise<Set<string>
     }
   }
   return done;
+}
+
+/**
+ * Background sweep (scheduled cron): deletes every expired Church Members voice note in all
+ * churches, files first, so voice notes go away on time even if nobody opens the room.
+ * The store is re-read just before writing so messages sent while files were being deleted
+ * are kept.
+ */
+export async function sweepExpiredChurchMembersVoiceNotes(nowMs = Date.now()) {
+  const roomSuffix = `::${CHURCH_MEMBERS_ROOM_ID}`;
+  const store = await readRoomMessagesJsonFile<Record<string, any[]>>(ROOM_MESSAGES_STORE_FILE, {});
+  const expired: any[] = [];
+  let rooms = 0;
+  for (const [key, rows] of Object.entries(store || {})) {
+    if (!key.endsWith(roomSuffix) || !Array.isArray(rows)) continue;
+    rooms += 1;
+    for (const m of rows) if (isExpiredVoiceNote(m, nowMs)) expired.push(m);
+  }
+  if (!expired.length) return { rooms, expired: 0, purged: 0, pendingRetry: 0 };
+
+  const deletedIds = await deleteVoiceNoteFiles(expired);
+  let purged = 0;
+  if (deletedIds.size) {
+    const fresh = await readRoomMessagesJsonFile<Record<string, any[]>>(ROOM_MESSAGES_STORE_FILE, {});
+    for (const [key, rows] of Object.entries(fresh || {})) {
+      if (!key.endsWith(roomSuffix) || !Array.isArray(rows)) continue;
+      const kept = rows.filter((m) => !(isVoiceNoteMessage(m) && deletedIds.has(String(m?.id || ""))));
+      purged += rows.length - kept.length;
+      fresh[key] = kept;
+    }
+    if (purged) await writeRoomMessagesJsonFile(ROOM_MESSAGES_STORE_FILE, fresh);
+  }
+  const result = { rooms, expired: expired.length, purged, pendingRetry: expired.length - deletedIds.size };
+  console.log("KRISTO_CHURCH_MEMBERS_VOICE_NOTES_SWEPT", result);
+  return result;
 }
