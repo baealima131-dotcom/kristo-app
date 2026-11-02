@@ -12,7 +12,6 @@ import {
   rejectMembership,
   requestMembership,
 } from "@/app/api/_lib/memberships";
-import { getProfileByUserCode } from "@/app/api/auth/_lib/profile";
 
 export const runtime = "nodejs";
 
@@ -54,24 +53,16 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const userId = h(req, "x-kristo-user-id");
-  if (!userId) return json({ ok: false, error: "userId missing" }, { status: 401 });
+  // The requester is the verified session user; x-kristo-user-id is not trusted.
+  const authOrRes = await guardAuth(req);
+  if (authOrRes instanceof NextResponse) return authOrRes;
+  const realUserId = String(authOrRes.viewer.userId || "").trim();
 
   const body = await req.json().catch(() => ({}));
   const churchId = String(body?.churchId || "").trim();
   const name = String(body?.name || body?.displayName || "").trim();
 
   if (!churchId) return json({ ok: false, error: "churchId missing" }, { status: 400 });
-
-  const profile = /^KR7-[A-Z0-9]{6,10}$/i.test(userId)
-    ? await getProfileByUserCode(userId)
-    : null;
-
-  const realUserId = String(
-    (profile as any)?.userId ||
-    (profile as any)?.id ||
-    userId
-  ).trim();
 
   const result = await requestMembership(realUserId, churchId, name || undefined);
   if (!result.ok) return json({ ok: false, error: result.error }, { status: 400 });

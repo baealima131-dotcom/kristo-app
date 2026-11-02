@@ -1,17 +1,17 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getChurchStoreDiagnostics } from "@/app/api/_lib/store/churchDb";
+import { getCheckoutViewer } from "@/app/api/_lib/auth";
 
 export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
-    const userId = String(
-      url.searchParams.get("userId") ||
-        req.headers.get("x-kristo-user-id") ||
-        ""
-    ).trim();
+    // Store health stays public; membership details only for the verified caller themself.
+    const viewer = await getCheckoutViewer(req);
+    const requestedUserId = String(url.searchParams.get("userId") || viewer.userId || "").trim();
+    const userId = viewer.userId && requestedUserId === viewer.userId ? viewer.userId : "";
     const churchId = String(
       url.searchParams.get("churchId") ||
         req.headers.get("x-kristo-church-id") ||

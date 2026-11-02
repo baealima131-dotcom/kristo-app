@@ -4,23 +4,14 @@ import { ensureProfileDraft, getProfile } from "@/app/api/auth/_lib/profile";
 
 export const runtime = "nodejs";
 
-async function resolveAuthedUser(req: Request) {
-  const headerUserId = String(req.headers.get("x-kristo-user-id") || "").trim();
-  if (!headerUserId) return null;
-  return getUserById(headerUserId);
-}
-
 export async function GET(req: Request) {
   await seedUserIfMissing();
 
+  // Verified session only (signed token or server cookie); x-kristo-user-id alone is not enough.
   const sess = await readSession(req);
-  let u = sess ? await getUserById(sess.userId) : null;
+  const u = sess ? await getUserById(sess.userId) : null;
 
   if (sess?.id) await touchSession(sess.id);
-
-  if (!u) {
-    u = await resolveAuthedUser(req);
-  }
 
   if (!u) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 

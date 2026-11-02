@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { guard } from "@/app/api/_lib/rbac";
+import { listMinistryMemberUserIds } from "@/app/api/_lib/ministryAuthority";
+import { createNotification } from "@/app/api/_lib/notifications";
 type MinistryAnnouncement = {
   id: string;
   churchId: string;
@@ -112,66 +114,38 @@ async function fanoutAnnouncementNotifications(
     announcementId: string;
   }
 ) {
+  // Direct store calls instead of HTTP calls to our own API that impersonated the author with
+  // x-kristo-* headers (those relied on the closed Stage-1 header session; the POST target did
+  // not even exist, so no notification was ever delivered).
+  void req;
   try {
     const { ministryId, churchId, title, body, createdByUserId, announcementId } = args;
-    const origin = new URL(req.url).origin;
-    const res = await fetch(
-      `${origin}/api/church/ministry-members?ministryId=${encodeURIComponent(ministryId)}&all=1`,
-      {
-        method: "GET",
-        headers: {
-          "x-kristo-user-id": createdByUserId,
-          "x-kristo-role": "Church_Admin",
-          "x-kristo-church-id": churchId,
-          accept: "application/json",
-        },
-        cache: "no-store",
-      }
+    const targets = (await listMinistryMemberUserIds(churchId, ministryId)).filter(
+      (uid) => uid && uid !== createdByUserId
     );
-    const j = await res.json().catch(() => ({}));
-    const allMembers = Array.isArray(j?.data) ? j.data : [];
-    const targets = allMembers
-      .filter((m: any) => String(m?.ministryId || "") === ministryId)
-      .map((m: any) => String(m?.userId || ""))
-      .filter(Boolean)
-      .filter((uid: any) => uid !== createdByUserId);
-    console.warn('[fanout] members total:', allMembers.length);
-    console.warn('[fanout] targets:', targets);
     const results = await Promise.all(
-      targets.map(async (uid: any) => {
+      targets.map(async (uid) => {
         try {
-          const r2 = await fetch(`${origin}/api/church/notifications`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-kristo-user-id": createdByUserId,
-              "x-kristo-role": "Church_Admin",
-              "x-kristo-church-id": churchId,
-              accept: "application/json",
-            },
-            cache: "no-store",
-            body: JSON.stringify({
-              targetUserId: uid,
-              type: "MinistryAnnouncement",
-              title,
-              message: body,
-              ministryId,
-              meta: { ministryId, announcementId },
-            }),
+          await createNotification({
+            churchId,
+            targetUserId: uid,
+            type: "MinistryAnnouncement",
+            title,
+            message: body,
+            ministryId,
+            actorUserId: createdByUserId,
           });
-          if (!r2.ok) {
-            const t = await r2.text().catch(() => "");
-            console.warn("[fanout] notif failed", uid, r2.status, t.slice(0, 400));
-            return { uid, ok: false, status: r2.status };
-          }
-          return { uid, ok: true, status: r2.status };
+          return true;
         } catch (e: any) {
-          console.warn("[fanout] notif exception", uid, e?.message || e);
-          return { uid, ok: false, status: 0 };
+          console.warn("[fanout] notif exception", { announcementId, error: String(e?.message || e) });
+          return false;
         }
       })
     );
-    const okCount = results.filter((x) => x.ok).length;
-    console.warn("[fanout] notif sent ok:", okCount, "of", results.length);
+    console.log("[fanout] ministry announcement notifications", {
+      announcementId,
+      sent: results.filter(Boolean).length,
+      of: results.length,
+    });
   } catch {}
 }

@@ -15,7 +15,10 @@ export type VerifiedChurchActor = {
  * x-kristo-user-id: unlike guard()/getViewer, there is no header-session fallback.
  * Safety enforcement (ban/suspend/restrict) applies.
  */
-export async function resolveVerifiedUserId(req: Request): Promise<string | NextResponse> {
+export async function resolveVerifiedUserId(
+  req: Request,
+  opts?: { safetyMethod?: string }
+): Promise<string | NextResponse> {
   const viewer = await getCheckoutViewer(req as any);
   const userId = String(viewer.userId || "").trim();
   if (!userId) {
@@ -24,7 +27,8 @@ export async function resolveVerifiedUserId(req: Request): Promise<string | Next
       { status: 401 }
     );
   }
-  const safetyBlocked = await assertSafetyEnforcementAllows(userId, req.method);
+  // safetyMethod lets a read-only use of a POST route (e.g. a view-only token) be checked as a read.
+  const safetyBlocked = await assertSafetyEnforcementAllows(userId, opts?.safetyMethod || req.method);
   if (safetyBlocked) return safetyBlocked;
   return userId;
 }
@@ -35,9 +39,10 @@ export async function resolveVerifiedUserId(req: Request): Promise<string | Next
  */
 export async function resolveVerifiedChurchActor(
   req: Request,
-  logTag: string
+  logTag: string,
+  opts?: { safetyMethod?: string }
 ): Promise<VerifiedChurchActor | NextResponse> {
-  const userIdOrRes = await resolveVerifiedUserId(req);
+  const userIdOrRes = await resolveVerifiedUserId(req, opts);
   if (userIdOrRes instanceof NextResponse) return userIdOrRes;
   const userId = userIdOrRes;
 

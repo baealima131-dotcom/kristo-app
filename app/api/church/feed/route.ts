@@ -2834,7 +2834,7 @@ async function handleFeedGet(
     logCommentStoreEvent({ op: "read", count: 0, detail: "feed-get-start" });
 
     const ctxOrRes = await guardAuth(req);
-    if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
+    if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
     const ctx = ctxOrRes as any;
     const headerChurchId = String(ctx?.viewer?.churchId || "").trim();
@@ -2870,7 +2870,7 @@ async function handleFeedGet(
 
     if (storageMode === "media" || storageMode === "church") {
       const membershipOrRes = await guard(req);
-      if ("ok" in (membershipOrRes as any) === false && membershipOrRes instanceof NextResponse) {
+      if (membershipOrRes instanceof NextResponse) {
         return membershipOrRes;
       }
 
@@ -3314,7 +3314,7 @@ export async function POST(req: NextRequest) {
   const action = String(body?.action || "").trim();
   if (action === "clear_media_schedule_slots") {
     const ctxOrRes = await guard(req);
-    if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) {
+    if (ctxOrRes instanceof NextResponse) {
       return ctxOrRes;
     }
     const a = ctxOrRes as any;
@@ -3521,7 +3521,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     action === "toggle_like" || action === "record_view"
       ? await guardAuth(req)
       : await guard(req);
-  if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
+  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const ctx = ctxOrRes as any;
   const churchId =

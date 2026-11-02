@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { getViewer } from "@/app/api/_lib/auth";
+import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
 import {
   MY_WAY_SETTINGS_STORE_KEY,
   readCoreJsonFile,
@@ -86,7 +87,15 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const viewer = await getViewer(req);
+  // Changing the shared My Way settings needs a verified session; once an owner is set, only
+  // that owner may change them (previously anyone, even signed out, could).
+  const userIdOrRes = await resolveVerifiedUserId(req);
+  if (userIdOrRes instanceof NextResponse) return userIdOrRes;
+  const viewer = { userId: userIdOrRes };
+  const currentOwner = String(normalizeSettings(await readSettings()).ownerUserId || "").trim();
+  if (currentOwner && currentOwner !== viewer.userId) {
+    return json({ ok: false, error: "Forbidden" }, { status: 403 });
+  }
   const body = await req.json().catch(() => ({} as Partial<MyWaySettingsRecord>));
 
   const data = await updateCoreJsonFile<Partial<MyWaySettingsRecord>>(

@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getViewer } from "@/app/api/_lib/auth";
+import { resolveVerifiedChurchActor } from "@/app/api/_lib/verifiedChurchActor";
 
 export const runtime = "nodejs";
 
@@ -29,9 +29,16 @@ function canPost(role: string) {
   return role === "Church_Admin" || role === "Pastor" || role === "System_Admin";
 }
 
+// Church scope and role come from the verified session + active membership, not x-kristo-* headers.
+async function viewer(req: NextRequest) {
+  const actor = await resolveVerifiedChurchActor(req, "church-announcements");
+  if (actor instanceof NextResponse) return actor;
+  return { userId: actor.userId, churchId: actor.churchId, role: actor.churchRole };
+}
+
 export async function GET(req: NextRequest) {
-  const v = await getViewer(req);
-  if (!v?.churchId) return json<Err>({ ok: false, error: "No church scope" }, 401);
+  const v = await viewer(req);
+  if (v instanceof NextResponse) return v;
 
   const items = store()
     .filter((a) => a.churchId === v.churchId)
@@ -41,8 +48,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const v = await getViewer(req);
-  if (!v?.churchId) return json<Err>({ ok: false, error: "No church scope" }, 401);
+  const v = await viewer(req);
+  if (v instanceof NextResponse) return v;
   if (!canPost(v.role)) return json<Err>({ ok: false, error: "Forbidden" }, 403);
 
   let body: any = null;
