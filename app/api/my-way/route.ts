@@ -80,20 +80,12 @@ async function readSettings(): Promise<MyWaySettingsRecord> {
   return normalizeSettings(raw);
 }
 
-/** Owner set explicitly in configuration (server env). Empty when not configured. */
-function configuredMyWayOwnerUserId() {
-  return String(process.env.KRISTO_MY_WAY_OWNER_USER_ID || "").trim();
-}
-
 /**
- * Who may change the system-wide My Way settings: a verified System_Admin (platform role
- * store) or the owner configured in KRISTO_MY_WAY_OWNER_USER_ID. A stored ownerUserId and
- * "first user to save" grant nothing.
+ * Only a verified System_Admin (platform role store) may change the system-wide My Way
+ * settings. A stored ownerUserId and "first user to save" grant nothing.
  */
-async function myWaySettingsAuthority(userId: string) {
-  const isSystemAdmin = (await getPlatformRole(userId).catch(() => null)) === "System_Admin";
-  const configuredOwner = configuredMyWayOwnerUserId();
-  return { isSystemAdmin, configuredOwner, allowed: isSystemAdmin || (!!configuredOwner && configuredOwner === userId) };
+async function isMyWaySystemAdmin(userId: string) {
+  return (await getPlatformRole(userId).catch(() => null)) === "System_Admin";
 }
 
 export async function GET(req: NextRequest) {
@@ -108,18 +100,14 @@ export async function PATCH(req: NextRequest) {
   const userIdOrRes = await resolveVerifiedUserId(req);
   if (userIdOrRes instanceof NextResponse) return userIdOrRes;
   const viewer = { userId: userIdOrRes };
-  const authority = await myWaySettingsAuthority(viewer.userId);
-  if (!authority.allowed) {
-    const ownerUnknown = !authority.configuredOwner;
-    console.log("KRISTO_MY_WAY_SETTINGS_PATCH_DENIED", { userId: viewer.userId, ownerConfigured: !ownerUnknown });
+  if (!(await isMyWaySystemAdmin(viewer.userId))) {
+    console.log("KRISTO_MY_WAY_SETTINGS_PATCH_DENIED", { userId: viewer.userId });
     return json(
-      ownerUnknown
-        ? {
-            ok: false,
-            error: "My Way owner is not configured. Only a System_Admin may change these settings.",
-            code: "MY_WAY_OWNER_NOT_CONFIGURED",
-          }
-        : { ok: false, error: "Forbidden" },
+      {
+        ok: false,
+        error: "Only a System_Admin may change My Way settings.",
+        code: "MY_WAY_SYSTEM_ADMIN_REQUIRED",
+      },
       { status: 403 }
     );
   }
@@ -137,15 +125,13 @@ export async function PATCH(req: NextRequest) {
       return normalizeSettings({
         ...base,
         ...body,
-        // The owner is configuration, not something a save can claim; only a System_Admin may
-        // record a different owner here (informational: authority comes from the env/role).
+        // Informational only (set by a System_Admin); authority comes from the platform role.
         ownerUserId:
-          authority.configuredOwner ||
-          (authority.isSystemAdmin && body.ownerUserId !== undefined
+          body.ownerUserId !== undefined
             ? body.ownerUserId
               ? String(body.ownerUserId).trim()
               : null
-            : base.ownerUserId),
+            : base.ownerUserId,
         agentCommand: body.agentCommand
           ? String(body.agentCommand).trim().toUpperCase()
           : base.agentCommand,

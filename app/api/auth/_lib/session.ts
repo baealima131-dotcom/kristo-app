@@ -527,6 +527,21 @@ export async function readCookieSessionUserId(): Promise<string> {
   }
 }
 
+/** Logout: drop the server cookie session itself, not only the browser cookie. */
+export async function destroyCookieSession(): Promise<boolean> {
+  try {
+    const jar = await cookies();
+    const sid = jar.get(SESSION_COOKIE)?.value || "";
+    if (!sid) return false;
+    const store = sessStore();
+    if (!store[sid]) return false;
+    delete store[sid];
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function touchSession(sessionId: string) {
   const store = sessStore();
   const s = store[sessionId];
