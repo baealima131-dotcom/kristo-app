@@ -24,7 +24,8 @@ async function resolveRealUserId(headerUserId: string): Promise<string> {
 export async function POST(req: NextRequest) {
   logAuthRequestDiag(req, "delete-account-precheck");
   const auth = resolveRequestUserId(req);
-  if (!auth.userId) {
+  // Deleting an account needs a verified session token, even where raw dev headers are trusted.
+  if (!auth.userId || auth.via === "dev-header") {
     return json({ ok: false, error: "Not signed in." }, { status: 401 });
   }
 

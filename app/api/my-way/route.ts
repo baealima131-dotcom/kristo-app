@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { getViewer } from "@/app/api/_lib/auth";
 import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
+import { getPlatformRole } from "@/app/api/_lib/platformRoles";
 import {
   MY_WAY_SETTINGS_STORE_KEY,
   readCoreJsonFile,
@@ -80,21 +80,48 @@ async function readSettings(): Promise<MyWaySettingsRecord> {
   return normalizeSettings(raw);
 }
 
+/** Owner set explicitly in configuration (server env). Empty when not configured. */
+function configuredMyWayOwnerUserId() {
+  return String(process.env.KRISTO_MY_WAY_OWNER_USER_ID || "").trim();
+}
+
+/**
+ * Who may change the system-wide My Way settings: a verified System_Admin (platform role
+ * store) or the owner configured in KRISTO_MY_WAY_OWNER_USER_ID. A stored ownerUserId and
+ * "first user to save" grant nothing.
+ */
+async function myWaySettingsAuthority(userId: string) {
+  const isSystemAdmin = (await getPlatformRole(userId).catch(() => null)) === "System_Admin";
+  const configuredOwner = configuredMyWayOwnerUserId();
+  return { isSystemAdmin, configuredOwner, allowed: isSystemAdmin || (!!configuredOwner && configuredOwner === userId) };
+}
+
 export async function GET(req: NextRequest) {
-  await getViewer(req);
+  // Settings include the agent command codes: signed-in (verified) users only.
+  const userIdOrRes = await resolveVerifiedUserId(req);
+  if (userIdOrRes instanceof NextResponse) return userIdOrRes;
   const data = await readSettings();
   return json({ ok: true, data });
 }
 
 export async function PATCH(req: NextRequest) {
-  // Changing the shared My Way settings needs a verified session; once an owner is set, only
-  // that owner may change them (previously anyone, even signed out, could).
   const userIdOrRes = await resolveVerifiedUserId(req);
   if (userIdOrRes instanceof NextResponse) return userIdOrRes;
   const viewer = { userId: userIdOrRes };
-  const currentOwner = String(normalizeSettings(await readSettings()).ownerUserId || "").trim();
-  if (currentOwner && currentOwner !== viewer.userId) {
-    return json({ ok: false, error: "Forbidden" }, { status: 403 });
+  const authority = await myWaySettingsAuthority(viewer.userId);
+  if (!authority.allowed) {
+    const ownerUnknown = !authority.configuredOwner;
+    console.log("KRISTO_MY_WAY_SETTINGS_PATCH_DENIED", { userId: viewer.userId, ownerConfigured: !ownerUnknown });
+    return json(
+      ownerUnknown
+        ? {
+            ok: false,
+            error: "My Way owner is not configured. Only a System_Admin may change these settings.",
+            code: "MY_WAY_OWNER_NOT_CONFIGURED",
+          }
+        : { ok: false, error: "Forbidden" },
+      { status: 403 }
+    );
   }
   const body = await req.json().catch(() => ({} as Partial<MyWaySettingsRecord>));
 
@@ -110,12 +137,15 @@ export async function PATCH(req: NextRequest) {
       return normalizeSettings({
         ...base,
         ...body,
+        // The owner is configuration, not something a save can claim; only a System_Admin may
+        // record a different owner here (informational: authority comes from the env/role).
         ownerUserId:
-          body.ownerUserId !== undefined
+          authority.configuredOwner ||
+          (authority.isSystemAdmin && body.ownerUserId !== undefined
             ? body.ownerUserId
               ? String(body.ownerUserId).trim()
               : null
-            : base.ownerUserId || (viewer.userId ? String(viewer.userId) : null),
+            : base.ownerUserId),
         agentCommand: body.agentCommand
           ? String(body.agentCommand).trim().toUpperCase()
           : base.agentCommand,

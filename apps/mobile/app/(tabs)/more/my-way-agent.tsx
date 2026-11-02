@@ -1,4 +1,5 @@
 import { Image } from "react-native";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { useFonts, Cinzel_700Bold } from "@expo-google-fonts/cinzel";
 import MyWayVoice from "@/components/MyWayVoice";
 import MyWayWorkspace from "@/components/MyWayWorkspace";
@@ -40,9 +41,8 @@ function buildHeaders() {
     "content-type": "application/json",
   };
 
-  if (auth?.userId) headers["x-kristo-user-id"] = auth.userId;
-  if (auth?.role) headers["x-kristo-role"] = auth.role;
-  if (auth?.churchId) headers["x-kristo-church-id"] = auth.churchId;
+  // Signed session token + identity; the backend no longer accepts x-kristo-user-id alone.
+  if (auth?.userId) Object.assign(headers, getKristoHeaders() as Record<string, string>);
   return headers;
 }
 

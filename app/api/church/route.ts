@@ -6,6 +6,17 @@ import crypto from "crypto";
 
 export const runtime = "nodejs";
 
+/**
+ * Demo prototype backed by a local JSON file, with no sign-in or ownership checks. Only
+ * available in local development; elsewhere it answers 404.
+ */
+function demoStoreUnavailable() {
+  if (process.env.NODE_ENV !== "development") {
+    return NextResponse.json({ ok: false, error: "Not available." }, { status: 404 });
+  }
+  return null;
+}
+
 /* =========================
    TYPES
    ========================= */
@@ -341,6 +352,8 @@ function enrichMinistry(db: ChurchDB, min: Ministry) {
    ========================= */
 
 export async function GET(req: Request) {
+  const unavailable = demoStoreUnavailable();
+  if (unavailable) return unavailable;
   const url = new URL(req.url);
   const action = str(url.searchParams.get("action"));
 
@@ -424,6 +437,8 @@ export async function GET(req: Request) {
    ========================= */
 
 export async function POST(req: Request) {
+  const unavailable = demoStoreUnavailable();
+  if (unavailable) return unavailable;
   const contentType = req.headers.get("content-type") || "";
   if (!contentType.toLowerCase().includes("application/json")) {
     return bad("Expected application/json", 415);

@@ -14,7 +14,7 @@ import {
   TextInput,
 } from "react-native";
 import { Stack, useRouter, router, useLocalSearchParams } from "expo-router";
-import { buildKristoRequestHeaders, getKristoAuth } from "@/src/lib/kristoHeaders";
+import { buildKristoRequestHeaders, getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
@@ -893,9 +893,12 @@ function FeedCard({
       const r = await fetch(`${base}/api/church/feed?id=${encodeURIComponent(String(item.id))}`, {
         headers: {
           accept: "application/json",
-          "x-kristo-user-id": effectiveAuthUserId,
-          "x-kristo-role": effectiveAuthRole,
-          "x-kristo-church-id": activeChurchId,
+          // Signed session token + identity; the backend no longer accepts x-kristo-user-id alone.
+          ...(getKristoHeaders({
+            userId: effectiveAuthUserId,
+            role: effectiveAuthRole as any,
+            churchId: activeChurchId,
+          }) as Record<string, string>),
         },
       });
 
@@ -948,9 +951,12 @@ if (!text) return;
         headers: {
           "content-type": "application/json",
           accept: "application/json",
-          "x-kristo-user-id": effectiveAuthUserId,
-          "x-kristo-role": effectiveAuthRole,
-          "x-kristo-church-id": activeChurchId,
+          // Signed session token + identity; the backend no longer accepts x-kristo-user-id alone.
+          ...(getKristoHeaders({
+            userId: effectiveAuthUserId,
+            role: effectiveAuthRole as any,
+            churchId: activeChurchId,
+          }) as Record<string, string>),
         },
         body: JSON.stringify(body),
       });

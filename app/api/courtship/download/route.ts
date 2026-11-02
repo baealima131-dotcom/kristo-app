@@ -3,6 +3,17 @@ import path from "path";
 
 export const runtime = "nodejs"; // ✅ fs works only in node runtime
 
+/**
+ * Demo prototype backed by a local JSON file, with no sign-in or ownership checks. Only
+ * available in local development; elsewhere it answers 404.
+ */
+function demoStoreUnavailable() {
+  if (process.env.NODE_ENV !== "development") {
+    return Response.json({ ok: false, error: "Not available." }, { status: 404 });
+  }
+  return null;
+}
+
 type FileMeta = {
   id: string;
   name: string;
@@ -54,6 +65,8 @@ function contentDisposition(name: string, download: boolean) {
 }
 
 export async function GET(req: Request) {
+  const unavailable = demoStoreUnavailable();
+  if (unavailable) return unavailable;
   const url = new URL(req.url);
   const fileId = url.searchParams.get("fileId") || "";
   const download = url.searchParams.get("download") === "1";

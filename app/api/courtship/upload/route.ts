@@ -4,6 +4,17 @@ import path from "path";
 
 export const runtime = "nodejs"; // ✅ fs needs node runtime
 
+/**
+ * Demo prototype backed by a local JSON file, with no sign-in or ownership checks. Only
+ * available in local development; elsewhere it answers 404.
+ */
+function demoStoreUnavailable() {
+  if (process.env.NODE_ENV !== "development") {
+    return NextResponse.json({ ok: false, error: "Not available." }, { status: 404 });
+  }
+  return null;
+}
+
 type ChatSender = "Sender" | "Receiver" | "Pastor";
 
 type AttachmentMeta = {
@@ -103,6 +114,8 @@ function buildFileUrl(req: Request, fileId: string) {
 const ALL_SENDERS: ChatSender[] = ["Sender", "Receiver", "Pastor"];
 
 export async function POST(req: Request) {
+  const unavailable = demoStoreUnavailable();
+  if (unavailable) return unavailable;
   const db = safeReadDB();
 
   const form = await req.formData();

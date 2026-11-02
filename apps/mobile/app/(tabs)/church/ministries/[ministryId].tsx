@@ -169,11 +169,10 @@ export default function ChurchMinistryDetailsScreen() {
     return false;
   }
 
+  // Includes the signed session token; the backend no longer accepts x-kristo-user-id alone.
   const getHeaders = () => ({
     accept: "application/json",
-    "x-kristo-user-id": effectiveAuthUserId,
-    "x-kristo-role": "Church_Admin",
-    "x-kristo-church-id": churchId,
+    ...(getKristoHeaders({ userId: effectiveAuthUserId, churchId }) as Record<string, string>),
   });
 
   const [item, setItem] = useState<Ministry | null>(null);

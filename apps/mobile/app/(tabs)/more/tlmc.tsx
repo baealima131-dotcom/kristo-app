@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   DEFAULT_AGENT_COMMAND,
@@ -150,9 +151,8 @@ function buildHeaders() {
     "content-type": "application/json",
   };
 
-  if (auth?.userId) headers["x-kristo-user-id"] = auth.userId;
-  if (auth?.role) headers["x-kristo-role"] = auth.role;
-  if (auth?.churchId) headers["x-kristo-church-id"] = auth.churchId;
+  // Signed session token + identity; the backend no longer accepts x-kristo-user-id alone.
+  if (auth?.userId) Object.assign(headers, getKristoHeaders() as Record<string, string>);
   if (authAny?.fullName || authAny?.displayName || authAny?.name) {
     headers["x-kristo-user-name"] =
       String(authAny.fullName || authAny.displayName || authAny.name || "").trim();

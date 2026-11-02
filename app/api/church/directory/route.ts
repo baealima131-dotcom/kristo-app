@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getChurchById, upsertChurchProfile } from "@/app/api/_lib/churches";
-import { addActiveMember } from "@/app/api/_lib/memberships";
+import { addActiveMember, getActiveMembership, isApproverForChurch } from "@/app/api/_lib/memberships";
+import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
 import { getChurchStoreDiagnostics, isChurchDatabaseError } from "@/app/api/_lib/store/churchDb";
 
 function json(data: any, init?: ResponseInit) {
@@ -19,6 +20,12 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  // Registering a church makes the caller its Pastor, and updating one rewrites its public
+  // profile: verified session only. Previously anyone could overwrite any church or make any
+  // pastorId the Pastor of it.
+  const userIdOrRes = await resolveVerifiedUserId(req);
+  if (userIdOrRes instanceof NextResponse) return userIdOrRes;
+  const userId = userIdOrRes;
   try {
     const body = await req.json().catch(() => ({}));
     const id = String(body?.churchId || body?.id || "").trim().toUpperCase();
@@ -26,6 +33,30 @@ export async function POST(req: NextRequest) {
 
     if (!id) return json({ ok: false, error: "churchId missing" }, { status: 400 });
     if (!name) return json({ ok: false, error: "name missing" }, { status: 400 });
+
+    const claimedPastorId = String(body?.pastorId || "").trim();
+    if (claimedPastorId && claimedPastorId !== userId) {
+      console.log("KRISTO_CHURCH_DIRECTORY_DENIED", { userId, churchId: id, reason: "pastor_mismatch" });
+      return json({ ok: false, error: "Forbidden" }, { status: 403 });
+    }
+
+    // An existing church may only be updated by its Pastor / Church_Admin; a new one is
+    // registered for a caller who is not already an active member somewhere.
+    const existing = await getChurchById(id);
+    if (existing) {
+      if (!(await isApproverForChurch(userId, id))) {
+        console.log("KRISTO_CHURCH_DIRECTORY_DENIED", { userId, churchId: id, reason: "not_church_admin" });
+        return json({ ok: false, error: "Forbidden" }, { status: 403 });
+      }
+    } else {
+      const active = await getActiveMembership(userId);
+      if (active?.churchId) {
+        return json(
+          { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` },
+          { status: 409 }
+        );
+      }
+    }
 
     const saved = await upsertChurchProfile({
       id,
@@ -38,7 +69,7 @@ export async function POST(req: NextRequest) {
       pastorName: body?.pastorName,
     });
 
-    const pastorId = String(body?.pastorId || "").trim();
+    const pastorId = existing ? "" : userId;
     let membership: any = null;
     if (pastorId) {
       const r = await addActiveMember(id, pastorId, body?.pastorName || "Pastor", "Pastor");
