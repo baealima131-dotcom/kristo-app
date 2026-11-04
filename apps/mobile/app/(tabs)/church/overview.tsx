@@ -1359,16 +1359,15 @@ setMediaTargets(
 
             {/* Church picture large on the left; name, verification, pastor, address and phone on the right. */}
             <View style={s.profileTop}>
-              <View style={s.profileAvatarRing}>
-                <View style={s.profileAvatarHalo} pointerEvents="none" />
+              <View style={s.profilePhotoFrame}>
                 {profile.avatarUri ? (
                   <Image
                     source={{ uri: avatarCacheBust(profile.avatarUri, profile.avatarUpdatedAt) }}
-                    style={s.profileAvatar}
+                    style={s.profilePhoto}
                     resizeMode="cover"
                   />
                 ) : (
-                  <View style={s.profileIcon}>
+                  <View style={s.profilePhotoEmpty}>
                     <Ionicons name="business-outline" size={46} color={GOLD} />
                   </View>
                 )}
@@ -1910,6 +1909,9 @@ const s = StyleSheet.create<any>({
     fontWeight: "800",
     letterSpacing: 0.12,
     lineHeight: 32,
+    textShadowColor: "rgba(217,179,95,0.45)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
   },
   heroIdentityRow: {
     flexDirection: "row",
@@ -1979,14 +1981,11 @@ const s = StyleSheet.create<any>({
     marginTop: 0,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.28)",
+    borderColor: "rgba(217,179,95,0.62)",
     backgroundColor: "rgba(8,14,24,0.72)",
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 8,
+    elevation: 0,
+    boxShadow: "0 0 16px rgba(217,179,95,0.42), inset 0 0 14px rgba(217,179,95,0.14)",
   },
   profileSheen: {
     position: "absolute",
@@ -1998,46 +1997,8 @@ const s = StyleSheet.create<any>({
 
   profileTop: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "stretch",
     gap: 14,
-    paddingVertical: 6,
-  },
-
-  profileAvatarRing: {
-    width: 128,
-    height: 128,
-    borderRadius: 64,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    borderColor: "rgba(217,179,95,0.85)",
-    backgroundColor: "rgba(217,179,95,0.06)",
-  },
-  profileAvatarHalo: {
-    position: "absolute",
-    width: 148,
-    height: 148,
-    borderRadius: 74,
-    backgroundColor: "rgba(217,179,95,0.10)",
-  },
-
-  profileAvatar: {
-    width: 116,
-    height: 116,
-    borderRadius: 58,
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.55)",
-  },
-
-  profileIcon: {
-    width: 116,
-    height: 116,
-    borderRadius: 58,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.24)",
   },
 
   profileEditBtn: {
@@ -2055,9 +2016,32 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(217,179,95,0.24)",
   },
 
+  // Church profile picture: large rectangle filling the left side of the main card.
+  profilePhotoFrame: {
+    width: "42%",
+    minHeight: 220,
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.75)",
+    backgroundColor: "rgba(217,179,95,0.06)",
+    boxShadow: "0 0 14px rgba(217,179,95,0.45)",
+  },
+  profilePhoto: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+  },
+  profilePhotoEmpty: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   profileDetails: {
     flex: 1,
     minWidth: 0,
+    justifyContent: "center",
+    paddingVertical: 4,
   },
   profileTitleWrap: {
     paddingRight: 34,
@@ -2070,6 +2054,9 @@ const s = StyleSheet.create<any>({
     marginBottom: 5,
     textTransform: "uppercase",
     letterSpacing: 1.1,
+    textShadowColor: "rgba(217,179,95,0.60)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
 
   profileChurch: {
@@ -2078,6 +2065,9 @@ const s = StyleSheet.create<any>({
     fontWeight: "900",
     lineHeight: 25,
     letterSpacing: 0.2,
+    textShadowColor: "rgba(217,179,95,0.40)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
   },
   profileVerifiedRow: {
     flexDirection: "row",
@@ -2135,6 +2125,9 @@ const s = StyleSheet.create<any>({
     letterSpacing: 0.7,
     textTransform: "uppercase",
     marginBottom: 2,
+    textShadowColor: "rgba(217,179,95,0.50)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
 
   profileInfoValue: {
@@ -2245,39 +2238,27 @@ const s = StyleSheet.create<any>({
 
   statCardBlue: {
     backgroundColor: "rgba(8,16,32,0.94)",
-    borderColor: "rgba(72,140,255,0.28)",
-    shadowColor: "#4A90FF",
-    shadowOpacity: 0.22,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
+    borderColor: "rgba(96,156,255,0.62)",
+    elevation: 0,
+    boxShadow: "0 0 14px rgba(74,144,255,0.42), inset 0 0 12px rgba(74,144,255,0.14)",
   },
   statCardGoldGlow: {
     backgroundColor: "rgba(14,12,8,0.94)",
-    borderColor: "rgba(217,179,95,0.30)",
-    shadowColor: GOLD,
-    shadowOpacity: 0.2,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
+    borderColor: "rgba(217,179,95,0.60)",
+    elevation: 0,
+    boxShadow: "0 0 14px rgba(217,179,95,0.40), inset 0 0 12px rgba(217,179,95,0.14)",
   },
   statCardPurple: {
     backgroundColor: "rgba(12,10,22,0.94)",
-    borderColor: "rgba(168,120,255,0.30)",
-    shadowColor: "#A878FF",
-    shadowOpacity: 0.22,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
+    borderColor: "rgba(176,132,255,0.62)",
+    elevation: 0,
+    boxShadow: "0 0 14px rgba(168,120,255,0.42), inset 0 0 12px rgba(168,120,255,0.14)",
   },
   statCardAction: {
     backgroundColor: "rgba(16,14,8,0.95)",
-    borderColor: "rgba(217,179,95,0.38)",
-    shadowColor: GOLD,
-    shadowOpacity: 0.28,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
+    borderColor: "rgba(217,179,95,0.62)",
+    elevation: 0,
+    boxShadow: "0 0 14px rgba(217,179,95,0.42), inset 0 0 12px rgba(217,179,95,0.14)",
   },
   statCardPremiumLocked: {
     backgroundColor: "rgba(10,12,18,0.96)",
@@ -2340,6 +2321,9 @@ const s = StyleSheet.create<any>({
     lineHeight: 38,
     fontWeight: "900",
     letterSpacing: 0.2,
+    textShadowColor: "rgba(255,255,255,0.28)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   statValueGold: { color: GOLD },
   statValueLocked: { fontSize: 24, lineHeight: 28, opacity: 0.82 },
@@ -2369,13 +2353,10 @@ const s = StyleSheet.create<any>({
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.34)",
+    borderColor: "rgba(217,179,95,0.55)",
     overflow: "hidden",
-    shadowColor: GOLD,
-    shadowOpacity: 0.24,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
+    elevation: 0,
+    boxShadow: "0 0 16px rgba(217,179,95,0.42), inset 0 0 14px rgba(217,179,95,0.14)",
   },
   powerAmbientGlow: {
     position: "absolute",
@@ -2387,7 +2368,8 @@ const s = StyleSheet.create<any>({
     backgroundColor: "rgba(217,179,95,0.12)",
   },
   memberAccessCard: {
-    borderColor: "rgba(86,139,255,0.34)",
+    borderColor: "rgba(110,160,255,0.70)",
+    boxShadow: "0 0 16px rgba(86,139,255,0.48), inset 0 0 14px rgba(86,139,255,0.16)",
   },
   memberAccessGlow: {
     position: "absolute",
@@ -2412,6 +2394,9 @@ const s = StyleSheet.create<any>({
     letterSpacing: 1,
     textTransform: "uppercase",
     marginBottom: 2,
+    textShadowColor: "rgba(86,139,255,0.70)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   memberAccessBtnText: {
     color: "#8FB5FF",
@@ -2470,6 +2455,9 @@ const s = StyleSheet.create<any>({
     fontWeight: "900",
     letterSpacing: 0.2,
     lineHeight: 20,
+    textShadowColor: "rgba(255,255,255,0.22)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
   powerActions: {
     flexDirection: "row",
