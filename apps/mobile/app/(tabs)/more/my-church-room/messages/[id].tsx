@@ -6707,6 +6707,22 @@ function MenuRow({
   );
 }
 
+/**
+ * Android: a translucent tile with `elevation` shows its shadow through the background as a dark
+ * block inside the card. Elevation is off there and the glow uses boxShadow instead (iOS unchanged).
+ */
+function androidMenuTileShadow(active: boolean, roleLocked: boolean): ViewStyle | null {
+  if (Platform.OS !== "android") return null;
+  return {
+    elevation: 0,
+    boxShadow: active
+      ? "0 0 14px rgba(244,208,111,0.35)"
+      : roleLocked
+        ? "0 0 8px rgba(244,208,111,0.16)"
+        : undefined,
+  } as ViewStyle;
+}
+
 function MenuTile({
   icon,
   label,
@@ -6794,6 +6810,7 @@ function MenuTile({
         !isV2Restricted && busy ? [s.menuTileDisabled, ({ opacity: 0.58 } as ViewStyle)] : null,
         !isV2Restricted && !roleLocked && pressed && !busy ? s.menuTilePressed : null,
         roleLocked && pressed && !busy ? s.menuTileRoleLockedPressed : null,
+        androidMenuTileShadow(!isV2Restricted && !!activeGlow && !roleLocked && !busy, !isV2Restricted && roleLocked),
       ]}
     >
       {tileBody}
@@ -15983,7 +16000,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
             <ScrollView
               style={s.menuBodyScroll}
-              contentContainerStyle={s.menuScrollContent}
+              contentContainerStyle={[
+                s.menuScrollContent,
+                // Android: the sheet draws under the navigation bar; keep the last cards scrollable above it.
+                Platform.OS === "android" ? { paddingBottom: 34 + insets.bottom + 24 } : null,
+              ]}
               showsVerticalScrollIndicator={false}
               bounces={false}
             >
