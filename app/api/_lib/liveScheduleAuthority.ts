@@ -8,6 +8,7 @@ import { getStoredMediaHosts } from "@/app/api/_lib/churchMediaAccess";
 import { canCreateOrEditScheduleSlots, isPastorAppRole } from "@/app/api/_lib/ministryAuthority";
 import { readRoomMessagesJsonFile } from "@/app/api/_lib/store/roomMessageDb";
 import { getFeedItemById } from "@/app/api/_lib/store/feedDb";
+import { isSuspendedForChurchLive } from "@/app/api/_lib/churchLiveControlSuspension";
 
 /**
  * Server-side authority for church live sessions, shared by /api/church/live and the LiveKit
@@ -51,12 +52,14 @@ export function ministryRoomIdFromLiveId(liveId: string) {
 /**
  * May write the server slot schedule and open/revive sessions: schedule-manager roles, live
  * moderators, church media hosts, and for a ministry live the ministry Leader/Assistant/Host.
+ * Church Live Control suspension overrides all of these (including media host) for church lives.
  */
 export async function canDriveLiveSchedule(
   a: { userId: string; role: string; churchId: string },
   live: any,
   liveId: string
 ) {
+  if (await isSuspendedForChurchLive(a.churchId, a.userId, liveId)) return false;
   if (LIVE_SCHEDULE_MANAGER_ROLES.has(a.role) || canModerateLive(a, live || {})) return true;
   const hosts = await getStoredMediaHosts(a.churchId).catch(() => []);
   if (hosts.some((host) => host.userId === a.userId)) return true;

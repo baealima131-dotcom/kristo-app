@@ -36,6 +36,8 @@ import {
 import {
   denyIfLiveControlSuspended,
   isChurchLiveControlLiveId,
+  isSuspendedForChurchLive,
+  liveControlSuspendedResponse,
 } from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const runtime = "nodejs";
@@ -465,6 +467,10 @@ const body = await req.json().catch(() => ({}));
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
   const liveId = String(body.liveId || `church-live-${now}`).trim();
+  if (await isSuspendedForChurchLive(a.churchId, a.userId, liveId)) {
+    console.log("KRISTO_LIVE_CONTROL_SUSPENDED_BLOCKED", { source: "church.live.POST", churchId: a.churchId, userId: a.userId });
+    return liveControlSuspendedResponse();
+  }
   const storeKey = liveStoreKey(a.churchId, liveId);
   const previousLive = store[storeKey] || store[a.churchId] || null;
 
@@ -552,6 +558,19 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: false, error: "Unknown action" }, { status: 400 });
   }
 
+  // Church Live Control suspension beats every live role (media host, schedule creator, slot
+  // holder, leader): a suspended member may only watch (viewer presence) and comment.
+  const liveControlSuspended = await isSuspendedForChurchLive(
+    a.churchId,
+    a.userId,
+    liveId || `church-live-${Date.now()}`
+  );
+  if (liveControlSuspended && action !== "presence" && action !== "comment") {
+    console.log("KRISTO_LIVE_CONTROL_SUSPENDED_BLOCKED", { source: `church.live.PATCH.${action}`, churchId: a.churchId, userId: a.userId });
+    return liveControlSuspendedResponse();
+  }
+  const canModerate = (target: any) => !liveControlSuspended && canModerateLive(a, target);
+
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
   const resolvedLiveId = liveId || `church-live-${now}`;
@@ -597,7 +616,7 @@ export async function PATCH(req: Request) {
   live.requestPolicy = String(live.requestPolicy || "locked");
 
   if (action === "end-live") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
 
@@ -611,7 +630,7 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "clear-schedule-live") {
-    if (!LIVE_SCHEDULE_MANAGER_ROLES.has(a.role) && !canModerateLive(a, live)) {
+    if (!LIVE_SCHEDULE_MANAGER_ROLES.has(a.role) && !canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Schedule manager only" }, { status: 403 });
     }
     const targetLiveId = String(body.liveId || liveId || live.liveId || "").trim();
@@ -635,7 +654,7 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "set-policy") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
 
@@ -650,7 +669,7 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "claim-schedule-request") {
-    if (actsForOtherUser && !canModerateLive(a, live)) {
+    if (actsForOtherUser && !canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
     }
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
@@ -703,7 +722,7 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "clear-claim-request") {
-    if (actsForOtherUser && !canModerateLive(a, live)) {
+    if (actsForOtherUser && !canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
     }
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
@@ -734,7 +753,7 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "request-join") {
-    if (actsForOtherUser && !canModerateLive(a, live)) {
+    if (actsForOtherUser && !canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
     }
     const requestUserId = String(body.userId || a.userId || "").trim();
@@ -773,12 +792,16 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "approve-request") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
     const rawSlot = Number(body.slot || 0);
     const slot = rawSlot > 0 ? rawSlot : 1;
     const existingRequest = live.requests[slot] || live.requests[0] || {};
+    const approvedUserId = String(body.userId || existingRequest.userId || "").trim();
+    if (approvedUserId && (await isSuspendedForChurchLive(a.churchId, approvedUserId, resolvedLiveId))) {
+      return liveControlSuspendedResponse(false);
+    }
 
     if (live.requests[0] && slot !== 0) {
       delete live.requests[0];
@@ -800,13 +823,17 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "move-upper") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
 
     const rawSlot = Number(body.slot || 0);
     const slot = rawSlot > 0 ? rawSlot : 1;
     const existingRequest = live.requests[slot] || live.requests[0] || null;
+    const movedUserId = String(existingRequest?.userId || "").trim();
+    if (movedUserId && (await isSuspendedForChurchLive(a.churchId, movedUserId, resolvedLiveId))) {
+      return liveControlSuspendedResponse(false);
+    }
 
     if (existingRequest) {
       if (live.requests[0]) delete live.requests[0];
@@ -824,7 +851,7 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "reject-request" || action === "drop-guest") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
 
@@ -959,16 +986,19 @@ export async function PATCH(req: Request) {
   if (action === "presence") {
     live.viewerPresence = live.viewerPresence || {};
 
-    const isLiveOwner = evaluateLiveMediaAuthority({
-      currentUserId: a.userId,
-      actualChurchPastorUserId: live.actualChurchPastorUserId,
-      scheduleCreatedByUserId: live.scheduleCreatedByUserId,
-      mediaHostIds: live.mediaHostIds,
-    }).isMediaOwnerHost;
+    const isLiveOwner =
+      !liveControlSuspended &&
+      evaluateLiveMediaAuthority({
+        currentUserId: a.userId,
+        actualChurchPastorUserId: live.actualChurchPastorUserId,
+        scheduleCreatedByUserId: live.scheduleCreatedByUserId,
+        mediaHostIds: live.mediaHostIds,
+      }).isMediaOwnerHost;
     const requestedRole = String(body.role || "").toLowerCase();
     const explicitlyEnded = !!live.endedAt && String(live.endedReason || "") !== "heartbeat-timeout";
     const stageAllowed =
       requestedRole === "stage" &&
+      !liveControlSuspended &&
       (canDrive ||
         // A live ended on purpose stays ended for everyone but schedule drivers.
         (!explicitlyEnded &&
@@ -978,7 +1008,7 @@ export async function PATCH(req: Request) {
     }
     const role = requestedRole === "stage" && !stageAllowed ? "viewer" : requestedRole;
 
-    if (isLiveOwner || isPastor(a.role) || stageAllowed) {
+    if (isLiveOwner || (isPastor(a.role) && !liveControlSuspended) || stageAllowed) {
       live.isLive = true;
       delete live.endedAt;
       delete live.endedReason;

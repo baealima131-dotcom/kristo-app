@@ -126,6 +126,8 @@ import {
 import {
   CHURCH_LIVE_CONTROL_ROOM_ID,
   denyIfLiveControlSuspended,
+  isChurchLiveControlSuspended,
+  LIVE_CONTROL_SUSPENDED_ERROR,
 } from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const runtime = "nodejs";
@@ -2058,7 +2060,9 @@ function isPastorOrAdminRole(role: unknown) {
 async function isMediaHostForChurch(churchId: string, userId: string) {
   const mediaProfile: any = await churchMediaFor(churchId);
   const mediaHosts = Array.isArray(mediaProfile?.hosts) ? mediaProfile.hosts : [];
-  return mediaHosts.some((h: any) => String(h?.userId || h?.id || "") === String(userId || ""));
+  if (!mediaHosts.some((h: any) => String(h?.userId || h?.id || "") === String(userId || ""))) return false;
+  // Church Live Control suspension overrides the media-host role (read failure: no host rights).
+  return !(await isChurchLiveControlSuspended(churchId, userId).catch(() => true));
 }
 
 async function canAccessMediaStorage(churchId: string, role: unknown, userId: string) {
@@ -2099,6 +2103,14 @@ async function assertScheduleEditPermission(args: {
   const itemChurchId = String(args.item?.churchId || args.churchId || "");
   if (itemChurchId && itemChurchId !== String(args.churchId || "")) {
     return "Feed item not in your church";
+  }
+
+  // Church Live Control schedules: suspension beats every role (pastor-level, leader, host).
+  if (
+    isChurchLiveControlSchedule(args.item, args.body) &&
+    (await isChurchLiveControlSuspended(args.churchId, args.viewerUserId).catch(() => true))
+  ) {
+    return LIVE_CONTROL_SUSPENDED_ERROR;
   }
 
   const isMedia =
@@ -3336,6 +3348,10 @@ export async function POST(req: NextRequest) {
       serverBuild: "main-clear-media-schedule-slots",
       stage: "early-handler-hit",
     });
+    const suspended = await denyIfLiveControlSuspended(String(a?.churchId || ""), String(a?.viewer?.userId || ""), {
+      source: "feed.clear_media_schedule_slots",
+    });
+    if (suspended) return suspended;
     return await handleClearMediaScheduleSlots(body, a, req.headers);
   }
 
@@ -3550,6 +3566,18 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
   const viewerName = String(ctx?.viewer?.name || "").trim();
   const actorLabel = viewerName || viewerUserId;
+
+  // Starting or running a Church Live Control media schedule: suspension beats every role.
+  const isChurchMediaScheduleAction =
+    action === "end_stale_media_schedule" ||
+    action === "clear_media_schedules" ||
+    (action === "create_post" && isIncomingMediaScheduleCreate(body));
+  if (isChurchMediaScheduleAction && isChurchLiveControlSchedule(null, body)) {
+    const suspended = await denyIfLiveControlSuspended(String(body?.churchId || churchId || ""), viewerUserId, {
+      source: `feed.${action}`,
+    });
+    if (suspended) return suspended;
+  }
 
   if (["add_comment", "add_reply"].includes(action) && !String(churchId || "").trim()) {
     return err("Join a church to comment", 403);

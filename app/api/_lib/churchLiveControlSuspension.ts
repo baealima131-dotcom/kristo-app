@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { readLiveJsonFile } from "@/app/api/_lib/store/liveDb";
-import { ministryRoomIdFromLiveId } from "@/app/api/_lib/liveScheduleAuthority";
 
 /** Same store and room the Church Live Control members route writes suspensions to. */
 const STORE_FILE = "church-live-control-members.json";
@@ -26,9 +25,19 @@ export async function isChurchLiveControlSuspended(churchId: string, userId: str
   );
 }
 
-/** A live/schedule id that belongs to Church Live Control (not a ministry room live). */
+/**
+ * A live/schedule id that belongs to Church Live Control (not a ministry room live). Same rule as
+ * ministryRoomIdFromLiveId in liveScheduleAuthority (kept local: that module imports this one).
+ */
 export function isChurchLiveControlLiveId(liveId: string) {
-  return !ministryRoomIdFromLiveId(liveId);
+  const lid = String(liveId || "").trim();
+  return !(lid.startsWith("ministry_") && lid.slice("ministry_".length).trim());
+}
+
+/** Suspended in Church Live Control for this live; a read failure counts as suspended. */
+export async function isSuspendedForChurchLive(churchId: string, userId: string, liveId: string) {
+  if (!isChurchLiveControlLiveId(liveId)) return false;
+  return isChurchLiveControlSuspended(churchId, userId).catch(() => true);
 }
 
 export function liveControlSuspendedResponse(self = true) {

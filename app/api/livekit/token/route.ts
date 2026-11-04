@@ -9,10 +9,7 @@ import {
   readChurchSchedule,
 } from "@/app/api/_lib/liveScheduleAuthority";
 import { readLiveJsonFile } from "@/app/api/_lib/store/liveDb";
-import {
-  isChurchLiveControlLiveId,
-  isChurchLiveControlSuspended,
-} from "@/app/api/_lib/churchLiveControlSuspension";
+import { isSuspendedForChurchLive } from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const runtime = "nodejs";
 
@@ -49,19 +46,19 @@ export async function POST(req: Request) {
     const approvedOnStage = Object.values((liveRecord?.requests as Record<string, any>) || {}).some(
       (r: any) => String(r?.userId || "") === a.userId && r?.approved === true && r?.onStage !== false
     );
-    // Church Live Control suspension removes slot-based publishing (a claimed or active slot);
-    // a read failure fails closed.
-    const slotPublishSuspended =
-      wantsPublish &&
-      isChurchLiveControlLiveId(roomName) &&
-      (await isChurchLiveControlSuspended(a.churchId, a.userId).catch(() => true));
+    // Church Live Control suspension beats every publish path (media host, schedule driver,
+    // claimed or active slot, approved on stage); a read failure fails closed. Watching stays.
+    const liveControlSuspended = await isSuspendedForChurchLive(a.churchId, a.userId, roomName);
     const allowedToPublish =
       wantsPublish &&
+      !liveControlSuspended &&
       ((await canDriveLiveSchedule(a, liveRecord, roomName)) ||
-        (!slotPublishSuspended &&
-          (schedule.cards.some((card: any) => String(card?.claimedByUserId || "") === a.userId) ||
-            (!!liveRecord && isServerActiveSlotOwner(liveRecord, a.userId, Date.now())))) ||
+        schedule.cards.some((card: any) => String(card?.claimedByUserId || "") === a.userId) ||
+        (!!liveRecord && isServerActiveSlotOwner(liveRecord, a.userId, Date.now())) ||
         approvedOnStage);
+    if (wantsPublish && liveControlSuspended) {
+      console.log("KRISTO_LIVE_CONTROL_SUSPENDED_BLOCKED", { source: "livekit.token.publish", churchId: a.churchId, userId: a.userId });
+    }
 
     /*
      * Suspended / permanently banned: block every token (read as
@@ -118,7 +115,7 @@ export async function POST(req: Request) {
       canSubscribe: true,
       // SECURITY: client request alone must never grant publish.
       canPublish: allowedToPublish,
-      canPublishData: true,
+      canPublishData: !liveControlSuspended,
     });
 
     return NextResponse.json({
