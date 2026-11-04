@@ -81,6 +81,88 @@ const VIP_BG = "#010102";
 const VIP_BORDER = "rgba(255,255,255,0.08)";
 const GOLD = HOME_FEED_GOLD;
 const MUTED = HOME_FEED_INACTIVE;
+
+/**
+ * Android only: the tab bar drawn as a raised glass dock resting on the navy base that continues
+ * into the Android system bar, with a raised glass plate behind each of the four tab buttons.
+ * Purely a background layer (no touches, same tab bar size), so buttons, icons and labels work
+ * exactly as before. iOS keeps its existing tab bar.
+ */
+const ANDROID_DOCK_BASE = "#0B0F17";
+
+function AndroidGlassDockBackground({ bottomInset }: { bottomInset: number }) {
+  return (
+    <View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { backgroundColor: ANDROID_DOCK_BASE }]}>
+      {/* Holder: soft gold rim where the dock meets the system bar base */}
+      <View style={[dockStyles.holder, { height: bottomInset + 14 }]} />
+      <View style={dockStyles.dock}>
+        <View style={dockStyles.dockSheen} />
+        <View style={dockStyles.plateRow}>
+          {[0, 1, 2, 3].map((i) => (
+            <View key={i} style={dockStyles.plateCell}>
+              <View style={dockStyles.plate} />
+            </View>
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const dockStyles = StyleSheet.create({
+  holder: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderTopWidth: 1,
+    borderColor: "rgba(217,179,95,0.30)",
+    backgroundColor: ANDROID_DOCK_BASE,
+    boxShadow: "0 -2px 14px rgba(217,179,95,0.16)",
+  },
+  dock: {
+    position: "absolute",
+    top: 2,
+    left: 8,
+    right: 8,
+    height: 66,
+    borderRadius: 26,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(232,196,110,0.55)",
+    backgroundColor: "rgba(20,26,40,0.92)",
+    boxShadow:
+      "0 -6px 18px rgba(0,0,0,0.55), 0 0 16px rgba(217,179,95,0.28), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -10px 18px rgba(0,0,0,0.35)",
+  },
+  dockSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 26,
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  plateRow: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: -8,
+    right: -8,
+    flexDirection: "row",
+  },
+  plateCell: { flex: 1, alignItems: "center", justifyContent: "center" },
+  plate: {
+    width: "78%",
+    height: 58,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.055)",
+    boxShadow: "0 3px 8px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.16), inset 0 -4px 8px rgba(0,0,0,0.25)",
+  },
+});
 const MORE_SHELL_BG = "#010102";
 /**
  * Hold time before onLongPress opens LIVE / the personal ring. Matches the RN
@@ -1155,6 +1237,8 @@ export default function TabLayout() {
                 {
                   // Keep Android tabs inside the navigator layout, above system buttons.
                   // A height of 70 matches the existing custom tab buttons.
+                  backgroundColor: ANDROID_DOCK_BASE,
+                  borderTopColor: "transparent",
                   position: "relative" as const,
                   bottom: 0,
                   height: 70 + androidBottomInset,
@@ -1163,6 +1247,10 @@ export default function TabLayout() {
                 },
               ]
             : homeFeedPremium.tabBarSolid,
+        tabBarBackground:
+          Platform.OS === "android" && !hideTabBar
+            ? () => <AndroidGlassDockBackground bottomInset={androidBottomInset} />
+            : undefined,
         tabBarActiveTintColor: GOLD,
         tabBarInactiveTintColor: MUTED,
         tabBarLabelStyle: { fontWeight: "800", fontSize: 11, paddingBottom: 0 },
