@@ -47,11 +47,13 @@ export default function ChurchOverviewProfileScreen() {
   const isPending = c.viewerState.joinStatus === "pending";
   const videos = (profile?.recentPosts || []).filter((post) => churchPublicPostIsVideo(post));
 
+  // Compact stats in one row; members / ministries only when the API returns them for this viewer.
   const stats = profile
     ? [
-        { key: "followers", label: "Followers", value: Number(profile.followerCount ?? 0), icon: "heart-outline" as const, tone: s.statBlue, iconTone: s.statIconBlue, color: "#7EB4FF" },
-        { key: "members", label: "Active Members", value: profile.memberCount, icon: "people-outline" as const, tone: s.statBlue, iconTone: s.statIconBlue, color: "#7EB4FF" },
-        { key: "ministries", label: "Ministries", value: profile.ministriesCount, icon: "grid-outline" as const, tone: s.statGold, iconTone: s.statIconGold, color: GOLD },
+        { key: "followers", label: "Followers", value: Number(profile.followerCount ?? 0), icon: "heart-outline" as const, color: "#7EB4FF", tone: s.chipBlue },
+        { key: "members", label: "Members", value: profile.memberCount, icon: "people-outline" as const, color: "#7EB4FF", tone: s.chipBlue },
+        { key: "videos", label: "Videos", value: videos.length, icon: "play-circle-outline" as const, color: GOLD, tone: s.chipGold },
+        { key: "ministries", label: "Ministries", value: profile.ministriesCount, icon: "grid-outline" as const, color: GOLD, tone: s.chipGold },
       ].filter((stat) => stat.value != null)
     : [];
 
@@ -71,6 +73,8 @@ export default function ChurchOverviewProfileScreen() {
     } as any);
 
   const sendDisabled = c.requesting || !c.viewerState.canJoin || c.churchBlocked;
+  // Member of another church (or blocked): Send Request stays disabled with a lock; the API refuses too.
+  const sendLocked = !c.requesting && (c.viewerState.memberOfOtherChurch || c.churchBlocked);
 
   return (
     <SafeAreaView style={s.safe} edges={["top", "left", "right"]}>
@@ -236,25 +240,26 @@ export default function ChurchOverviewProfileScreen() {
                     disabled={sendDisabled}
                     style={[s.btn, s.btnGold, sendDisabled && s.btnDisabled]}
                   >
-                    <Ionicons name={c.requesting ? "hourglass-outline" : "paper-plane-outline"} size={16} color="#07101A" />
+                    <Ionicons
+                      name={c.requesting ? "hourglass-outline" : sendLocked ? "lock-closed" : "paper-plane-outline"}
+                      size={16}
+                      color="#07101A"
+                    />
                     <Text style={s.btnGoldText}>{c.requesting ? "Sending…" : "Send Request"}</Text>
                   </Pressable>
                 )}
               </View>
-              {c.viewerState.memberOfOtherChurch && !isPending ? (
-                <Text style={s.accessNote}>You are a member of another church, so you cannot send a request here.</Text>
-              ) : null}
             </View>
           )}
 
-          <View style={s.statsGrid}>
+          <View style={s.statsRow}>
             {stats.map((stat) => (
-              <View key={stat.key} style={[s.statCard, stat.tone]}>
-                <View style={[s.statIcon, stat.iconTone]}>
-                  <Ionicons name={stat.icon} size={18} color={stat.color} />
-                </View>
-                <Text style={s.statValue}>{stat.value}</Text>
-                <Text style={s.statLabel} numberOfLines={2}>
+              <View key={stat.key} style={[s.statChip, stat.tone]}>
+                <Ionicons name={stat.icon} size={16} color={stat.color} />
+                <Text style={s.statChipValue} numberOfLines={1}>
+                  {stat.value}
+                </Text>
+                <Text style={s.statChipLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
                   {stat.label}
                 </Text>
               </View>
@@ -474,7 +479,6 @@ const s = StyleSheet.create({
     textShadowRadius: 10,
   },
   accessTitle: { color: TEXT_PRIMARY, fontSize: 16, fontWeight: "900" },
-  accessNote: { color: TEXT_SECONDARY, fontSize: 12, lineHeight: 17 },
   actionRow: { flexDirection: "row", gap: 10 },
   btn: { flex: 1, minHeight: 46, borderRadius: 16, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 10 },
   btnBlue: { borderWidth: 1.3, borderColor: "rgba(120,170,255,0.70)", backgroundColor: "rgba(86,139,255,0.12)" },
@@ -485,33 +489,37 @@ const s = StyleSheet.create({
   btnGoldOutlineText: { color: GOLD, fontWeight: "900", fontSize: 13 },
   btnDisabled: { opacity: 0.5 },
 
-  statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  statCard: { width: "47%", flexGrow: 1, minHeight: 124, borderRadius: 24, padding: 16, borderWidth: 1.8, justifyContent: "space-between" },
-  statBlue: {
+  statsRow: { flexDirection: "row", gap: 8 },
+  statChip: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderRadius: 18,
+    borderWidth: 1.5,
+    gap: 2,
+  },
+  chipBlue: {
     backgroundColor: "rgba(8,16,32,0.94)",
-    borderColor: "rgba(110,165,255,0.92)",
-    boxShadow: "0 0 20px rgba(74,144,255,0.55), 0 0 5px rgba(74,144,255,0.50), inset 0 0 14px rgba(74,144,255,0.16)",
+    borderColor: "rgba(110,165,255,0.85)",
+    boxShadow: "0 0 12px rgba(74,144,255,0.45), inset 0 0 10px rgba(74,144,255,0.14)",
   },
-  statGold: {
+  chipGold: {
     backgroundColor: "rgba(14,12,8,0.94)",
-    borderColor: "rgba(232,196,110,0.90)",
-    boxShadow: "0 0 20px rgba(217,179,95,0.55), 0 0 5px rgba(217,179,95,0.50), inset 0 0 14px rgba(217,179,95,0.16)",
+    borderColor: "rgba(232,196,110,0.85)",
+    boxShadow: "0 0 12px rgba(217,179,95,0.45), inset 0 0 10px rgba(217,179,95,0.14)",
   },
-  statIcon: { width: 40, height: 40, borderRadius: 14, alignItems: "center", justifyContent: "center", borderWidth: 1 },
-  statIconBlue: { backgroundColor: "rgba(74,144,255,0.14)", borderColor: "rgba(110,165,255,0.45)" },
-  statIconGold: { backgroundColor: "rgba(217,179,95,0.14)", borderColor: "rgba(232,196,110,0.45)" },
-  statValue: {
+  statChipValue: {
     color: TEXT_PRIMARY,
-    fontSize: 32,
-    lineHeight: 36,
+    fontSize: 20,
+    lineHeight: 24,
     fontWeight: "900",
-    marginTop: 8,
-    textShadowColor: "rgba(255,255,255,0.45)",
+    textShadowColor: "rgba(255,255,255,0.40)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 12,
+    textShadowRadius: 8,
   },
-  statLabel: { color: TEXT_SECONDARY, fontSize: 14, fontWeight: "800", marginTop: 4 },
-
+  statChipLabel: { color: TEXT_SECONDARY, fontSize: 11, fontWeight: "800", letterSpacing: 0.3 },
   sectionLabel: {
     color: LABEL_GOLD,
     fontSize: 12,

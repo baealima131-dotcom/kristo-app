@@ -293,10 +293,13 @@ export function useChurchProfileController(churchId: string) {
     }
     options.push({ label: "Report this church", onPress: () => setReportSheetOpen(true) });
     options.push({ label: "Cancel", style: "cancel" });
+    // Android shows at most 3 dialog buttons (the 4th, Cancel, is dropped): let Back / tapping
+    // outside close the menu.
     Alert.alert(
       "Church safety",
       undefined,
-      options.map((option) => ({ text: option.label, style: option.style, onPress: option.onPress }))
+      options.map((option) => ({ text: option.label, style: option.style, onPress: option.onPress })),
+      { cancelable: true }
     );
   }, [profile?.id, churchBlocked, churchHidden, requestHideChurch, requestBlockChurch, requestUnhideChurch, requestUnblockChurch]);
 
