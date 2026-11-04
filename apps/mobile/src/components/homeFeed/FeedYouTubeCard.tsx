@@ -187,6 +187,7 @@ export const FeedYouTubeCard = memo(
             variant="premium"
             part="avatar"
             source="home-feed-card"
+            avatarOpensOverview
             deferAvatarLoad={!shouldLoadImages}
             avatarDiagnostics={{
               rowIndex,

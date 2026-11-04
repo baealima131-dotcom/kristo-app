@@ -16,7 +16,7 @@ import {
   resolveHomeFeedAvatarCacheContext,
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD } from "./theme";
-import { openChurchProfileFromFeedItem } from "@/src/lib/churchProfileNavigation";
+import { openChurchOverviewFromFeedItem, openChurchProfileFromFeedItem } from "@/src/lib/churchProfileNavigation";
 import { FeedChurchAvatar } from "./FeedChurchAvatar";
 import { HomeFeedCachedAvatarImage } from "./HomeFeedCachedAvatarImage";
 
@@ -31,6 +31,8 @@ type Props = {
   source?: string;
   /** When false, only the avatar opens the profile (e.g. member-authored church room posts). */
   nameOpensProfile?: boolean;
+  /** Avatar opens the Church Overview style profile (Home feed video cards). */
+  avatarOpensOverview?: boolean;
   deferAvatarLoad?: boolean;
   avatarDiagnostics?: {
     rowIndex?: number;
@@ -45,6 +47,7 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   style,
   source,
   nameOpensProfile = true,
+  avatarOpensOverview = false,
   deferAvatarLoad = false,
   avatarDiagnostics,
 }: Props) {
@@ -61,6 +64,12 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
     if (!canOpen) return;
     openChurchProfileFromFeedItem(item, { source });
   }, [canOpen, item, source]);
+
+  const openAvatarTarget = useCallback(() => {
+    if (!canOpen) return;
+    if (avatarOpensOverview) openChurchOverviewFromFeedItem(item, { source: source ? `${source}-avatar` : undefined });
+    else openChurchProfileFromFeedItem(item, { source });
+  }, [avatarOpensOverview, canOpen, item, source]);
 
   const isWatch = variant === "watch";
   const postId = String(item?.id || "").trim();
@@ -136,7 +145,7 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
 
   const avatarPressable = (
     <Pressable
-      onPress={openProfile}
+      onPress={openAvatarTarget}
       accessibilityRole="button"
       accessibilityLabel={churchName ? `Open ${churchName} profile` : "Open church profile"}
       hitSlop={8}

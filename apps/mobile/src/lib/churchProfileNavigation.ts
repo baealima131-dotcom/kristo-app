@@ -18,6 +18,20 @@ export function openChurchProfile(
   } as any);
 }
 
+/** Church profile in the Church Overview style (Home feed video avatar). */
+export function openChurchOverviewFromFeedItem(item: any, params?: { source?: string }) {
+  const id = String(homeFeedRowChurchId(item) || "").trim();
+  if (!id) return;
+  router.push({
+    pathname: "/church-overview/[churchId]",
+    params: {
+      churchId: id,
+      churchName: String(item?.churchName || item?.churchLabel || "").trim() || undefined,
+      source: String(params?.source || "").trim() || undefined,
+    },
+  } as any);
+}
+
 export function openChurchProfileFromFeedItem(
   item: any,
   params?: { source?: string }

@@ -63,12 +63,13 @@ export default function ChurchPreviewScreen() {
   const location = profile ? profile.location || [profile.city, profile.province, profile.country].filter(Boolean).join(" • ") : "";
   const status = profile?.viewerMembershipStatus || "none";
 
+  // Member / ministry counts come back only for members of this church (API decides).
   const stats = profile
     ? [
         { key: "members", label: "Active Members", value: profile.memberCount, icon: "people-outline" as const, tone: s.statBlue, iconTone: s.statIconBlue, color: "#7EB4FF" },
         { key: "followers", label: "Followers", value: Number(profile.followerCount || 0), icon: "heart-outline" as const, tone: s.statBlue, iconTone: s.statIconBlue, color: "#7EB4FF" },
         { key: "ministries", label: "Ministries", value: profile.ministriesCount, icon: "grid-outline" as const, tone: s.statGold, iconTone: s.statIconGold, color: GOLD },
-      ]
+      ].filter((c) => c.value != null)
     : [];
 
   return (
