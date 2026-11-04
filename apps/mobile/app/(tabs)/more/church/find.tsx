@@ -662,14 +662,16 @@ function ChurchCard({
             </Text>
             {church.verified ? (
               <View style={s.verifiedBadgeSmall}>
-                <Ionicons name="shield-checkmark" size={11} color="#07101A" />
+                <Ionicons name="shield-checkmark" size={14} color="#07101A" />
               </View>
             ) : null}
           </View>
 
-          <Text style={s.churchId} numberOfLines={1}>
-            {church.id}
-          </Text>
+          <View style={s.churchIdPill}>
+            <Text style={s.churchId} numberOfLines={1}>
+              {church.id}
+            </Text>
+          </View>
 
           <CountryLine country={church.country} countryCode={church.countryCode} />
 
@@ -1198,11 +1200,12 @@ const s = StyleSheet.create<any>({
   countText: { color: "rgba(255,255,255,0.62)", fontWeight: "900", marginBottom: 2, letterSpacing: 0.3 },
 
   churchCard: {
-    borderRadius: 28,
-    padding: 18,
-    backgroundColor: "rgba(255,255,255,0.028)",
-    borderWidth: 1.2,
-    borderColor: "rgba(244,201,93,0.20)",
+    borderRadius: 24,
+    padding: 16,
+    backgroundColor: "rgba(8,14,24,0.94)",
+    borderWidth: 1.8,
+    borderColor: "rgba(232,196,110,0.85)",
+    boxShadow: "0 0 18px rgba(217,179,95,0.45), inset 0 0 14px rgba(217,179,95,0.12)",
   },
   churchCardGlow: {
     position: "absolute",
@@ -1211,19 +1214,28 @@ const s = StyleSheet.create<any>({
     width: 140,
     height: 140,
     borderRadius: 999,
-    backgroundColor: "rgba(244,201,93,0.06)",
+    backgroundColor: "rgba(244,201,93,0.05)",
   },
-  churchCardTop: { flexDirection: "row", gap: 14, alignItems: "flex-start" },
-  churchBody: { flex: 1, minWidth: 0, gap: 5 },
+  churchCardTop: {
+    flexDirection: "row",
+    gap: 14,
+    alignItems: "center",
+  },
+  churchBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
 
   avatarRing: {
     padding: 3,
     borderRadius: 999,
     borderWidth: 2,
-    borderColor: "rgba(244,201,93,0.55)",
+    borderColor: "rgba(232,196,110,0.90)",
     backgroundColor: "rgba(0,0,0,0.35)",
     alignItems: "center",
     justifyContent: "center",
+    boxShadow: "0 0 12px rgba(217,179,95,0.45)",
   },
   avatarRingVerified: {
     borderColor: GOLD,
@@ -1243,16 +1255,48 @@ const s = StyleSheet.create<any>({
   avatarFallback: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(244,201,93,0.08)",
+    backgroundColor: "rgba(217,179,95,0.12)",
     borderWidth: 1,
-    borderColor: "rgba(244,201,93,0.18)",
+    borderColor: "rgba(232,196,110,0.35)",
   },
-  avatarInitials: { color: GOLD, fontWeight: "950", letterSpacing: 0.6 },
+  avatarInitials: {
+    color: GOLD,
+    fontWeight: "950",
+    letterSpacing: 0.6,
+    textShadowColor: "rgba(232,196,110,0.55)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
+  },
 
   nameRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, flexWrap: "wrap" },
-  churchName: { flex: 1, minWidth: 0, color: "#fff", fontWeight: "950", fontSize: 20, letterSpacing: 0.2, lineHeight: 24 },
-  churchId: { color: "rgba(244,201,93,0.82)", fontWeight: "900", fontSize: 12, letterSpacing: 0.8 },
+  churchName: {
+    flex: 1,
+    minWidth: 0,
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 21,
+    letterSpacing: 0.2,
+    lineHeight: 26,
+    textShadowColor: "rgba(232,196,110,0.40)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
+  },
+  churchId: {
+    color: GOLD,
+    fontWeight: "900",
+    fontSize: 12,
+    letterSpacing: 1.2,
+  },
 
+  churchIdPill: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.45)",
+    backgroundColor: "rgba(244,201,93,0.10)",
+  },
   countryRow: { flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "nowrap" },
   flagBox: { width: 22, height: 20, alignItems: "center", justifyContent: "center" },
   flag: {
@@ -1260,17 +1304,42 @@ const s = StyleSheet.create<any>({
     lineHeight: Platform.OS === "android" ? 18 : 16,
     ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : {}),
   },
-  countryName: { flexShrink: 1, color: "rgba(255,255,255,0.78)", fontWeight: "800", fontSize: 13, lineHeight: 18 },
+  countryName: {
+    flexShrink: 1,
+    color: "rgba(255,255,255,0.90)",
+    fontWeight: "800",
+    fontSize: 14,
+    lineHeight: 18,
+  },
   isoPill: {
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
     backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
   },
-  isoTag: { color: "rgba(255,255,255,0.45)", fontWeight: "900", fontSize: 10, letterSpacing: 0.4 },
+  isoTag: {
+    color: "rgba(255,255,255,0.70)",
+    fontWeight: "900",
+    fontSize: 10,
+    letterSpacing: 0.4,
+  },
 
-  locationLine: { color: "rgba(255,255,255,0.58)", fontWeight: "750", lineHeight: 19, marginTop: 2 },
-  pastorLine: { color: "rgba(255,255,255,0.45)", fontWeight: "800", fontSize: 12, marginTop: 2, lineHeight: 16 },
+  locationLine: {
+    color: "rgba(255,255,255,0.74)",
+    fontWeight: "750",
+    lineHeight: 19,
+    marginTop: 2,
+    fontSize: 13.5,
+  },
+  pastorLine: {
+    color: "rgba(255,255,255,0.66)",
+    fontWeight: "800",
+    fontSize: 12.5,
+    marginTop: 2,
+    lineHeight: 16,
+  },
 
   verifiedBadge: {
     flexDirection: "row",
@@ -1282,29 +1351,37 @@ const s = StyleSheet.create<any>({
     backgroundColor: GOLD,
   },
   verifiedBadgeSmall: {
-    width: 22,
-    height: 22,
+    width: 26,
+    height: 26,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: GOLD,
     marginTop: 2,
+    boxShadow: "0 0 10px rgba(244,201,93,0.70)",
+    borderWidth: 1,
+    borderColor: "rgba(255,236,170,0.90)",
   },
   verifiedText: { color: "#07101A", fontWeight: "950", fontSize: 10, letterSpacing: 0.4 },
 
-  cardDivider: { height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginVertical: 16 },
+  cardDivider: {
+    height: 1,
+    backgroundColor: "rgba(232,196,110,0.22)",
+    marginVertical: 14,
+  },
   cardActions: { gap: 10 },
 
   primaryBtnCompact: {
-    minHeight: 52,
-    borderRadius: 20,
+    minHeight: 48,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
     backgroundColor: GOLD,
     borderWidth: 1,
-    borderColor: "rgba(244,201,93,0.70)",
+    borderColor: "rgba(255,226,140,0.95)",
+    boxShadow: "0 0 14px rgba(244,201,93,0.40)",
   },
   primaryBtnText: { color: "#07101A", fontWeight: "950", fontSize: 14, letterSpacing: 0.6 },
   btnDisabled: { opacity: 0.72 },
@@ -1314,29 +1391,34 @@ const s = StyleSheet.create<any>({
 
   linkBtn: {
     minHeight: 44,
-    borderRadius: 18,
+    borderRadius: 16,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
     paddingHorizontal: 12,
-    backgroundColor: "rgba(244,201,93,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(244,201,93,0.18)",
+    backgroundColor: "rgba(244,201,93,0.10)",
+    borderWidth: 1.3,
+    borderColor: "rgba(232,196,110,0.70)",
   },
   linkBtnText: { color: GOLD, fontWeight: "950", fontSize: 13, letterSpacing: 0.5 },
 
   ghostBtn: {
     minHeight: 44,
-    borderRadius: 18,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 12,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(86,139,255,0.10)",
+    borderWidth: 1.3,
+    borderColor: "rgba(120,170,255,0.70)",
   },
-  ghostBtnText: { color: "rgba(255,255,255,0.72)", fontWeight: "900", fontSize: 12, letterSpacing: 0.4 },
+  ghostBtnText: {
+    color: "#8FB5FF",
+    fontWeight: "950",
+    fontSize: 13,
+    letterSpacing: 0.5,
+  },
 
   centerBox: { marginTop: 28, alignItems: "center", gap: 12, paddingVertical: 24 },
   centerText: { color: "rgba(255,255,255,0.62)", fontWeight: "800" },
