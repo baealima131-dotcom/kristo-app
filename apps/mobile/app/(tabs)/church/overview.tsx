@@ -1357,6 +1357,7 @@ setMediaTargets(
               style={StyleSheet.absoluteFillObject}
             />
 
+            {/* Church picture large on the left; name, verification, pastor, address and phone on the right. */}
             <View style={s.profileTop}>
               <View style={s.profileAvatarRing}>
                 <View style={s.profileAvatarHalo} pointerEvents="none" />
@@ -1373,19 +1374,52 @@ setMediaTargets(
                 )}
               </View>
 
-              <View style={s.profileTitleWrap}>
-                <Text style={s.profileEyebrow}>Church Profile</Text>
-                <Text style={s.profileChurch} numberOfLines={2}>
-                  {displayChurchName}
-                </Text>
-                {churchVerified ? (
-                  <View style={s.profileVerifiedRow}>
-                    <Ionicons name="shield-checkmark" size={12} color={GOLD_SOFT} />
-                    <Text style={s.profileVerifiedText}>Verified church identity</Text>
-                  </View>
-                ) : null}
-              </View>
+              <View style={s.profileDetails}>
+                <View style={s.profileTitleWrap}>
+                  <Text style={s.profileEyebrow}>Church Profile</Text>
+                  <Text style={s.profileChurch} numberOfLines={2}>
+                    {displayChurchName}
+                  </Text>
+                  {churchVerified ? (
+                    <View style={s.profileVerifiedRow}>
+                      <Ionicons name="shield-checkmark" size={12} color={GOLD_SOFT} />
+                      <Text style={s.profileVerifiedText}>Verified church identity</Text>
+                    </View>
+                  ) : null}
+                </View>
 
+                <View style={s.profileInfoList}>
+                  <View style={s.profileInfoRow}>
+                    <View style={s.pastorAvatar}>
+                      <Text style={s.pastorAvatarText}>{pastorInitial(profile.pastorName)}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.profileInfoLabel}>Pastor</Text>
+                      <Text style={s.profileInfoValue}>{pastorDisplay}</Text>
+                    </View>
+                  </View>
+
+                  <View style={s.profileInfoRow}>
+                    <View style={s.profileInfoIconWrap}>
+                      <Ionicons name="location-outline" size={15} color={GOLD} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.profileInfoLabel}>Address</Text>
+                      <Text style={s.profileInfoValue}>{profile.address || "—"}</Text>
+                    </View>
+                  </View>
+
+                  <View style={s.profileInfoRow}>
+                    <View style={s.profileInfoIconWrap}>
+                      <Ionicons name="call-outline" size={15} color={GOLD} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.profileInfoLabel}>Phone</Text>
+                      <Text style={s.profileInfoValue}>{profile.phone || "—"}</Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
               {canEditProfile ? (
                 <LuxuryPressable
                   onPress={() =>
@@ -1404,38 +1438,6 @@ setMediaTargets(
                   <Ionicons name="create-outline" size={16} color={GOLD} />
                 </LuxuryPressable>
               ) : null}
-            </View>
-
-            <View style={s.profileInfoList}>
-              <View style={s.profileInfoRow}>
-                <View style={s.pastorAvatar}>
-                  <Text style={s.pastorAvatarText}>{pastorInitial(profile.pastorName)}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.profileInfoLabel}>Pastor</Text>
-                  <Text style={s.profileInfoValue}>{pastorDisplay}</Text>
-                </View>
-              </View>
-
-              <View style={s.profileInfoRow}>
-                <View style={s.profileInfoIconWrap}>
-                  <Ionicons name="location-outline" size={15} color={GOLD} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.profileInfoLabel}>Address</Text>
-                  <Text style={s.profileInfoValue}>{profile.address || "—"}</Text>
-                </View>
-              </View>
-
-              <View style={s.profileInfoRow}>
-                <View style={s.profileInfoIconWrap}>
-                  <Ionicons name="call-outline" size={15} color={GOLD} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.profileInfoLabel}>Phone</Text>
-                  <Text style={s.profileInfoValue}>{profile.phone || "—"}</Text>
-                </View>
-              </View>
             </View>
           </View>
 
@@ -1995,43 +1997,42 @@ const s = StyleSheet.create<any>({
   },
 
   profileTop: {
-    // Large church picture on top, name centered under it (edit button pinned top-right).
+    flexDirection: "row",
     alignItems: "center",
-    paddingTop: 8,
-    marginBottom: 16,
+    gap: 14,
+    paddingVertical: 6,
   },
 
   profileAvatarRing: {
-    width: 148,
-    height: 148,
-    borderRadius: 74,
+    width: 128,
+    height: 128,
+    borderRadius: 64,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 3,
     borderColor: "rgba(217,179,95,0.85)",
     backgroundColor: "rgba(217,179,95,0.06)",
-    marginBottom: 14,
   },
   profileAvatarHalo: {
     position: "absolute",
-    width: 172,
-    height: 172,
-    borderRadius: 86,
+    width: 148,
+    height: 148,
+    borderRadius: 74,
     backgroundColor: "rgba(217,179,95,0.10)",
   },
 
   profileAvatar: {
-    width: 136,
-    height: 136,
-    borderRadius: 68,
+    width: 116,
+    height: 116,
+    borderRadius: 58,
     borderWidth: 1,
     borderColor: "rgba(0,0,0,0.55)",
   },
 
   profileIcon: {
-    width: 136,
-    height: 136,
-    borderRadius: 68,
+    width: 116,
+    height: 116,
+    borderRadius: 58,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.05)",
@@ -2054,9 +2055,13 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(217,179,95,0.24)",
   },
 
+  profileDetails: {
+    flex: 1,
+    minWidth: 0,
+  },
   profileTitleWrap: {
-    alignItems: "center",
-    paddingHorizontal: 28,
+    paddingRight: 34,
+    marginBottom: 10,
   },
   profileEyebrow: {
     color: LABEL_GOLD,
@@ -2065,23 +2070,20 @@ const s = StyleSheet.create<any>({
     marginBottom: 5,
     textTransform: "uppercase",
     letterSpacing: 1.1,
-    textAlign: "center",
   },
 
   profileChurch: {
     color: TEXT_PRIMARY,
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: "900",
-    lineHeight: 30,
+    lineHeight: 25,
     letterSpacing: 0.2,
-    textAlign: "center",
   },
   profileVerifiedRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
     gap: 5,
-    marginTop: 6,
+    marginTop: 4,
   },
   profileVerifiedText: {
     color: TEXT_SECONDARY,
@@ -2091,12 +2093,7 @@ const s = StyleSheet.create<any>({
   },
 
   profileInfoList: {
-    gap: 10,
-    padding: 12,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.16)",
-    backgroundColor: "rgba(0,0,0,0.30)",
+    gap: 8,
   },
 
   profileInfoRow: {
