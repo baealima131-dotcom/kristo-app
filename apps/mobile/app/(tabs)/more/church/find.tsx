@@ -616,7 +616,6 @@ function ChurchCard({
   onViewProfile,
   onRequest,
   onCancel,
-  onUseId,
   requesting,
   cancelling,
   pendingRequest,
@@ -625,7 +624,6 @@ function ChurchCard({
   onViewProfile: (ch: ChurchRow) => void;
   onRequest: (ch: ChurchRow) => void;
   onCancel: (ch: ChurchRow) => void;
-  onUseId: (ch: ChurchRow) => void;
   requesting: boolean;
   cancelling: boolean;
   pendingRequest: PendingJoinRequest | null;
@@ -692,31 +690,24 @@ function ChurchCard({
       <View style={s.cardDivider} />
 
       <View style={s.cardActions}>
+        {/* One row: Send Request (main, gold) beside View Profile (secondary). */}
         <ScalePress
           onPress={handlePrimaryAction}
           disabled={joinButton.disabled}
-          style={[s.primaryBtnCompact, joinButton.disabled && s.btnDisabled]}
+          style={[s.primaryBtnCompact, s.cardActionPrimary, joinButton.disabled && s.btnDisabled]}
           pressedScale={0.985}
         >
-          <Text style={s.primaryBtnText} numberOfLines={1}>
+          <Text style={s.primaryBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
             {joinButton.label}
           </Text>
         </ScalePress>
 
-        <View style={s.secondaryActionRow}>
-          <ScalePress onPress={() => onViewProfile(church)} style={[s.linkBtn, s.secondaryActionBtn]} pressedScale={0.98}>
-            <Text style={s.linkBtnText} numberOfLines={1}>
-              View Profile
-            </Text>
-            <Ionicons name="arrow-forward" size={14} color={GOLD} />
-          </ScalePress>
-
-          <ScalePress onPress={() => onUseId(church)} style={[s.ghostBtn, s.secondaryActionBtn]} pressedScale={0.98}>
-            <Text style={s.ghostBtnText} numberOfLines={1}>
-              Use ID
-            </Text>
-          </ScalePress>
-        </View>
+        <ScalePress onPress={() => onViewProfile(church)} style={[s.linkBtn, s.cardActionSecondary]} pressedScale={0.98}>
+          <Text style={s.linkBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+            View Profile
+          </Text>
+          <Ionicons name="arrow-forward" size={14} color={GOLD} />
+        </ScalePress>
       </View>
     </View>
   );
@@ -1121,7 +1112,6 @@ export default function ChurchFindScreen() {
                 onViewProfile={openChurchOverview}
                 onRequest={requestJoin}
                 onCancel={cancelPendingRequest}
-                onUseId={useId}
                 requesting={requestingId === c.id}
                 cancelling={cancellingId === c.id}
                 pendingRequest={pendingRequest}
@@ -1374,7 +1364,9 @@ const s = StyleSheet.create<any>({
     backgroundColor: "rgba(232,196,110,0.22)",
     marginVertical: 14,
   },
-  cardActions: { gap: 10 },
+  cardActions: { flexDirection: "row", alignItems: "stretch", gap: 10 },
+  cardActionPrimary: { flex: 1.25, minHeight: 46 },
+  cardActionSecondary: { flex: 1, minHeight: 46 },
 
   primaryBtnCompact: {
     minHeight: 48,
@@ -1391,8 +1383,6 @@ const s = StyleSheet.create<any>({
   primaryBtnText: { color: "#07101A", fontWeight: "950", fontSize: 14, letterSpacing: 0.6 },
   btnDisabled: { opacity: 0.72 },
 
-  secondaryActionRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  secondaryActionBtn: { flex: 1, minWidth: 128 },
 
   linkBtn: {
     minHeight: 44,
@@ -1408,22 +1398,6 @@ const s = StyleSheet.create<any>({
   },
   linkBtnText: { color: GOLD, fontWeight: "950", fontSize: 13, letterSpacing: 0.5 },
 
-  ghostBtn: {
-    minHeight: 44,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 12,
-    backgroundColor: "rgba(86,139,255,0.10)",
-    borderWidth: 1.3,
-    borderColor: "rgba(120,170,255,0.70)",
-  },
-  ghostBtnText: {
-    color: "#8FB5FF",
-    fontWeight: "950",
-    fontSize: 13,
-    letterSpacing: 0.5,
-  },
 
   centerBox: { marginTop: 28, alignItems: "center", gap: 12, paddingVertical: 24 },
   centerText: { color: "rgba(255,255,255,0.62)", fontWeight: "800" },
