@@ -365,7 +365,8 @@ export async function fetchFeedComments(postId: string, options?: { bypassCache?
       ids: comments.map((c) => c.id),
     });
 
-    return { ok: true as const, comments, discussionCount };
+    // The post itself comes back with its comments; the Church tab post screen shows it.
+    return { ok: true as const, comments, discussionCount, item: res?.data?.item || null };
   } catch (error: any) {
     console.log("KRISTO_COMMENT_FAILED", {
       postId: cleanPostId,

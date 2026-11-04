@@ -3781,9 +3781,25 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const item = await getFeedItemById(requestPostId);
 
     if (!item) return err("Feed item not found", 404);
+    // Same visibility rule as reading the post: no comments on posts of another church.
+    if (!isDiscoverableFeedItem(item, churchId)) {
+      console.log("KRISTO_COMMENT_WRITE_DENIED", { postId: requestPostId, userId: viewerUserId, reason: "not_visible" });
+      return err("Feed item not found", 404);
+    }
 
     const itemChurchId = String(item.churchId || churchId);
     const canonicalPostId = String(item.id || requestPostId).trim();
+
+    // A reply must point at an existing comment on this same post.
+    const replyParentId = action === "add_reply" ? cleanText(body?.parentCommentId, 240) : "";
+    if (action === "add_reply") {
+      if (!replyParentId) return err("parentCommentId is required", 400);
+      const parent = await findFeedCommentById(replyParentId);
+      if (!parent || !commentPostIdAliases(item, requestPostId).has(String(parent.postId || "").trim())) {
+        console.log("KRISTO_COMMENT_WRITE_DENIED", { postId: canonicalPostId, userId: viewerUserId, reason: "parent_not_on_post" });
+        return err("Parent comment not found", 404);
+      }
+    }
 
     console.log("KRISTO_COMMENT_BACKEND_WRITE_START", {
       postId: canonicalPostId,
@@ -3799,10 +3815,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       id: makeId("comment"),
       churchId: itemChurchId,
       postId: canonicalPostId,
-      parentCommentId:
-        action === "add_reply"
-          ? cleanText(body?.parentCommentId, 240)
-          : undefined,
+      parentCommentId: replyParentId || undefined,
       text,
       createdAt: new Date().toISOString(),
       createdBy: viewerUserId,

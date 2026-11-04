@@ -11,15 +11,15 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
-  TextInput,
 } from "react-native";
-import { Stack, useRouter, router, useLocalSearchParams } from "expo-router";
+import { Stack, useRouter, router, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { buildKristoRequestHeaders, getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { feedList, subscribe, feedToggleLike, feedToggleSave, type FeedItem } from "@/src/lib/churchFeedStore";
 import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
+import { apiGet } from "@/src/lib/kristoApi";
 
 const S = { pad: 16 };
 
@@ -391,33 +391,34 @@ type ChurchProfile = {
   name?: string;
 };
 
-type ApiComment = {
-  id: string;
-  activeChurchId: string;
-  postId: string;
-  parentCommentId?: string;
-  text: string;
-  createdAt: string;
-  createdBy: string;
-  replies?: ApiComment[];
-};
+const CHURCH_TAB_FEED_KINDS = new Set(["announcement", "post", "testimony", "counsel", "prayer_request"]);
 
-type ApiDetail = {
-  item: {
-    id: string;
-    activeChurchId: string;
-    type: "post" | "announcement" | "video";
-    title?: string;
-    text?: string;
-    videoUrl?: string;
-    createdAt: string;
-    createdBy: string;
-    commentCount?: number;
-    replyCount?: number;
-    totalDiscussionCount?: number;
-  };
-  comments: ApiComment[];
-};
+/** Server church post -> Church tab card. Media schedule cards and deleted posts are not shown here. */
+function toChurchTabFeedItem(raw: any): FeedItem | null {
+  const id = String(raw?.id || "").trim();
+  if (!id || raw?.deleted || raw?.deletedAt) return null;
+  if ((Array.isArray(raw?.scheduleSlots) && raw.scheduleSlots.length > 0) || raw?.scheduleType) return null;
+  const kindRaw = String(raw?.kind || raw?.type || "post").trim();
+  const firstImage = Array.isArray(raw?.images) ? raw.images[0] : "";
+  const image = String(raw?.mediaUri || raw?.imageUri || firstImage || "").trim();
+  const videoUrl = String(raw?.videoUrl || "").trim();
+  return {
+    id,
+    kind: (CHURCH_TAB_FEED_KINDS.has(kindRaw) ? kindRaw : "post") as FeedItem["kind"],
+    title: String(raw?.title || "").trim() || undefined,
+    body: String(raw?.text || raw?.body || "").trim(),
+    mediaType: videoUrl ? "video" : /^https?:\/\//i.test(image) ? "image" : "none",
+    mediaUri: /^https?:\/\//i.test(image) ? image : undefined,
+    videoUrl: videoUrl || undefined,
+    posterUri: String(raw?.posterUri || raw?.videoPosterUri || "").trim() || undefined,
+    createdAt: String(raw?.createdAt || ""),
+    actorLabel: String(raw?.actorLabel || raw?.authorName || "").trim() || undefined,
+    churchLabel: String(raw?.churchName || raw?.churchLabel || "").trim() || undefined,
+    likeCount: Number(raw?.likeCount || 0),
+    commentCount: Number(raw?.commentCount || 0),
+    totalDiscussionCount: Number(raw?.totalDiscussionCount || 0) || undefined,
+  } as FeedItem;
+}
 
 export default function ChurchTabFeed() {
   const router = useRouter();
@@ -555,8 +556,38 @@ const goOverview = () => router.push("/church/overview");
     return subscribe(() => setTick((t) => t + 1));
   }, []);
 
+  // Church posts from the server (signed session), next to posts created on this device.
+  const [serverItems, setServerItems] = useState<FeedItem[]>([]);
+  const loadServerFeed = useCallback(async () => {
+    if (!hasChurch || !effectiveAuthUserId) return;
+    const res: any = await apiGet(
+      "/api/church/feed?scope=church&limit=30",
+      {
+        headers: getKristoHeaders({
+          userId: effectiveAuthUserId,
+          role: effectiveAuthRole as any,
+          churchId: activeChurchId,
+        }) as Record<string, string>,
+      },
+      { screen: "ChurchTabFeed", dedupe: false }
+    );
+    if (!res?.ok || !Array.isArray(res?.data)) return;
+    setServerItems(res.data.map(toChurchTabFeedItem).filter(Boolean) as FeedItem[]);
+  }, [hasChurch, effectiveAuthUserId, effectiveAuthRole, activeChurchId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadServerFeed();
+    }, [loadServerFeed])
+  );
+
   const insets = useSafeAreaInsets();
-  const data = useMemo(() => feedList(), [tick]);
+  const data = useMemo(() => {
+    const seen = new Set<string>();
+    return [...feedList(), ...serverItems]
+      .filter((x) => (seen.has(x.id) ? false : (seen.add(x.id), true)))
+      .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+  }, [tick, serverItems]);
   const [truncatedMap, setTruncatedMap] = useState<Record<string, boolean>>({});
 
   const setItemTruncated = useCallback((id: string, value: boolean) => {
@@ -591,12 +622,13 @@ const goOverview = () => router.push("/church/overview");
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  // Post screen: app/(tabs)/church/post/[id].tsx (the old /church/post/read/… route never existed).
   const openPostDetail = (id: string) => {
-    router.push((`/church/post/${id}`) as any);
+    router.push({ pathname: "/church/post/[id]", params: { id, comments: "1" } } as any);
   };
 
   const openReadMore = (id: string) => {
-    router.push((`/church/post/read/${id}`) as any);
+    router.push({ pathname: "/church/post/[id]", params: { id } } as any);
   };
 
   const profileSlideX = React.useRef(new Animated.Value(SCREEN_WIDTH + 40)).current;
@@ -878,106 +910,8 @@ function FeedCard({
   onOpenDetail: () => void;
   onBodyLayout: (isTruncated: boolean) => void;
 }) {
-  const [commentsOpen, setCommentsOpen] = useState(false);
-  const [loadingComments, setLoadingComments] = useState(false);
-  const [posting, setPosting] = useState(false);
-  const [detail, setDetail] = useState<ApiDetail | null>(null);
-  const [composer, setComposer] = useState("");
-  const [replyTo, setReplyTo] = useState<ApiComment | null>(null);
-
-  const loadComments = useCallback(async () => {
-    try {
-      if (!base || !item.id || !activeChurchId || !effectiveAuthUserId) return;
-      setLoadingComments(true);
-
-      const r = await fetch(`${base}/api/church/feed?id=${encodeURIComponent(String(item.id))}`, {
-        headers: {
-          accept: "application/json",
-          // Signed session token + identity; the backend no longer accepts x-kristo-user-id alone.
-          ...(getKristoHeaders({
-            userId: effectiveAuthUserId,
-            role: effectiveAuthRole as any,
-            churchId: activeChurchId,
-          }) as Record<string, string>),
-        },
-      });
-
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) {
-        setDetail(null);
-        return;
-      }
-
-      setDetail(j.data as ApiDetail);
-    } finally {
-      setLoadingComments(false);
-    }
-  }, [base, activeChurchId, effectiveAuthRole, effectiveAuthUserId, item.id]);
-
-  const toggleComments = async () => {
-    const next = !commentsOpen;
-    setCommentsOpen(next);
-    if (next) {
-      await loadComments();
-    } else {
-      setReplyTo(null);
-      setComposer("");
-    }
-  };
-
-  const submitCommentOrReply = async () => {
-    const text = String(composer || "").trim();
-if (!text) return;
-    if (!base || !item.id || !activeChurchId || !effectiveAuthUserId) return;
-
-    try {
-      setPosting(true);
-
-      const body = replyTo
-        ? {
-            action: "add_reply",
-            postId: item.id,
-            parentCommentId: replyTo.id,
-            text,
-          }
-        : {
-            action: "add_comment",
-            postId: item.id,
-            text,
-          };
-
-      const r = await fetch(`${base}/api/church/feed`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json",
-          // Signed session token + identity; the backend no longer accepts x-kristo-user-id alone.
-          ...(getKristoHeaders({
-            userId: effectiveAuthUserId,
-            role: effectiveAuthRole as any,
-            churchId: activeChurchId,
-          }) as Record<string, string>),
-        },
-        body: JSON.stringify(body),
-      });
-
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) {
-        Alert.alert("Failed", String(j?.error || "Could not send comment."));
-        return;
-      }
-
-      setComposer("");
-      setReplyTo(null);
-      await loadComments();
-    } finally {
-      setPosting(false);
-    }
-  };
-
-  const totalComments = Number((detail?.item as any)?.commentCount ?? (item as any)?.commentCount ?? 0);
-  const totalReplies = Number(detail?.item?.replyCount ?? 0);
-  const totalDiscussion = Number(detail?.item?.totalDiscussionCount ?? (totalComments + totalReplies));
+  // Comments open on the post screen (app/(tabs)/church/post/[id].tsx).
+  const totalComments = Number((item as any)?.totalDiscussionCount ?? (item as any)?.commentCount ?? 0);
   const theme = kindTheme(item.kind);
   const isPrayerRequest = String((item as any)?.kind || "") === "prayer_request";
   const isGlobalPrayer = isPrayerRequest && /^global prayer request:/i.test(String(item.title || ""));
@@ -1305,11 +1239,7 @@ if (!text) return;
                 e.stopPropagation();
                 onOpenDetail();
               }}
-              style={[
-                styles.actionBtn,
-                styles.prayerCommentBtn,
-                commentsOpen && styles.actionBtnCommentsOpen
-              ]}
+              style={[styles.actionBtn, styles.prayerCommentBtn]}
             >
               <View style={styles.prayerBtnInner}>
                 <View style={styles.actionContent}>
@@ -1351,7 +1281,7 @@ if (!text) return;
                 e.stopPropagation();
                 onOpenDetail();
               }}
-              style={[styles.actionBtn, commentsOpen && { borderColor: theme.softBorder, backgroundColor: theme.softBg }]}
+              style={styles.actionBtn}
             >
               <View style={styles.actionContent}>
                 <Ionicons
