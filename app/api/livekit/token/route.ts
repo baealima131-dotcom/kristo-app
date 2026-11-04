@@ -9,6 +9,10 @@ import {
   readChurchSchedule,
 } from "@/app/api/_lib/liveScheduleAuthority";
 import { readLiveJsonFile } from "@/app/api/_lib/store/liveDb";
+import {
+  isChurchLiveControlLiveId,
+  isChurchLiveControlSuspended,
+} from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const runtime = "nodejs";
 
@@ -45,11 +49,18 @@ export async function POST(req: Request) {
     const approvedOnStage = Object.values((liveRecord?.requests as Record<string, any>) || {}).some(
       (r: any) => String(r?.userId || "") === a.userId && r?.approved === true && r?.onStage !== false
     );
+    // Church Live Control suspension removes slot-based publishing (a claimed or active slot);
+    // a read failure fails closed.
+    const slotPublishSuspended =
+      wantsPublish &&
+      isChurchLiveControlLiveId(roomName) &&
+      (await isChurchLiveControlSuspended(a.churchId, a.userId).catch(() => true));
     const allowedToPublish =
       wantsPublish &&
       ((await canDriveLiveSchedule(a, liveRecord, roomName)) ||
-        schedule.cards.some((card: any) => String(card?.claimedByUserId || "") === a.userId) ||
-        (!!liveRecord && isServerActiveSlotOwner(liveRecord, a.userId, Date.now())) ||
+        (!slotPublishSuspended &&
+          (schedule.cards.some((card: any) => String(card?.claimedByUserId || "") === a.userId) ||
+            (!!liveRecord && isServerActiveSlotOwner(liveRecord, a.userId, Date.now())))) ||
         approvedOnStage);
 
     /*

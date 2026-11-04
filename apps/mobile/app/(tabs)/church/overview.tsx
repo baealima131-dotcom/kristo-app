@@ -38,6 +38,10 @@ import { ChurchOverviewSkeleton } from "@/src/components/PremiumTabSkeletons";
 import { onChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import {
+  fetchLiveControlSelfStatus,
+  lastKnownLiveControlStatus,
+} from "@/src/lib/churchLiveControlAccess";
+import {
   avatarCacheBust,
   mergeChurchAvatarForDisplay,
   normalizeAvatarUpdatedAt,
@@ -988,6 +992,29 @@ const contentOpacity = useRef(new Animated.Value(0)).current;
     (canOpenMediaStudio || canManageMinistryMediaAccess);
   const showMemberChurchAccessCard = !invitePreview && isMember && !showMediaControlCard;
 
+  // Church Live Control suspension locks Claim Media Slot (the server refuses it as well).
+  const [liveControlSuspended, setLiveControlSuspended] = useState(
+    () => lastKnownLiveControlStatus(effectiveAuthUserId) === "Suspended"
+  );
+  const [checkingLiveControl, setCheckingLiveControl] = useState(false);
+  useEffect(() => {
+    if (!showMemberChurchAccessCard || !isFocused || !effectiveAuthUserId) return;
+    let alive = true;
+    void fetchLiveControlSelfStatus(effectiveAuthUserId).then((status) => {
+      if (alive && status) setLiveControlSuspended(status === "Suspended");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [showMemberChurchAccessCard, isFocused, effectiveAuthUserId]);
+
+  const showLiveControlSuspendedAlert = useCallback(() => {
+    Alert.alert(
+      "Access suspended",
+      "Your Church Live Control access is suspended. You cannot claim media slots until a church leader restores your access."
+    );
+  }, []);
+
   useEffect(() => {
     const next = {
       role,
@@ -1495,7 +1522,7 @@ setMediaTargets(
                 </LuxuryPressable>
 
                 <LuxuryPressable
-                  onPress={() => {
+                  onPress={async () => {
                     if (!churchId) {
                       Alert.alert(
                         "Church not found",
@@ -1504,11 +1531,27 @@ setMediaTargets(
                       return;
                     }
 
+                    if (liveControlSuspended) {
+                      showLiveControlSuspendedAlert();
+                      return;
+                    }
+                    if (checkingLiveControl) return;
+
                     console.log("KRISTO_CLAIM_MEDIA_SLOT_TAP", {
                       churchId,
                       userId: effectiveAuthUserId,
                       source: "church-overview",
                     });
+
+                    // Re-check on tap: a suspension made since this screen loaded applies now.
+                    setCheckingLiveControl(true);
+                    const status = await fetchLiveControlSelfStatus(effectiveAuthUserId);
+                    setCheckingLiveControl(false);
+                    if (status === "Suspended") {
+                      setLiveControlSuspended(true);
+                      showLiveControlSuspendedAlert();
+                      return;
+                    }
 
                     router.replace({
                       pathname: "/(tabs)/more/my-church-room/messages/[id]",
@@ -1526,17 +1569,24 @@ setMediaTargets(
                       },
                     } as any);
                   }}
-                  style={s.powerBtnGoldWrap}
+                  style={[s.powerBtnGoldWrap, liveControlSuspended && s.powerBtnSuspendedWrap]}
                 >
-                  <LinearGradient
-                    colors={["#F2D792", GOLD, "#A67C2E"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={s.powerBtnGold}
-                  >
-                    <Ionicons name="radio-outline" size={16} color="#0B0F17" />
-                    <Text style={s.powerBtnGoldText}>Claim Media Slot</Text>
-                  </LinearGradient>
+                  {liveControlSuspended ? (
+                    <View style={[s.powerBtnGold, s.powerBtnSuspended]}>
+                      <Ionicons name="lock-closed" size={15} color={GOLD_SOFT} />
+                      <Text style={s.powerBtnSuspendedText}>Access suspended</Text>
+                    </View>
+                  ) : (
+                    <LinearGradient
+                      colors={["#F2D792", GOLD, "#A67C2E"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={s.powerBtnGold}
+                    >
+                      <Ionicons name="radio-outline" size={16} color="#0B0F17" />
+                      <Text style={s.powerBtnGoldText}>Claim Media Slot</Text>
+                    </LinearGradient>
+                  )}
                 </LuxuryPressable>
               </View>
             </View>
@@ -2503,6 +2553,23 @@ const s = StyleSheet.create<any>({
     flexDirection: "row",
     gap: 7,
     overflow: "hidden",
+  },
+  powerBtnSuspendedWrap: {
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  powerBtnSuspended: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.32)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  powerBtnSuspendedText: {
+    color: GOLD_SOFT,
+    fontWeight: "900",
+    fontSize: 12,
+    lineHeight: 14,
+    letterSpacing: 0.2,
   },
   powerBtnGoldShimmer: {
     position: "absolute",

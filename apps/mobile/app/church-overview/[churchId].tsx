@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -11,6 +11,7 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { loadChurchProfileCache } from "@/src/lib/churchStore";
 import { getChurchOverviewCache, parseChurchOverviewProfileFields } from "@/src/lib/screenDataCache";
 import { avatarCacheBust } from "@/src/lib/avatarFreshness";
+import { fetchLiveControlSelfStatus, lastKnownLiveControlStatus } from "@/src/lib/churchLiveControlAccess";
 import {
   churchPublicPostTitle,
   resolveChurchProfileImageUrl,
@@ -97,8 +98,45 @@ export default function ChurchOverviewProfileScreen() {
       ].filter((stat) => stat.value != null)
     : [];
 
+  // Church Live Control suspension locks Claim Media Slot (the server refuses it as well).
+  const viewerUserId = String(session?.userId || "").trim();
+  const [liveControlSuspended, setLiveControlSuspended] = useState(
+    () => lastKnownLiveControlStatus(viewerUserId) === "Suspended"
+  );
+  const [checkingLiveControl, setCheckingLiveControl] = useState(false);
+  useEffect(() => {
+    if (!isMember || !viewerUserId) return;
+    let alive = true;
+    void fetchLiveControlSelfStatus(viewerUserId).then((status) => {
+      if (alive && status) setLiveControlSuspended(status === "Suspended");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [isMember, viewerUserId]);
+
+  const showLiveControlSuspendedAlert = () =>
+    Alert.alert(
+      "Access suspended",
+      "Your Church Live Control access is suspended. You cannot claim media slots until a church leader restores your access."
+    );
+
   const openMinistries = () => router.push("/more/ministries" as any);
-  const openClaimMediaSlot = () =>
+  const openClaimMediaSlot = async () => {
+    if (liveControlSuspended) {
+      showLiveControlSuspendedAlert();
+      return;
+    }
+    if (checkingLiveControl) return;
+    // Re-check on tap: a suspension made since this screen loaded applies now.
+    setCheckingLiveControl(true);
+    const status = await fetchLiveControlSelfStatus(viewerUserId);
+    setCheckingLiveControl(false);
+    if (status === "Suspended") {
+      setLiveControlSuspended(true);
+      showLiveControlSuspendedAlert();
+      return;
+    }
     router.push({
       pathname: "/(tabs)/more/my-church-room/messages/[id]",
       params: {
@@ -111,6 +149,7 @@ export default function ChurchOverviewProfileScreen() {
         assignmentId: "church-media-room",
       },
     } as any);
+  };
 
   const sendDisabled = c.requesting || !c.viewerState.canJoin || c.churchBlocked;
   // Member of another church (or blocked): Send Request stays disabled with a lock; the API refuses too.
@@ -238,12 +277,21 @@ export default function ChurchOverviewProfileScreen() {
                   <Ionicons name="grid-outline" size={17} color={BLUE_TEXT} />
                   <Text style={s.btnBlueText}>Ministries</Text>
                 </Pressable>
-                <Pressable onPress={openClaimMediaSlot} style={[s.btn, s.btnGold]}>
-                  <Ionicons name="radio-outline" size={17} color="#07101A" />
-                  <Text style={s.btnGoldText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
-                    Claim Media Slot
-                  </Text>
-                </Pressable>
+                {liveControlSuspended ? (
+                  <Pressable onPress={openClaimMediaSlot} style={[s.btn, s.btnGoldOutline, s.btnSuspended]}>
+                    <Ionicons name="lock-closed" size={15} color={GOLD} />
+                    <Text style={s.btnGoldOutlineText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                      Access suspended
+                    </Text>
+                  </Pressable>
+                ) : (
+                  <Pressable onPress={openClaimMediaSlot} style={[s.btn, s.btnGold]}>
+                    <Ionicons name="radio-outline" size={17} color="#07101A" />
+                    <Text style={s.btnGoldText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                      Claim Media Slot
+                    </Text>
+                  </Pressable>
+                )}
               </View>
             </View>
           ) : (
@@ -528,6 +576,7 @@ const s = StyleSheet.create({
   btnGoldOutline: { borderWidth: 1.3, borderColor: "rgba(232,196,110,0.70)", backgroundColor: "rgba(244,201,93,0.10)" },
   btnGoldOutlineText: { color: GOLD, fontWeight: "900", fontSize: 13 },
   btnDisabled: { opacity: 0.5 },
+  btnSuspended: { opacity: 0.72 },
 
   statsRow: { flexDirection: "row", gap: 8 },
   statChip: {

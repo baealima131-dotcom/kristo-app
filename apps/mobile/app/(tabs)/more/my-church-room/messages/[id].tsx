@@ -124,6 +124,12 @@ import { getApiBase } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
+  fetchLiveControlSelfStatus,
+  isLiveControlSuspendedError,
+  lastKnownLiveControlStatus,
+  rememberLiveControlStatus,
+} from "@/src/lib/churchLiveControlAccess";
+import {
   DM_REQUEST_MESSAGE_LIMIT,
   fetchDirectMessageConversationSettings,
   markDirectMessageThreadRead,
@@ -8152,6 +8158,11 @@ export default function MessageThreadScreen() {
             );
 
             if (!alive) return false;
+            if (isLiveControlSuspendedError(res)) {
+              rememberLiveControlStatus(selfId, "Suspended");
+              setLiveControlAccess("suspended");
+              return false;
+            }
 
             const rawRows = Array.isArray(res?.data) ? res.data : [];
             const visibleRows = filterVisibleRoomMessageRows(rawRows);
@@ -8638,8 +8649,30 @@ export default function MessageThreadScreen() {
   const [adminsOpen, setAdminsOpen] = useState(false);
   const [suspendedOpen, setSuspendedOpen] = useState(false);
 
-  const accessChecked = true;
-  const accessAllowed = true;
+  // Church Live Control: a suspended member gets no room access, from any entry point (Church
+  // Overview, Ministries, links). The server refuses their requests too; this keeps cached room
+  // content off screen.
+  const [liveControlAccess, setLiveControlAccess] = useState<"checking" | "allowed" | "suspended">(() => {
+    const known = lastKnownLiveControlStatus(effectiveAuthUserId);
+    if (known === "Suspended") return "suspended";
+    return known === "Active" ? "allowed" : "checking";
+  });
+
+  useEffect(() => {
+    if (!isChurchLiveControlRoom || !isFocused || !effectiveAuthUserId) return;
+    let alive = true;
+    void fetchLiveControlSelfStatus(effectiveAuthUserId).then((status) => {
+      if (!alive) return;
+      // Unknown (offline): keep the room usable; the server still blocks a suspended member.
+      setLiveControlAccess(status === "Suspended" ? "suspended" : "allowed");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [isChurchLiveControlRoom, isFocused, effectiveAuthUserId]);
+
+  const accessChecked = !isChurchLiveControlRoom || liveControlAccess !== "checking";
+  const accessAllowed = !isChurchLiveControlRoom || liveControlAccess !== "suspended";
 
   const headerTitle = useMemo(
     () =>
@@ -14117,6 +14150,32 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     );
   }
 
+  if (!accessAllowed && isChurchLiveControlRoom) {
+    return (
+      <View style={[s.screen, s.suspendedGateScreen, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+        <View style={s.suspendedGateCard}>
+          <View style={s.suspendedGateIcon}>
+            <Ionicons name="lock-closed" size={26} color={GOLD} />
+          </View>
+          <Text style={t.suspendedGateTitle}>Access suspended</Text>
+          <Text style={t.suspendedGateSub}>
+            Your Church Live Control access is suspended. You cannot open the room or claim media
+            slots until a church leader restores your access.
+          </Text>
+          <Pressable
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else router.replace("/church/overview" as any);
+            }}
+            style={({ pressed }) => [s.suspendedGateBtn, pressed ? ({ opacity: 0.9 } as ViewStyle) : null]}
+          >
+            <Text style={t.suspendedGateBtnText}>Back</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   if (!accessAllowed) {
     return (
       <View style={[s.screen, { paddingTop: insets.top, alignItems: "center", justifyContent: "center" }]}>
@@ -15055,9 +15114,18 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       >
         <View style={s.menuOverlay}>
           <Pressable style={s.menuBackdrop} onPress={() => setAddMemberOpen(false)} />
-          <View style={s.memberSheet}>
+          <View
+            style={[
+              s.memberSheet,
+              // Android: dark/gold sheet that sits above the system navigation bar.
+              Platform.OS === "android" ? [s.addSuspendSheetAndroid, { marginBottom: insets.bottom + 10 }] : null,
+            ]}
+          >
+            {Platform.OS === "android" ? <View style={s.addSuspendHandleAndroid} /> : null}
             <View style={s.memberSheetHeader}>
-              <Text style={t.menuTitle}>{isChurchLiveControlRoom ? "ADD & Suspend" : "ADD & Remove"}</Text>
+              <Text style={[t.menuTitle, Platform.OS === "android" ? t.addSuspendTitleAndroid : null]}>
+                {isChurchLiveControlRoom ? "ADD & Suspend" : "ADD & Remove"}
+              </Text>
               <Text style={t.menuSub}>
                 {isChurchLiveControlRoom
                   ? `Restore or suspend access for ${headerTitle}`
@@ -15126,6 +15194,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 })
               }
               keyExtractor={(item: any) => String(item.userId || item.id)}
+              style={Platform.OS === "android" ? s.addSuspendListAndroid : undefined}
               contentContainerStyle={s.memberListContent}
               ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
               ListEmptyComponent={
@@ -15256,9 +15325,18 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     : !!selectedRemoveMemberId && !selectedRemoveProtected;
                 return [
                   s.menuCancelBtn,
+                  Platform.OS === "android" ? s.addSuspendBtnAndroid : null,
                   {
-                    backgroundColor: enabled ? GOLD : "rgba(255,255,255,0.08)",
-                    borderColor: enabled ? GOLD : "rgba(255,255,255,0.12)",
+                    backgroundColor: enabled
+                      ? GOLD
+                      : Platform.OS === "android"
+                        ? "rgba(217,179,95,0.06)"
+                        : "rgba(255,255,255,0.08)",
+                    borderColor: enabled
+                      ? GOLD
+                      : Platform.OS === "android"
+                        ? "rgba(217,179,95,0.26)"
+                        : "rgba(255,255,255,0.12)",
                   },
                   pressed && enabled ? ({ opacity: 0.9 } as ViewStyle) : null,
                 ];
@@ -15271,7 +15349,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     color:
                       (addMemberMode === "add" ? selectedAddMemberId : selectedRemoveMemberId)
                         ? "#0B0F17"
-                        : "rgba(255,255,255,0.45)",
+                        : Platform.OS === "android"
+                          ? "rgba(217,179,95,0.55)"
+                          : "rgba(255,255,255,0.45)",
                   },
                 ]}
               >
@@ -15297,9 +15377,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
             <Pressable
               onPress={() => setAddMemberOpen(false)}
-              style={({ pressed }) => [s.menuCancelBtn, pressed ? ({ opacity: 0.9 } as ViewStyle) : null]}
+              style={({ pressed }) => [
+                s.menuCancelBtn,
+                Platform.OS === "android" ? [s.addSuspendBtnAndroid, s.addSuspendCancelAndroid] : null,
+                pressed ? ({ opacity: 0.9 } as ViewStyle) : null,
+              ]}
             >
-              <Text style={t.menuCancelText}>Cancel</Text>
+              <Text style={[t.menuCancelText, Platform.OS === "android" ? t.addSuspendCancelTextAndroid : null]}>
+                Cancel
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -18380,6 +18466,63 @@ videoEditorSplitTimelineBadgeText: {
   } as TextStyle,
 
   screen: { flex: 1, backgroundColor: BG, paddingHorizontal: PAD } as ViewStyle,
+  addSuspendSheetAndroid: {
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.42)",
+    backgroundColor: "#0B0F17",
+    borderRadius: 30,
+    elevation: 0,
+    boxShadow: "0 0 26px rgba(217,179,95,0.20)",
+    paddingTop: 8,
+  } as ViewStyle,
+  addSuspendHandleAndroid: {
+    alignSelf: "center",
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    marginBottom: 4,
+    backgroundColor: "rgba(217,179,95,0.45)",
+  } as ViewStyle,
+  addSuspendListAndroid: { flexGrow: 0, flexShrink: 1 } as ViewStyle,
+  addSuspendBtnAndroid: { minHeight: 46, borderRadius: 18, marginTop: 9 } as ViewStyle,
+  addSuspendCancelAndroid: {
+    borderColor: "rgba(217,179,95,0.45)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  } as ViewStyle,
+  suspendedGateScreen: { alignItems: "center", justifyContent: "center", backgroundColor: "#0B0F17" } as ViewStyle,
+  suspendedGateCard: {
+    width: "100%",
+    alignItems: "center",
+    paddingHorizontal: 22,
+    paddingVertical: 28,
+    borderRadius: 28,
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.42)",
+    backgroundColor: "rgba(14,19,30,0.98)",
+    boxShadow: "0 0 22px rgba(217,179,95,0.18)",
+  } as ViewStyle,
+  suspendedGateIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.45)",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    marginBottom: 16,
+  } as ViewStyle,
+  suspendedGateBtn: {
+    alignSelf: "stretch",
+    minHeight: 48,
+    marginTop: 22,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.55)",
+    backgroundColor: "rgba(217,179,95,0.12)",
+  } as ViewStyle,
 
   header: {
     flexDirection: "row",
@@ -20918,6 +21061,18 @@ const t = StyleSheet.create({
   input: { color: "white", fontWeight: "700", fontSize: 15, lineHeight: 21 } as TextStyle,
 
   emptyTitle: { color: "white", fontWeight: "900", fontSize: 16 } as TextStyle,
+  addSuspendTitleAndroid: { color: "#F4D06F", letterSpacing: 0.6 } as TextStyle,
+  addSuspendCancelTextAndroid: { color: "#D9B35F" } as TextStyle,
+  suspendedGateTitle: { color: "white", fontWeight: "900", fontSize: 20, letterSpacing: 0.2 } as TextStyle,
+  suspendedGateSub: {
+    marginTop: 8,
+    color: "rgba(255,255,255,0.66)",
+    fontWeight: "700",
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: "center",
+  } as TextStyle,
+  suspendedGateBtnText: { color: "#D9B35F", fontWeight: "900", fontSize: 14 } as TextStyle,
   emptySub: { marginTop: 6, color: "rgba(255,255,255,0.62)", fontWeight: "700", fontSize: 12 } as TextStyle,
 
   pendingChipName: {

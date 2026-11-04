@@ -33,6 +33,10 @@ import {
   slotTransitionLitePayload,
   upsertSlotScheduleSnapshot,
 } from "@/lib/liveSlotTransition";
+import {
+  denyIfLiveControlSuspended,
+  isChurchLiveControlLiveId,
+} from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const runtime = "nodejs";
 
@@ -654,9 +658,18 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: false, error: "liveId is required" }, { status: 400 });
     }
 
+    const requestUserId = String(body.userId || a.userId || "").trim();
+    // A suspended member cannot request a Church Live Control slot (nor be put in one).
+    if (isChurchLiveControlLiveId(requestLiveId)) {
+      const suspended = await denyIfLiveControlSuspended(a.churchId, requestUserId, {
+        self: requestUserId === a.userId,
+        source: "church.live.claim-schedule-request",
+      });
+      if (suspended) return suspended;
+    }
+
     live.liveId = requestLiveId;
 
-    const requestUserId = String(body.userId || a.userId || "").trim();
     const slotId = String(body.slotId || "").trim();
     const name = await resolvePublicDisplayName(requestUserId, "Member");
     const avatar = String(body.avatar || body.avatarUri || "M").trim() || "M";

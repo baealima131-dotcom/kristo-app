@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
+import java.util.WeakHashMap
 import androidx.core.view.WindowCompat
 
 import com.facebook.react.ReactActivity
@@ -18,6 +19,10 @@ import com.facebook.react.views.modal.ReactModalHostView
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+  /** Modal windows already given the navy bar (and a layout listener for modals opened inside them). */
+  private val navyModalWindows = WeakHashMap<Window, Boolean>()
+  private var modalScanPending = false
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
@@ -28,6 +33,11 @@ class MainActivity : ReactActivity() {
     // @generated end expo-splashscreen
     super.onCreate(null)
     applyKristoNavigationBar()
+    // A modal opened while another one is showing (or right after it closes) gives the activity
+    // no focus change; its host view still lays out in this tree, so scan then.
+    window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
+      if (!hasWindowFocus()) scheduleModalNavigationBarScan()
+    }
   }
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -37,10 +47,19 @@ class MainActivity : ReactActivity() {
     } else {
       // A React Native <Modal> opened: it has its own dialog window, which RN sets up edge-to-edge
       // with a white contrast scrim. Give it the same navy bar once RN is done with it.
-      val decor = window.decorView
-      decor.post { applyKristoNavigationBarToModals(decor) }
-      decor.postDelayed({ applyKristoNavigationBarToModals(decor) }, 150)
+      scheduleModalNavigationBarScan()
     }
+  }
+
+  private fun scheduleModalNavigationBarScan() {
+    if (modalScanPending) return
+    modalScanPending = true
+    val decor = window.decorView
+    decor.post {
+      modalScanPending = false
+      applyKristoNavigationBarToModals(decor)
+    }
+    decor.postDelayed({ applyKristoNavigationBarToModals(decor) }, 150)
   }
 
   /**
@@ -68,6 +87,12 @@ class MainActivity : ReactActivity() {
       val dialogWindow = dialog?.window
       if (dialog != null && dialog.isShowing && dialogWindow != null) {
         applyKristoNavigationBarTo(dialogWindow)
+        val dialogDecor = dialogWindow.decorView
+        if (navyModalWindows.put(dialogWindow, true) == null) {
+          dialogDecor.viewTreeObserver.addOnGlobalLayoutListener { scheduleModalNavigationBarScan() }
+        }
+        // A modal rendered inside this modal lives in the dialog's own view tree.
+        applyKristoNavigationBarToModals(dialogDecor)
       }
     }
     if (view is ViewGroup) {

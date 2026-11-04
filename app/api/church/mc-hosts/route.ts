@@ -7,6 +7,10 @@ import {
   updateLiveJsonFile as updateJsonFile,
 } from "@/app/api/_lib/store/liveDb";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
+import {
+  CHURCH_LIVE_CONTROL_ROOM_ID,
+  denyIfLiveControlSuspended,
+} from "@/app/api/_lib/churchLiveControlSuspension";
 
 type McHostsRow = {
   assignmentId: string;
@@ -115,6 +119,17 @@ export async function POST(req: NextRequest) {
 
     if (!isCurrentHost || JSON.stringify(hostUserIds) !== JSON.stringify(allowedQuitIds)) {
       return json({ ok: false, error: "Only leaders can manage MC+ Hosts. Hosts can only quit themselves." } satisfies ApiErr, { status: 403 });
+    }
+  }
+
+  // Church Live Control: a suspended member cannot be made an MC+ Host.
+  if (assignmentId === CHURCH_LIVE_CONTROL_ROOM_ID) {
+    for (const hostId of hostUserIds.filter((id) => !existingIds.includes(id))) {
+      const suspended = await denyIfLiveControlSuspended(churchId, hostId, {
+        self: hostId === viewer.userId,
+        source: "mc-hosts.POST",
+      });
+      if (suspended) return suspended;
     }
   }
 

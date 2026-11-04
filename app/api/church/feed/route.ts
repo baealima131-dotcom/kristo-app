@@ -123,6 +123,10 @@ import {
   filterHomeFeedRowsBySearchQuery,
   parseHomeFeedSearchQueryParam,
 } from "@/app/api/_lib/homeFeedSearch";
+import {
+  CHURCH_LIVE_CONTROL_ROOM_ID,
+  denyIfLiveControlSuspended,
+} from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const runtime = "nodejs";
 
@@ -2059,6 +2063,12 @@ async function isMediaHostForChurch(churchId: string, userId: string) {
 
 async function canAccessMediaStorage(churchId: string, role: unknown, userId: string) {
   return isPastorOrAdminRole(role) || (await isMediaHostForChurch(churchId, userId));
+}
+
+/** A feed schedule of Church Live Control (church-media-room), not of a ministry room. */
+function isChurchLiveControlSchedule(item: any, body: any) {
+  const ministryId = resolveScheduleMinistryId(item, body);
+  return !ministryId || ministryId === CHURCH_LIVE_CONTROL_ROOM_ID;
 }
 
 function resolveScheduleMinistryId(item: any, body: any) {
@@ -4153,6 +4163,13 @@ const postId = cleanText(body?.postId, 240);
       });
     }
 
+    if (isChurchLiveControlSchedule(item, body)) {
+      const suspended = await denyIfLiveControlSuspended(churchId, viewerUserId, {
+        source: "feed.claim_schedule_slot",
+      });
+      if (suspended) return suspended;
+    }
+
     const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
     const slotIndex = slots.findIndex((slot: any) => String(slot?.id || "") === String(slotId));
     if (slotIndex < 0) return err("Slot not found", 404);
@@ -4282,6 +4299,14 @@ const item = await getFeedItemById(postId);
 
     if (existing.locked && existingOwner && existingOwner !== targetUserId) {
       return err("Slot is locked", 409);
+    }
+
+    if (targetUserId !== existingOwner && isChurchLiveControlSchedule(item, body)) {
+      const suspended = await denyIfLiveControlSuspended(churchId, targetUserId, {
+        self: targetUserId === viewerUserId,
+        source: "feed.assign_schedule_slot",
+      });
+      if (suspended) return suspended;
     }
 
     if (existingOwner && existingOwner !== targetUserId) {

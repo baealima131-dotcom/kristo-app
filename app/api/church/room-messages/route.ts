@@ -15,6 +15,7 @@ import {
   type VerifiedChurchActor,
 } from "@/app/api/_lib/verifiedChurchActor";
 import { getStoredMediaHosts } from "@/app/api/_lib/churchMediaAccess";
+import { denyIfLiveControlSuspended } from "@/app/api/_lib/churchLiveControlSuspension";
 import { canCreateOrEditScheduleSlots } from "@/app/api/_lib/ministryAuthority";
 import {
   VOICE_NOTE_MAX_DURATION_MS,
@@ -809,6 +810,15 @@ export async function POST(req: Request) {
       console.log("KRISTO_ROOM_POST_SLOT_CREATE_DENIED", { userId, roomId, kind });
       return NextResponse.json({ ok: false, error: "not_allowed_to_create_slots" }, { status: 403 });
     }
+    // A slot created already claimed must not hand it to a suspended member.
+    const createdOwner = String(card?.claimedByUserId || "").trim();
+    if (createdOwner && isChurchMembersRoom(roomId)) {
+      const suspended = await denyIfLiveControlSuspended(churchId, createdOwner, {
+        self: createdOwner === userId,
+        source: "room-messages.POST.slot",
+      });
+      if (suspended) return suspended;
+    }
   }
 
   // Block + DM request limit after validation, immediately before persist.
@@ -996,7 +1006,13 @@ async function resolveVerifiedRoomActor(
   req: Request,
   roomId: string
 ): Promise<VerifiedChurchActor | NextResponse> {
-  if (!isDirectRoomId(roomId)) return resolveVerifiedChurchActor(req, "room-messages");
+  if (!isDirectRoomId(roomId)) {
+    const actor = await resolveVerifiedChurchActor(req, "room-messages");
+    if (actor instanceof NextResponse || !isChurchMembersRoom(roomId)) return actor;
+    // Church Live Control: a suspended member may not read, send, claim, edit or delete here.
+    const suspended = await denyIfLiveControlSuspended(actor.churchId, actor.userId, { source: "room-messages" });
+    return suspended || actor;
+  }
 
   const userIdOrRes = await resolveVerifiedUserId(req);
   if (userIdOrRes instanceof NextResponse) return userIdOrRes;
@@ -1368,6 +1384,15 @@ export async function PATCH(req: Request) {
   } else if (!isOwnSlot && !isManager) {
     // Time/order/details of a slot: managers, or the member who holds the slot.
     return denied("not_allowed_to_edit_slot");
+  }
+
+  // A manager may not assign a Church Live Control slot to a suspended member.
+  if (patchTouchesClaim && !isReleasePatch && incomingOwner && incomingOwner !== existingOwner && isChurchMembersRoom(roomId)) {
+    const suspended = await denyIfLiveControlSuspended(churchId, incomingOwner, {
+      self: incomingOwner === userId,
+      source: "room-messages.PATCH.claim",
+    });
+    if (suspended) return suspended;
   }
 
   if (
