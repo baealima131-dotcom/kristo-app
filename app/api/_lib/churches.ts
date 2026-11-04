@@ -198,7 +198,7 @@ function isHiddenFromSearch(id: string) {
   return !/^CH7-[A-Z0-9]{4,12}$/i.test(x);
 }
 
-function isVerifiedChurch(church: ChurchProfile) {
+export function isVerifiedChurch(church: ChurchProfile) {
   const hasPastor = Boolean(String(church.pastorName || "").trim());
   const hasLocation = Boolean(String(church.city || church.country || church.address || "").trim());
   const hasPhone = Boolean(String(church.phone || "").trim());

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { getChurchById, searchChurches, type ChurchProfile } from "@/app/api/_lib/churches";
+import { getChurchById, isVerifiedChurch, searchChurches, type ChurchProfile } from "@/app/api/_lib/churches";
 import { resolveChurchAvatarFields } from "@/app/api/_lib/churchAvatar";
 import { getMembershipsForChurch, getMembershipsForUser } from "@/app/api/_lib/memberships";
 import { getChurchFollowerCount, getViewerFollowingChurch } from "@/app/api/_lib/churchFollows";
@@ -211,6 +211,9 @@ export async function GET(req: NextRequest) {
         country: String((profile as any).country || "").trim(),
         province: String((profile as any).province || "").trim(),
         city: String((profile as any).city || "").trim(),
+        // Same public fields Find a Church already shows (no phone): pastor name and verification.
+        pastorName: String(profile.pastorName || "").trim(),
+        verified: isVerifiedChurch(profile),
         avatarUri: avatar.finalAvatarUri || avatar.avatarUri || avatar.churchAvatarUri || avatarUrl,
         avatarUrl,
         logoUrl,

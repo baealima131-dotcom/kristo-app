@@ -55,6 +55,8 @@ export type ChurchPublicProfile = {
   country: string;
   province: string;
   city: string;
+  pastorName?: string;
+  verified?: boolean;
   avatarUri: string;
   avatarUrl: string;
   logoUrl: string;
@@ -119,6 +121,8 @@ function mapPublicProfilePayload(profile: any): ChurchPublicProfile {
     country: String(profile.country || "").trim(),
     province: String(profile.province || "").trim(),
     city: String(profile.city || "").trim(),
+    pastorName: String(profile.pastorName || "").trim(),
+    verified: Boolean(profile.verified),
     avatarUri: String(profile.avatarUri || profile.avatarUrl || profile.logoUrl || "").trim(),
     avatarUrl: String(profile.avatarUrl || profile.avatarUri || profile.logoUrl || "").trim(),
     logoUrl: String(profile.logoUrl || profile.avatarUrl || profile.avatarUri || "").trim(),

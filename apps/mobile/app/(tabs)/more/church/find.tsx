@@ -899,6 +899,11 @@ export default function ChurchFindScreen() {
     return () => clearTimeout(timer);
   }, [loadChurches, q]);
 
+  // View Profile: read-only Church Overview of the selected church (Back returns here).
+  function openChurchOverview(ch: ChurchRow) {
+    router.push({ pathname: "/more/church/preview/[churchId]", params: { churchId: ch.id } } as any);
+  }
+
   function useId(ch: ChurchRow) {
     setProfileChurch(null);
     router.replace({ pathname: "/more/church", params: { joinId: ch.id } } as any);
@@ -1113,7 +1118,7 @@ export default function ChurchFindScreen() {
               <ChurchCard
                 key={c.id}
                 church={c}
-                onViewProfile={setProfileChurch}
+                onViewProfile={openChurchOverview}
                 onRequest={requestJoin}
                 onCancel={cancelPendingRequest}
                 onUseId={useId}
