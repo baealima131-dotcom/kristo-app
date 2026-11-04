@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { getChurchById, isVerifiedChurch, searchChurches, type ChurchProfile } from "@/app/api/_lib/churches";
-import { resolveChurchAvatarFields } from "@/app/api/_lib/churchAvatar";
+import { churchAvatarUpdatedAtMs, resolveChurchAvatarFields } from "@/app/api/_lib/churchAvatar";
 import { getMembershipsForChurch, getMembershipsForUser } from "@/app/api/_lib/memberships";
 import { getChurchFollowerCount, getViewerFollowingChurch } from "@/app/api/_lib/churchFollows";
 import { readMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
@@ -241,6 +241,8 @@ export async function GET(req: NextRequest) {
         avatarUri: avatar.finalAvatarUri || avatar.avatarUri || avatar.churchAvatarUri || avatarUrl,
         avatarUrl,
         logoUrl,
+        // Same freshness stamp as /api/church/overview, so clients can pick server vs cached picture alike.
+        avatarUpdatedAt: churchAvatarUpdatedAtMs(profile) || undefined,
         // Member and ministry counts are internal: only for members of this church / staff.
         memberCount: viewerAccess === "member" ? memberCount : null,
         ministryCount: viewerAccess === "member" ? ministryCount : null,

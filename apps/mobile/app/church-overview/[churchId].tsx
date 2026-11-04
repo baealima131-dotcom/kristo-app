@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -7,6 +7,10 @@ import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import { ChurchReportSheet } from "@/src/components/church/ChurchReportSheet";
 import { formatFeedTimestamp } from "@/src/components/homeFeed/homeFeedUtils";
 import { churchPublicPostIsVideo, resolveChurchPublicPostCover } from "@/src/lib/churchProfilePostCover";
+import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { loadChurchProfileCache } from "@/src/lib/churchStore";
+import { getChurchOverviewCache, parseChurchOverviewProfileFields } from "@/src/lib/screenDataCache";
+import { avatarCacheBust } from "@/src/lib/avatarFreshness";
 import {
   churchPublicPostTitle,
   resolveChurchProfileImageUrl,
@@ -35,11 +39,47 @@ export default function ChurchOverviewProfileScreen() {
   const churchId = String(params.churchId || "").trim();
   const hintName = String(params.churchName || "").trim();
   const c = useChurchProfileController(churchId);
+  const { session } = useKristoSession();
   const [photoFailed, setPhotoFailed] = useState(false);
+  const [photoUri, setPhotoUri] = useState("");
 
   const profile = c.profile;
   const displayName = profile?.name || hintName || churchId;
-  const photo = photoFailed ? "" : resolveChurchProfileImageUrl(profile?.avatarUri || profile?.avatarUrl || profile?.logoUrl);
+
+  // Church picture chosen exactly like Church Overview: the church record (API) first, and the same
+  // device caches Overview uses for this church (only present for the viewer's own church).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!profile) return;
+      const userId = String(session?.userId || "").trim();
+      const overviewCache = userId ? await getChurchOverviewCache(profile.id, userId).catch(() => null) : null;
+      const legacyCache = await loadChurchProfileCache(profile.id).catch(() => null);
+      const fields = parseChurchOverviewProfileFields(
+        profile.id,
+        {
+          avatarUri: profile.avatarUri,
+          avatarUrl: profile.avatarUrl,
+          churchLogoUrl: profile.logoUrl,
+          avatarUpdatedAt: profile.avatarUpdatedAt,
+        },
+        {
+          uri: overviewCache?.profile?.avatarUri || legacyCache?.avatarUri || legacyCache?.avatarUrl || "",
+          updatedAt: overviewCache?.profile?.avatarUpdatedAt || legacyCache?.avatarUpdatedAt,
+        }
+      );
+      const uri = fields.avatarUri ? avatarCacheBust(resolveChurchProfileImageUrl(fields.avatarUri), fields.avatarUpdatedAt) : "";
+      if (!cancelled) {
+        setPhotoFailed(false);
+        setPhotoUri(uri);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, session?.userId]);
+
+  const photo = photoFailed ? "" : photoUri;
   const location = profile
     ? profile.location || [profile.city, profile.province, profile.country].filter(Boolean).join(" • ")
     : "";

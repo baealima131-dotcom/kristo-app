@@ -60,6 +60,7 @@ export type ChurchPublicProfile = {
   avatarUri: string;
   avatarUrl: string;
   logoUrl: string;
+  avatarUpdatedAt?: number;
   /** null when the viewer may not see it (not a member of this church / not staff). */
   memberCount: number | null;
   ministriesCount: number | null;
@@ -130,6 +131,7 @@ function mapPublicProfilePayload(profile: any): ChurchPublicProfile {
     avatarUri: String(profile.avatarUri || profile.avatarUrl || profile.logoUrl || "").trim(),
     avatarUrl: String(profile.avatarUrl || profile.avatarUri || profile.logoUrl || "").trim(),
     logoUrl: String(profile.logoUrl || profile.avatarUrl || profile.avatarUri || "").trim(),
+    avatarUpdatedAt: Number(profile.avatarUpdatedAt || 0) || undefined,
     memberCount: profile.memberCount == null ? null : Number(profile.memberCount || 0),
     ministriesCount: ministryCount,
     viewerAccess: profile.viewerAccess === "member" ? "member" : "visitor",
