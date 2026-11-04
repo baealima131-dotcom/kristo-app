@@ -1368,12 +1368,12 @@ setMediaTargets(
                   />
                 ) : (
                   <View style={s.profileIcon}>
-                    <Ionicons name="business-outline" size={28} color={GOLD} />
+                    <Ionicons name="business-outline" size={46} color={GOLD} />
                   </View>
                 )}
               </View>
 
-              <View style={{ flex: 1 }}>
+              <View style={s.profileTitleWrap}>
                 <Text style={s.profileEyebrow}>Church Profile</Text>
                 <Text style={s.profileChurch} numberOfLines={2}>
                   {displayChurchName}
@@ -1995,50 +1995,55 @@ const s = StyleSheet.create<any>({
   },
 
   profileTop: {
-    flexDirection: "row",
+    // Large church picture on top, name centered under it (edit button pinned top-right).
     alignItems: "center",
-    gap: 12,
-    marginBottom: 10,
+    paddingTop: 8,
+    marginBottom: 16,
   },
 
   profileAvatarRing: {
-    width: 70,
-    height: 70,
-    borderRadius: 22,
+    width: 148,
+    height: 148,
+    borderRadius: 74,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "rgba(217,179,95,0.42)",
+    borderWidth: 3,
+    borderColor: "rgba(217,179,95,0.85)",
     backgroundColor: "rgba(217,179,95,0.06)",
+    marginBottom: 14,
   },
   profileAvatarHalo: {
     position: "absolute",
-    width: 82,
-    height: 82,
-    borderRadius: 26,
+    width: 172,
+    height: 172,
+    borderRadius: 86,
     backgroundColor: "rgba(217,179,95,0.10)",
   },
 
   profileAvatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 20,
+    width: 136,
+    height: 136,
+    borderRadius: 68,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    borderColor: "rgba(0,0,0,0.55)",
   },
 
   profileIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: 20,
+    width: 136,
+    height: 136,
+    borderRadius: 68,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.24)",
   },
 
   profileEditBtn: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    zIndex: 2,
     width: 38,
     height: 38,
     borderRadius: 14,
@@ -2049,6 +2054,10 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(217,179,95,0.24)",
   },
 
+  profileTitleWrap: {
+    alignItems: "center",
+    paddingHorizontal: 28,
+  },
   profileEyebrow: {
     color: LABEL_GOLD,
     fontSize: 11,
@@ -2056,20 +2065,23 @@ const s = StyleSheet.create<any>({
     marginBottom: 5,
     textTransform: "uppercase",
     letterSpacing: 1.1,
+    textAlign: "center",
   },
 
   profileChurch: {
     color: TEXT_PRIMARY,
-    fontSize: 21,
+    fontSize: 24,
     fontWeight: "900",
-    lineHeight: 26,
+    lineHeight: 30,
     letterSpacing: 0.2,
+    textAlign: "center",
   },
   profileVerifiedRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 5,
-    marginTop: 4,
+    marginTop: 6,
   },
   profileVerifiedText: {
     color: TEXT_SECONDARY,
@@ -2079,8 +2091,12 @@ const s = StyleSheet.create<any>({
   },
 
   profileInfoList: {
-    gap: 8,
-    paddingTop: 0,
+    gap: 10,
+    padding: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.16)",
+    backgroundColor: "rgba(0,0,0,0.30)",
   },
 
   profileInfoRow: {

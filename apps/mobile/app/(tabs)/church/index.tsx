@@ -389,6 +389,7 @@ type OverviewStats = {
 type ChurchProfile = {
   id?: string;
   name?: string;
+  avatarUri?: string;
 };
 
 const CHURCH_TAB_FEED_KINDS = new Set(["announcement", "post", "testimony", "counsel", "prayer_request"]);
@@ -413,6 +414,7 @@ function toChurchTabFeedItem(raw: any): FeedItem | null {
     posterUri: String(raw?.posterUri || raw?.videoPosterUri || "").trim() || undefined,
     createdAt: String(raw?.createdAt || ""),
     actorLabel: String(raw?.actorLabel || raw?.authorName || "").trim() || undefined,
+    churchAvatarUri: String(raw?.churchAvatarUri || raw?.churchLogoUrl || "").trim() || undefined,
     churchLabel: String(raw?.churchName || raw?.churchLabel || "").trim() || undefined,
     likeCount: Number(raw?.likeCount || 0),
     commentCount: Number(raw?.commentCount || 0),
@@ -505,6 +507,7 @@ const goOverview = () => router.push("/church/overview");
           const nextProfile = {
             id: String(p?.id || activeChurchId || ""),
             name: String(p?.name || "Church"),
+            avatarUri: String(p?.avatarUri || p?.churchAvatarUri || "").trim(),
           };
           const nextStats = {
             activeMembers: nextActiveMembers ?? Number(st?.activeMembers || 0),
@@ -514,7 +517,9 @@ const goOverview = () => router.push("/church/overview");
           };
 
           setProfile((prev) =>
-            prev.id === nextProfile.id && prev.name === nextProfile.name ? prev : nextProfile
+            prev.id === nextProfile.id && prev.name === nextProfile.name && prev.avatarUri === nextProfile.avatarUri
+              ? prev
+              : nextProfile
           );
           setStats((prev) =>
             prev.activeMembers === nextStats.activeMembers &&
@@ -789,7 +794,9 @@ const goOverview = () => router.push("/church/overview");
               <View style={styles.profileLeft}>
                 <View style={styles.churchAvatarOuter}>
                   <View style={styles.churchAvatar}>
-                    {loadingProfile ? (
+                    {profile?.avatarUri ? (
+                      <Image source={{ uri: profile.avatarUri }} style={styles.churchAvatarImage} contentFit="cover" />
+                    ) : loadingProfile ? (
                       <ActivityIndicator size="small" color={C.gold} />
                     ) : (
                       <Text style={styles.churchAvatarText}>
@@ -863,6 +870,7 @@ const goOverview = () => router.push("/church/overview");
               <FeedCard
                 item={item}
                 base={base}
+                churchAvatarUri={profile?.avatarUri || ""}
                 activeChurchId={activeChurchId}
                 effectiveAuthUserId={effectiveAuthUserId}
                 effectiveAuthRole={effectiveAuthRole}
@@ -886,6 +894,7 @@ const goOverview = () => router.push("/church/overview");
 function FeedCard({
   item,
   base,
+  churchAvatarUri,
   activeChurchId,
   effectiveAuthUserId,
   effectiveAuthRole,
@@ -899,6 +908,8 @@ function FeedCard({
 }: {
   item: FeedItem;
   base: string;
+  /** Church profile picture: the account image on this church's posts. */
+  churchAvatarUri?: string;
   activeChurchId: string;
   effectiveAuthUserId: string;
   effectiveAuthRole: string;
@@ -974,7 +985,7 @@ function FeedCard({
     (item as any)?.profileImage ??
     (item as any)?.image ??
     ""
-  ).trim();
+  ).trim() || String((item as any)?.churchAvatarUri || churchAvatarUri || "").trim();
 
   function openPosterProfile() {
     try {
@@ -1427,6 +1438,7 @@ const styles = StyleSheet.create<any>({
     backgroundColor: "rgba(217,179,95,0.16)",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
   churchAvatarText: {
     color: C.gold,
@@ -1650,6 +1662,7 @@ const styles = StyleSheet.create<any>({
     backgroundColor: "rgba(217,179,95,0.20)",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
   postAvatarText: {
     color: C.gold,
@@ -2225,6 +2238,10 @@ body: {
     paddingHorizontal: 12,
     backgroundColor: "rgba(255,255,255,0.028)",
     overflow: "hidden",
+  },
+  churchAvatarImage: {
+    width: "100%",
+    height: "100%",
   },
   postAvatarImage: {
     width: "100%",
