@@ -1,8 +1,10 @@
 package com.princefariji.kristoapp.free
 import expo.modules.splashscreen.SplashScreenManager
 
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import androidx.core.view.WindowCompat
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -21,6 +23,26 @@ class MainActivity : ReactActivity() {
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
     super.onCreate(null)
+    applyKristoNavigationBar()
+  }
+
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus) applyKristoNavigationBar()
+  }
+
+  /**
+   * Bottom system bar (Back / Home / Recents) in Kristo colours. React Native's edge-to-edge setup
+   * makes it transparent with a white contrast scrim and dark buttons in light mode; Kristo is a
+   * dark app, so: no scrim, navy behind the buttons, light buttons.
+   */
+  private fun applyKristoNavigationBar() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      window.isNavigationBarContrastEnforced = false
+    }
+    @Suppress("DEPRECATION")
+    window.navigationBarColor = Color.parseColor("#0B0F17")
+    WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = false
   }
 
   /**

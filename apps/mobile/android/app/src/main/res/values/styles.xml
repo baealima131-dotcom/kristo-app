@@ -1,6 +1,12 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
   <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
-    <item name="android:enforceNavigationBarContrast" tools:targetApi="29">true</item>
+    <!-- Bottom system bar in Kristo colours: navy/black background, light Back/Home/Recents buttons
+         (no white contrast scrim behind the 3-button navigation). -->
+    <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+    <item name="android:navigationBarColor">#0B0F17</item>
+    <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
+    <!-- Edge-to-edge (Android 15+) keeps the bar transparent: the window behind it stays navy. -->
+    <item name="android:windowBackground">@color/splashscreen_background</item>
     <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
     <item name="colorPrimary">@color/colorPrimary</item>
     <item name="android:statusBarColor">#0B0F17</item>
