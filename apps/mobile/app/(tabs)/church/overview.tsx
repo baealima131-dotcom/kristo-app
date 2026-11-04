@@ -36,6 +36,7 @@ import {
 } from "@/src/lib/screenDataCache";
 import { ChurchOverviewSkeleton } from "@/src/components/PremiumTabSkeletons";
 import { onChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
+import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import {
   avatarCacheBust,
   mergeChurchAvatarForDisplay,
@@ -1266,7 +1267,9 @@ setMediaTargets(
 
           <View style={s.topRow}>
             <View style={{ flex: 1 }}>
-              <Text style={s.h1}>Church Overview</Text>
+              <Text style={s.h1} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                Church Overview
+              </Text>
             </View>
 
             <LuxuryPressable onPress={() => load({ silent: true })} style={s.refreshBtn}>
@@ -1900,15 +1903,18 @@ const s = StyleSheet.create<any>({
     elevation: 4,
   },
 
+  // Same luxury heading as MY MINISTRIES: Cinzel SemiBold, gold caps, wide tracking, soft glow.
   h1: {
-    color: TEXT_PRIMARY,
-    fontSize: 28,
-    fontWeight: "800",
-    letterSpacing: 0.12,
-    lineHeight: 32,
-    textShadowColor: "rgba(232,196,110,0.65)",
+    // Exact registered Cinzel SemiBold — no fontWeight (avoids iOS fallback).
+    fontFamily: CINZEL_SEMIBOLD_FAMILY,
+    color: "#F4D06F",
+    fontSize: 26,
+    lineHeight: 34,
+    letterSpacing: 3.2,
+    textTransform: "uppercase",
+    textShadowColor: "rgba(244,208,111,0.55)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 14,
+    textShadowRadius: 10,
   },
   heroIdentityRow: {
     flexDirection: "row",
