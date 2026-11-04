@@ -4,6 +4,9 @@ import expo.modules.splashscreen.SplashScreenManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
+import android.view.Window
 import androidx.core.view.WindowCompat
 
 import com.facebook.react.ReactActivity
@@ -11,6 +14,7 @@ import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
 
+import com.facebook.react.views.modal.ReactModalHostView
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
@@ -28,7 +32,15 @@ class MainActivity : ReactActivity() {
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
-    if (hasFocus) applyKristoNavigationBar()
+    if (hasFocus) {
+      applyKristoNavigationBar()
+    } else {
+      // A React Native <Modal> opened: it has its own dialog window, which RN sets up edge-to-edge
+      // with a white contrast scrim. Give it the same navy bar once RN is done with it.
+      val decor = window.decorView
+      decor.post { applyKristoNavigationBarToModals(decor) }
+      decor.postDelayed({ applyKristoNavigationBarToModals(decor) }, 150)
+    }
   }
 
   /**
@@ -37,12 +49,30 @@ class MainActivity : ReactActivity() {
    * dark app, so: no scrim, navy behind the buttons, light buttons.
    */
   private fun applyKristoNavigationBar() {
+    applyKristoNavigationBarTo(window)
+  }
+
+  private fun applyKristoNavigationBarTo(target: Window) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      window.isNavigationBarContrastEnforced = false
+      target.isNavigationBarContrastEnforced = false
     }
     @Suppress("DEPRECATION")
-    window.navigationBarColor = Color.parseColor("#0B0F17")
-    WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = false
+    target.navigationBarColor = Color.parseColor("#0B0F17")
+    WindowCompat.getInsetsController(target, target.decorView).isAppearanceLightNavigationBars = false
+  }
+
+  /** Modal host views stay in the activity's view tree; their dialogs hold the modal windows. */
+  private fun applyKristoNavigationBarToModals(view: View) {
+    if (view is ReactModalHostView) {
+      val dialog = view.dialog
+      val dialogWindow = dialog?.window
+      if (dialog != null && dialog.isShowing && dialogWindow != null) {
+        applyKristoNavigationBarTo(dialogWindow)
+      }
+    }
+    if (view is ViewGroup) {
+      for (i in 0 until view.childCount) applyKristoNavigationBarToModals(view.getChildAt(i))
+    }
   }
 
   /**
