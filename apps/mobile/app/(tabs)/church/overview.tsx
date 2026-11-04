@@ -118,13 +118,6 @@ function formatPastorDisplayName(name?: string) {
   return s;
 }
 
-function pastorInitial(name?: string) {
-  const label = formatPastorDisplayName(name);
-  if (label === "Pastor Not Assigned") return "P";
-  const parts = label.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
-  return label.slice(0, 2).toUpperCase();
-}
 
 function LuxuryPressable({
   style,
@@ -1335,8 +1328,12 @@ setMediaTargets(
       ) : (
         <Animated.ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: Platform.OS === "android" ? 24 : insets.bottom + 140 }}
-          style={{ opacity: contentOpacity }}
+          contentContainerStyle={{
+            paddingTop: 10,
+            paddingHorizontal: 10,
+            paddingBottom: Platform.OS === "android" ? 24 : insets.bottom + 140,
+          }}
+          style={{ opacity: contentOpacity, marginHorizontal: -10 }}
         >
           <View style={s.profileCardOuter}>
             <LinearGradient
@@ -1389,8 +1386,8 @@ setMediaTargets(
 
                 <View style={s.profileInfoList}>
                   <View style={s.profileInfoRow}>
-                    <View style={s.pastorAvatar}>
-                      <Text style={s.pastorAvatarText}>{pastorInitial(profile.pastorName)}</Text>
+                    <View style={s.profileInfoIconWrap}>
+                      <Ionicons name="person-outline" size={21} color={GOLD} />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={s.profileInfoLabel}>Pastor</Text>
@@ -1400,7 +1397,7 @@ setMediaTargets(
 
                   <View style={s.profileInfoRow}>
                     <View style={s.profileInfoIconWrap}>
-                      <Ionicons name="location-outline" size={15} color={GOLD} />
+                      <Ionicons name="location-outline" size={21} color={GOLD} />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={s.profileInfoLabel}>Address</Text>
@@ -1410,7 +1407,7 @@ setMediaTargets(
 
                   <View style={s.profileInfoRow}>
                     <View style={s.profileInfoIconWrap}>
-                      <Ionicons name="call-outline" size={15} color={GOLD} />
+                      <Ionicons name="call-outline" size={21} color={GOLD} />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={s.profileInfoLabel}>Phone</Text>
@@ -1909,9 +1906,9 @@ const s = StyleSheet.create<any>({
     fontWeight: "800",
     letterSpacing: 0.12,
     lineHeight: 32,
-    textShadowColor: "rgba(217,179,95,0.45)",
+    textShadowColor: "rgba(232,196,110,0.65)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10,
+    textShadowRadius: 14,
   },
   heroIdentityRow: {
     flexDirection: "row",
@@ -1980,12 +1977,12 @@ const s = StyleSheet.create<any>({
     paddingBottom: 12,
     marginTop: 0,
     marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.62)",
+    borderWidth: 2,
+    borderColor: "rgba(232,196,110,0.95)",
     backgroundColor: "rgba(8,14,24,0.72)",
     overflow: "hidden",
     elevation: 0,
-    boxShadow: "0 0 16px rgba(217,179,95,0.42), inset 0 0 14px rgba(217,179,95,0.14)",
+    boxShadow: "0 0 24px rgba(217,179,95,0.60), 0 0 6px rgba(217,179,95,0.55), inset 0 0 16px rgba(217,179,95,0.16)",
   },
   profileSheen: {
     position: "absolute",
@@ -2022,10 +2019,10 @@ const s = StyleSheet.create<any>({
     minHeight: 220,
     borderRadius: 22,
     overflow: "hidden",
-    borderWidth: 1.5,
-    borderColor: "rgba(217,179,95,0.75)",
+    borderWidth: 2,
+    borderColor: "rgba(232,196,110,0.90)",
     backgroundColor: "rgba(217,179,95,0.06)",
-    boxShadow: "0 0 14px rgba(217,179,95,0.45)",
+    boxShadow: "0 0 16px rgba(217,179,95,0.55)",
   },
   profilePhoto: {
     ...StyleSheet.absoluteFillObject,
@@ -2054,9 +2051,9 @@ const s = StyleSheet.create<any>({
     marginBottom: 5,
     textTransform: "uppercase",
     letterSpacing: 1.1,
-    textShadowColor: "rgba(217,179,95,0.60)",
+    textShadowColor: "rgba(232,196,110,0.75)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+    textShadowRadius: 10,
   },
 
   profileChurch: {
@@ -2065,9 +2062,9 @@ const s = StyleSheet.create<any>({
     fontWeight: "900",
     lineHeight: 25,
     letterSpacing: 0.2,
-    textShadowColor: "rgba(217,179,95,0.40)",
+    textShadowColor: "rgba(232,196,110,0.60)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10,
+    textShadowRadius: 14,
   },
   profileVerifiedRow: {
     flexDirection: "row",
@@ -2092,30 +2089,16 @@ const s = StyleSheet.create<any>({
     gap: 12,
   },
 
-  pastorAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.14)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.28)",
-  },
-  pastorAvatarText: {
-    color: GOLD,
-    fontSize: 12,
-    fontWeight: "900",
-  },
   profileInfoIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 14,
+    width: 44,
+    height: 44,
+    borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.16)",
+    backgroundColor: "rgba(217,179,95,0.16)",
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.80)",
+    boxShadow: "0 0 10px rgba(217,179,95,0.45)",
   },
 
   profileInfoLabel: {
@@ -2125,9 +2108,9 @@ const s = StyleSheet.create<any>({
     letterSpacing: 0.7,
     textTransform: "uppercase",
     marginBottom: 2,
-    textShadowColor: "rgba(217,179,95,0.50)",
+    textShadowColor: "rgba(232,196,110,0.65)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 6,
+    textShadowRadius: 8,
   },
 
   profileInfoValue: {
@@ -2238,27 +2221,31 @@ const s = StyleSheet.create<any>({
 
   statCardBlue: {
     backgroundColor: "rgba(8,16,32,0.94)",
-    borderColor: "rgba(96,156,255,0.62)",
+    borderColor: "rgba(110,165,255,0.92)",
     elevation: 0,
-    boxShadow: "0 0 14px rgba(74,144,255,0.42), inset 0 0 12px rgba(74,144,255,0.14)",
+    boxShadow: "0 0 20px rgba(74,144,255,0.55), 0 0 5px rgba(74,144,255,0.50), inset 0 0 14px rgba(74,144,255,0.16)",
+    borderWidth: 1.8,
   },
   statCardGoldGlow: {
     backgroundColor: "rgba(14,12,8,0.94)",
-    borderColor: "rgba(217,179,95,0.60)",
+    borderColor: "rgba(232,196,110,0.90)",
     elevation: 0,
-    boxShadow: "0 0 14px rgba(217,179,95,0.40), inset 0 0 12px rgba(217,179,95,0.14)",
+    boxShadow: "0 0 20px rgba(217,179,95,0.55), 0 0 5px rgba(217,179,95,0.50), inset 0 0 14px rgba(217,179,95,0.16)",
+    borderWidth: 1.8,
   },
   statCardPurple: {
     backgroundColor: "rgba(12,10,22,0.94)",
-    borderColor: "rgba(176,132,255,0.62)",
+    borderColor: "rgba(186,145,255,0.92)",
     elevation: 0,
-    boxShadow: "0 0 14px rgba(168,120,255,0.42), inset 0 0 12px rgba(168,120,255,0.14)",
+    boxShadow: "0 0 20px rgba(168,120,255,0.55), 0 0 5px rgba(168,120,255,0.50), inset 0 0 14px rgba(168,120,255,0.16)",
+    borderWidth: 1.8,
   },
   statCardAction: {
     backgroundColor: "rgba(16,14,8,0.95)",
-    borderColor: "rgba(217,179,95,0.62)",
+    borderColor: "rgba(232,196,110,0.90)",
     elevation: 0,
-    boxShadow: "0 0 14px rgba(217,179,95,0.42), inset 0 0 12px rgba(217,179,95,0.14)",
+    boxShadow: "0 0 20px rgba(217,179,95,0.55), 0 0 5px rgba(217,179,95,0.50), inset 0 0 14px rgba(217,179,95,0.16)",
+    borderWidth: 1.8,
   },
   statCardPremiumLocked: {
     backgroundColor: "rgba(10,12,18,0.96)",
@@ -2321,9 +2308,9 @@ const s = StyleSheet.create<any>({
     lineHeight: 38,
     fontWeight: "900",
     letterSpacing: 0.2,
-    textShadowColor: "rgba(255,255,255,0.28)",
+    textShadowColor: "rgba(255,255,255,0.45)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+    textShadowRadius: 12,
   },
   statValueGold: { color: GOLD },
   statValueLocked: { fontSize: 24, lineHeight: 28, opacity: 0.82 },
@@ -2352,11 +2339,11 @@ const s = StyleSheet.create<any>({
     borderRadius: 24,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.55)",
+    borderWidth: 2,
+    borderColor: "rgba(232,196,110,0.90)",
     overflow: "hidden",
     elevation: 0,
-    boxShadow: "0 0 16px rgba(217,179,95,0.42), inset 0 0 14px rgba(217,179,95,0.14)",
+    boxShadow: "0 0 24px rgba(217,179,95,0.60), 0 0 6px rgba(217,179,95,0.55), inset 0 0 16px rgba(217,179,95,0.16)",
   },
   powerAmbientGlow: {
     position: "absolute",
@@ -2368,8 +2355,9 @@ const s = StyleSheet.create<any>({
     backgroundColor: "rgba(217,179,95,0.12)",
   },
   memberAccessCard: {
-    borderColor: "rgba(110,160,255,0.70)",
-    boxShadow: "0 0 16px rgba(86,139,255,0.48), inset 0 0 14px rgba(86,139,255,0.16)",
+    borderColor: "rgba(120,170,255,0.95)",
+    boxShadow: "0 0 24px rgba(86,139,255,0.60), 0 0 6px rgba(86,139,255,0.55), inset 0 0 16px rgba(86,139,255,0.18)",
+    borderWidth: 2,
   },
   memberAccessGlow: {
     position: "absolute",
@@ -2394,9 +2382,9 @@ const s = StyleSheet.create<any>({
     letterSpacing: 1,
     textTransform: "uppercase",
     marginBottom: 2,
-    textShadowColor: "rgba(86,139,255,0.70)",
+    textShadowColor: "rgba(110,160,255,0.85)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+    textShadowRadius: 10,
   },
   memberAccessBtnText: {
     color: "#8FB5FF",
@@ -2455,9 +2443,9 @@ const s = StyleSheet.create<any>({
     fontWeight: "900",
     letterSpacing: 0.2,
     lineHeight: 20,
-    textShadowColor: "rgba(255,255,255,0.22)",
+    textShadowColor: "rgba(255,255,255,0.35)",
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 6,
+    textShadowRadius: 10,
   },
   powerActions: {
     flexDirection: "row",
