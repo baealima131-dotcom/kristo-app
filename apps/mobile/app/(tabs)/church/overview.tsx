@@ -42,6 +42,7 @@ import {
   lastKnownLiveControlStatus,
 } from "@/src/lib/churchLiveControlAccess";
 import { fetchMyChurchApplication } from "@/src/lib/churchApplicationsApi";
+import { rememberChurchActivationState } from "@/src/components/church/ChurchActivationGate";
 import {
   avatarCacheBust,
   mergeChurchAvatarForDisplay,
@@ -1009,27 +1010,76 @@ const contentOpacity = useRef(new Animated.Value(0)).current;
     };
   }, [showMemberChurchAccessCard, isFocused, effectiveAuthUserId]);
 
-  // A church created from a church application is not open until it is activated: its Pastor
-  // and members see the application progress instead of the Overview.
+  // A church created from a church application keeps the normal Overview, but posting and
+  // ministries stay closed until it is activated (the server refuses them too). Its Pastor gets
+  // a Church Requirements button with the admin's instructions.
+  const [pendingChurch, setPendingChurch] = useState<{
+    isPastorApplicant: boolean;
+    statusLabel: string;
+    open: number;
+    total: number;
+  } | null>(null);
   useEffect(() => {
     if (!isFocused || invitePreview || !effectiveAuthUserId) return;
     let alive = true;
     void fetchMyChurchApplication().then((res) => {
       if (!alive || !res.ok) return;
-      const { application, pendingChurch } = res.data;
+      const { application, pendingChurch: memberPending } = res.data;
       const ownNotOpen =
         !!application &&
         !!application.churchId &&
         application.status !== "active" &&
         application.status !== "rejected" &&
         (!churchId || application.churchId === churchId);
-      const memberOfNotOpen = !!pendingChurch && (!churchId || pendingChurch.churchId === churchId);
-      if (ownNotOpen || memberOfNotOpen) router.replace("/(tabs)/church/application" as any);
+      const memberOfNotOpen = !!memberPending && (!churchId || memberPending.churchId === churchId);
+      rememberChurchActivationState({ locked: ownNotOpen || memberOfNotOpen, churchName: application?.church.name || memberPending?.churchName });
+      if (ownNotOpen && application) {
+        setPendingChurch({
+          isPastorApplicant: true,
+          statusLabel: application.statusLabel,
+          open: application.requirements.filter((r) => !r.completed).length,
+          total: application.requirements.length,
+        });
+      } else if (memberOfNotOpen && memberPending) {
+        setPendingChurch({
+          isPastorApplicant: false,
+          statusLabel: "",
+          open: memberPending.requirements.filter((r) => !r.completed).length,
+          total: memberPending.requirements.length,
+        });
+      } else {
+        setPendingChurch(null);
+      }
     });
     return () => {
       alive = false;
     };
-  }, [isFocused, invitePreview, effectiveAuthUserId, churchId, router]);
+  }, [isFocused, invitePreview, effectiveAuthUserId, churchId]);
+
+  const openChurchRequirements = useCallback(() => {
+    router.push("/(tabs)/church/application" as any);
+  }, [router]);
+
+  /** True (and explains why) when the action must wait for the church to be activated. */
+  const blockUntilChurchActive = useCallback(
+    (what: string) => {
+      if (!pendingChurch) return false;
+      Alert.alert(
+        `${what} is not available yet`,
+        pendingChurch.isPastorApplicant
+          ? "Your church opens for posting and ministries when every requirement is complete and Kristo App activates it. Open Church Requirements to see what to do next."
+          : "This church opens for posting and ministries when Kristo App activates it.",
+        pendingChurch.isPastorApplicant
+          ? [
+              { text: "Not now", style: "cancel" },
+              { text: "Church Requirements", onPress: openChurchRequirements },
+            ]
+          : [{ text: "OK" }]
+      );
+      return true;
+    },
+    [pendingChurch, openChurchRequirements]
+  );
 
   const showLiveControlSuspendedAlert = useCallback(() => {
     Alert.alert(
@@ -1080,6 +1130,7 @@ const contentOpacity = useRef(new Animated.Value(0)).current;
   }
 
   function handleCreateMinistryPress() {
+    if (blockUntilChurchActive("Creating a ministry")) return;
     markCreateMinistryPress("church/overview");
     if (!canCreateMinistryRole) {
       Alert.alert(
@@ -1207,6 +1258,7 @@ setMediaTargets(
 
   function openMediaStudio(target?: MediaMinistryTarget) {
     setMediaPickerOpen(false);
+    if (blockUntilChurchActive("Church media posting")) return;
     router.push({
       pathname: "/more/media" as any,
       params: {
@@ -1490,6 +1542,29 @@ setMediaTargets(
             </View>
           </View>
 
+          {pendingChurch?.isPastorApplicant ? (
+            <LuxuryPressable onPress={openChurchRequirements} style={s.requirementsBtn}>
+              <View style={s.requirementsBtnInner}>
+                <View style={s.requirementsIcon}>
+                  <Ionicons name="clipboard-outline" size={18} color={GOLD} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.requirementsTitle}>Church Requirements</Text>
+                  <Text style={s.requirementsSub} numberOfLines={1}>
+                    {pendingChurch.statusLabel}
+                    {pendingChurch.total ? ` · ${pendingChurch.total - pendingChurch.open} of ${pendingChurch.total} done` : ""}
+                  </Text>
+                </View>
+                {pendingChurch.open > 0 ? (
+                  <View style={s.requirementsBadge}>
+                    <Text style={s.requirementsBadgeText}>{pendingChurch.open}</Text>
+                  </View>
+                ) : null}
+                <Ionicons name="chevron-forward" size={17} color={MUTED} />
+              </View>
+            </LuxuryPressable>
+          ) : null}
+
           {showMemberChurchAccessCard ? (
             <View style={[s.powerCardOuter, s.memberAccessCard]}>
               <LinearGradient
@@ -1558,6 +1633,7 @@ setMediaTargets(
                       showLiveControlSuspendedAlert();
                       return;
                     }
+                    if (blockUntilChurchActive("Claiming a media slot")) return;
                     if (checkingLiveControl) return;
 
                     console.log("KRISTO_CLAIM_MEDIA_SLOT_TAP", {
@@ -2577,6 +2653,37 @@ const s = StyleSheet.create<any>({
     gap: 7,
     overflow: "hidden",
   },
+  requirementsBtn: {
+    marginTop: 14,
+    marginBottom: 12,
+    borderRadius: 18,
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.5)",
+    backgroundColor: "rgba(217,179,95,0.08)",
+  },
+  requirementsBtnInner: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 14, paddingVertical: 12 },
+  requirementsIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.45)",
+    backgroundColor: "rgba(217,179,95,0.1)",
+  },
+  requirementsTitle: { color: "#FFFFFF", fontSize: 15, fontWeight: "900" },
+  requirementsSub: { color: MUTED, fontSize: 12, fontWeight: "700", marginTop: 1 },
+  requirementsBadge: {
+    minWidth: 24,
+    height: 24,
+    borderRadius: 12,
+    paddingHorizontal: 7,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GOLD,
+  },
+  requirementsBadgeText: { color: "#0B0F17", fontSize: 12, fontWeight: "900" },
   powerBtnSuspendedWrap: {
     shadowOpacity: 0,
     elevation: 0,
