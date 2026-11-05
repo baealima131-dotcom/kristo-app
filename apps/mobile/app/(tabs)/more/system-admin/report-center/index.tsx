@@ -31,6 +31,8 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { SokoProductReportQueue } from "@/src/components/SokoProductReportQueue";
+import { ChurchApplicationsPanel } from "@/src/components/systemAdmin/ChurchApplicationsPanel";
+import { fetchAdminChurchApplications } from "@/src/lib/churchApplicationsApi";
 
 import {
   getSessionSync,
@@ -80,7 +82,8 @@ type OperationsTab =
 type ReportSourceFilter =
   | "all"
   | "kristo"
-  | "soko";
+  | "soko"
+  | "churches";
 
 function BackgroundScene() {
   return (
@@ -221,7 +224,7 @@ export default function ReportCenterScreen() {
         return null;
       }
 
-      if (reportSourceFilter === "all") {
+      if (reportSourceFilter === "all" || reportSourceFilter === "churches") {
         return systemDashboard.counts;
       }
 
@@ -232,6 +235,19 @@ export default function ReportCenterScreen() {
       reportSourceFilter,
       systemDashboard,
     ]);
+
+  // Churches tab badge: church applications waiting for a System Admin decision.
+  const [churchReviewCount, setChurchReviewCount] = React.useState(0);
+  React.useEffect(() => {
+    if (!allowed) return;
+    let alive = true;
+    void fetchAdminChurchApplications({ status: "needs_review" }).then((res) => {
+      if (alive && res.ok) setChurchReviewCount(Number(res.data.counts.needs_review || 0));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [allowed]);
 
   const [
     supervisors,
@@ -868,6 +884,11 @@ export default function ReportCenterScreen() {
                     systemDashboard?.countsBySource
                       .soko.total || 0,
                 },
+                {
+                  key: "churches",
+                  label: "Churches",
+                  count: churchReviewCount,
+                },
               ] as const).map((source) => {
                 const active =
                   reportSourceFilter === source.key;
@@ -945,7 +966,14 @@ export default function ReportCenterScreen() {
               })}
             </View>
 
+            {reportSourceFilter === "churches" ? (
+              <ChurchApplicationsPanel onNeedsReviewCount={setChurchReviewCount} />
+            ) : null}
+
             {reportSourceFilter === "soko" ? <SokoProductReportQueue /> : null}
+
+            {reportSourceFilter !== "churches" ? (
+            <>
 
             <View style={styles.metricsGrid}>
               {metrics.map((metric) => (
@@ -1870,6 +1898,8 @@ export default function ReportCenterScreen() {
                 </View>
               ) : null}
             </GlassCard>
+            </>
+            ) : null}
 
           </>
         )}

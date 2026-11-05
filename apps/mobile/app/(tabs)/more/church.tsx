@@ -126,52 +126,13 @@ export default function MoreChurch() {
 
   async function onCreate() {
     if (current.cid) {
-      setErr("You already have a church. One pastor account can create only one church in V1.");
+      setErr("You already have a church. One pastor account can lead only one church.");
       return;
     }
-
-    if (!canCreate) {
-      setErr("Tafadhali jaza Church name na Phone number (sahihi).");
-      return;
-    }
-    setErr(null);
-    setSaving(true);
-    try {
-      const cid = makeChurchId();
-
-      const churchProfile = {
-        name: createName.trim(),
-        phone: cleanPhone(phone).trim(),
-        country: country.trim(),
-        province: province.trim() || undefined,
-        city: city.trim() || undefined,
-        location: loc || undefined,
-        createdAt: new Date().toISOString(),
-      };
-
-      const churchDraft = {
-        churchId: cid,
-        role: "Pastor",
-        churchProfile,
-        churchName: churchProfile.name,
-        churchPhone: churchProfile.phone,
-        churchCountry: churchProfile.country,
-        churchCity: churchProfile.city || "",
-      };
-
-      await saveChurchDraft(churchDraft, session?.userId);
-
-      await setSession({
-        ...(session as any),
-        userId: String(session?.userId || ""),
-        ...churchDraft,
-      } as any);
-
-      router.replace("/(tabs)/church/overview" as any);
-    } finally {
-      setSaving(false);
-    }
+    // New churches are created only after Kristo App approves a church application.
+    router.push("/more/church/create" as any);
   }
+
 
   async function onJoin() {
     setErr(null);
@@ -342,7 +303,7 @@ export default function MoreChurch() {
           <Text style={s.navSub}>
   {current.cid
     ? "Manage your church account."
-    : "Find church, enter Church ID, or create church mpya."}
+    : "Find church, enter Church ID, or apply for a new church."}
 </Text>
         </View>
       </View>)}
@@ -400,8 +361,8 @@ export default function MoreChurch() {
                 <View style={s.tileIcon}>
                   <MaterialCommunityIcons name="church" size={24} color={GOLD} />
                 </View>
-                <Text style={s.tileTitle}>Create Church</Text>
-                <Text style={s.tileSub}>For pastors. Create new church ID.</Text>
+                <Text style={s.tileTitle}>Apply for a Church</Text>
+                <Text style={s.tileSub}>For pastors. Kristo App reviews it.</Text>
               </Pressable>
 
               <Pressable onPress={() => router.push("/more/church/find" as any)} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
@@ -467,8 +428,8 @@ export default function MoreChurch() {
                   <View style={s.tileIcon}>
                     <MaterialCommunityIcons name="church" size={24} color={GOLD} />
                   </View>
-                  <Text style={s.tileTitle}>Create Church</Text>
-                  <Text style={s.tileSub}>For pastors. Create new church ID.</Text>
+                  <Text style={s.tileTitle}>Apply for a Church</Text>
+                  <Text style={s.tileSub}>For pastors. Kristo App reviews it.</Text>
                 </Pressable>
 
                 <Pressable onPress={() => router.push("/more/church/find" as any)} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>

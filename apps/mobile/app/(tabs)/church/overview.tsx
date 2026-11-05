@@ -41,6 +41,7 @@ import {
   fetchLiveControlSelfStatus,
   lastKnownLiveControlStatus,
 } from "@/src/lib/churchLiveControlAccess";
+import { fetchMyChurchApplication } from "@/src/lib/churchApplicationsApi";
 import {
   avatarCacheBust,
   mergeChurchAvatarForDisplay,
@@ -1007,6 +1008,28 @@ const contentOpacity = useRef(new Animated.Value(0)).current;
       alive = false;
     };
   }, [showMemberChurchAccessCard, isFocused, effectiveAuthUserId]);
+
+  // A church created from a church application is not open until it is activated: its Pastor
+  // and members see the application progress instead of the Overview.
+  useEffect(() => {
+    if (!isFocused || invitePreview || !effectiveAuthUserId) return;
+    let alive = true;
+    void fetchMyChurchApplication().then((res) => {
+      if (!alive || !res.ok) return;
+      const { application, pendingChurch } = res.data;
+      const ownNotOpen =
+        !!application &&
+        !!application.churchId &&
+        application.status !== "active" &&
+        application.status !== "rejected" &&
+        (!churchId || application.churchId === churchId);
+      const memberOfNotOpen = !!pendingChurch && (!churchId || pendingChurch.churchId === churchId);
+      if (ownNotOpen || memberOfNotOpen) router.replace("/(tabs)/church/application" as any);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [isFocused, invitePreview, effectiveAuthUserId, churchId, router]);
 
   const showLiveControlSuspendedAlert = useCallback(() => {
     Alert.alert(

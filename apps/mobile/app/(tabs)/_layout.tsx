@@ -1,3 +1,4 @@
+import { fetchMyChurchApplication } from "@/src/lib/churchApplicationsApi";
 import { Tabs, useGlobalSearchParams, useSegments, useRouter} from "expo-router";
 import {
   getExternalProfileTabActive,
@@ -1277,6 +1278,12 @@ export default function TabLayout() {
 
                 // LIVE room opens only on long press (red ring).
                 if (!hasChurch) {
+                  // Someone who applied for a church follows the application here.
+                  const applied = await fetchMyChurchApplication().catch(() => null);
+                  if (applied?.ok && applied.data.application) {
+                    router.replace("/(tabs)/church/application" as any);
+                    return;
+                  }
                   await ensureChurchAccessOrSetup({
                     session,
                     setSession,
