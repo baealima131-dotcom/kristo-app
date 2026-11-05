@@ -1,38 +1,34 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
-  CHURCH_APPLICATION_STATUS_COLORS,
   CHURCH_APPLICATION_STATUS_LABELS,
   fetchAdminChurchApplications,
   formatShortDate,
   type AdminApplication,
   type ChurchApplicationStatus,
 } from "@/src/lib/churchApplicationsApi";
+import { GlassCard, RC, StatusPill } from "@/src/components/systemAdmin/reportCenterTheme";
 
-const GOLD = "#F4D06F";
-const MUTED = "rgba(255,255,255,0.62)";
-const TEXT = "rgba(255,255,255,0.94)";
-
-const STATUS_FILTERS: { key: string; label: string }[] = [
-  { key: "needs_review", label: "Needs review" },
+const ALL_STATUSES = Object.keys(CHURCH_APPLICATION_STATUS_LABELS) as ChurchApplicationStatus[];
+const SOURCES = [
   { key: "all", label: "All" },
-  ...(Object.keys(CHURCH_APPLICATION_STATUS_LABELS) as ChurchApplicationStatus[]).map((key) => ({
-    key,
-    label: CHURCH_APPLICATION_STATUS_LABELS[key],
-  })),
-];
-
-const SOURCE_FILTERS = [
-  { key: "all", label: "All sources" },
   { key: "direct", label: "Direct" },
   { key: "agent", label: "Agent" },
 ];
 
+function statusFilterLabel(key: string) {
+  if (key === "needs_review") return "Needs review";
+  if (key === "all") return "All";
+  return CHURCH_APPLICATION_STATUS_LABELS[key as ChurchApplicationStatus] || key;
+}
+
 /** System Admin Report Center > Churches: church applications list. */
 export function ChurchApplicationsPanel({ onNeedsReviewCount }: { onNeedsReviewCount?: (count: number) => void }) {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [status, setStatus] = useState("needs_review");
   const [source, setSource] = useState("all");
   const [query, setQuery] = useState("");
@@ -41,6 +37,7 @@ export function ChurchApplicationsPanel({ onNeedsReviewCount }: { onNeedsReviewC
   const [error, setError] = useState("");
   const [rows, setRows] = useState<AdminApplication[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 300);
@@ -67,56 +64,59 @@ export function ChurchApplicationsPanel({ onNeedsReviewCount }: { onNeedsReviewC
     }, [load])
   );
 
+  // Quick filters cover the daily case; everything else is in the Filter sheet.
+  const quick = ["needs_review", "all"];
+  const extraFilter = !quick.includes(status) || source !== "all";
+
   return (
     <View>
-      <View style={s.search}>
-        <Ionicons name="search" size={16} color={MUTED} />
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search church, city, applicant, agent or code"
-          placeholderTextColor="rgba(255,255,255,0.38)"
-          style={s.searchInput}
-          autoCapitalize="none"
-          returnKeyType="search"
-        />
-        {query ? (
-          <Pressable onPress={() => setQuery("")} hitSlop={8}>
-            <Ionicons name="close-circle" size={16} color={MUTED} />
-          </Pressable>
-        ) : null}
+      <View style={s.searchRow}>
+        <View style={s.search}>
+          <Ionicons name="search" size={15} color={RC.faint} />
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search churches, people, codes"
+            placeholderTextColor={RC.faint}
+            style={s.searchInput}
+            autoCapitalize="none"
+            returnKeyType="search"
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery("")} hitSlop={8}>
+              <Ionicons name="close-circle" size={16} color={RC.faint} />
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
-        {STATUS_FILTERS.map((f) => {
-          const active = status === f.key;
-          const count = counts[f.key];
+      <View style={s.filterRow}>
+        {quick.map((key) => {
+          const active = status === key && source === "all";
           return (
-            <Pressable key={f.key} onPress={() => setStatus(f.key)} style={[s.chip, active && s.chipActive]}>
-              <Text style={[s.chipText, active && s.chipTextActive]}>{f.label}</Text>
-              {typeof count === "number" ? (
-                <View style={[s.chipCount, active && s.chipCountActive]}>
-                  <Text style={[s.chipCountText, active && { color: "#FFF3C4" }]}>{count}</Text>
-                </View>
-              ) : null}
+            <Pressable
+              key={key}
+              onPress={() => {
+                setStatus(key);
+                setSource("all");
+              }}
+              style={[s.quick, active && s.quickActive]}
+            >
+              <Text style={[s.quickText, active && { color: RC.gold }]}>{statusFilterLabel(key)}</Text>
+              <Text style={[s.quickCount, active && { color: RC.gold }]}>{counts[key] ?? 0}</Text>
             </Pressable>
           );
         })}
-      </ScrollView>
-
-      <View style={s.sourceRow}>
-        {SOURCE_FILTERS.map((f) => {
-          const active = source === f.key;
-          return (
-            <Pressable key={f.key} onPress={() => setSource(f.key)} style={[s.sourceBtn, active && s.sourceBtnActive]}>
-              <Text style={[s.sourceText, active && { color: GOLD }]}>{f.label}</Text>
-            </Pressable>
-          );
-        })}
+        <Pressable onPress={() => setFiltersOpen(true)} style={[s.quick, s.filterBtn, extraFilter && s.quickActive]}>
+          <Ionicons name="options-outline" size={15} color={extraFilter ? RC.gold : RC.muted} />
+          <Text style={[s.quickText, extraFilter && { color: RC.gold }]} numberOfLines={1}>
+            {extraFilter ? [!quick.includes(status) ? statusFilterLabel(status) : "", source !== "all" ? source === "agent" ? "Agent" : "Direct" : ""].filter(Boolean).join(" · ") : "Filter"}
+          </Text>
+        </Pressable>
       </View>
 
       {loading && !rows.length ? (
-        <ActivityIndicator color={GOLD} style={{ marginTop: 30 }} />
+        <ActivityIndicator color={RC.gold} style={{ marginTop: 28 }} />
       ) : error ? (
         <Pressable onPress={() => void load()} style={s.empty}>
           <Text style={s.emptyTitle}>{error}</Text>
@@ -124,137 +124,179 @@ export function ChurchApplicationsPanel({ onNeedsReviewCount }: { onNeedsReviewC
         </Pressable>
       ) : !rows.length ? (
         <View style={s.empty}>
-          <MaterialCommunityIcons name="church" size={26} color={GOLD} />
-          <Text style={s.emptyTitle}>No church applications</Text>
-          <Text style={s.muted}>Nothing matches this filter.</Text>
+          <MaterialCommunityIcons name="church" size={24} color={RC.gold} />
+          <Text style={s.emptyTitle}>{status === "needs_review" ? "Nothing to review" : "No applications"}</Text>
+          <Text style={s.muted}>{status === "needs_review" ? "New applications will appear here." : "Nothing matches this filter."}</Text>
         </View>
       ) : (
-        rows.map((app) => {
-          const color = CHURCH_APPLICATION_STATUS_COLORS[app.status] || GOLD;
-          return (
+        <View style={{ gap: 10 }}>
+          {rows.map((app) => (
             <Pressable
               key={app.id}
               onPress={() => router.push(`/more/system-admin/report-center/church-applications/${app.id}` as any)}
-              style={({ pressed }) => [s.card, app.needsReview && s.cardReview, pressed && { opacity: 0.86 }]}
+              style={({ pressed }) => [pressed && { opacity: 0.85 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`${app.church.name}, ${app.statusLabel}`}
             >
-              <View style={s.cardTop}>
-                <View style={s.icon}>
-                  <MaterialCommunityIcons name="church" size={20} color={GOLD} />
+              <GlassCard style={s.card} borderColor={app.needsReview ? "rgba(244,208,111,0.42)" : RC.line}>
+                {app.needsReview ? <View style={s.accent} /> : null}
+                <View style={s.cardRow}>
+                  <View style={{ flex: 1, gap: 4 }}>
+                    <Text style={s.name} numberOfLines={1}>
+                      {app.church.name}
+                    </Text>
+                    <View style={s.metaRow}>
+                      <Text style={s.muted} numberOfLines={1}>
+                        {app.church.city}
+                        {app.church.country ? `, ${app.church.country}` : ""} · {formatShortDate(app.submittedAt)}
+                      </Text>
+                      {app.source === "agent" ? (
+                        <View style={s.agentTag}>
+                          <Ionicons name="id-card-outline" size={11} color={RC.purple} />
+                          <Text style={s.agentTagText}>Agent</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={17} color={RC.faint} />
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.name} numberOfLines={1}>
-                    {app.church.name}
-                  </Text>
-                  <Text style={s.muted} numberOfLines={1}>
-                    {[app.church.city, app.church.country].filter(Boolean).join(", ")}
-                  </Text>
+                <View style={{ marginTop: 10 }}>
+                  <StatusPill status={app.status} label={app.statusLabel} small />
                 </View>
-                <Ionicons name="chevron-forward" size={18} color={MUTED} />
-              </View>
-              <View style={s.badges}>
-                <View style={[s.status, { borderColor: color, backgroundColor: `${color}1F` }]}>
-                  <Text style={[s.statusText, { color }]}>{app.statusLabel}</Text>
-                </View>
-                <View style={[s.status, app.source === "agent" ? s.agentBadge : s.directBadge]}>
-                  <Ionicons
-                    name={app.source === "agent" ? "id-card-outline" : "person-outline"}
-                    size={12}
-                    color={app.source === "agent" ? "#C4B5FD" : "#93C5FD"}
-                  />
-                  <Text style={[s.statusText, { color: app.source === "agent" ? "#C4B5FD" : "#93C5FD" }]}>
-                    {app.source === "agent" ? "Agent" : "Direct"}
-                  </Text>
-                </View>
-              </View>
-              <Text style={s.meta} numberOfLines={1}>
-                {app.applicantName}
-                {app.applicantKristoId ? ` • ${app.applicantKristoId}` : ""} • {formatShortDate(app.submittedAt)}
-              </Text>
-              {app.agent ? (
-                <Text style={s.meta} numberOfLines={1}>
-                  Agent {app.agent.agentName || app.agent.agentKristoId} • code {app.agent.agentCode}
-                </Text>
-              ) : null}
+              </GlassCard>
             </Pressable>
-          );
-        })
+          ))}
+        </View>
       )}
+
+      <Modal visible={filtersOpen} transparent animationType="fade" onRequestClose={() => setFiltersOpen(false)}>
+        <View style={s.modalWrap}>
+          <Pressable style={s.backdrop} onPress={() => setFiltersOpen(false)} />
+          <View style={[s.sheet, { paddingBottom: 18 + insets.bottom }]}>
+            <View style={s.handle} />
+            <Text style={s.sheetTitle}>Filter applications</Text>
+
+            <Text style={s.sheetLabel}>Status</Text>
+            <View style={s.wrap}>
+              {["needs_review", "all", ...ALL_STATUSES].map((key) => {
+                const active = status === key;
+                return (
+                  <Pressable key={key} onPress={() => setStatus(key)} style={[s.option, active && s.optionActive]}>
+                    <Text style={[s.optionText, active && { color: RC.gold }]}>{statusFilterLabel(key)}</Text>
+                    <Text style={[s.optionCount, active && { color: RC.gold }]}>{counts[key] ?? 0}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Text style={s.sheetLabel}>Source</Text>
+            <View style={s.segment}>
+              {SOURCES.map((x) => {
+                const active = source === x.key;
+                return (
+                  <Pressable key={x.key} onPress={() => setSource(x.key)} style={[s.seg, active && s.segActive]}>
+                    <Text style={[s.segText, active && { color: RC.gold }]}>{x.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={s.sheetBtns}>
+              <Pressable
+                onPress={() => {
+                  setStatus("needs_review");
+                  setSource("all");
+                }}
+                style={[s.sheetBtn, { flex: 1 }]}
+              >
+                <Text style={s.sheetBtnText}>Reset</Text>
+              </Pressable>
+              <Pressable onPress={() => setFiltersOpen(false)} style={[s.sheetBtn, s.sheetBtnPrimary, { flex: 1 }]}>
+                <Text style={[s.sheetBtnText, { color: "#0B0F17" }]}>Show results</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const s = StyleSheet.create({
+  searchRow: { marginBottom: 10 },
   search: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    minHeight: 44,
+    height: 42,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(167,139,250,0.28)",
-    backgroundColor: "rgba(255,255,255,0.05)",
+    borderColor: RC.line,
+    backgroundColor: "rgba(255,255,255,0.045)",
     paddingHorizontal: 12,
-    marginBottom: 10,
   },
-  searchInput: { flex: 1, color: TEXT, fontSize: 14, fontWeight: "700", paddingVertical: 8 },
-  chips: { gap: 8, paddingBottom: 10 },
-  chip: {
+  searchInput: { flex: 1, color: RC.text, fontSize: 14, fontWeight: "700", paddingVertical: 0 },
+  filterRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
+  quick: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    height: 34,
+    height: 36,
     paddingHorizontal: 12,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: RC.line,
+    backgroundColor: "rgba(255,255,255,0.03)",
   },
-  chipActive: { borderColor: "rgba(244,208,111,0.5)", backgroundColor: "rgba(244,208,111,0.15)" },
-  chipText: { color: MUTED, fontSize: 12, fontWeight: "900" },
-  chipTextActive: { color: GOLD },
-  chipCount: { minWidth: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center", paddingHorizontal: 5, backgroundColor: "rgba(255,255,255,0.08)" },
-  chipCountActive: { backgroundColor: "rgba(244,208,111,0.22)" },
-  chipCountText: { color: MUTED, fontSize: 10, fontWeight: "900" },
-  sourceRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
-  sourceBtn: {
-    flex: 1,
-    height: 36,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
+  quickActive: { borderColor: "rgba(244,208,111,0.48)", backgroundColor: "rgba(244,208,111,0.13)" },
+  quickText: { color: RC.muted, fontSize: 12.5, fontWeight: "900" },
+  quickCount: { color: RC.faint, fontSize: 12, fontWeight: "900" },
+  filterBtn: { flex: 1, justifyContent: "center", minWidth: 0 },
+  card: { paddingHorizontal: 16, paddingVertical: 14 },
+  accent: { position: "absolute", left: 0, top: 14, bottom: 14, width: 3, borderRadius: 2, backgroundColor: RC.gold },
+  cardRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  name: { color: RC.text, fontSize: 16, fontWeight: "900" },
+  metaRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  muted: { color: RC.muted, fontSize: 12.5, fontWeight: "700", flexShrink: 1 },
+  agentTag: { flexDirection: "row", alignItems: "center", gap: 3 },
+  agentTagText: { color: RC.purple, fontSize: 11.5, fontWeight: "900" },
+  empty: { alignItems: "center", gap: 6, paddingVertical: 34 },
+  emptyTitle: { color: RC.text, fontSize: 15, fontWeight: "900", textAlign: "center" },
+  modalWrap: { flex: 1, justifyContent: "flex-end" },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.6)" },
+  sheet: {
+    marginHorizontal: 8,
+    marginBottom: 8,
+    borderRadius: 26,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
+    borderColor: "rgba(167,139,250,0.3)",
+    backgroundColor: "#111321",
+    paddingHorizontal: 18,
+    paddingTop: 10,
   },
-  sourceBtnActive: { borderColor: "rgba(244,208,111,0.5)", backgroundColor: "rgba(244,208,111,0.1)" },
-  sourceText: { color: MUTED, fontSize: 12, fontWeight: "900" },
-  card: {
-    borderRadius: 20,
-    borderWidth: 1.3,
-    borderColor: "rgba(167,139,250,0.26)",
-    backgroundColor: "rgba(255,255,255,0.045)",
-    padding: 14,
-    marginBottom: 10,
-  },
-  cardReview: { borderColor: "rgba(244,208,111,0.55)", boxShadow: "0 0 14px rgba(244,208,111,0.18)" },
-  cardTop: { flexDirection: "row", alignItems: "center", gap: 10 },
-  icon: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+  handle: { alignSelf: "center", width: 40, height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.2)", marginBottom: 12 },
+  sheetTitle: { color: RC.text, fontSize: 17, fontWeight: "900", marginBottom: 6 },
+  sheetLabel: { color: RC.gold, fontSize: 12, fontWeight: "900", letterSpacing: 0.6, marginTop: 14, marginBottom: 8 },
+  wrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  option: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 11,
+    height: 34,
+    borderRadius: 11,
     borderWidth: 1,
-    borderColor: "rgba(244,208,111,0.4)",
-    backgroundColor: "rgba(244,208,111,0.1)",
+    borderColor: RC.line,
   },
-  name: { color: TEXT, fontSize: 15.5, fontWeight: "900" },
-  muted: { color: MUTED, fontSize: 12, fontWeight: "700" },
-  badges: { flexDirection: "row", gap: 8, marginTop: 10, flexWrap: "wrap" },
-  status: { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 999, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
-  statusText: { fontSize: 11.5, fontWeight: "900" },
-  agentBadge: { borderColor: "rgba(196,181,253,0.5)", backgroundColor: "rgba(196,181,253,0.1)" },
-  directBadge: { borderColor: "rgba(147,197,253,0.45)", backgroundColor: "rgba(147,197,253,0.08)" },
-  meta: { color: MUTED, fontSize: 12, fontWeight: "700", marginTop: 6 },
-  empty: { alignItems: "center", gap: 6, paddingVertical: 30 },
-  emptyTitle: { color: TEXT, fontSize: 15, fontWeight: "900", textAlign: "center" },
+  optionActive: { borderColor: "rgba(244,208,111,0.48)", backgroundColor: "rgba(244,208,111,0.13)" },
+  optionText: { color: RC.muted, fontSize: 12.5, fontWeight: "800" },
+  optionCount: { color: RC.faint, fontSize: 11.5, fontWeight: "900" },
+  segment: { flexDirection: "row", gap: 8 },
+  seg: { flex: 1, height: 38, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: RC.line },
+  segActive: { borderColor: "rgba(244,208,111,0.48)", backgroundColor: "rgba(244,208,111,0.13)" },
+  segText: { color: RC.muted, fontSize: 13, fontWeight: "900" },
+  sheetBtns: { flexDirection: "row", gap: 10, marginTop: 20 },
+  sheetBtn: { height: 46, borderRadius: 15, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: RC.line },
+  sheetBtnPrimary: { backgroundColor: RC.gold, borderColor: RC.gold },
+  sheetBtnText: { color: RC.text, fontSize: 14, fontWeight: "900" },
 });
