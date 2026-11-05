@@ -12,7 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Stack, router, useFocusEffect } from "expo-router";
+import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
@@ -28,6 +28,7 @@ import {
   type ChurchApplicationStatus,
   type PendingChurchForMember,
 } from "@/src/lib/churchApplicationsApi";
+import { rememberChurchActivationState } from "@/src/components/church/ChurchActivationGate";
 
 const BG = "#05070D";
 const CARD = "rgba(255,255,255,0.045)";
@@ -128,6 +129,49 @@ function RequirementRow({ r }: { r: Pick<ApplicantRequirement, "kind" | "title" 
   );
 }
 
+/** What the Pastor should do now, in plain words. */
+function nextSteps(app: ApplicantApplication): string[] {
+  const open = app.requirements.filter((r) => !r.completed);
+  if (app.status === "pending_review") return ["Kristo App is reviewing your application. You will see the decision here."];
+  if (app.status === "more_info_needed") return ["Answer Kristo App's question below and send it."];
+  if (app.status === "ready_for_admin_review") return ["All requirements are complete. Kristo App is doing the final review."];
+  if (app.status === "expired") return ["A deadline passed. Contact Kristo App Support to ask for more time."];
+  if (app.status === "rejected") return ["This application was not approved. You can apply again."];
+  if (app.status === "active") return ["Your church is active. Posting and ministries are open."];
+  const steps: string[] = [];
+  for (const r of open) {
+    if (r.kind === "verified_members") {
+      const left = Math.max(0, Number(r.target || 0) - Number(r.current || 0));
+      steps.push(
+        `Invite members with Church ID ${app.churchId} and approve their join requests: ${left} more by ${formatShortDate(r.deadlineAt)}.`
+      );
+    } else {
+      steps.push(`Kristo App will confirm "${r.title}" by ${formatShortDate(r.deadlineAt)}.`);
+    }
+  }
+  steps.push(
+    app.activationMode === "auto"
+      ? "Your church opens automatically when everything is complete."
+      : "When everything is complete, Kristo App does a final review and activates your church."
+  );
+  return steps;
+}
+
+function LockedAction({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={s.actionRow} accessibilityRole="button" accessibilityState={{ disabled: true }}>
+      <View style={[s.actionIcon, s.actionIconLocked]}>
+        <Ionicons name={icon} size={17} color={MUTED} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[s.actionLabel, { color: MUTED }]}>{label}</Text>
+        <Text style={s.actionHint}>Opens when your church is active</Text>
+      </View>
+      <Ionicons name="lock-closed" size={15} color={MUTED} />
+    </Pressable>
+  );
+}
+
 export default function ChurchApplicationScreen() {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
@@ -139,6 +183,25 @@ export default function ChurchApplicationScreen() {
   const [address, setAddress] = useState("");
   const [sending, setSending] = useState(false);
   const markedSeen = useRef(false);
+  const params = useLocalSearchParams<{ focus?: string }>();
+  const scrollRef = useRef<ScrollView>(null);
+  const requirementsY = useRef(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const scrollToRequirements = useCallback(() => {
+    scrollRef.current?.scrollTo({ y: Math.max(0, requirementsY.current - 12), animated: true });
+  }, []);
+
+  const explainLocked = useCallback(
+    (what: string) => {
+      Alert.alert(
+        `${what} is not available yet`,
+        "Your church opens for posting and ministries when every requirement is complete and Kristo App activates it.",
+        [{ text: "See requirements", onPress: scrollToRequirements }]
+      );
+    },
+    [scrollToRequirements]
+  );
 
   const load = useCallback(async (mode: "initial" | "refresh" = "initial") => {
     if (mode === "refresh") setRefreshing(true);
@@ -147,6 +210,11 @@ export default function ChurchApplicationScreen() {
       markedSeen.current = true;
       setApp(res.data.application);
       setPendingChurch(res.data.pendingChurch);
+      const a = res.data.application;
+      rememberChurchActivationState({
+        locked: (!!a?.churchId && a.status !== "active" && a.status !== "rejected") || !!res.data.pendingChurch,
+        churchName: a?.church.name || res.data.pendingChurch?.churchName,
+      });
       setError("");
       if (res.data.application) setAddress((prev) => prev || res.data.application?.church.address || "");
     } else {
@@ -165,6 +233,13 @@ export default function ChurchApplicationScreen() {
   useEffect(() => {
     if (app?.status === "active" && app.churchId) markedSeen.current = true;
   }, [app?.status, app?.churchId]);
+
+  // Opened from a locked feature ("View church requirements"): jump to the requirements.
+  useEffect(() => {
+    if (loading || params.focus !== "requirements") return;
+    const t = setTimeout(scrollToRequirements, 350);
+    return () => clearTimeout(t);
+  }, [loading, params.focus, scrollToRequirements]);
 
   const onRespond = async () => {
     if (!app || !response.trim() || sending) return;
@@ -195,7 +270,7 @@ export default function ChurchApplicationScreen() {
         <Ionicons name="chevron-back" size={22} color={TEXT} />
       </Pressable>
       <Text style={s.headerTitle} numberOfLines={1}>
-        CHURCH APPLICATION
+        {app?.churchId && app.status !== "rejected" && app.status !== "active" ? "CHURCH REQUIREMENTS" : "CHURCH APPLICATION"}
       </Text>
       <Pressable onPress={() => void load("refresh")} hitSlop={10} style={s.headerBtn} accessibilityLabel="Refresh">
         <Ionicons name="refresh" size={19} color={GOLD} />
@@ -291,16 +366,25 @@ export default function ChurchApplicationScreen() {
           </View>
         </View>
 
-        {app.adminMessage ? (
-          <View style={[s.card, s.messageCard]}>
-            <View style={s.cardTop}>
-              <Ionicons name="chatbubble-ellipses-outline" size={18} color={GOLD} />
-              <Text style={s.messageTitle}>Message from Kristo App</Text>
-            </View>
-            <Text style={[s.body, { marginTop: 8 }]}>{app.adminMessage}</Text>
-            {app.adminMessageAt ? <Text style={[s.muted, { marginTop: 6 }]}>{formatShortDate(app.adminMessageAt)}</Text> : null}
+        <View style={[s.card, s.messageCard]}>
+          <View style={s.cardTop}>
+            <Ionicons name="clipboard-outline" size={18} color={GOLD} />
+            <Text style={s.messageTitle}>Instructions</Text>
           </View>
-        ) : null}
+          {app.adminMessage ? (
+            <View style={s.adminMsg}>
+              <Text style={s.adminMsgLabel}>From Kristo App{app.adminMessageAt ? ` · ${formatShortDate(app.adminMessageAt)}` : ""}</Text>
+              <Text style={s.body}>{app.adminMessage}</Text>
+            </View>
+          ) : null}
+          <Text style={[s.adminMsgLabel, { marginTop: 12 }]}>Next step</Text>
+          {nextSteps(app).map((step, i) => (
+            <View key={i} style={s.stepRow}>
+              <View style={s.stepBullet} />
+              <Text style={[s.body, { flex: 1 }]}>{step}</Text>
+            </View>
+          ))}
+        </View>
 
         {app.status === "more_info_needed" ? (
           <View style={s.card}>
@@ -334,29 +418,34 @@ export default function ChurchApplicationScreen() {
         ) : null}
 
         {app.requirements.length ? (
-          <>
-            <Text style={s.section}>Requirements</Text>
-            <Text style={[s.muted, { marginBottom: 10 }]}>
-              {app.activationMode === "auto"
-                ? "Your church opens automatically when every requirement is complete."
-                : "When every requirement is complete, Kristo App does a final review and activates your church."}
+          <View onLayout={(e) => (requirementsY.current = e.nativeEvent.layout.y)}>
+            <Text style={s.section}>
+              Requirements{" "}
+              <Text style={s.sectionCount}>
+                {app.requirements.filter((r) => r.completed).length}/{app.requirements.length} done
+              </Text>
             </Text>
             {app.requirements.map((r) => (
               <RequirementRow key={r.id} r={r} />
             ))}
-          </>
+          </View>
         ) : null}
 
         {provisioned && app.status !== "active" ? (
           <View style={s.card}>
-            <Text style={s.eyebrow}>GROW YOUR CHURCH</Text>
-            <Text style={s.body}>
-              Share your Church ID {app.churchId} so members can request to join. Members count once you approve them.
-            </Text>
-            <Pressable onPress={() => router.push("/church/members" as any)} style={[s.outlineBtn, { marginTop: 12 }]}>
-              <Ionicons name="people-outline" size={16} color={GOLD} />
-              <Text style={s.outlineBtnText}>Members & join requests</Text>
+            <Text style={s.eyebrow}>CHURCH ACTIONS</Text>
+            <Pressable onPress={() => router.push("/church/members" as any)} style={s.actionRow} accessibilityRole="button">
+              <View style={s.actionIcon}>
+                <Ionicons name="people-outline" size={17} color={GOLD} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.actionLabel}>Members & join requests</Text>
+                <Text style={s.actionHint}>Approve members who join with your Church ID</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={MUTED} />
             </Pressable>
+            <LockedAction icon="create-outline" label="Create church post" onPress={() => explainLocked("Posting")} />
+            <LockedAction icon="grid-outline" label="Create ministry" onPress={() => explainLocked("Creating a ministry")} />
           </View>
         ) : null}
 
@@ -372,7 +461,11 @@ export default function ChurchApplicationScreen() {
           </Pressable>
         ) : null}
 
-        <Text style={s.section}>Timeline</Text>
+        <Pressable onPress={() => setHistoryOpen((v) => !v)} style={s.historyToggle} accessibilityRole="button" accessibilityState={{ expanded: historyOpen }}>
+          <Text style={s.section}>History</Text>
+          <Ionicons name={historyOpen ? "chevron-up" : "chevron-down"} size={17} color={MUTED} />
+        </Pressable>
+        {historyOpen ? (
         <View style={s.card}>
           {[...app.timeline].reverse().map((e, i, arr) => (
             <View key={`${e.at}-${i}`} style={s.tl}>
@@ -388,6 +481,7 @@ export default function ChurchApplicationScreen() {
             </View>
           ))}
         </View>
+        ) : null}
       </>
     );
   }
@@ -398,6 +492,7 @@ export default function ChurchApplicationScreen() {
       {header}
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView
+          ref={scrollRef}
           contentContainerStyle={[s.content, { paddingBottom: 120 + insets.bottom }]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load("refresh")} tintColor={GOLD} />}
           keyboardShouldPersistTaps="handled"
@@ -489,7 +584,27 @@ const s = StyleSheet.create({
   metaGrid: { marginTop: 16, flexDirection: "row", flexWrap: "wrap", rowGap: 6 },
   metaLabel: { width: "34%", color: MUTED, fontSize: 12.5, fontWeight: "700" },
   metaValue: { width: "66%", color: TEXT, fontSize: 12.5, fontWeight: "800" },
-  messageTitle: { color: TITLE_GOLD, fontSize: 14, fontWeight: "900" },
+  messageTitle: { color: TITLE_GOLD, fontSize: 15, fontWeight: "900" },
+  adminMsg: { marginTop: 10, padding: 12, borderRadius: 14, backgroundColor: "rgba(255,255,255,0.05)" },
+  adminMsgLabel: { color: GOLD, fontSize: 11.5, fontWeight: "900", letterSpacing: 0.6, marginBottom: 4 },
+  stepRow: { flexDirection: "row", gap: 10, marginTop: 6 },
+  stepBullet: { width: 6, height: 6, borderRadius: 3, backgroundColor: GOLD, marginTop: 7 },
+  sectionCount: { color: MUTED, fontSize: 13, fontWeight: "800" },
+  actionRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 10 },
+  actionIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.45)",
+    backgroundColor: "rgba(217,179,95,0.1)",
+  },
+  actionIconLocked: { borderColor: "rgba(255,255,255,0.14)", backgroundColor: "rgba(255,255,255,0.04)" },
+  actionLabel: { color: TEXT, fontSize: 14.5, fontWeight: "900" },
+  actionHint: { color: MUTED, fontSize: 12, fontWeight: "700", marginTop: 1 },
+  historyToggle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 },
   input: {
     borderRadius: 14,
     borderWidth: 1,

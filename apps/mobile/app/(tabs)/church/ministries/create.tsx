@@ -1,3 +1,4 @@
+import { ChurchActivationGate } from "@/src/components/church/ChurchActivationGate";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -258,7 +259,7 @@ async function apiCreateMinistry(body: { name: string; description?: string; sta
 
 type PickerKind = "members" | "leaders";
 
-export default function ChurchMinistryCreateScreen() {
+function ChurchMinistryCreateScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const nameRef = useRef<TextInput>(null);
@@ -1800,3 +1801,12 @@ const s = StyleSheet.create<any>({
   },
   btnGoldTextDark: { color: "#0B0F17", fontWeight: "900" },
 });
+
+/** Closed while the church (from a church application) is not active; the server refuses it too. */
+export default function ChurchMinistryCreateScreenRoute() {
+  return (
+    <ChurchActivationGate feature="Creating a ministry">
+      <ChurchMinistryCreateScreen />
+    </ChurchActivationGate>
+  );
+}

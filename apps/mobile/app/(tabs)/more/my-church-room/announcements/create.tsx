@@ -1,3 +1,4 @@
+import { ChurchActivationGate } from "@/src/components/church/ChurchActivationGate";
 import React, { useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from "react";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -771,7 +772,7 @@ function photoPermissionDeniedMessage(kind: "announcement" | "post" | "testimony
     : "Photo access is required to add images.";
 }
 
-export default function CreateAnnouncement() {
+function CreateAnnouncement() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const router = useRouter();
@@ -1907,3 +1908,12 @@ const t = StyleSheet.create({
     letterSpacing: 0.18,
   } as TextStyle,
 });
+
+/** Closed while the church (from a church application) is not active; the server refuses it too. */
+export default function CreateAnnouncementRoute() {
+  return (
+    <ChurchActivationGate feature="Posting">
+      <CreateAnnouncement />
+    </ChurchActivationGate>
+  );
+}

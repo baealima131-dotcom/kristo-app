@@ -1,3 +1,4 @@
+import { ChurchActivationGate } from "@/src/components/church/ChurchActivationGate";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Image,
@@ -412,7 +413,7 @@ const MEDIA_STUDIO_SUBSCRIPTION_TITLE = MEDIA_STUDIO_ROLE_TITLE;
 const MEDIA_STUDIO_SUBSCRIPTION_MESSAGE =
   "Only authorized church media leaders can use Media Studio tools.";
 
-export default function MediaStudioScreen() {
+function MediaStudioScreen() {
   const router = useRouter();
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
@@ -7446,3 +7447,12 @@ showcaseBadgeText: {
   },
 
 });
+
+/** Closed while the church (from a church application) is not active; the server refuses it too. */
+export default function MediaStudioScreenRoute() {
+  return (
+    <ChurchActivationGate feature="Church media posting">
+      <MediaStudioScreen />
+    </ChurchActivationGate>
+  );
+}
