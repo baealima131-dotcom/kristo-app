@@ -1,6 +1,7 @@
+import { churchNotActiveResponse } from "@/app/api/_lib/churchActivationGate";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { getChurchById, upsertChurchProfile } from "@/app/api/_lib/churches";
+import { getChurchById, isChurchOpen, upsertChurchProfile } from "@/app/api/_lib/churches";
 import { addActiveMember, getActiveMembership, isApproverForChurch } from "@/app/api/_lib/memberships";
 import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
 import { getChurchStoreDiagnostics, isChurchDatabaseError } from "@/app/api/_lib/store/churchDb";
@@ -44,6 +45,8 @@ export async function POST(req: NextRequest) {
     // registered for a caller who is not already an active member somewhere.
     const existing = await getChurchById(id);
     if (existing) {
+      // A church waiting for activation keeps the details it was approved with.
+      if (!isChurchOpen(existing)) return churchNotActiveResponse(String(existing.activationStatus || "pending"));
       if (!(await isApproverForChurch(userId, id))) {
         console.log("KRISTO_CHURCH_DIRECTORY_DENIED", { userId, churchId: id, reason: "not_church_admin" });
         return json({ ok: false, error: "Forbidden" }, { status: 403 });

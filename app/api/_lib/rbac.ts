@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { denyIfChurchNotActive } from "@/app/api/_lib/churchActivationGate";
 import type { NextRequest } from "next/server";
 
 import {
@@ -505,6 +506,10 @@ export async function guardCheckoutAuth(
 export async function guard(req: NextRequest, roles?: Role[]): Promise<GuardContext | NextResponse> {
   const ctxOrRes = await requireActiveMembership(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+
+  // Churches from a church application are closed to church features until activated.
+  const notActive = await denyIfChurchNotActive(String(ctxOrRes.churchId || ""), req, "rbac.guard");
+  if (notActive) return notActive;
 
   const blocked =
     await assertSafetyEnforcementAllows(

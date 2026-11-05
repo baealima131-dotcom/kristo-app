@@ -1,3 +1,4 @@
+import { denyIfChurchNotActive } from "@/app/api/_lib/churchActivationGate";
 import { NextResponse } from "next/server";
 import { getCheckoutViewer } from "@/app/api/_lib/auth";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
@@ -55,5 +56,7 @@ export async function resolveVerifiedChurchActor(
     console.log("KRISTO_VERIFIED_ACTOR_CHURCH_MISMATCH", { route: logTag, userId, headerChurchId });
     return NextResponse.json({ ok: false, error: "Forbidden (church)" }, { status: 403 });
   }
+  const notActive = await denyIfChurchNotActive(membership.churchId, req, `verifiedActor.${logTag}`);
+  if (notActive) return notActive;
   return { userId, churchId: membership.churchId, churchRole: String(membership.churchRole || "") };
 }

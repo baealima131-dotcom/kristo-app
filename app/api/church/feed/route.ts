@@ -1,3 +1,4 @@
+import { churchNotActiveResponse, isChurchOpenById } from "@/app/api/_lib/churchActivationGate";
 import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
@@ -2862,7 +2863,10 @@ async function handleFeedGet(
     const headerChurchId = String(ctx?.viewer?.churchId || "").trim();
     const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
     const viewerRole = String(ctx?.viewer?.role || "Member").trim();
-    const churchId = await resolveViewerChurchId(req, headerChurchId, viewerUserId, viewerRole);
+    const resolvedChurchId = await resolveViewerChurchId(req, headerChurchId, viewerUserId, viewerRole);
+    // A church that is not active yet has no church feed; its members still get the global feed.
+    const viewerChurchOpen = !resolvedChurchId || (await isChurchOpenById(resolvedChurchId).catch(() => false));
+    const churchId = viewerChurchOpen ? resolvedChurchId : "";
     setFallbackChurchId(churchId || getFallbackChurchId());
     const url = new URL(req.url);
 
@@ -2871,6 +2875,7 @@ async function handleFeedGet(
     const storageMode = String(url.searchParams.get("storage") || "").trim().toLowerCase();
     const feedScope = String(url.searchParams.get("scope") || "church").trim().toLowerCase();
     const isGlobalFeedScope = feedScope === "global" || feedScope === "home";
+    if (!viewerChurchOpen && !isGlobalFeedScope) return churchNotActiveResponse("pending");
     const mediaOnly =
       isGlobalFeedScope &&
       (url.searchParams.get("mediaOnly") === "1" ||

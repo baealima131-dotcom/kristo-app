@@ -15,6 +15,7 @@ import {
   readOfflineActivationJsonFile,
 } from "@/app/api/_lib/store/offlineActivationDb";
 import { activateChurchWithAgentCode } from "@/app/api/_lib/offlineActivationCodeStore";
+import { invalidateChurchActivationCache } from "@/app/api/_lib/churchActivationGate";
 
 /**
  * Church applications: nobody creates a church directly any more. Applicants (or agents on their
@@ -684,6 +685,7 @@ async function setChurchActivation(app: ChurchApplication, status: ChurchActivat
   const church = await getChurchById(app.churchId);
   if (!church) return;
   await upsertChurchProfile({ id: app.churchId, name: church.name, activationStatus: status, applicationId: app.id });
+  invalidateChurchActivationCache(app.churchId);
 }
 
 async function afterEffects(app: ChurchApplication, effects: EvaluationEffects) {
