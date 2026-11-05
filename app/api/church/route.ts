@@ -463,6 +463,8 @@ export async function POST(req: Request) {
     }
 
     if (action === "create_church") {
+      // Local demo store only; real churches come from approved church applications.
+      return bad("church_application_required", 403);
       const name = str(body?.name);
       const pastorName = str(body?.pastorName);
       const pastorId = str(body?.pastorId);

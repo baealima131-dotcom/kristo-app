@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { getChurchById, isVerifiedChurch, searchChurches, type ChurchProfile } from "@/app/api/_lib/churches";
+import { getChurchById, isChurchOpen, isVerifiedChurch, searchChurches, type ChurchProfile } from "@/app/api/_lib/churches";
 import { churchAvatarUpdatedAtMs, resolveChurchAvatarFields } from "@/app/api/_lib/churchAvatar";
 import { getMembershipsForChurch, getMembershipsForUser } from "@/app/api/_lib/memberships";
 import { getChurchFollowerCount, getViewerFollowingChurch } from "@/app/api/_lib/churchFollows";
@@ -217,6 +217,10 @@ export async function GET(req: NextRequest) {
       viewerMembershipStatus === "member" || STAFF_PLATFORM_ROLES.has(String(viewerPlatformRole || ""))
         ? "member"
         : "visitor";
+    // A church waiting for activation (church application) has no public profile yet.
+    if (viewerAccess === "visitor" && !isChurchOpen(profile as ChurchProfile)) {
+      return json({ ok: false, error: "Church not found" }, { status: 404 });
+    }
     const recentPosts = await loadRecentPosts(id, String(profile.name || id), viewerAccess === "member").catch(
       () => []
     );

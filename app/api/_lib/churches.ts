@@ -10,9 +10,22 @@ import {
   ensureChurchStoreReady,
 } from "@/app/api/_lib/store/churchDb";
 
+/**
+ * Churches created through a church application start as "pending_requirements" (hidden until
+ * the System Admin's requirements and activation step are done); "closed" after a rejection.
+ * Churches without the field (all existing ones) are active.
+ */
+export type ChurchActivationStatus = "pending_requirements" | "active" | "closed";
+
+export function isChurchOpen(church: { activationStatus?: ChurchActivationStatus } | null | undefined) {
+  return !!church && (!church.activationStatus || church.activationStatus === "active");
+}
+
 export type ChurchProfile = {
   id: string;
   name: string;
+  activationStatus?: ChurchActivationStatus;
+  applicationId?: string;
   address?: string;
   phone?: string;
   country?: string;
@@ -275,6 +288,7 @@ export async function searchChurches(params: {
   lng?: number;
   limit?: number;
   includeDev?: boolean;
+  includePending?: boolean;
 }): Promise<ChurchSearchHit[]> {
   const q = normalizeSearch(params.q);
   const city = normalizeSearch(params.city);
@@ -286,6 +300,10 @@ export async function searchChurches(params: {
 
   if (!params.includeDev) {
     rows = rows.filter((c) => !isHiddenFromSearch(c.id));
+  }
+  // Churches still waiting for activation are reachable only by Church ID, never listed.
+  if (!params.includePending) {
+    rows = rows.filter((c) => isChurchOpen(c));
   }
 
   if (q) {

@@ -49,13 +49,17 @@ export async function POST(req: NextRequest) {
         return json({ ok: false, error: "Forbidden" }, { status: 403 });
       }
     } else {
-      const active = await getActiveMembership(userId);
-      if (active?.churchId) {
-        return json(
-          { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` },
-          { status: 409 }
-        );
-      }
+      // New churches are created only through a church application approved by a System Admin
+      // (POST /api/church/applications); this route only updates existing churches.
+      console.log("KRISTO_CHURCH_DIRECTORY_DENIED", { userId, churchId: id, reason: "church_application_required" });
+      return json(
+        {
+          ok: false,
+          error: "church_application_required",
+          message: "Submit a church application. A Kristo App admin reviews it before the church is created.",
+        },
+        { status: 403 }
+      );
     }
 
     const saved = await upsertChurchProfile({
