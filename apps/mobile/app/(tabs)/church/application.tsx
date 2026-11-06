@@ -22,6 +22,7 @@ import {
   fetchMyChurchApplication,
   formatShortDate,
   formatTimeRemaining,
+  isDeadlinePassed,
   respondToChurchApplication,
   type ApplicantApplication,
   type ApplicantRequirement,
@@ -86,7 +87,7 @@ function RequirementRow({ r }: { r: Pick<ApplicantRequirement, "kind" | "title" 
   const target = Math.max(1, Number(r.target || 1));
   const pct = r.completed ? 1 : Math.min(1, current / target);
   const remaining = formatTimeRemaining(r.deadlineAt);
-  const overdue = !r.completed && Date.parse(r.deadlineAt) < Date.now();
+  const overdue = !r.completed && isDeadlinePassed(r.deadlineAt);
   return (
     <View style={[s.req, r.completed && s.reqDone]}>
       <View style={s.reqTop}>

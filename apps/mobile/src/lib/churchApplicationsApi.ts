@@ -276,6 +276,10 @@ export async function deleteRequirementTemplate(id: string): Promise<Result<true
   return { ok: true, data: true };
 }
 
+export function isDeadlinePassed(deadlineAt: string, nowMs = Date.now()) {
+  return Date.parse(deadlineAt) < nowMs;
+}
+
 /** "12 days left", "Due today", "3 days overdue". */
 export function formatTimeRemaining(deadlineAt: string, nowMs = Date.now()) {
   const ms = Date.parse(deadlineAt) - nowMs;
