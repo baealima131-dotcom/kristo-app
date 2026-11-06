@@ -150,6 +150,8 @@ export type ChurchApplication = {
   updatedAt: string;
   churchId?: string;
   activationMode: ActivationMode;
+  /** How the System Admin approved: with requirements (conditional) or without (active at once). */
+  approvalType?: "with_requirements" | "without_requirements";
   requirements: ApplicationRequirement[];
   adminMessage?: string;
   adminMessageAt?: string;
@@ -646,7 +648,13 @@ function applyEvaluation(app: ChurchApplication, verifiedMembers: number, nowMs 
   const allMet = app.requirements.every((r) => !!r.completedAt);
   if (allMet) {
     if (app.activationMode === "auto") {
-      setStatus(app, "active", { at, type: "activated", byUserId: "system", byRole: "system", message: "All requirements met" });
+      setStatus(app, "active", {
+        at,
+        type: "activated",
+        byUserId: "system",
+        byRole: "system",
+        message: app.requirements.length ? "All requirements met" : "Approved without requirements",
+      });
       app.activatedAt = at;
       app.activatedBy = "system";
       effects.activated = true;
@@ -691,7 +699,13 @@ async function setChurchActivation(app: ChurchApplication, status: ChurchActivat
 async function afterEffects(app: ChurchApplication, effects: EvaluationEffects) {
   if (effects.activated) {
     await setChurchActivation(app, "active");
-    await notifyApplicant(app, "Your church is active", `${app.church.name} met all requirements and is now active on Kristo App.`);
+    await notifyApplicant(
+      app,
+      "Your church is active",
+      app.requirements.length
+        ? `${app.church.name} met all requirements and is now active on Kristo App.`
+        : `${app.church.name} was approved and is now active on Kristo App. You can post and create ministries.`
+    );
     console.log("KRISTO_CHURCH_APPLICATION_ACTIVATED", { applicationId: app.id, churchId: app.churchId, by: "system" });
   }
   if (effects.ready) {
@@ -954,8 +968,13 @@ export async function applyAdminAction(input: { adminUserId: string; id: string;
     applicantMessage = `${app.church.name}: ${message}`;
   } else if (action === "approve") {
     guardStatus(["pending_review", "more_info_needed"]);
-    const activationMode: ActivationMode = body?.activationMode === "auto" ? "auto" : "admin_review";
+    // "Approve without requirements": the church is created and activated at once.
+    const withoutRequirements = body?.withoutRequirements === true;
+    const activationMode: ActivationMode = withoutRequirements || body?.activationMode === "auto" ? "auto" : "admin_review";
     const rawReqs = Array.isArray(body?.requirements) ? body.requirements : [];
+    if (withoutRequirements && rawReqs.length) {
+      throw new ChurchApplicationError(400, "requirements_not_allowed", "Approving without requirements cannot include requirements");
+    }
     if (rawReqs.length > 20) throw new ChurchApplicationError(400, "too_many_requirements", "At most 20 requirements");
     const requirements = rawReqs.map((r: any) => parseRequirementInput(r, undefined, templates));
     const provisioned = await provisionChurch(app);
@@ -969,12 +988,15 @@ export async function applyAdminAction(input: { adminUserId: string; id: string;
       a.adminMessage = message;
       a.adminMessageAt = message ? at : a.adminMessageAt;
       a.applicantUnseenUpdate = true;
+      a.approvalType = withoutRequirements ? "without_requirements" : "with_requirements";
       setStatus(a, "conditionally_approved", {
         at,
+        type: withoutRequirements ? "approved_without_requirements" : "approved_with_requirements",
         byUserId: adminUserId,
         byRole: ACTION_ROLE,
         message,
         details: {
+          approvalType: a.approvalType,
           churchId: provisioned.churchId,
           activationMode,
           requirements: requirements.map(describeRequirement),
@@ -995,10 +1017,9 @@ export async function applyAdminAction(input: { adminUserId: string; id: string;
       a.updatedAt = at;
       return a;
     });
-    applicantTitle = "Church application approved with requirements";
-    applicantMessage = requirements.length
-      ? `${app.church.name} is approved on conditions. Open the Church tab to see your requirements.`
-      : `${app.church.name} is approved.`;
+    // Without requirements the church is active now; afterEffects sends "Your church is active".
+    applicantTitle = withoutRequirements || !requirements.length ? "" : "Church application approved with requirements";
+    applicantMessage = `${app.church.name} is approved on conditions. Open Church Requirements in the Church tab to see what to do next.`;
   } else if (action === "update_requirements") {
     guardStatus(["conditionally_approved", "requirements_in_progress", "ready_for_admin_review", "expired"]);
     const rawReqs = Array.isArray(body?.requirements) ? body.requirements : [];
@@ -1202,7 +1223,12 @@ function timelineFor(app: ChurchApplication) {
       at: e.at,
       type: e.type,
       status: e.toStatus,
-      statusLabel: e.toStatus ? CHURCH_APPLICATION_STATUS_LABELS[e.toStatus] : undefined,
+      statusLabel:
+        e.type === "approved_without_requirements"
+          ? "Approved"
+          : e.toStatus
+            ? CHURCH_APPLICATION_STATUS_LABELS[e.toStatus]
+            : undefined,
       message: e.byRole === "admin" || e.byRole === "applicant" ? e.message : undefined,
     }));
 }

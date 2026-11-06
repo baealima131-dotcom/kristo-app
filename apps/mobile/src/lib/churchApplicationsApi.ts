@@ -120,6 +120,7 @@ export type AdminApplication = {
   updatedAt: string;
   churchId?: string;
   activationMode: "auto" | "admin_review";
+  approvalType?: "with_requirements" | "without_requirements";
   requirements: AdminRequirement[];
   adminMessage?: string;
   applicantResponse?: string;
@@ -236,6 +237,8 @@ export async function adminChurchApplicationAction(
     requirementId?: string;
     deadlineAt?: string;
     expectedUpdatedAt?: string;
+    /** approve: create and activate the church now, with no requirements. */
+    withoutRequirements?: boolean;
   }
 ): Promise<Result<AdminApplication>> {
   const res: any = await apiPost(`/api/church/applications/admin/${encodeURIComponent(id)}`, body, { headers: headers() });

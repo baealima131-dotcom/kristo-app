@@ -274,6 +274,26 @@ export default function ChurchApplicationAdminDetail() {
     ]);
   };
 
+  /** Second approval choice: create and activate the church now, after a confirmation. */
+  const approveWithoutRequirements = () => {
+    if (!app) return;
+    Alert.alert(
+      "Approve and activate now?",
+      `${app.church.name} will be created and activated right away, with no requirements. The Pastor can post and create ministries immediately and will be notified.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Approve & activate",
+          onPress: () =>
+            void run(
+              { action: "approve", withoutRequirements: true, requirements: [], activationMode: "auto" },
+              "The church is approved and active. The Pastor was notified."
+            ),
+        },
+      ]
+    );
+  };
+
   const saveBuilder = async () => {
     const requirements: RequirementInput[] = draft.map(({ key: _key, ...r }) => r);
     const ok = await run(
@@ -360,7 +380,7 @@ export default function ChurchApplicationAdminDetail() {
 
   // One clear primary action per status; everything else lives under "More".
   const primary: { label: string; onPress: () => void } | null = canDecide
-    ? { label: "Approve with requirements", onPress: () => openBuilder("approve") }
+    ? null
     : ready
       ? { label: "Activate church", onPress: () => setMessageAction("activate") }
       : inRequirements
@@ -414,6 +434,42 @@ export default function ChurchApplicationAdminDetail() {
             </Text>
           ) : null}
         </GlassCard>
+
+        {canDecide ? (
+          <GlassCard style={s.decision}>
+            <Text style={s.decisionTitle}>Decision</Text>
+            <Pressable
+              disabled={busy}
+              onPress={() => openBuilder("approve")}
+              style={({ pressed }) => [s.choice, s.choiceReq, pressed && { opacity: 0.88 }]}
+              accessibilityRole="button"
+            >
+              <View style={[s.choiceIcon, { borderColor: "rgba(244,208,111,0.5)", backgroundColor: "rgba(244,208,111,0.12)" }]}>
+                <Ionicons name="list-outline" size={19} color={RC.gold} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[s.choiceTitle, { color: RC.gold }]}>Approve with requirements</Text>
+                <Text style={s.choiceSub}>The church is created but stays closed until the requirements you set are met.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={17} color={RC.muted} />
+            </Pressable>
+            <Pressable
+              disabled={busy}
+              onPress={approveWithoutRequirements}
+              style={({ pressed }) => [s.choice, s.choiceNow, pressed && { opacity: 0.88 }]}
+              accessibilityRole="button"
+            >
+              <View style={[s.choiceIcon, { borderColor: "rgba(110,231,183,0.5)", backgroundColor: "rgba(110,231,183,0.12)" }]}>
+                <Ionicons name="checkmark-done-outline" size={19} color={RC.green} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[s.choiceTitle, { color: RC.green }]}>Approve without requirements</Text>
+                <Text style={s.choiceSub}>The church is created and active right away. The Pastor can post and create ministries.</Text>
+              </View>
+              {busy ? <ActivityIndicator color={RC.green} /> : <Ionicons name="chevron-forward" size={17} color={RC.muted} />}
+            </Pressable>
+          </GlassCard>
+        ) : null}
 
         {app.applicantResponse && app.status === "pending_review" ? (
           <GlassCard style={s.note} borderColor="rgba(147,197,253,0.35)">
@@ -495,7 +551,16 @@ export default function ChurchApplicationAdminDetail() {
 
       {/* Action bar: one primary action, the rest under More. */}
       <View style={[s.actionBar, { paddingBottom: 12 + insets.bottom }]}>
-        {primary ? (
+        {canDecide ? (
+          <Pressable
+            disabled={busy}
+            onPress={() => setSheet({ title: "Other actions", options: more })}
+            style={({ pressed }) => [s.primaryBtn, s.secondaryBtn, pressed && { opacity: 0.9 }]}
+          >
+            <Text style={[s.primaryText, { color: RC.text }]}>Other actions</Text>
+            <Text style={s.secondaryHint}>Request info · Note · Reject</Text>
+          </Pressable>
+        ) : primary ? (
           <Pressable disabled={busy} onPress={primary.onPress} style={({ pressed }) => [s.primaryBtn, pressed && { opacity: 0.9 }]}>
             {busy ? <ActivityIndicator color="#0B0F17" /> : <Text style={s.primaryText}>{primary.label}</Text>}
           </Pressable>
@@ -504,14 +569,16 @@ export default function ChurchApplicationAdminDetail() {
             <Text style={[s.primaryText, { color: RC.muted }]}>{app.status === "active" ? "Church is active" : "Application closed"}</Text>
           </View>
         )}
-        <Pressable
-          disabled={busy}
-          onPress={() => setSheet({ title: "More actions", options: more })}
-          style={({ pressed }) => [s.moreBtn, pressed && { opacity: 0.85 }]}
-          accessibilityLabel="More actions"
-        >
-          <Ionicons name="ellipsis-horizontal" size={20} color={RC.text} />
-        </Pressable>
+        {!canDecide ? (
+          <Pressable
+            disabled={busy}
+            onPress={() => setSheet({ title: "More actions", options: more })}
+            style={({ pressed }) => [s.moreBtn, pressed && { opacity: 0.85 }]}
+            accessibilityLabel="More actions"
+          >
+            <Ionicons name="ellipsis-horizontal" size={20} color={RC.text} />
+          </Pressable>
+        ) : null}
       </View>
 
       {/* Action sheet */}
@@ -718,15 +785,29 @@ export default function ChurchApplicationAdminDetail() {
             </ScrollView>
           </KeyboardAvoidingView>
           <View style={[s.actionBar, { paddingBottom: 12 + insets.bottom }]}>
-            <Pressable disabled={busy} onPress={() => void saveBuilder()} style={({ pressed }) => [s.primaryBtn, pressed && { opacity: 0.9 }]}>
-              {busy ? (
-                <ActivityIndicator color="#0B0F17" />
-              ) : (
-                <Text style={s.primaryText}>
-                  {builderMode === "approve" ? `Approve${draft.length ? ` with ${draft.length} requirement${draft.length > 1 ? "s" : ""}` : ""}` : "Save requirements"}
-                </Text>
-              )}
-            </Pressable>
+            {(() => {
+              // Approving with requirements needs at least one; "Approve without requirements" is the other choice.
+              const needsOne = builderMode === "approve" && !draft.length;
+              return (
+                <Pressable
+                  disabled={busy || needsOne}
+                  onPress={() => void saveBuilder()}
+                  style={({ pressed }) => [s.primaryBtn, needsOne && s.primaryDisabled, pressed && { opacity: 0.9 }]}
+                >
+                  {busy ? (
+                    <ActivityIndicator color="#0B0F17" />
+                  ) : (
+                    <Text style={[s.primaryText, needsOne && { color: RC.muted }]}>
+                      {builderMode === "approve"
+                        ? needsOne
+                          ? "Add at least one requirement"
+                          : `Approve with ${draft.length} requirement${draft.length > 1 ? "s" : ""}`
+                        : "Save requirements"}
+                    </Text>
+                  )}
+                </Pressable>
+              );
+            })()}
           </View>
         </View>
       </Modal>
@@ -811,6 +892,17 @@ const s = StyleSheet.create({
   },
   primaryBtn: { flex: 1, height: 50, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: RC.gold },
   primaryDone: { backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: RC.line },
+  primaryDisabled: { backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: RC.line },
+  secondaryBtn: { backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: RC.line, gap: 1 },
+  secondaryHint: { color: RC.faint, fontSize: 11, fontWeight: "800" },
+  decision: { padding: 14, gap: 10 },
+  decisionTitle: { color: RC.gold, fontSize: 15, fontWeight: "900", letterSpacing: 0.4, marginBottom: 2 },
+  choice: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 18, borderWidth: 1.2 },
+  choiceReq: { borderColor: "rgba(244,208,111,0.42)", backgroundColor: "rgba(244,208,111,0.06)" },
+  choiceNow: { borderColor: "rgba(110,231,183,0.42)", backgroundColor: "rgba(110,231,183,0.06)" },
+  choiceIcon: { width: 38, height: 38, borderRadius: 13, alignItems: "center", justifyContent: "center", borderWidth: 1 },
+  choiceTitle: { fontSize: 15, fontWeight: "900" },
+  choiceSub: { color: RC.muted, fontSize: 12.5, lineHeight: 17, fontWeight: "700", marginTop: 3 },
   primaryText: { color: "#0B0F17", fontSize: 15, fontWeight: "900" },
   moreBtn: {
     width: 50,
