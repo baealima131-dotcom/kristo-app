@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
+import { withAppUpdateRequired } from "@/app/api/_lib/appUpdateRequired";
 import {
   isMinistryDatabaseError,
   readMinistryJsonFile as readJsonFile,
@@ -247,7 +248,7 @@ export async function GET(req: NextRequest) {
   if (limited) return limited;
 
   const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin", "Member"]);
-  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+  if (ctxOrRes instanceof NextResponse) return withAppUpdateRequired(ctxOrRes, req);
 
   const { churchId, viewer } = ctxOrRes;
   const url = new URL(req.url);
@@ -306,7 +307,7 @@ export async function POST(req: NextRequest) {
   if (limited) return limited;
 
   const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Ministry_Leader", "System_Admin"]);
-  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+  if (ctxOrRes instanceof NextResponse) return withAppUpdateRequired(ctxOrRes, req);
 
   const { churchId, viewer } = ctxOrRes;
   const viewerUserId = String(viewer?.userId || "").trim();
@@ -485,7 +486,7 @@ export async function PATCH(req: NextRequest) {
   if (limited) return limited;
 
   const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "System_Admin"]);
-  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+  if (ctxOrRes instanceof NextResponse) return withAppUpdateRequired(ctxOrRes, req);
 
   const { churchId, viewer } = ctxOrRes;
   const viewerUserId = String(viewer?.userId || "").trim();
@@ -617,7 +618,7 @@ export async function DELETE(req: NextRequest) {
   if (limited) return limited;
 
   const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "System_Admin"]);
-  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+  if (ctxOrRes instanceof NextResponse) return withAppUpdateRequired(ctxOrRes, req);
 
   const { churchId, viewer } = ctxOrRes;
 

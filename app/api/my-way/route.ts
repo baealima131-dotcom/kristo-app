@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
+import { withAppUpdateRequired } from "@/app/api/_lib/appUpdateRequired";
 import { getPlatformRole } from "@/app/api/_lib/platformRoles";
 import {
   MY_WAY_SETTINGS_STORE_KEY,
@@ -91,14 +92,14 @@ async function isMyWaySystemAdmin(userId: string) {
 export async function GET(req: NextRequest) {
   // Settings include the agent command codes: signed-in (verified) users only.
   const userIdOrRes = await resolveVerifiedUserId(req);
-  if (userIdOrRes instanceof NextResponse) return userIdOrRes;
+  if (userIdOrRes instanceof NextResponse) return withAppUpdateRequired(userIdOrRes, req);
   const data = await readSettings();
   return json({ ok: true, data });
 }
 
 export async function PATCH(req: NextRequest) {
   const userIdOrRes = await resolveVerifiedUserId(req);
-  if (userIdOrRes instanceof NextResponse) return userIdOrRes;
+  if (userIdOrRes instanceof NextResponse) return withAppUpdateRequired(userIdOrRes, req);
   const viewer = { userId: userIdOrRes };
   if (!(await isMyWaySystemAdmin(viewer.userId))) {
     console.log("KRISTO_MY_WAY_SETTINGS_PATCH_DENIED", { userId: viewer.userId });
