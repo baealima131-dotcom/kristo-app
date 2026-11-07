@@ -28,8 +28,14 @@ export async function POST(req: NextRequest) {
     // cannot activate it here (the application records the agent's code instead).
     const church = await getChurchById(churchId.toUpperCase());
     if (church && !isChurchOpen(church)) {
+      // Older agent apps show `error` directly: keep it a plain sentence.
       return json(
-        { ok: false, error: "church_application_required", message: "This church is waiting for System Admin activation." },
+        {
+          ok: false,
+          error: "This church is waiting for Kristo App to activate it. Agent codes cannot activate it.",
+          message: "This church is waiting for Kristo App to activate it. Agent codes cannot activate it.",
+          code: "church_application_required",
+        },
         { status: 403 }
       );
     }

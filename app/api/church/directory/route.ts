@@ -6,6 +6,9 @@ import { addActiveMember, getActiveMembership, isApproverForChurch } from "@/app
 import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
 import { getChurchStoreDiagnostics, isChurchDatabaseError } from "@/app/api/_lib/store/churchDb";
 
+const CHURCH_APPLICATION_UPDATE_MESSAGE =
+  "Kristo App now reviews every new church before it opens. Please update Kristo App to the latest version, then apply for your church from the Church tab.";
+
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
@@ -55,11 +58,15 @@ export async function POST(req: NextRequest) {
       // New churches are created only through a church application approved by a System Admin
       // (POST /api/church/applications); this route only updates existing churches.
       console.log("KRISTO_CHURCH_DIRECTORY_DENIED", { userId, churchId: id, reason: "church_application_required" });
+      // Older app versions show `error` as-is after "Server registration failed", so it is a
+      // plain sentence; current apps never call this for new churches and read `code`.
       return json(
         {
           ok: false,
-          error: "church_application_required",
-          message: "Submit a church application. A Kristo App admin reviews it before the church is created.",
+          error: CHURCH_APPLICATION_UPDATE_MESSAGE,
+          message: CHURCH_APPLICATION_UPDATE_MESSAGE,
+          code: "church_application_required",
+          updateRequired: true,
         },
         { status: 403 }
       );
