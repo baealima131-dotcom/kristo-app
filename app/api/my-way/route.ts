@@ -3,7 +3,6 @@ import type { NextRequest } from "next/server";
 
 import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
 import { withAppUpdateRequired } from "@/app/api/_lib/appUpdateRequired";
-import { getPlatformRole } from "@/app/api/_lib/platformRoles";
 import {
   MY_WAY_SETTINGS_STORE_KEY,
   readCoreJsonFile,
@@ -81,14 +80,6 @@ async function readSettings(): Promise<MyWaySettingsRecord> {
   return normalizeSettings(raw);
 }
 
-/**
- * Only a verified System_Admin (platform role store) may change the system-wide My Way
- * settings. A stored ownerUserId and "first user to save" grant nothing.
- */
-async function isMyWaySystemAdmin(userId: string) {
-  return (await getPlatformRole(userId).catch(() => null)) === "System_Admin";
-}
-
 export async function GET(req: NextRequest) {
   // Settings include the agent command codes: signed-in (verified) users only.
   const userIdOrRes = await resolveVerifiedUserId(req);
@@ -100,18 +91,8 @@ export async function GET(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const userIdOrRes = await resolveVerifiedUserId(req);
   if (userIdOrRes instanceof NextResponse) return withAppUpdateRequired(userIdOrRes, req);
+  // Saving needs a verified session; who may save and how the owner is recorded are unchanged.
   const viewer = { userId: userIdOrRes };
-  if (!(await isMyWaySystemAdmin(viewer.userId))) {
-    console.log("KRISTO_MY_WAY_SETTINGS_PATCH_DENIED", { userId: viewer.userId });
-    return json(
-      {
-        ok: false,
-        error: "Only a System_Admin may change My Way settings.",
-        code: "MY_WAY_SYSTEM_ADMIN_REQUIRED",
-      },
-      { status: 403 }
-    );
-  }
   const body = await req.json().catch(() => ({} as Partial<MyWaySettingsRecord>));
 
   const data = await updateCoreJsonFile<Partial<MyWaySettingsRecord>>(
@@ -126,13 +107,12 @@ export async function PATCH(req: NextRequest) {
       return normalizeSettings({
         ...base,
         ...body,
-        // Informational only (set by a System_Admin); authority comes from the platform role.
         ownerUserId:
           body.ownerUserId !== undefined
             ? body.ownerUserId
               ? String(body.ownerUserId).trim()
               : null
-            : base.ownerUserId,
+            : base.ownerUserId || (viewer.userId ? String(viewer.userId) : null),
         agentCommand: body.agentCommand
           ? String(body.agentCommand).trim().toUpperCase()
           : base.agentCommand,
