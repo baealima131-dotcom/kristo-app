@@ -146,6 +146,7 @@ import {
   kickoffYoutubePagePosterPrewarm,
   kickoffYoutubePageAvatarPrewarm,
   HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT,
+  HOME_FEED_YOUTUBE_VISUAL_READY_TIMEOUT_MS,
 } from "./homeFeedYoutubeStreamUi";
 import {
   hydrateHomeFeedDisplayOrderFromStorage,
@@ -205,9 +206,9 @@ import {
   ensureWatchQueueDepth,
   getWatchUpNextGeneration,
   mergeWatchUpNextCandidateRows,
+  orderWatchUpNextByFeedSequence,
   recordWatchSessionVideo,
   resetWatchUpNextSession,
-  reshuffleHomeFeedRowsAfterWatchSelection,
   WATCH_QUEUE_REFILL_THRESHOLD,
   WATCH_QUEUE_TARGET_DEPTH,
 } from "@/src/lib/homeFeedWatchUpNext";
@@ -395,6 +396,7 @@ export default function HomeFeedScreen() {
   );
   const userHasScrolledSinceAppendRef = useRef(false);
   const youtubeStreamExhaustedRef = useRef(false);
+  const youtubePrefetchRetryPendingRef = useRef(false);
   /** Once-per-focus attempt for stale hasMore:false revalidation. */
   const homeFeedStalePagingAttemptedThisFocusRef = useRef(false);
   /** Set after an authoritative revalidate accept/repair (exhaust or recover). */
@@ -438,6 +440,10 @@ export default function HomeFeedScreen() {
       : getHomeFeedPagingState().hasMore
   );
   const [loadingMore, setLoadingMore] = useState(false);
+  // YouTube stream: true while the user is within about one screen of the list end (drives the
+  // bottom "Loading more videos…" footer, so the spinner only exists when it can be seen).
+  const [youtubeNearListEnd, setYoutubeNearListEnd] = useState(false);
+  const youtubeNearListEndRef = useRef(false);
   const youtubeStreamRowsRef = useRef<any[]>(youtubeSessionOnMount.rows);
   const [youtubeRowsTick, bumpYoutubeRows] = useReducer((value: number) => value + 1, 0);
   const youtubeStreamRows = useMemo(() => {
@@ -1529,6 +1535,27 @@ export default function HomeFeedScreen() {
       if (!hasHomeFeedYoutubeStreamSession() || shouldReplaceHomeFeedYoutubeStreamUi(reason, forceFetch)) {
         const paging = getHomeFeedPagingState();
         applyFeedPagingState(paging, { allowSessionOverwrite: true });
+      } else if (youtubeLayout && !feedHasMoreRef.current) {
+        // A restored session can say "no more videos" from an earlier, shorter feed. When the
+        // server now reports more pages and the rows on screen already cover its cursor, reopen
+        // paging (nothing on screen moves or repeats; the next page simply becomes loadable).
+        const paging = getHomeFeedPagingState();
+        const cursorRows = Number(paging.nextCursor);
+        if (
+          paging.hasMore &&
+          Number.isFinite(cursorRows) &&
+          cursorRows > 0 &&
+          youtubeStreamRowsRef.current.length >= cursorRows
+        ) {
+          console.log("KRISTO_HOME_FEED_PAGING_REOPENED", {
+            reason,
+            rowCount: youtubeStreamRowsRef.current.length,
+            nextCursor: paging.nextCursor,
+          });
+          applyFeedPagingState(paging, { allowSessionOverwrite: true });
+          youtubeStreamExhaustedRef.current = false;
+          void prepareHomeFeedYoutubeNextPageSilently();
+        }
       }
 
       // Cold-start often leaves one-page hasMore:false after mount/focus skipped
@@ -2054,6 +2081,13 @@ export default function HomeFeedScreen() {
         if (Math.abs(metrics.scrollY - lastUserScrollYRef.current) < 12) return;
       }
       lastUserScrollYRef.current = metrics.scrollY;
+      const nearEnd =
+        metrics.contentHeight > 0 &&
+        youtubeStreamDistanceFromEnd(metrics) < Math.max(400, metrics.viewportHeight);
+      if (nearEnd !== youtubeNearListEndRef.current) {
+        youtubeNearListEndRef.current = nearEnd;
+        setYoutubeNearListEnd(nearEnd);
+      }
       userScrollGenerationRef.current += 1;
       userHasScrolledSinceAppendRef.current = true;
       if (youtubePageVisualReadyRef.current) {
@@ -2207,10 +2241,24 @@ export default function HomeFeedScreen() {
       const rowCount = youtubeStreamRowsRef.current.length;
       const block = getYoutubePrefetchBlockReason(scrollMetrics, rowCount);
       if (block) {
-        if (block === "silent-prep-pending") {
-          void ensureHomeFeedYoutubeSilentNextPagePrepared().then(() => {
-            tryYoutubeStreamPrefetch(scrollMetrics);
-          });
+        if (
+          (block === "silent-prep-pending" ||
+            block === "silent-prep-inflight" ||
+            block === "pagination-locked") &&
+          !youtubePrefetchRetryPendingRef.current &&
+          shouldPrefetchHomeFeedYoutubeStreamByScroll(scrollMetrics)
+        ) {
+          // Near the end while the next page is still being prepared: check again once it is ready,
+          // using the current scroll position, so a user already waiting at the end gets the next
+          // videos without having to scroll again.
+          youtubePrefetchRetryPendingRef.current = true;
+          void ensureHomeFeedYoutubeSilentNextPagePrepared()
+            .catch(() => false)
+            .then(() => new Promise((resolve) => setTimeout(resolve, 400)))
+            .then(() => {
+              youtubePrefetchRetryPendingRef.current = false;
+              tryYoutubeStreamPrefetch();
+            });
         }
         if (
           block !== "no-more" &&
@@ -2491,6 +2539,30 @@ export default function HomeFeedScreen() {
     !youtubeShowSkeleton &&
     !feedCaughtUp &&
     youtubePageVisualReady;
+  // Watchdog: a cold-start reload resets pagination and can end with the same rows on screen, so
+  // nothing re-runs the "page visual ready" gate and infinite scroll stays off. When rows are
+  // visible and the gate has not finished well past its own timeout, run it for those rows.
+  useEffect(() => {
+    if (!youtubeLayout || youtubeShowSkeleton || youtubePageVisualReady) return;
+    if (!youtubeStreamRows.length) return;
+    const timer = setTimeout(() => {
+      if (youtubePageVisualReadyRef.current || !youtubeStreamRowsRef.current.length) return;
+      console.log("KRISTO_HOME_FEED_VISUAL_READY_RESUMED", {
+        rowCount: youtubeStreamRowsRef.current.length,
+      });
+      youtubePageRevealCompleteRef.current = true;
+      void runYoutubePageVisualReadyGate(
+        youtubeStreamRowsRef.current.slice(-HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE)
+      );
+    }, HOME_FEED_YOUTUBE_VISUAL_READY_TIMEOUT_MS + 1500);
+    return () => clearTimeout(timer);
+  }, [
+    youtubeLayout,
+    youtubeShowSkeleton,
+    youtubePageVisualReady,
+    youtubeStreamRows.length,
+    runYoutubePageVisualReadyGate,
+  ]);
   const displayFeedRowsRef = useRef(displayFeedRows);
   feedListRowsRef.current = feedListRows;
   displayFeedRowsRef.current = displayFeedRows;
@@ -3078,7 +3150,7 @@ export default function HomeFeedScreen() {
   const handleVideoPress = useCallback(
     (
       payload: HomeFeedVideoOpenPayload,
-      options?: { preserveFeedOrder?: boolean }
+      _options?: { preserveFeedOrder?: boolean }
     ) => {
       const postId = String(payload.postId || "").trim();
       console.log("KRISTO_WATCH_OPEN_TAP", { postId, at: Date.now() });
@@ -3093,28 +3165,11 @@ export default function HomeFeedScreen() {
       }
 
       setWatchUpNextGeneration(generation);
+      // The Home feed keeps its order while Watch is open, so Back returns to the same place
+      // with the same videos after the one that was watched (no reshuffle under the user).
       setVideoModalPayload(payload);
-
-      // Search/backend-only opens must not reshuffle or mutate Home Feed order/session.
-      if (options?.preserveFeedOrder) {
-        return;
-      }
-
-      InteractionManager.runAfterInteractions(() => {
-        setStableDisplayRows((prev) => {
-          const base = prev.length ? prev : stableDisplayRowsRef.current;
-          const next = reshuffleHomeFeedRowsAfterWatchSelection({
-            rows: base,
-            currentItem: payload.item,
-            viewerChurchId,
-            generationSeed: generation,
-          });
-          stableDisplayRowsRef.current = next;
-          return next;
-        });
-      });
     },
-    [viewerChurchId]
+    []
   );
 
   const handleCloseVideo = useCallback(() => {
@@ -3315,7 +3370,13 @@ export default function HomeFeedScreen() {
             at: Date.now(),
           });
 
-          setRelatedVideoItems(ensured.items);
+          setRelatedVideoItems(
+            orderWatchUpNextByFeedSequence({
+              items: ensured.items,
+              feedRows: feedListRowsRef.current,
+              currentItem: payload.item,
+            })
+          );
         })();
       }, 900);
 
@@ -3837,7 +3898,11 @@ export default function HomeFeedScreen() {
           activeIndex={activeIndex}
           screenFocused={feedFocused}
           loading={loading}
-          loadingMore={loadingMore}
+          // YouTube stream: near the end of the list, the footer says "Loading more videos…" while
+          // more pages exist, so a user who arrives before the next page lands sees it is coming.
+          loadingMore={
+            youtubeLayout ? feedHasMore && youtubeStreamRows.length > 0 && youtubeNearListEnd : loadingMore
+          }
           showCaughtUpFooter={feedCaughtUp}
           youtubePrefetchEnabled={youtubePrefetchEnabled}
           onEndReached={handleFeedEndReached}

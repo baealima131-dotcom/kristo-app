@@ -122,6 +122,10 @@ export function homeFeedRowCardFingerprint(row: any): string {
     String(row?.commentCount || ""),
     String(row?.shareCount || ""),
     String(row?.homeFeedRecycleKey || ""),
+    // Video shape decides the card frame, so a row that gains it must replace the cached one.
+    String(row?.videoWidth || ""),
+    String(row?.videoHeight || ""),
+    String(row?.videoDisplayType || ""),
   ].join("|");
 }
 

@@ -325,7 +325,8 @@ function testSourceWiring() {
   assert.match(screenSrc, /handleSearchSelectRow/);
   assert.match(screenSrc, /resolveHomeFeedSearchSelection/);
   assert.match(screenSrc, /preserveFeedOrder:\s*true/);
-  assert.match(screenSrc, /options\?\.preserveFeedOrder/);
+  // Opening Watch (from search or the feed) never reshuffles the Home feed.
+  assert.doesNotMatch(screenSrc, /reshuffleHomeFeedRowsAfterWatchSelection/);
   assert.match(screenSrc, /onSelectRow=\{handleSearchSelectRow\}/);
   assert.doesNotMatch(screenSrc, /scroll-in-feed/);
   assert.match(screenSrc, /reason:\s*decision\.action === ["']open-watch["'] \? ["']open-watch["']/);

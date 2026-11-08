@@ -622,3 +622,35 @@ export function reshuffleHomeFeedRowsAfterWatchSelection(params: {
 
   return [...head, ...reshuffledTail, ...remainder];
 }
+
+/**
+ * Up Next continues the Home feed: videos after the current one in feed order come first,
+ * then the ones before it, then any loaded beyond the feed (in their existing order).
+ */
+export function orderWatchUpNextByFeedSequence(params: {
+  items: any[];
+  feedRows: any[];
+  currentItem: any;
+}): any[] {
+  const items = params.items || [];
+  const feedIds = (params.feedRows || []).map((row) => normalizePostId(row)).filter(Boolean);
+  const currentIndex = feedIds.indexOf(normalizePostId(params.currentItem));
+  if (!items.length || !feedIds.length) return items;
+
+  const rank = new Map<string, number>();
+  feedIds.forEach((id, index) => {
+    if (rank.has(id)) return;
+    // Rows after the current video keep their feed order; earlier rows follow them.
+    const distance = currentIndex >= 0 ? (index - currentIndex + feedIds.length) % feedIds.length : index;
+    rank.set(id, distance);
+  });
+
+  return items
+    .map((item, order) => ({ item, order, rank: rank.get(normalizePostId(item)) }))
+    .sort((a, b) => {
+      const ar = a.rank ?? Number.MAX_SAFE_INTEGER;
+      const br = b.rank ?? Number.MAX_SAFE_INTEGER;
+      return ar !== br ? ar - br : a.order - b.order;
+    })
+    .map((entry) => entry.item);
+}

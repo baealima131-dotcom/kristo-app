@@ -43,6 +43,8 @@ export function resolveWatchPlayerHeight(params: {
   windowHeight: number;
   topInset?: number;
   isTikTokLayout?: boolean;
+  /** Video width / height when known: the player follows the video's own shape. */
+  videoAspect?: number;
 }): number {
   const width = Math.max(280, params.windowWidth);
   const windowHeight = Math.max(480, params.windowHeight);
@@ -54,6 +56,18 @@ export function resolveWatchPlayerHeight(params: {
     220,
     windowHeight - topInset - WATCH_TOP_BAR_HEIGHT - WATCH_PANEL_ESTIMATE_HEIGHT - upNextPeek
   );
+
+  const videoAspect = Number(params.videoAspect || 0);
+  if (videoAspect > 0 && videoAspect < 1) {
+    // Vertical video: full width, as tall as its shape allows while leaving the header and a
+    // strip of the page (the header and info panel fold away while scrolling).
+    const cap = Math.round((windowHeight - topInset) * (tablet ? 0.62 : 0.68));
+    return Math.min(Math.round(width / videoAspect), cap);
+  }
+  if (videoAspect >= 1) {
+    const byShape = Math.round(width / videoAspect);
+    return tablet ? Math.min(viewportBudget, Math.max(byShape, Math.round(windowHeight * 0.5))) : Math.min(byShape, viewportBudget);
+  }
 
   if (isTikTokLayout) {
     const byAspect = Math.round(width / TIKTOK_THUMB_ASPECT);
@@ -76,6 +90,34 @@ export function tiktokThumbnailWidth(windowWidth: number): number {
 
 export function tiktokThumbnailHeight(windowWidth: number): number {
   return Math.round(tiktokThumbnailWidth(windowWidth) / TIKTOK_THUMB_ASPECT);
+}
+
+/**
+ * The video's own shape (width / height): stored video size when the post has it, otherwise
+ * the post's display type (vertical 9:16, else 16:9).
+ */
+export function resolveHomeFeedVideoAspect(item: any): number {
+  const w = Number(item?.videoWidth || 0);
+  const h = Number(item?.videoHeight || 0);
+  if (w > 0 && h > 0) return w / h;
+  return resolveHomeFeedVideoDisplayType(item) === "tiktok" ? TIKTOK_THUMB_ASPECT : YOUTUBE_THUMB_ASPECT;
+}
+
+/**
+ * Feed video frame: the standard full-width 16:9 card for every video. A video of another shape
+ * (e.g. vertical 4:5 or 9:16) is shown whole inside it, never cropped; Watch shows its own shape.
+ */
+export function homeFeedVideoFrameForItem(
+  windowWidth: number,
+  item: any
+): { height: number; aspect: number; letterboxed: boolean } {
+  const width = Math.max(280, windowWidth - YOUTUBE_CARD_H_PADDING * 2);
+  const aspect = resolveHomeFeedVideoAspect(item);
+  return {
+    height: Math.round(width / YOUTUBE_THUMB_ASPECT),
+    aspect,
+    letterboxed: Math.abs(aspect - YOUTUBE_THUMB_ASPECT) > 0.02,
+  };
 }
 
 export function homeFeedVideoThumbnailHeight(
@@ -106,9 +148,8 @@ export function estimateYouTubeFeedCardHeightForItem(
   if (isSokoHomeFeedRow(item)) {
     return estimateSokoHomeFeedCardHeight(windowWidth, item);
   }
-  const displayType = resolveHomeFeedVideoDisplayType(item);
   const thumb = isVideoPost(item)
-    ? homeFeedVideoThumbnailHeight(windowWidth, displayType)
+    ? homeFeedVideoFrameForItem(windowWidth, item).height
     : youtubeThumbnailHeight(windowWidth);
   const caption = String(resolvePostBody(item) || "").trim();
   const meta = caption ? YOUTUBE_META_BLOCK_HEIGHT + 20 : YOUTUBE_META_BLOCK_HEIGHT;

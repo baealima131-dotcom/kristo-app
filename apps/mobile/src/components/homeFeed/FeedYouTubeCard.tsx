@@ -26,10 +26,9 @@ import {
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
 import {
-  homeFeedVideoThumbnailHeight,
-  tiktokThumbnailWidth,
+  homeFeedVideoFrameForItem,
+  youtubeThumbnailHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
-import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { markHomeFeedPosterPipelineStage } from "@/src/lib/homeFeedPosterPipelineTrace";
 import { markHomeFeedStartupTiming } from "@/src/lib/homeFeedStartupTiming";
 import { HOME_FEED_GOLD, HOME_FEED_THUMB_RADIUS } from "./theme";
@@ -69,9 +68,9 @@ export const FeedYouTubeCard = memo(
     Number(item?.viewCount || 0)
   );
   const { width: windowWidth } = useWindowDimensions();
-  const displayType = resolveHomeFeedVideoDisplayType(item);
-  const thumbHeight = homeFeedVideoThumbnailHeight(windowWidth, displayType);
-  const tiktokThumbWidth = tiktokThumbnailWidth(windowWidth);
+  // Full-width frame that follows the video's own shape (tall videos are capped at 4:5 and
+  // shown whole inside it, never squeezed or cropped).
+  const videoFrame = homeFeedVideoFrameForItem(windowWidth, item);
 
   const postId = String(item?.id || "").trim();
   const posterFieldsKey = posterMetadataFingerprint(item);
@@ -135,16 +134,12 @@ export const FeedYouTubeCard = memo(
       <View
         style={[
           premium.thumbFrame,
-          { height: thumbHeight },
-          displayType === "tiktok" ? styles.thumbWrapTikTok : null,
+          { height: video ? videoFrame.height : youtubeThumbnailHeight(windowWidth) },
         ]}
       >
         {video && videoUri ? (
           <Pressable
-            style={[
-              styles.thumbPress,
-              displayType === "tiktok" ? { width: tiktokThumbWidth, height: thumbHeight } : null,
-            ]}
+            style={styles.thumbPress}
             onPress={handleVideoPress}
             accessibilityLabel="Play video"
           >
@@ -158,6 +153,7 @@ export const FeedYouTubeCard = memo(
               posterFieldsKey={posterFieldsKey}
               shouldLoadImages={shouldLoadImages}
               durationLabel={durationLabel}
+              letterboxed={videoFrame.letterboxed}
             />
           </Pressable>
         ) : postImageUris.length > 0 ? (
@@ -271,6 +267,7 @@ function VideoThumbnail({
   posterFieldsKey,
   shouldLoadImages = true,
   durationLabel = "",
+  letterboxed = false,
 }: {
   item: any;
   postId: string;
@@ -281,6 +278,8 @@ function VideoThumbnail({
   posterFieldsKey: string;
   shouldLoadImages?: boolean;
   durationLabel?: string;
+  /** Video taller than its frame: show it whole (contain) instead of cropping. */
+  letterboxed?: boolean;
 }) {
   const [coverReady, setCoverReady] = useState(false);
 
@@ -293,7 +292,7 @@ function VideoThumbnail({
       <FeedVideoPosterImage
         item={item}
         style={StyleSheet.absoluteFillObject}
-        resizeMode="cover"
+        resizeMode={letterboxed ? "contain" : "cover"}
         postId={postId}
         videoUrl={videoUri}
         mediaStatus={mediaStatus}
@@ -327,7 +326,8 @@ const MemoVideoThumbnail = memo(
     prev.mediaStatus === next.mediaStatus &&
     prev.posterFieldsKey === next.posterFieldsKey &&
     prev.videoDurationMs === next.videoDurationMs &&
-    prev.shouldLoadImages === next.shouldLoadImages
+    prev.shouldLoadImages === next.shouldLoadImages &&
+    prev.letterboxed === next.letterboxed
 );
 
 function TextCardPreview({
@@ -359,11 +359,6 @@ function TextCardPreview({
 }
 
 const styles = StyleSheet.create({
-  thumbWrapTikTok: {
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#1a1a1a",
-  },
   thumbPress: {
     flex: 1,
     borderRadius: HOME_FEED_THUMB_RADIUS,

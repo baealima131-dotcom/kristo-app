@@ -317,6 +317,8 @@ export function homeFeedYoutubeStreamRemaining(activeIndex: number, totalRows: n
 
 /** Prefetch when scroll position is within this many px of list bottom. */
 export const HOME_FEED_YOUTUBE_PREFETCH_DISTANCE_PX = 900;
+/** ...or within this many screen heights, whichever is larger. */
+export const HOME_FEED_YOUTUBE_PREFETCH_VIEWPORTS = 2;
 
 export type HomeFeedYoutubeScrollMetrics = {
   scrollY: number;
@@ -334,7 +336,12 @@ export function shouldPrefetchHomeFeedYoutubeStreamByScroll(
   metrics: HomeFeedYoutubeScrollMetrics
 ): boolean {
   if (metrics.contentHeight <= 0 || metrics.viewportHeight <= 0) return false;
-  return youtubeStreamDistanceFromEnd(metrics) < HOME_FEED_YOUTUBE_PREFETCH_DISTANCE_PX;
+  // Start early (about two screens ahead) so the next page is in place before the user arrives.
+  const threshold = Math.max(
+    HOME_FEED_YOUTUBE_PREFETCH_DISTANCE_PX,
+    metrics.viewportHeight * HOME_FEED_YOUTUBE_PREFETCH_VIEWPORTS
+  );
+  return youtubeStreamDistanceFromEnd(metrics) < threshold;
 }
 
 /** @deprecated YouTube stream uses scroll distance — see shouldPrefetchHomeFeedYoutubeStreamByScroll. */

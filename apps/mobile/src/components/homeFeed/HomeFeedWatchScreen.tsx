@@ -46,6 +46,7 @@ import {
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import {
   YOUTUBE_CARD_H_PADDING,
+  resolveHomeFeedVideoAspect,
   resolveWatchPlayerHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
@@ -278,11 +279,17 @@ function WatchVideoSurface({
   isTikTokLayout = false,
   isLandscape = false,
   onPlaybackStarted,
+  onVideoAspect,
+  videoAspect,
 }: {
   payload: HomeFeedVideoOpenPayload;
   isTikTokLayout?: boolean;
   isLandscape?: boolean;
   onPlaybackStarted?: () => void;
+  /** Video width / height when known: the vertical video column takes this shape (default 9:16). */
+  videoAspect?: number;
+  /** Reports the playing video's own shape (width / height) once the player knows it. */
+  onVideoAspect?: (aspect: number) => void;
 }) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
@@ -413,6 +420,12 @@ function WatchVideoSurface({
   useEffect(() => {
     endedRef.current = ended;
   }, [ended]);
+
+  useEventListener(player, "videoTrackChange", ({ videoTrack }) => {
+    const w = Number(videoTrack?.size?.width || 0);
+    const h = Number(videoTrack?.size?.height || 0);
+    if (w > 0 && h > 0) onVideoAspect?.(w / h);
+  });
 
   useEventListener(player, "playToEnd", () => {
     if (fullscreenRef.current) {
@@ -571,9 +584,35 @@ function WatchVideoSurface({
     let stopped = false;
     let restored = false;
 
+    // The player's real length wins over the post's stored duration (which can be missing or
+    // wrong), so a saved position is not mistaken for "watched to the end".
+    const effectiveDurationSec = () => {
+      try {
+        const d = Number((player as any)?.duration || 0);
+        if (Number.isFinite(d) && d > 0) return d;
+      } catch {}
+      return durationSec;
+    };
+
+    let restoreAttempts = 0;
+    let restoreTimer: ReturnType<typeof setTimeout> | null = null;
+    const playerKnowsDuration = () => {
+      try {
+        return Number((player as any)?.duration || 0) > 0;
+      } catch {
+        return false;
+      }
+    };
+
     const restoreSeek = () => {
       if (stopped || restored || endedRef.current) return;
-      const seekTo = peekHomeFeedVideoRestoreSeek(postId, durationSec);
+      // Wait (up to ~3 s) for the player's real length before judging "watched to the end".
+      if (!playerKnowsDuration() && restoreAttempts < 12) {
+        restoreAttempts += 1;
+        restoreTimer = setTimeout(restoreSeek, 250);
+        return;
+      }
+      const seekTo = peekHomeFeedVideoRestoreSeek(postId, effectiveDurationSec());
       if (seekTo == null || seekTo <= 0.1) return;
 
       try {
@@ -593,17 +632,17 @@ function WatchVideoSurface({
       try {
         const t = Number((player as any)?.currentTime || 0);
         if (Number.isFinite(t) && t > 0.5) {
-          saveHomeFeedVideoProgress(postId, t, durationSec);
+          saveHomeFeedVideoProgress(postId, t, effectiveDurationSec());
         }
       } catch {}
     };
 
-    const restoreTimer = setTimeout(restoreSeek, 250);
+    restoreTimer = setTimeout(restoreSeek, 250);
     const progressTimer = setInterval(saveProgress, 1000);
 
     return () => {
       stopped = true;
-      clearTimeout(restoreTimer);
+      if (restoreTimer) clearTimeout(restoreTimer);
       clearInterval(progressTimer);
       if (!endedRef.current) {
         saveProgress();
@@ -695,7 +734,12 @@ function WatchVideoSurface({
   useEventListener(player, "timeUpdate", ({ currentTime }) => {
     if (!fullscreenRef.current || endedRef.current || !postId) return;
     if (Number.isFinite(currentTime) && currentTime > 0.5) {
-      saveHomeFeedVideoProgress(postId, currentTime, durationSec);
+      const playerDuration = Number((player as any)?.duration || 0);
+      saveHomeFeedVideoProgress(
+        postId,
+        currentTime,
+        Number.isFinite(playerDuration) && playerDuration > 0 ? playerDuration : durationSec
+      );
     }
   });
 
@@ -783,7 +827,11 @@ function WatchVideoSurface({
         <VideoView
           ref={videoViewRef}
           player={player}
-          style={isTikTokLayout ? styles.videoOverBackdrop : styles.video}
+          style={
+            isTikTokLayout
+              ? [styles.videoOverBackdrop, videoAspect && videoAspect > 0 ? { aspectRatio: videoAspect } : null]
+              : styles.video
+          }
           contentFit="contain"
           nativeControls
           fullscreenOptions={WATCH_FULLSCREEN_OPTIONS}
@@ -889,7 +937,28 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const insets = useSafeAreaInsets();
   const { width, height: windowHeight } = useWindowDimensions();
   const displayType = resolveHomeFeedVideoDisplayType(payload?.item);
-  const isTikTokLayout = displayType === "tiktok";
+  // Player follows the video's own shape: stored video size, else the size the player reports.
+  const hasStoredVideoSize =
+    Number(payload?.item?.videoWidth || 0) > 0 && Number(payload?.item?.videoHeight || 0) > 0;
+  const [reportedAspect, setReportedAspect] = useState<{ postId: string; aspect: number } | null>(null);
+  const currentPostId = String(payload?.postId || "").trim();
+  const videoAspect = hasStoredVideoSize
+    ? resolveHomeFeedVideoAspect(payload?.item)
+    : reportedAspect && reportedAspect.postId === currentPostId
+      ? reportedAspect.aspect
+      : undefined;
+  const handleVideoAspect = useCallback(
+    (aspect: number) => {
+      if (!currentPostId || !(aspect > 0)) return;
+      setReportedAspect((prev) =>
+        prev && prev.postId === currentPostId && Math.abs(prev.aspect - aspect) < 0.01
+          ? prev
+          : { postId: currentPostId, aspect }
+      );
+    },
+    [currentPostId]
+  );
+  const isTikTokLayout = videoAspect ? videoAspect < 1 : displayType === "tiktok";
   const isLandscape = width > windowHeight;
   const playerHeight = useMemo(
     () =>
@@ -898,8 +967,9 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         windowHeight,
         topInset: insets.top,
         isTikTokLayout,
+        videoAspect,
       }),
-    [width, windowHeight, insets.top, isTikTokLayout]
+    [width, windowHeight, insets.top, isTikTokLayout, videoAspect]
   );
   const scrollRef = useRef<ScrollView | null>(null);
   const [playbackStarted, setPlaybackStarted] = useState(false);
@@ -1007,12 +1077,30 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     return rows;
   }, [relatedItems, sokoProducts]);
 
+  // A tap that lands while Watch is still opening (or the list is shifting under the finger)
+  // must not switch away from the video the user just chose.
+  const videoOpenedAtRef = useRef(0);
+  const upNextChangedAtRef = useRef(0);
+  useEffect(() => {
+    videoOpenedAtRef.current = Date.now();
+  }, [currentPostId]);
+  useEffect(() => {
+    upNextChangedAtRef.current = Date.now();
+  }, [relatedItems]);
   const handleRelatedVideoPress = useCallback(
     (next: HomeFeedVideoOpenPayload) => {
+      const now = Date.now();
+      if (now - videoOpenedAtRef.current < 900 || now - upNextChangedAtRef.current < 500) {
+        console.log("KRISTO_WATCH_RELATED_TAP_IGNORED_DURING_OPEN", {
+          currentPostId,
+          tappedPostId: String(next?.postId || ""),
+        });
+        return;
+      }
       scrollRef.current?.scrollTo({ y: 0, animated: false });
       onSelectRelated(next);
     },
-    [onSelectRelated]
+    [onSelectRelated, currentPostId]
   );
 
   // Watch ownership lifecycle: close ONLY when invisible or unmounted.
@@ -1222,6 +1310,8 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 isTikTokLayout={isTikTokLayout}
                 isLandscape={isLandscape}
                 onPlaybackStarted={handlePlaybackStarted}
+                onVideoAspect={handleVideoAspect}
+                videoAspect={videoAspect}
               />
             </View>
 
@@ -1397,6 +1487,7 @@ const styles = StyleSheet.create({
   },
   videoOverBackdrop: {
     height: "100%",
+    maxWidth: "100%",
     aspectRatio: 9 / 16,
     alignSelf: "center",
     zIndex: 2,

@@ -6,6 +6,7 @@ import React, {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import {
   ActivityIndicator,
@@ -202,6 +203,24 @@ export const FeedList = memo(
       if (index >= rows.length) unlocked.delete(index);
     }
   }, [rows.length, youtubeLayout]);
+
+  // A card rendered during a fast scroll (before the active row caught up) decided "no image"
+  // once and was never re-rendered, so its poster stayed blank. When the active row moves, unlock
+  // posters around it and re-render the list cells only if something new was unlocked.
+  const [youtubeImageUnlockEpoch, setYoutubeImageUnlockEpoch] = useState(0);
+  useEffect(() => {
+    if (!youtubeLayout || !rows.length) return;
+    const unlocked = youtubeImageLoadUnlockedRef.current;
+    let added = false;
+    const last = Math.min(rows.length - 1, activeIndex + 2);
+    for (let index = Math.max(0, activeIndex - 2); index <= last; index += 1) {
+      if (!unlocked.has(index)) {
+        unlocked.add(index);
+        added = true;
+      }
+    }
+    if (added) setYoutubeImageUnlockEpoch((epoch) => epoch + 1);
+  }, [activeIndex, rows.length, youtubeLayout]);
 
   const youtubeRowKey = useCallback(
     (row: any, index: number) => feedRenderKey(row) || String(row?.id || `row-${index}`),
@@ -844,6 +863,14 @@ export const FeedList = memo(
           </View>
         );
       }
+      if (loadingMore) {
+        return (
+          <View style={styles.footer} accessibilityLabel="Loading more videos">
+            <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="small" />
+            <Text style={styles.loadingMoreText}>Loading more videos…</Text>
+          </View>
+        );
+      }
       return null;
     }
     if (showCaughtUpFooter) {
@@ -900,6 +927,7 @@ export const FeedList = memo(
         key="home-youtube-feed-list"
         ref={listRef}
         data={rows}
+        extraData={youtubeImageUnlockEpoch}
         keyExtractor={keyExtractor}
         renderItem={renderYouTubeItem}
         showsVerticalScrollIndicator={false}
@@ -1027,6 +1055,13 @@ const styles = StyleSheet.create({
   caughtUpText: {
     color: HOME_FEED_MUTED,
     fontSize: 14,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  loadingMoreText: {
+    marginTop: 8,
+    color: HOME_FEED_MUTED,
+    fontSize: 13,
     fontWeight: "600",
     textAlign: "center",
   },
