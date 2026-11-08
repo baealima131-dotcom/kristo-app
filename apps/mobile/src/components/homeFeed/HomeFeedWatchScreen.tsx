@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Animated,
   AppState,
   Image,
   Modal,
@@ -902,6 +903,35 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   );
   const scrollRef = useRef<ScrollView | null>(null);
   const [playbackStarted, setPlaybackStarted] = useState(false);
+
+  /*
+   * Collapsing chrome (like YouTube): scrolling Up Next down folds the purple header to a slim bar
+   * (back + creator avatar + church name, no "JESUS IS KING") and folds the purple panel under the
+   * video to a thin line. Scrolling up, or reaching the top, opens both again.
+   */
+  const collapse = useRef(new Animated.Value(0)).current;
+  const collapsedRef = useRef(false);
+  const lastScrollYRef = useRef(0);
+  const [panelHeight, setPanelHeight] = useState(0);
+  const setChromeCollapsed = useCallback(
+    (next: boolean) => {
+      if (collapsedRef.current === next) return;
+      collapsedRef.current = next;
+      Animated.timing(collapse, { toValue: next ? 1 : 0, duration: 220, useNativeDriver: false }).start();
+    },
+    [collapse]
+  );
+  const handleUpNextScroll = useCallback(
+    (e: { nativeEvent: { contentOffset: { y: number } } }) => {
+      const y = Math.max(0, e.nativeEvent.contentOffset.y);
+      const dy = y - lastScrollYRef.current;
+      lastScrollYRef.current = y;
+      if (y <= 4) setChromeCollapsed(false);
+      else if (dy > 6) setChromeCollapsed(true);
+      else if (dy < -6) setChromeCollapsed(false);
+    },
+    [setChromeCollapsed]
+  );
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
 
   const item = payload?.item;
@@ -1038,7 +1068,9 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   useEffect(() => {
     if (!payload?.postId) return;
     scrollRef.current?.scrollTo({ y: 0, animated: false });
-  }, [payload?.postId]);
+    lastScrollYRef.current = 0;
+    setChromeCollapsed(false);
+  }, [payload?.postId, setChromeCollapsed]);
 
   if (!payload) return null;
 
@@ -1065,8 +1097,19 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             pointerEvents="none"
           />
           <View style={{ paddingTop: insets.top }}>
-            <View style={styles.topBar}>
-              <View style={styles.topBarTitleRow} pointerEvents="none">
+            <Animated.View
+              style={[
+                styles.topBar,
+                { height: collapse.interpolate({ inputRange: [0, 1], outputRange: [52, 44] }) },
+              ]}
+            >
+              <Animated.View
+                style={[
+                  styles.topBarTitleRow,
+                  { opacity: collapse.interpolate({ inputRange: [0, 0.5], outputRange: [1, 0], extrapolate: "clamp" }) },
+                ]}
+                pointerEvents="none"
+              >
                 <Text style={styles.topBarTitleWord} numberOfLines={1}>
                   JESUS
                 </Text>
@@ -1076,7 +1119,40 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 <Text style={styles.topBarTitleWord} numberOfLines={1}>
                   KING
                 </Text>
-              </View>
+              </Animated.View>
+              {item ? (
+                <>
+                  {/* Expanded: creator avatar on the right of JESUS IS KING. */}
+                  <Animated.View
+                    style={[
+                      styles.headerAvatarRight,
+                      { opacity: collapse.interpolate({ inputRange: [0, 0.5], outputRange: [1, 0], extrapolate: "clamp" }) },
+                    ]}
+                  >
+                    <FeedChurchBrandRow item={item} variant="watch" part="avatar" source="watch-header" />
+                  </Animated.View>
+                  {/* Collapsed: creator avatar + church name next to the back button. */}
+                  <Animated.View
+                    style={[
+                      styles.headerCompactRow,
+                      { opacity: collapse.interpolate({ inputRange: [0.5, 1], outputRange: [0, 1], extrapolate: "clamp" }) },
+                    ]}
+                    pointerEvents="none"
+                  >
+                    <View style={styles.headerCompactAvatar}>
+                      <FeedChurchBrandRow item={item} variant="watch" part="avatar" source="watch-header-compact" />
+                    </View>
+                    <Text
+                      style={styles.headerCompactName}
+                      numberOfLines={2}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.7}
+                    >
+                      {resolveChurchName(item)}
+                    </Text>
+                  </Animated.View>
+                </>
+              ) : null}
               <Pressable
                 onPress={onClose}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -1085,7 +1161,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
               >
                 <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
               </Pressable>
-            </View>
+            </Animated.View>
           </View>
         </View>
 
@@ -1104,7 +1180,24 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           />
         </View>
 
-        <View style={styles.currentVideoPanel}>
+        <Animated.View
+          style={[
+            styles.currentVideoPanelFold,
+            panelHeight > 0
+              ? { height: collapse.interpolate({ inputRange: [0, 1], outputRange: [panelHeight, 3] }) }
+              : null,
+          ]}
+        >
+        <Animated.View
+          style={[
+            styles.currentVideoPanel,
+            { opacity: collapse.interpolate({ inputRange: [0, 0.6], outputRange: [1, 0], extrapolate: "clamp" }) },
+          ]}
+          onLayout={(e) => {
+            const h = Math.round(e.nativeEvent.layout.height);
+            if (h > 0 && h !== panelHeight) setPanelHeight(h);
+          }}
+        >
           <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
           <LinearGradient
             colors={[
@@ -1132,11 +1225,14 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
               ) : null}
             </View>
           </View>
-        </View>
+        </Animated.View>
+        </Animated.View>
 
         <ScrollView
           ref={scrollRef}
           style={styles.scroll}
+          onScroll={handleUpNextScroll}
+          scrollEventThrottle={16}
           contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
           showsVerticalScrollIndicator={false}
         >
@@ -1330,6 +1426,34 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
+  },
+  // Folds to a thin purple line while Up Next is scrolled down.
+  currentVideoPanelFold: {
+    overflow: "hidden",
+    backgroundColor: "#5A007A",
+  },
+  headerAvatarRight: {
+    position: "absolute",
+    right: 12,
+  },
+  headerCompactRow: {
+    position: "absolute",
+    left: 62,
+    right: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  headerCompactAvatar: {
+    transform: [{ scale: 0.82 }],
+  },
+  // Long church names wrap to two lines and shrink a little instead of being cut off.
+  headerCompactName: {
+    flex: 1,
+    color: "#F4D06F",
+    fontSize: 16,
+    lineHeight: 19,
+    fontWeight: "800",
   },
   currentVideoPanel: {
     borderTopWidth: 1,
