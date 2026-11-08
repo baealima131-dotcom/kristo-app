@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Animated, Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   RecordingPresets,
   createAudioPlayer,
@@ -87,6 +88,7 @@ export function ChurchVoiceNoteButton({
   disabled?: boolean;
   onSend: (uri: string, durationMs: number, mime: string) => Promise<void>;
 }) {
+  const insets = useSafeAreaInsets();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 200);
   const [recording, setRecording] = useState(false);
@@ -196,21 +198,39 @@ export function ChurchVoiceNoteButton({
         )}
       </Pressable>
 
-      <Modal visible={recording} transparent animationType="fade" onRequestClose={() => void stopRecording(false)}>
+      {/* Edge-to-edge on Android: the panel sits above the system navigation bar (safe-area inset). */}
+      <Modal
+        visible={recording}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        navigationBarTranslucent
+        onRequestClose={() => void stopRecording(false)}
+      >
         <View style={styles.sheetBackdrop}>
-          <View style={styles.sheet}>
+          <View style={[styles.sheet, { marginBottom: Math.max(insets.bottom, 12) + 12 }]}>
+            <View style={styles.sheetHandle} />
             <View style={styles.sheetRow}>
-              <Animated.View style={[styles.recDot, { opacity: dot }]} />
-              <Text style={styles.recTime}>{formatClock(elapsed)}</Text>
-              <Text style={styles.recHint} numberOfLines={1}>
-                Recording voice note
-              </Text>
+              <View style={styles.recMicCircle}>
+                <Ionicons name="mic" size={22} color="#1B1404" />
+              </View>
+              <View style={styles.recInfo}>
+                <View style={styles.recLiveRow}>
+                  <Animated.View style={[styles.recDot, { opacity: dot }]} />
+                  <Text style={styles.recHint} numberOfLines={1}>
+                    Recording voice note
+                  </Text>
+                </View>
+                <Text style={styles.recTime}>{formatClock(elapsed)}</Text>
+              </View>
+              <Text style={styles.recLimit}>max {formatClock(CHURCH_VOICE_NOTE_MAX_MS)}</Text>
             </View>
             <Text style={styles.recNote}>Voice notes are deleted automatically after 7 days.</Text>
             <View style={styles.sheetActions}>
               <Pressable
                 onPress={() => void stopRecording(false)}
                 accessibilityLabel="Cancel voice note"
+                hitSlop={6}
                 style={({ pressed }) => [styles.cancelBtn, pressed ? { opacity: 0.8 } : null]}
               >
                 <Ionicons name="trash-outline" size={18} color="#FF8A80" />
@@ -219,9 +239,10 @@ export function ChurchVoiceNoteButton({
               <Pressable
                 onPress={() => void stopRecording(true)}
                 accessibilityLabel="Send voice note"
+                hitSlop={6}
                 style={({ pressed }) => [styles.sendBtn, pressed ? { opacity: 0.85 } : null]}
               >
-                <Ionicons name="send" size={16} color="#1B1404" />
+                <Ionicons name="send" size={17} color="#1B1404" />
                 <Text style={styles.sendText}>Send</Text>
               </Pressable>
             </View>
@@ -320,25 +341,47 @@ const styles = StyleSheet.create({
   },
   micBtnDisabled: { backgroundColor: "rgba(255,255,255,0.10)" },
 
-  sheetBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.45)" },
+  sheetBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.55)" },
   sheet: {
-    margin: 12,
-    marginBottom: 28,
-    padding: 16,
-    borderRadius: 22,
+    marginHorizontal: 12,
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 18,
+    borderRadius: 26,
     backgroundColor: "#0B1220",
     borderWidth: 1,
-    borderColor: "rgba(245,215,128,0.28)",
+    borderColor: "rgba(245,215,128,0.35)",
+    boxShadow: "0 0 22px rgba(245,215,128,0.18)",
   },
-  sheetRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  recDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: "#FF4D4F" },
-  recTime: { color: "#FFFFFF", fontSize: 20, fontWeight: "800", fontVariant: ["tabular-nums"] },
-  recHint: { flex: 1, color: "rgba(255,255,255,0.7)", fontSize: 13, fontWeight: "600" },
-  recNote: { marginTop: 8, color: "rgba(255,255,255,0.55)", fontSize: 12 },
-  sheetActions: { flexDirection: "row", justifyContent: "space-between", marginTop: 14, gap: 12 },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    marginBottom: 14,
+  },
+  sheetRow: { flexDirection: "row", alignItems: "center", gap: 14 },
+  recMicCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GOLD,
+    boxShadow: "0 0 14px rgba(245,215,128,0.45)",
+  },
+  recInfo: { flex: 1, minWidth: 0 },
+  recLiveRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  recDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#FF4D4F" },
+  recTime: { marginTop: 2, color: "#FFFFFF", fontSize: 26, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  recHint: { flexShrink: 1, color: "rgba(255,255,255,0.72)", fontSize: 13, fontWeight: "700" },
+  recLimit: { color: "rgba(245,215,128,0.75)", fontSize: 12, fontWeight: "700" },
+  recNote: { marginTop: 12, color: "rgba(255,255,255,0.55)", fontSize: 12 },
+  sheetActions: { flexDirection: "row", justifyContent: "space-between", marginTop: 16, gap: 12 },
   cancelBtn: {
     flex: 1,
-    height: 44,
+    height: 52,
     borderRadius: 999,
     flexDirection: "row",
     alignItems: "center",
@@ -350,7 +393,7 @@ const styles = StyleSheet.create({
   cancelText: { color: "#FF8A80", fontWeight: "800" },
   sendBtn: {
     flex: 1,
-    height: 44,
+    height: 52,
     borderRadius: 999,
     flexDirection: "row",
     alignItems: "center",
