@@ -6449,6 +6449,8 @@ function Bubble({
             durationMs={Number(audio?.durationMs || 0)}
             expiresAt={Number((m as any).expiresAt || 0) || undefined}
             nowMs={Number(liveScheduleNowMs || Date.now())}
+            // The Pastor's own voice notes use the same purple as the Pastor's own text messages.
+            style={mine && pastorMessage ? s.bubblePastor : undefined}
           />
           <Text style={[t.msgTime, mine ? s.voiceNoteTimeMine : null]}>{formatTime(m.createdAt)}</Text>
         </View>

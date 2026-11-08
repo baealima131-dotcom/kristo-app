@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Animated, Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import type { StyleProp, ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
   RecordingPresets,
@@ -231,17 +232,19 @@ export function ChurchVoiceNoteButton({
   );
 }
 
-/** Playable voice note bubble; same look for every sender (the row's side and avatar show who sent it). */
+/** Playable voice note bubble; `style` lets the room match a sender's message colour (e.g. the Pastor's). */
 export function ChurchVoiceNoteBubble({
   url,
   durationMs,
   expiresAt,
   nowMs,
+  style,
 }: {
   url: string;
   durationMs?: number;
   expiresAt?: number;
   nowMs: number;
+  style?: StyleProp<ViewStyle>;
 }) {
   const player = useAudioPlayer(url ? { uri: url } : null);
   const status = useAudioPlayerStatus(player);
@@ -267,7 +270,7 @@ export function ChurchVoiceNoteBubble({
   };
 
   return (
-    <View style={styles.voiceBubble}>
+    <View style={[styles.voiceBubble, style]}>
       <Pressable
         onPress={() => void toggle()}
         accessibilityLabel={status.playing ? "Pause voice note" : "Play voice note"}
