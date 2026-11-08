@@ -231,17 +231,15 @@ export function ChurchVoiceNoteButton({
   );
 }
 
-/** Playable voice note bubble. */
+/** Playable voice note bubble; same look for every sender (the row's side and avatar show who sent it). */
 export function ChurchVoiceNoteBubble({
   url,
   durationMs,
-  mine,
   expiresAt,
   nowMs,
 }: {
   url: string;
   durationMs?: number;
-  mine: boolean;
   expiresAt?: number;
   nowMs: number;
 }) {
@@ -269,7 +267,7 @@ export function ChurchVoiceNoteBubble({
   };
 
   return (
-    <View style={[styles.voiceBubble, mine ? styles.voiceBubbleMine : null]}>
+    <View style={styles.voiceBubble}>
       <Pressable
         onPress={() => void toggle()}
         accessibilityLabel={status.playing ? "Pause voice note" : "Play voice note"}
@@ -372,7 +370,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
   },
-  voiceBubbleMine: { backgroundColor: "rgba(245,215,128,0.12)", borderColor: "rgba(245,215,128,0.28)" },
   playBtn: {
     width: 36,
     height: 36,

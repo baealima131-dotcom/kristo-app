@@ -6447,7 +6447,6 @@ function Bubble({
           <ChurchVoiceNoteBubble
             url={resolveMessageAttachmentUrl(audio?.url || audio?.uri || "")}
             durationMs={Number(audio?.durationMs || 0)}
-            mine={mine}
             expiresAt={Number((m as any).expiresAt || 0) || undefined}
             nowMs={Number(liveScheduleNowMs || Date.now())}
           />
