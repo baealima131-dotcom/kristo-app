@@ -1165,106 +1165,115 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           </View>
         </View>
 
-        <View
-          style={[
-            styles.playerWrap,
-            { height: playerHeight },
-            isTikTokLayout ? styles.playerWrapTikTok : null,
-          ]}
-        >
-          <WatchVideoSurface
-            payload={payload}
-            isTikTokLayout={isTikTokLayout}
-            isLandscape={isLandscape}
-            onPlaybackStarted={handlePlaybackStarted}
-          />
-        </View>
+        {/*
+          * The playing video floats above the page: Up Next scrolls underneath it (never over it),
+          * with a thin gold edge and shadow so the video reads as being in front.
+          */}
+        <View style={styles.scroll}>
+          <ScrollView
+            ref={scrollRef}
+            style={StyleSheet.absoluteFill}
+            onScroll={handleUpNextScroll}
+            scrollEventThrottle={16}
+            // Up Next starts below the floating video and slides underneath it while scrolling.
+            contentContainerStyle={{ paddingTop: playerHeight + panelHeight, paddingBottom: insets.bottom + 24 }}
+            showsVerticalScrollIndicator={false}
+          >
+            <Text style={styles.upNextLabel}>Up next</Text>
+            {watchUpNextRows.map((row) => {
+              if (row.kind === "soko") {
+                return (
+                  <View
+                    key={row.key}
+                    style={styles.watchSokoPost}
+                  >
+                    <SokoHomeProductCard product={row.item}/>
+                  </View>
+                );
+              }
 
-        <Animated.View
-          style={[
-            styles.currentVideoPanelFold,
-            panelHeight > 0
-              ? { height: collapse.interpolate({ inputRange: [0, 1], outputRange: [panelHeight, 3] }) }
-              : null,
-          ]}
-        >
-        <Animated.View
-          style={[
-            styles.currentVideoPanel,
-            { opacity: collapse.interpolate({ inputRange: [0, 0.6], outputRange: [1, 0], extrapolate: "clamp" }) },
-          ]}
-          onLayout={(e) => {
-            const h = Math.round(e.nativeEvent.layout.height);
-            if (h > 0 && h !== panelHeight) setPanelHeight(h);
-          }}
-        >
-          <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
-          <LinearGradient
-            colors={[
-              "rgba(52, 4, 82, 0.76)",
-              "rgba(46, 3, 73, 0.72)",
-              "rgba(38, 2, 62, 0.74)",
-            ]}
-            locations={[0, 0.5, 1]}
-            style={StyleSheet.absoluteFillObject}
-            pointerEvents="none"
-          />
-          <View style={styles.panelContent}>
-            {item ? <WatchVideoMeta item={item} fallbackTitle={payload.title} /> : null}
-            {item ? <View style={styles.actionsDivider} /> : null}
-            <View style={styles.actionsWrap}>
-              {item ? (
-                <WatchVideoEngagementActions
-                  item={item}
-                  onLike={onLike}
-                  onComment={onComment}
-                  onShare={onShare}
-                  onSave={onSave}
-                  onReport={onReport}
-                />
-              ) : null}
-            </View>
-          </View>
-        </Animated.View>
-        </Animated.View>
+              const related = row.item;
 
-        <ScrollView
-          ref={scrollRef}
-          style={styles.scroll}
-          onScroll={handleUpNextScroll}
-          scrollEventThrottle={16}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-          showsVerticalScrollIndicator={false}
-        >
-          <Text style={styles.upNextLabel}>Up next</Text>
-          {watchUpNextRows.map((row) => {
-            if (row.kind === "soko") {
               return (
-                <View
+                <FeedYouTubeCard
                   key={row.key}
-                  style={styles.watchSokoPost}
-                >
-                  <SokoHomeProductCard product={row.item}/>
-                </View>
+                  item={related}
+                  onLike={() => onItemLike(related)}
+                  onComment={() => onItemComment(related)}
+                  onShare={() => onItemShare(related)}
+                  onSave={() => onItemSave(related)}
+                  onReport={() => onItemReport(related)}
+                  onVideoPress={handleRelatedVideoPress}
+                />
               );
-            }
+            })}
+          </ScrollView>
 
-            const related = row.item;
-
-            return (
-              <FeedYouTubeCard
-                key={row.key}
-                item={related}
-                onLike={() => onItemLike(related)}
-                onComment={() => onItemComment(related)}
-                onShare={() => onItemShare(related)}
-                onSave={() => onItemSave(related)}
-                onReport={() => onItemReport(related)}
-                onVideoPress={handleRelatedVideoPress}
+          <View style={styles.floatingVideoStack} pointerEvents="box-none">
+            <View
+              style={[
+                styles.playerWrap,
+                { height: playerHeight },
+                isTikTokLayout ? styles.playerWrapTikTok : null,
+              ]}
+            >
+              <WatchVideoSurface
+                payload={payload}
+                isTikTokLayout={isTikTokLayout}
+                isLandscape={isLandscape}
+                onPlaybackStarted={handlePlaybackStarted}
               />
-            );
-          })}
-        </ScrollView>
+            </View>
+
+            <Animated.View
+              style={[
+                styles.currentVideoPanelFold,
+                panelHeight > 0
+                  ? { height: collapse.interpolate({ inputRange: [0, 1], outputRange: [panelHeight, 3] }) }
+                  : null,
+              ]}
+            >
+            <Animated.View
+              style={[
+                styles.currentVideoPanel,
+                { opacity: collapse.interpolate({ inputRange: [0, 0.6], outputRange: [1, 0], extrapolate: "clamp" }) },
+              ]}
+              onLayout={(e) => {
+                const h = Math.round(e.nativeEvent.layout.height);
+                if (h > 0 && h !== panelHeight) setPanelHeight(h);
+              }}
+            >
+              <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
+              <LinearGradient
+                colors={[
+                  "rgba(52, 4, 82, 0.76)",
+                  "rgba(46, 3, 73, 0.72)",
+                  "rgba(38, 2, 62, 0.74)",
+                ]}
+                locations={[0, 0.5, 1]}
+                style={StyleSheet.absoluteFillObject}
+                pointerEvents="none"
+              />
+              <View style={styles.panelContent}>
+                {item ? <WatchVideoMeta item={item} fallbackTitle={payload.title} /> : null}
+                {item ? <View style={styles.actionsDivider} /> : null}
+                <View style={styles.actionsWrap}>
+                  {item ? (
+                    <WatchVideoEngagementActions
+                      item={item}
+                      onLike={onLike}
+                      onComment={onComment}
+                      onShare={onShare}
+                      onSave={onSave}
+                      onReport={onReport}
+                    />
+                  ) : null}
+                </View>
+              </View>
+            </Animated.View>
+            </Animated.View>
+          </View>
+        </View>
 
         <FeedCommentsSheet
           visible={commentsSheetOpen}
@@ -1426,6 +1435,18 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
+  },
+  floatingVideoStack: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    elevation: 24,
+    backgroundColor: "#000000",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(244,208,111,0.55)",
+    boxShadow: "0 8px 18px rgba(0,0,0,0.65), 0 2px 10px rgba(168,85,247,0.35)",
   },
   // Folds to a thin purple line while Up Next is scrolled down.
   currentVideoPanelFold: {
