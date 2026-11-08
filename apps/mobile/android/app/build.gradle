@@ -185,3 +185,9 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// Firebase Cloud Messaging (Kristo push) is enabled only in builds that ship a
+// google-services.json (test development builds); other builds are unchanged.
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
+}

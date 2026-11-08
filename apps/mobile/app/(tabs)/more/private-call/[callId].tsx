@@ -45,6 +45,17 @@ import {
   prefetchPrivateCallLiveKitCredentials,
   type PrivateCallSession,
 } from "@/src/lib/privateCallService";
+import {
+  playPrivateCallUnavailableTone,
+  shouldPlayPrivateCallUnavailableTone,
+} from "@/src/lib/privateCallUnavailableTone";
+import { playPrivateCallWaitTone } from "@/src/lib/privateCallWaitTone";
+import {
+  cancelIncomingCallNotification,
+  startCallForegroundService,
+  stopCallForegroundService,
+} from "@/src/lib/push/kristoCallNotifications";
+import { consumePendingCallAnswer } from "@/src/lib/push/kristoCallRouting";
 
 import SokoLiveStore from "@/src/components/homeFeed/SokoLiveStore";
 
@@ -982,6 +993,8 @@ export default function PrivateCallScreen() {
   const ringingPreconnectPromiseRef = useRef<Promise<void> | null>(null);
   const latencyMarksRef = useRef<Record<string, number>>({});
   const sessionStatusRef = useRef<string>("");
+  const unavailableToneStopRef = useRef<(() => void) | null>(null);
+  const waitToneStopRef = useRef<((reason?: string) => void) | null>(null);
   const onEndRef = useRef<() => void>(() => {});
   const onRemoteTerminationRef = useRef<(source: string, status: string) => void>(() => {});
 
@@ -1066,12 +1079,59 @@ export default function PrivateCallScreen() {
         source,
         status,
       });
+
+      // Caller whose ringing call was not picked up: play the unavailable message once,
+      // keep the "No answer" screen while it plays, then close the call screen.
+      if (unavailableToneStopRef.current) return;
+      waitToneStopRef.current?.("ring-ended");
+      const wasRinging = sessionStatusRef.current === "ringing";
+      if (wasRinging && shouldPlayPrivateCallUnavailableTone(role, status)) {
+        const tone = playPrivateCallUnavailableTone(callId, status);
+        unavailableToneStopRef.current = tone.stop;
+        void tone.finished.then(() => {
+          exitCallScreen("remote-end", { source, status, unavailableTone: true });
+        });
+        return;
+      }
+
       exitCallScreen("remote-end", { source, status });
     },
-    [callId, currentUserId, exitCallScreen]
+    [callId, currentUserId, exitCallScreen, role]
   );
 
+  // Caller hears the wait tone while the call rings (30 s at most, the server ring timeout).
+  // Answered, cancelled, declined or timed out: the status leaves "ringing" and it stops at once.
+  useEffect(() => {
+    if (!session?.id || role !== "caller" || session.status !== "ringing") return;
+    const tone = playPrivateCallWaitTone(session.id);
+    waitToneStopRef.current = tone.stop;
+    return () => {
+      tone.stop("ringing-ended");
+      waitToneStopRef.current = null;
+    };
+  }, [session?.id, session?.status, role]);
+
+  useEffect(
+    () => () => {
+      if (!unavailableToneStopRef.current) return;
+      // Screen already leaving (e.g. hardware back): stop the message without navigating again.
+      exitHandledRef.current = true;
+      unavailableToneStopRef.current();
+    },
+    []
+  );
+
+  const closeTerminalScreen = useCallback(() => {
+    if (unavailableToneStopRef.current) {
+      unavailableToneStopRef.current();
+      exitCallScreen("unavailable-tone-closed");
+      return;
+    }
+    leaveCallRoute();
+  }, [exitCallScreen, leaveCallRoute]);
+
   const handleEndCall = useCallback(async () => {
+    waitToneStopRef.current?.("caller-cancel");
     if (!session || actionBusy) return;
     if (exitHandledRef.current) {
       console.log("KRISTO_PRIVATE_CALL_END_DUPLICATE_BLOCKED", {
@@ -1585,6 +1645,33 @@ export default function PrivateCallScreen() {
     }
   };
 
+  const handleAcceptRef = useRef(handleAccept);
+  handleAcceptRef.current = handleAccept;
+
+  // "Answer" pressed on the incoming-call notification: accept as soon as the ringing call loads.
+  useEffect(() => {
+    if (!session || role !== "pastor" || session.status !== "ringing") return;
+    if (consumePendingCallAnswer(session.id)) void handleAcceptRef.current();
+  }, [session?.id, session?.status, role]);
+
+  // The ringing notification goes away once the call is answered, declined or over.
+  useEffect(() => {
+    if (!session || role !== "pastor" || session.status === "ringing") return;
+    void cancelIncomingCallNotification(session.id);
+  }, [session?.id, session?.status, role]);
+
+  // Keep the microphone and connection alive with the screen off or the app in the background.
+  const ongoingPeerName =
+    role === "caller" ? session?.pastorName || "Pastor" : session?.callerName || "Caller";
+  useEffect(() => {
+    if (!session?.id || session.status !== "accepted") return;
+    const id = session.id;
+    void startCallForegroundService({ callId: id, peerName: ongoingPeerName });
+    return () => {
+      void stopCallForegroundService(id);
+    };
+  }, [session?.id, session?.status, ongoingPeerName]);
+
   const handleEnd = handleEndCall;
 
   const statusMessage = (() => {
@@ -1598,6 +1685,7 @@ export default function PrivateCallScreen() {
     if (session.status === "declined") return "Call declined.";
     if (session.status === "timeout") return "No answer.";
     if (session.status === "ended") return "Call ended.";
+    if (session.status === "failed") return "Call could not connect.";
     return "";
   })();
 
@@ -1691,11 +1779,16 @@ export default function PrivateCallScreen() {
     );
   }
 
-  if (session.status === "declined" || session.status === "timeout" || session.status === "ended") {
+  if (
+    session.status === "declined" ||
+    session.status === "timeout" ||
+    session.status === "ended" ||
+    session.status === "failed"
+  ) {
     return (
       <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
         <Text style={styles.title}>{statusMessage}</Text>
-        <Pressable onPress={leaveCallRoute} style={styles.secondaryBtn}>
+        <Pressable onPress={closeTerminalScreen} style={styles.secondaryBtn}>
           <Text style={styles.secondaryBtnText}>Close</Text>
         </Pressable>
       </View>

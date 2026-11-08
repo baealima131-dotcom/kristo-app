@@ -17,6 +17,10 @@ import {
 import {
   fetchIncomingPrivateCalls,
 } from "@/src/lib/privateCallService";
+import {
+  markIncomingCallScreenOpened,
+  wasIncomingCallScreenOpened,
+} from "@/src/lib/push/kristoCallRouting";
 
 const IDLE_POLL_DELAYS_MS = [
   2_000,
@@ -255,7 +259,8 @@ export function PrivateCallIncomingWatcher() {
 
           if (
             handledCallIdsRef.current
-              .has(call.id)
+              .has(call.id) ||
+            wasIncomingCallScreenOpened(call.id)
           ) {
             return false;
           }
@@ -274,6 +279,9 @@ export function PrivateCallIncomingWatcher() {
       }
 
       handledCallIdsRef.current.add(
+        nextCall.id
+      );
+      markIncomingCallScreenOpened(
         nextCall.id
       );
 

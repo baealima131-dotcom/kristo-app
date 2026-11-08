@@ -1,6 +1,8 @@
 package com.princefariji.kristoapp.free
 import expo.modules.splashscreen.SplashScreenManager
 
+import android.app.NotificationManager
+import android.content.Intent
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -33,6 +35,7 @@ class MainActivity : ReactActivity() {
     // @generated end expo-splashscreen
     super.onCreate(null)
     applyKristoNavigationBar()
+    syncCallLockScreenAccess()
     // A modal opened while another one is showing (or right after it closes) gives the activity
     // no focus change; its host view still lays out in this tree, so scan then.
     window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
@@ -49,6 +52,31 @@ class MainActivity : ReactActivity() {
       // with a white contrast scrim. Give it the same navy bar once RN is done with it.
       scheduleModalNavigationBarScan()
     }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    syncCallLockScreenAccess()
+  }
+
+  override fun onResume() {
+    super.onResume()
+    syncCallLockScreenAccess()
+  }
+
+  /**
+   * Show over the lock screen (and turn the screen on) only while a Kristo call notification is
+   * active: an incoming call opened from its full-screen notification, or a call in progress.
+   * Without one, the app stays behind the lock screen as usual.
+   */
+  private fun syncCallLockScreenAccess() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1) return
+    val manager = getSystemService(NotificationManager::class.java)
+    val hasCall = manager?.activeNotifications?.any {
+      it.notification.channelId?.startsWith("kristo_call") == true
+    } == true
+    setShowWhenLocked(hasCall)
+    setTurnScreenOn(hasCall)
   }
 
   private fun scheduleModalNavigationBarScan() {
