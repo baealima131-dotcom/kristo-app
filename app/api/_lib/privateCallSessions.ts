@@ -39,7 +39,8 @@ type PrivateCallStore = {
   sessions: PrivateCallSession[];
 };
 
-const RING_TIMEOUT_MS = 45_000;
+// The caller hears the wait tone for 30 s; unanswered calls then end as "timeout".
+const RING_TIMEOUT_MS = 30_000;
 
 function defaultStore(): PrivateCallStore {
   return { sessions: [] };

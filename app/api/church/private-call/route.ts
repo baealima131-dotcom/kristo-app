@@ -17,12 +17,14 @@ import { findThreadEntryByRoomId } from "@/app/api/_lib/directMessageRequestLogi
 import { readDirectMessageThreadStore } from "@/app/api/_lib/store/directMessageThreadDb";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { notifyPastorPrivateCallIncoming } from "@/app/api/_lib/privateCallNotifications";
+import { notifyKristoCallClosedPush } from "@/app/api/_lib/kristoPush";
 import {
   createPrivateCallSession,
   getPrivateCallSession,
   listPrivateCallSessionsForUser,
   listRingingCallsForPastor,
   updatePrivateCallSession,
+  type PrivateCallSession,
 } from "@/app/api/_lib/privateCallSessions";
 
 export const runtime = "nodejs";
@@ -469,6 +471,13 @@ export async function POST(req: NextRequest) {
   );
 }
 
+/** Clears the ringing notification on the receiver's devices; push failures never fail the call. */
+async function closeIncomingCallPush(session: PrivateCallSession) {
+  await notifyKristoCallClosedPush(session).catch((error) =>
+    console.warn("KRISTO_CALL_PUSH_UNAVAILABLE", { callId: session.id, error: String(error?.message || error) })
+  );
+}
+
 export async function PATCH(req: NextRequest) {
   const ctxOrRes = await guard(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
@@ -514,6 +523,7 @@ export async function PATCH(req: NextRequest) {
       callerUserId: existing.callerUserId,
     });
 
+    if (updated) await closeIncomingCallPush(updated);
     return json({ ok: true, data: updated });
   }
 
@@ -539,6 +549,7 @@ export async function PATCH(req: NextRequest) {
       callerUserId: existing.callerUserId,
     });
 
+    if (updated) await closeIncomingCallPush(updated);
     return json({ ok: true, data: updated });
   }
 
@@ -576,6 +587,7 @@ export async function PATCH(req: NextRequest) {
       churchId: existing.churchId,
     });
 
+    if (updated) await closeIncomingCallPush(updated);
     return json({ ok: true, data: updated });
   }
 

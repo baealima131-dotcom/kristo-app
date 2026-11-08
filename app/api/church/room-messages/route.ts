@@ -32,10 +32,13 @@ import {
   getDirectMessageConversationSettings,
   isDirectRoomId,
   isParticipantInDirectRoom,
+  parseDirectRoomParticipants,
   releaseDirectMessageRequestOutboundSlot,
   resolveDirectMessageStorageChurchId,
   touchDirectMessageThread,
 } from "@/app/api/_lib/directMessages";
+import { notifyKristoDirectMessagePush } from "@/app/api/_lib/kristoPush";
+import { getMessagePrivacySettings } from "@/app/api/_lib/store/messagePrivacySettingsDb";
 
 export const runtime = "nodejs";
 
@@ -559,6 +562,26 @@ export async function GET(req: Request) {
   });
 }
 
+/** Push the receiver of a direct message, honouring their notification privacy settings. */
+async function pushDirectMessage(msg: RoomMessage) {
+  const participants = parseDirectRoomParticipants(msg.roomId);
+  if (!participants) return;
+  const receiverUserId = participants[0] === msg.senderUserId ? participants[1] : participants[0];
+  if (!receiverUserId || receiverUserId === msg.senderUserId) return;
+  const privacy = await getMessagePrivacySettings(receiverUserId);
+  if (privacy.muteAllMessageNotifications) return;
+  const preview =
+    msg.kind === "voice_note"
+      ? "Voice message"
+      : String(msg.text || "").trim() || (msg.attachments?.length ? "Attachment" : "New message");
+  await notifyKristoDirectMessagePush({
+    receiverUserId,
+    roomId: msg.roomId,
+    title: privacy.showSenderNameInNotifications ? msg.senderName || "Kristo" : "Kristo",
+    body: privacy.showMessagePreviews ? preview.slice(0, 160) : "New message",
+  });
+}
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const roomId = String(body?.roomId || "").trim();
@@ -966,6 +989,12 @@ export async function POST(req: Request) {
         error: String((touchError as any)?.message || touchError),
       });
     }
+    await pushDirectMessage(msg).catch((pushError) =>
+      console.log("KRISTO_DIRECT_MESSAGE_PUSH_FAILED", {
+        roomId,
+        error: String((pushError as any)?.message || pushError),
+      })
+    );
   }
 
   // Verify durability by re-reading the document straight back from the store.

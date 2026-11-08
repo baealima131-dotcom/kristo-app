@@ -1,4 +1,5 @@
 import {notifyZporaCallPush} from "./zporaCallPush";
+import { notifyKristoCallPush } from "@/app/api/_lib/kristoPush";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { isUnsafeActorDisplayName } from "@/app/api/_lib/notificationActor";
 import type { PrivateCallSession } from "@/app/api/_lib/privateCallSessions";
@@ -57,5 +58,8 @@ export async function notifyPastorPrivateCallIncoming(session: PrivateCallSessio
   });
 
   await notifyZporaCallPush(session,title).catch(()=>console.warn("ZPORA_CALL_PUSH_UNAVAILABLE",{callId:session.id}));
+  await notifyKristoCallPush(session, title).catch((error) =>
+    console.warn("KRISTO_CALL_PUSH_UNAVAILABLE", { callId: session.id, error: String(error?.message || error) })
+  );
   return created;
 }
