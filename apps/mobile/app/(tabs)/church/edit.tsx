@@ -16,6 +16,7 @@ import {
 } from "@/src/lib/churchStore";
 import { invalidateChurchProfileCaches } from "@/src/lib/screenDataCache";
 import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
+import { ChurchPhotoCropper } from "@/src/components/church/ChurchPhotoCropper";
 import {
   mergeChurchAvatarForDisplay,
   normalizeAvatarUpdatedAt,
@@ -92,6 +93,7 @@ export default function EditChurchProfile() {
   const [address, setAddress] = useState("");
   const [avatarUri, setAvatarUri] = useState("");
   const [avatarDirty, setAvatarDirty] = useState(false);
+  const [cropSourceUri, setCropSourceUri] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -150,24 +152,28 @@ export default function EditChurchProfile() {
   }, [session?.churchId]);
 
   async function pickAvatar() {
+    // No system crop: the Pastor positions the picture in the Church Overview frame (5:8) next.
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.85,
-      allowsEditing: true,
-      aspect: [1, 1],
+      quality: 1,
+      allowsEditing: false,
     });
 
     if (res.canceled) return;
     const picked = String(res.assets?.[0]?.uri || "").trim();
     if (!picked) return;
+    setCropSourceUri(picked);
+  }
 
+  async function onChurchPhotoCropped(picked: string) {
+    setCropSourceUri(null);
     try {
       const auth = getKristoAuth();
       const churchId = String(session?.churchId || auth.churchId || "").trim();
       const dir = `${FileSystem.documentDirectory}church-avatar/`;
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
       const nextUri = `${dir}${churchId || "church"}-${Date.now()}.jpg`;
-      const compressedUri = await compressAvatarFile(picked, nextUri);
+      const compressedUri = await compressAvatarFile(picked, nextUri, { keepAspect: true });
       setAvatarUri(compressedUri);
     } catch {
       setAvatarUri(picked);
@@ -292,7 +298,7 @@ export default function EditChurchProfile() {
               hasLocalUri: true,
               targetField,
             });
-            avatarData = await buildAvatarDataUrl(avatarUri);
+            avatarData = await buildAvatarDataUrl(avatarUri, { keepAspect: true });
           } else {
             targetField = "avatarUri";
             console.log("KRISTO_CHURCH_AVATAR_SAVE_START", {
@@ -455,6 +461,12 @@ export default function EditChurchProfile() {
           <Text style={s.saveText}>Save Church Profile</Text>
         </Pressable>
       </ScrollView>
+
+      <ChurchPhotoCropper
+        sourceUri={cropSourceUri}
+        onCancel={() => setCropSourceUri(null)}
+        onDone={onChurchPhotoCropped}
+      />
     </View>
   );
 }
@@ -467,9 +479,10 @@ const s = StyleSheet.create({
   sub: { color: "rgba(255,255,255,0.58)", fontWeight: "700", marginTop: 3 },
   content: { padding: 18, paddingBottom: 80 },
   avatarBox: { alignSelf: "center", alignItems: "center", marginBottom: 30 },
+  // Church Overview shape (5:8), so this preview matches the Overview picture.
   avatarFrame: {
-    width: 128,
-    height: 128,
+    width: 105,
+    height: 162,
     borderRadius: 34,
     alignItems: "center",
     justifyContent: "center",
@@ -479,14 +492,14 @@ const s = StyleSheet.create({
     overflow: "visible",
   },
   avatarPlaceholder: {
-    width: 118,
-    height: 118,
+    width: 95,
+    height: 152,
     borderRadius: 30,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-  avatar: { width: 118, height: 118, borderRadius: 30 },
+  avatar: { width: 95, height: 152, borderRadius: 30 },
   avatarEditBadge: {
     position: "absolute",
     right: -8,

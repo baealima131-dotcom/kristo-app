@@ -510,6 +510,21 @@ function initials(name: string) {
   return (s[0] || "?").toUpperCase();
 }
 
+/**
+ * First letters of the first and last name ("Grace Mwita" -> "GM"); one letter for a single name.
+ * Bracketed notes and non-letters are ignored ("Review Supervisor (test)" -> "RS").
+ */
+function nameInitials(name: string) {
+  const parts = String(name || "")
+    .replace(/\([^)]*\)/g, " ")
+    .split(/\s+/)
+    .map((w) => (w.match(/\p{L}/u) || [""])[0])
+    .filter(Boolean);
+  if (!parts.length) return "?";
+  const last = parts.length > 1 ? parts[parts.length - 1] : "";
+  return (parts[0] + last).toUpperCase();
+}
+
 function formatMeetingInShort(diffMs: number) {
   const totalSec = Math.max(0, Math.floor(diffMs / 1000));
   const days = Math.floor(totalSec / 86400);
@@ -2121,11 +2136,14 @@ function MessageBubbleAvatar({
   label,
   show,
   side,
+  initialsText,
 }: {
   uri: string;
   label: string;
   show: boolean;
   side: "left" | "right";
+  /** Letters shown without a photo; default is the first letter of label. */
+  initialsText?: string;
 }) {
   if (!show) {
     return <View style={s.avatarSpacer} />;
@@ -2136,7 +2154,7 @@ function MessageBubbleAvatar({
       {uri ? (
         <Image source={{ uri }} style={s.avatarMiniImage as any} />
       ) : (
-        <Text style={t.avatarMiniText}>{initials(label || "U")}</Text>
+        <Text style={t.avatarMiniText}>{initialsText || initials(label || "U")}</Text>
       )}
     </View>
   );
@@ -6397,6 +6415,17 @@ function Bubble({
   if (m.kind === "voice_note") {
     const audio: any = (m.attachments || [])[0];
     const mine = m.sender === "me";
+    // Who sent it: avatar (photo, or the sender's initials) beside the voice, name above it.
+    const voiceSenderName = String(m.displayName || (mine ? "Me" : "Member"));
+    const voiceSenderAvatar = (
+      <MessageBubbleAvatar
+        uri={resolveMessageSenderAvatar(m).uri}
+        label={voiceSenderName}
+        initialsText={nameInitials(voiceSenderName)}
+        show={true}
+        side={mine ? "right" : "left"}
+      />
+    );
     return (
       <Pressable
         onPress={onPress}
@@ -6408,19 +6437,23 @@ function Bubble({
           selected || actionHighlighted ? s.bubbleSelectedGlow : null,
         ]}
       >
-        {!mine ? (
-          <Text style={s.voiceNoteSender} numberOfLines={1}>
-            {m.displayName || "Member"}
-          </Text>
-        ) : null}
-        <ChurchVoiceNoteBubble
-          url={resolveMessageAttachmentUrl(audio?.url || audio?.uri || "")}
-          durationMs={Number(audio?.durationMs || 0)}
-          mine={mine}
-          expiresAt={Number((m as any).expiresAt || 0) || undefined}
-          nowMs={Number(liveScheduleNowMs || Date.now())}
-        />
-        <Text style={[t.msgTime, mine ? s.voiceNoteTimeMine : null]}>{formatTime(m.createdAt)}</Text>
+        {!mine ? voiceSenderAvatar : null}
+        <View style={s.voiceNoteBody}>
+          {!mine ? (
+            <Text style={s.voiceNoteSender} numberOfLines={1}>
+              {voiceSenderName}
+            </Text>
+          ) : null}
+          <ChurchVoiceNoteBubble
+            url={resolveMessageAttachmentUrl(audio?.url || audio?.uri || "")}
+            durationMs={Number(audio?.durationMs || 0)}
+            mine={mine}
+            expiresAt={Number((m as any).expiresAt || 0) || undefined}
+            nowMs={Number(liveScheduleNowMs || Date.now())}
+          />
+          <Text style={[t.msgTime, mine ? s.voiceNoteTimeMine : null]}>{formatTime(m.createdAt)}</Text>
+        </View>
+        {mine ? voiceSenderAvatar : null}
       </Pressable>
     );
   }
@@ -19961,8 +19994,14 @@ videoEditorSplitTimelineBadgeText: {
 
   voiceNoteRow: {
     alignSelf: "flex-start",
-    maxWidth: "86%",
+    flexDirection: "row",
+    alignItems: "flex-start",
+    maxWidth: "94%",
     marginVertical: 6,
+  } as ViewStyle,
+
+  voiceNoteBody: {
+    flexShrink: 1,
     gap: 4,
   } as ViewStyle,
 

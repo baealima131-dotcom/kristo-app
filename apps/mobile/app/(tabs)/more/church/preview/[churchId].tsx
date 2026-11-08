@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import { getApiBase } from "@/src/lib/kristoApi";
 import { fetchChurchPublicProfile, type ChurchPublicProfile } from "@/src/lib/churchProfileApi";
+import { CHURCH_PHOTO_ASPECT, CHURCH_PHOTO_FRAME_WIDTH } from "@/src/lib/churchPhotoFrame";
 
 const BG = "#05070D";
 const GOLD = "#D9B35F";
@@ -241,9 +242,11 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(8,14,24,0.92)",
     boxShadow: GOLD_GLOW,
   },
+  // Fixed Church Overview shape (5:8, see churchPhotoFrame.ts) so the cropped picture is never cut.
   photoFrame: {
-    width: "42%",
-    minHeight: 220,
+    width: CHURCH_PHOTO_FRAME_WIDTH,
+    aspectRatio: CHURCH_PHOTO_ASPECT,
+    alignSelf: "center",
     borderRadius: 22,
     overflow: "hidden",
     borderWidth: 2,

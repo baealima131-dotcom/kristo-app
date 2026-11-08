@@ -78,6 +78,7 @@ import {
   isMinistryMediaAccessLimitReachedError,
   MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE,
 } from "@/src/lib/ministryMediaAccessLimit";
+import { CHURCH_PHOTO_ASPECT, CHURCH_PHOTO_FRAME_WIDTH } from "@/src/lib/churchPhotoFrame";
 
 const VIP_BG = "#05070D";
 const VIP_BG_MID = "#0A101C";
@@ -2169,9 +2170,11 @@ const s = StyleSheet.create<any>({
   },
 
   // Church profile picture: large rectangle filling the left side of the main card.
+  // Fixed Church Overview shape (5:8, see churchPhotoFrame.ts) so the cropped picture is never cut.
   profilePhotoFrame: {
-    width: "42%",
-    minHeight: 220,
+    width: CHURCH_PHOTO_FRAME_WIDTH,
+    aspectRatio: CHURCH_PHOTO_ASPECT,
+    alignSelf: "center",
     borderRadius: 22,
     overflow: "hidden",
     borderWidth: 2,

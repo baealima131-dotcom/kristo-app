@@ -31,10 +31,15 @@ function dataUrlByteSize(dataUrl: string): number {
   return new TextEncoder().encode(dataUrl).length;
 }
 
-async function compressOnce(uri: string, maxSide: number, quality: number) {
+type CompressOptions = {
+  /** Keep the picture's shape (church picture, 5:8 portrait): maxSide limits the height. Default: square. */
+  keepAspect?: boolean;
+};
+
+async function compressOnce(uri: string, maxSide: number, quality: number, opts?: CompressOptions) {
   return ImageManipulator.manipulateAsync(
     uri,
-    [{ resize: { width: maxSide, height: maxSide } }],
+    [{ resize: opts?.keepAspect ? { height: maxSide } : { width: maxSide, height: maxSide } }],
     {
       compress: quality,
       format: ImageManipulator.SaveFormat.JPEG,
@@ -46,7 +51,7 @@ async function compressOnce(uri: string, maxSide: number, quality: number) {
 /**
  * Resize + compress a local image URI into a JPEG data URL safe for upload.
  */
-export async function buildAvatarDataUrl(sourceUri: string): Promise<string> {
+export async function buildAvatarDataUrl(sourceUri: string, opts?: CompressOptions): Promise<string> {
   const uri = String(sourceUri || "").trim();
   if (!uri || !uri.startsWith("file:")) return "";
 
@@ -56,7 +61,7 @@ export async function buildAvatarDataUrl(sourceUri: string): Promise<string> {
   let lastDataUrl = "";
 
   for (const attempt of ATTEMPTS) {
-    const result = await compressOnce(uri, attempt.maxSide, attempt.quality);
+    const result = await compressOnce(uri, attempt.maxSide, attempt.quality, opts);
     const b64 = String(result.base64 || "").trim();
     if (!b64) continue;
 
@@ -84,7 +89,7 @@ export async function buildAvatarDataUrl(sourceUri: string): Promise<string> {
 /**
  * Compress for local preview storage (returns file:// JPEG path).
  */
-export async function compressAvatarFile(sourceUri: string, destUri: string): Promise<string> {
+export async function compressAvatarFile(sourceUri: string, destUri: string, opts?: CompressOptions): Promise<string> {
   const uri = String(sourceUri || "").trim();
   if (!uri.startsWith("file:")) return uri;
 
@@ -92,7 +97,7 @@ export async function compressAvatarFile(sourceUri: string, destUri: string): Pr
   console.log("[AvatarCompress] beforeSize", beforeSize);
 
   for (const attempt of ATTEMPTS) {
-    const result = await compressOnce(uri, attempt.maxSide, attempt.quality);
+    const result = await compressOnce(uri, attempt.maxSide, attempt.quality, opts);
     const outUri = String(result.uri || "").trim();
     if (!outUri) continue;
 
