@@ -10,8 +10,29 @@ import {
 } from "@/app/api/_lib/liveScheduleAuthority";
 import { readLiveJsonFile } from "@/app/api/_lib/store/liveDb";
 import { isSuspendedForChurchLive } from "@/app/api/_lib/churchLiveControlSuspension";
+import { getPrivateCallSession } from "@/app/api/_lib/privateCallSessions";
 
 export const runtime = "nodejs";
+
+const PRIVATE_CALL_ROOM_PREFIX = "private-call-";
+
+/**
+ * null: not a private call room. "participant": the caller or the receiver of a ringing or
+ * accepted call whose stored room name matches. "forbidden": anything else.
+ */
+async function resolvePrivateCallRoomAccess(
+  roomName: string,
+  userId: string
+): Promise<"participant" | "forbidden" | null> {
+  if (!roomName.startsWith(PRIVATE_CALL_ROOM_PREFIX)) return null;
+  const callId = roomName.slice(roomName.lastIndexOf("-pc_") + 1);
+  if (!callId.startsWith("pc_")) return "forbidden";
+  const session = await getPrivateCallSession(callId);
+  if (!session || session.roomName !== roomName) return "forbidden";
+  if (session.status !== "ringing" && session.status !== "accepted") return "forbidden";
+  if (userId !== session.callerUserId && userId !== session.pastorUserId) return "forbidden";
+  return "participant";
+}
 
 export async function GET() {
   return NextResponse.json(
@@ -31,11 +52,19 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const roomName = String(body.roomName || body.liveId || `church-live-${a.churchId}`).trim();
 
-    // The room must be a live session or schedule of the caller's own church.
-    const liveStore = await readLiveJsonFile<Record<string, any>>("church-live.json", {});
+    // Private call rooms: only the call's two participants, while the call is ringing or accepted.
+    const privateCall = await resolvePrivateCallRoomAccess(roomName, a.userId);
+    if (privateCall === "forbidden") {
+      return NextResponse.json({ ok: false, error: "Forbidden (room)" }, { status: 403 });
+    }
+
+    // Otherwise the room must be a live session or schedule of the caller's own church.
+    const liveStore = privateCall ? {} : await readLiveJsonFile<Record<string, any>>("church-live.json", {});
     const liveRecord = liveStore[`${a.churchId}|${roomName}`] || null;
-    const schedule = await readChurchSchedule(a.churchId, roomName);
-    if (!liveRecord && !schedule.known && roomName !== `church-live-${a.churchId}`) {
+    const schedule = privateCall
+      ? { known: false, cards: [] as any[] }
+      : await readChurchSchedule(a.churchId, roomName);
+    if (!privateCall && !liveRecord && !schedule.known && roomName !== `church-live-${a.churchId}`) {
       return NextResponse.json({ ok: false, error: "Forbidden (room)" }, { status: 403 });
     }
 
@@ -48,11 +77,14 @@ export async function POST(req: Request) {
     );
     // Church Live Control suspension beats every publish path (media host, schedule driver,
     // claimed or active slot, approved on stage); a read failure fails closed. Watching stays.
-    const liveControlSuspended = await isSuspendedForChurchLive(a.churchId, a.userId, roomName);
+    const liveControlSuspended = privateCall
+      ? false
+      : await isSuspendedForChurchLive(a.churchId, a.userId, roomName);
     const allowedToPublish =
       wantsPublish &&
       !liveControlSuspended &&
-      ((await canDriveLiveSchedule(a, liveRecord, roomName)) ||
+      (privateCall === "participant" ||
+        (await canDriveLiveSchedule(a, liveRecord, roomName)) ||
         schedule.cards.some((card: any) => String(card?.claimedByUserId || "") === a.userId) ||
         (!!liveRecord && isServerActiveSlotOwner(liveRecord, a.userId, Date.now())) ||
         approvedOnStage);
