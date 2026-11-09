@@ -140,6 +140,7 @@ import {
 import { buildDmMembershipLabel } from "@/src/lib/dmMembershipLabel";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
 import { createPrivateCallToUser } from "@/src/lib/privateCallService";
+import { isRoomMessageRowForViewer } from "@/src/lib/roomMessageVisibility";
 import {
   applyPastorAuthorityToMinistryBoard,
   canOpenMinistryTool,
@@ -7888,10 +7889,13 @@ export default function MessageThreadScreen() {
       const viewerChurchId = String(headers?.["x-kristo-church-id"] || "").trim();
       const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
       const mapped: MsgItem[] = filterVisibleRoomMessageRows(visibleRows)
-        .filter((x: any) => {
-          const rowChurchId = String(x?.churchId || "").trim();
-          return !rowChurchId || !viewerChurchId || rowChurchId === viewerChurchId;
-        })
+        .filter((x: any) =>
+          isRoomMessageRowForViewer({
+            isPersonToPersonDm,
+            rowChurchId: String(x?.churchId || ""),
+            viewerChurchId,
+          })
+        )
         .map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase))
         .map((m) => enrichMessageSenderAvatar(m, memberAvatarByUserIdRef.current));
 
@@ -7976,6 +7980,7 @@ export default function MessageThreadScreen() {
       messages.length,
       filterVisibleRoomMessageRows,
       (params as any)?.assignmentTitle,
+      isPersonToPersonDm,
     ]
   );
 
