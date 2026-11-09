@@ -35,6 +35,7 @@ module.exports = {
       ],
       "./plugins/withDevClientMetroPort",
       "./plugins/withAndroidPortraitMainActivity",
+      "./plugins/withoutIosPushEntitlement",
       ...(isProductionEasBuild ? ["./plugins/withAndroidProductionAbis"] : []),
     ],
   },
