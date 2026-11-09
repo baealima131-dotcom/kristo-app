@@ -248,6 +248,13 @@ const WATCH_FULLSCREEN_OPTIONS: NonNullable<React.ComponentProps<typeof VideoVie
   orientation: "landscape",
   autoExitOnRotate: true,
 };
+// A vertical video (4:5, 9:16) opens fullscreen in the phone's own orientation, so it fills the
+// portrait screen instead of a small strip of a landscape one.
+const WATCH_VERTICAL_FULLSCREEN_OPTIONS: NonNullable<React.ComponentProps<typeof VideoView>["fullscreenOptions"]> = {
+  enable: true,
+  orientation: "default",
+  autoExitOnRotate: false,
+};
 const WATCH_MODAL_ORIENTATIONS: React.ComponentProps<typeof Modal>["supportedOrientations"] = [
   "portrait",
   "landscape-left",
@@ -774,6 +781,36 @@ function WatchVideoSurface({
     [postId]
   );
 
+  // Inline the video has no native controls: a tap (or the fullscreen button) opens fullscreen,
+  // which always shows the full native controls, and swipes on the video scroll Up Next.
+  const [isPlaying, setIsPlaying] = useState(false);
+  useEventListener(player, "playingChange", ({ isPlaying: playing }) => setIsPlaying(playing));
+
+  const handleEnterFullscreen = useCallback(() => {
+    const view = videoViewRef.current;
+    if (!view || fullscreenRef.current || endedRef.current) return;
+    fullscreenRef.current = true;
+    console.log("KRISTO_WATCH_TAP_FULLSCREEN_ENTER", { postId });
+    view.enterFullscreen().catch((error: any) => {
+      fullscreenRef.current = false;
+      console.log("KRISTO_WATCH_TAP_FULLSCREEN_FAILED", {
+        postId,
+        error: String(error?.message || error || "unknown"),
+      });
+    });
+  }, [postId]);
+
+  const handleTogglePlay = useCallback(() => {
+    if (isPlaying) {
+      userPausedRef.current = true;
+      safePauseVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
+    } else {
+      userPausedRef.current = false;
+      backgroundPausedRef.current = false;
+      safePlayVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
+    }
+  }, [isPlaying, player, playbackUri]);
+
   const handleReplay = useCallback(() => {
     clearHomeFeedVideoProgress(postId);
     console.log("KRISTO_WATCH_VIDEO_REPLAY_FROM_START", { postId });
@@ -833,11 +870,40 @@ function WatchVideoSurface({
               : styles.video
           }
           contentFit="contain"
-          nativeControls
-          fullscreenOptions={WATCH_FULLSCREEN_OPTIONS}
+          nativeControls={false}
+          fullscreenOptions={isTikTokLayout ? WATCH_VERTICAL_FULLSCREEN_OPTIONS : WATCH_FULLSCREEN_OPTIONS}
           onFullscreenEnter={handleFullscreenEnter}
           onFullscreenExit={handleFullscreenExit}
         />
+      ) : null}
+      {!ended && !isFullscreen ? (
+        <Pressable
+          style={styles.inlineTapLayer}
+          onPress={handleEnterFullscreen}
+          accessibilityRole="button"
+          accessibilityLabel="Open video fullscreen"
+        >
+          <View style={styles.inlineControls} pointerEvents="box-none">
+            <Pressable
+              onPress={handleTogglePlay}
+              hitSlop={8}
+              style={styles.inlineControlButton}
+              accessibilityRole="button"
+              accessibilityLabel={isPlaying ? "Pause video" : "Play video"}
+            >
+              <Ionicons name={isPlaying ? "pause" : "play"} size={18} color="#FFFFFF" />
+            </Pressable>
+            <Pressable
+              onPress={handleEnterFullscreen}
+              hitSlop={8}
+              style={styles.inlineControlButton}
+              accessibilityRole="button"
+              accessibilityLabel="Fullscreen"
+            >
+              <Ionicons name="expand" size={18} color="#FFFFFF" />
+            </Pressable>
+          </View>
+        </Pressable>
       ) : null}
       {ended ? (
         <Pressable style={styles.replayOverlay} onPress={handleReplay} accessibilityLabel="Replay video">
@@ -1001,6 +1067,16 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
       else if (dy < -6) setChromeCollapsed(false);
     },
     [setChromeCollapsed]
+  );
+  // Scroll offset on the native driver: keeps the video stack pinned while Up Next scrolls.
+  const upNextScrollY = useRef(new Animated.Value(0)).current;
+  const upNextScrollEvent = useMemo(
+    () =>
+      Animated.event([{ nativeEvent: { contentOffset: { y: upNextScrollY } } }], {
+        useNativeDriver: true,
+        listener: handleUpNextScroll,
+      }),
+    [upNextScrollY, handleUpNextScroll]
   );
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
 
@@ -1255,18 +1331,21 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 
         {/*
           * The playing video floats above the page: Up Next scrolls underneath it (never over it),
-          * with a thin gold edge and shadow so the video reads as being in front.
+          * with a thin gold edge and shadow so the video reads as being in front. The video stack
+          * lives inside the scroll view (held in place by translateY = scroll offset), so a swipe
+          * that starts on the video or its panel scrolls Up Next too.
           */}
         <View style={styles.scroll}>
-          <ScrollView
+          <Animated.ScrollView
             ref={scrollRef}
             style={StyleSheet.absoluteFill}
-            onScroll={handleUpNextScroll}
+            onScroll={upNextScrollEvent}
             scrollEventThrottle={16}
-            // Up Next starts below the floating video and slides underneath it while scrolling.
-            contentContainerStyle={{ paddingTop: playerHeight + panelHeight, paddingBottom: insets.bottom + 24 }}
+            contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
             showsVerticalScrollIndicator={false}
           >
+            {/* Up Next starts below the floating video and slides underneath it while scrolling. */}
+            <View style={{ height: playerHeight + panelHeight }} />
             <Text style={styles.upNextLabel}>Up next</Text>
             {watchUpNextRows.map((row) => {
               if (row.kind === "soko") {
@@ -1295,9 +1374,11 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 />
               );
             })}
-          </ScrollView>
 
-          <View style={styles.floatingVideoStack} pointerEvents="box-none">
+          <Animated.View
+            style={[styles.floatingVideoStack, { transform: [{ translateY: upNextScrollY }] }]}
+            pointerEvents="box-none"
+          >
             <View
               style={[
                 styles.playerWrap,
@@ -1362,7 +1443,8 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
               </View>
             </Animated.View>
             </Animated.View>
-          </View>
+          </Animated.View>
+          </Animated.ScrollView>
         </View>
 
         <FeedCommentsSheet
@@ -1496,6 +1578,26 @@ const styles = StyleSheet.create({
   tikTokVideoBackdrop: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 0,
+  },
+  inlineTapLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 3,
+  },
+  inlineControls: {
+    position: "absolute",
+    left: 10,
+    right: 10,
+    bottom: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  inlineControlButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
   },
   tikTokBackdropOverlay: {
     ...StyleSheet.absoluteFillObject,
