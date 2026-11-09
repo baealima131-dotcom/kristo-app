@@ -25,6 +25,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
 import {
   hydrateAndCacheWatchVideo,
@@ -54,7 +55,6 @@ import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayT
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import {
   allowWatchRotation,
-  isScreenLandscapeNow,
   restoreAppPortrait,
 } from "@/src/lib/watchOrientation";
 import {
@@ -67,6 +67,12 @@ import {
   resolveYouTubeFeedMetadataPosterUri,
 } from "./homeFeedUtils";
 import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
+import {
+  HEADER_INBOX_ICONS_WIDTH,
+  HEADER_INBOX_ROUTES,
+  HeaderInboxIcons,
+  type HeaderInboxTarget,
+} from "./HeaderInboxIcons";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
 import {
   SokoHomeProductCard,
@@ -249,6 +255,13 @@ const WATCH_FULLSCREEN_OPTIONS: NonNullable<React.ComponentProps<typeof VideoVie
   orientation: "landscape",
   autoExitOnRotate: true,
 };
+// A vertical video (4:5, 9:16) opens fullscreen in the phone's own orientation, so it fills the
+// portrait screen instead of a small strip of a landscape one (Android; iOS: IosWatchFullscreen).
+const WATCH_VERTICAL_FULLSCREEN_OPTIONS: NonNullable<React.ComponentProps<typeof VideoView>["fullscreenOptions"]> = {
+  enable: true,
+  orientation: "default",
+  autoExitOnRotate: false,
+};
 const WATCH_MODAL_ORIENTATIONS: React.ComponentProps<typeof Modal>["supportedOrientations"] = [
   "portrait",
   "landscape-left",
@@ -259,6 +272,8 @@ const WATCH_MODAL_ORIENTATIONS: React.ComponentProps<typeof Modal>["supportedOri
 const IOS_NATIVE_FULLSCREEN_OFF: NonNullable<React.ComponentProps<typeof VideoView>["fullscreenOptions"]> = {
   enable: false,
 };
+const WATCH_HEADER_SIDE_PADDING = 12;
+const WATCH_HEADER_TITLE_INSET = WATCH_HEADER_SIDE_PADDING + HEADER_INBOX_ICONS_WIDTH + 8;
 const IOS_FULLSCREEN_SWIPE_CLOSE_DISTANCE = 120;
 const IOS_FULLSCREEN_SWIPE_CLOSE_VELOCITY = 1.2;
 
@@ -414,24 +429,11 @@ function WatchVideoSurface({
   onPlaybackStartedRef.current = onPlaybackStarted;
   const videoViewRef = useRef<VideoView | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Fullscreen opens only when the viewer taps the video or its fullscreen button (never by
+  // itself, e.g. on rotating the phone). iOS uses IosWatchFullscreen, Android the native one.
   const fullscreenRef = useRef(false);
-  const isLandscapeRef = useRef(isLandscape);
-  isLandscapeRef.current = isLandscape;
-  // Set when fullscreen is left while the screen is still landscape (Back, Done,
-  // video end). Cleared once the screen is portrait again, so auto-rotate re-arms.
-  const autoFullscreenSuppressedRef = useRef(false);
-  // Bumped after fullscreen closes so auto-enter re-checks the real orientation
-  // even when window dimensions did not change in between (quick rotations).
-  const [autoFullscreenRecheck, setAutoFullscreenRecheck] = useState(0);
-  // Last screen orientation read from native. On Android, window dimension
-  // events can be missed after quick rotations around fullscreen, so this is
-  // the fallback source of truth for auto-enter.
-  const nativeLandscapeRef = useRef<boolean | null>(null);
-  // iOS fullscreen (IosWatchFullscreen). auto: opened by rotating to landscape.
   const [iosFullscreenOpen, setIosFullscreenOpen] = useState(false);
-  const iosFullscreenAutoRef = useRef(false);
-  const openIosFullscreenRef = useRef<(auto: boolean) => void>(() => {});
-  const closeIosFullscreenRef = useRef<(autoExited: boolean) => void>(() => {});
+  const closeIosFullscreenRef = useRef<() => void>(() => {});
 
   const isWatchAutoPlayBlocked = useCallback(
     () => userPausedRef.current || backgroundPausedRef.current,
@@ -524,7 +526,7 @@ function WatchVideoSurface({
 
   useEventListener(player, "playToEnd", () => {
     if (Platform.OS === "ios") {
-      closeIosFullscreenRef.current(false);
+      closeIosFullscreenRef.current();
     } else if (fullscreenRef.current) {
       void videoViewRef.current?.exitFullscreen().catch(() => {});
     }
@@ -747,87 +749,6 @@ function WatchVideoSurface({
     };
   }, [player, postId, durationSec]);
 
-  useEffect(() => {
-    console.log("KRISTO_WATCH_ORIENTATION_STATE", {
-      postId,
-      isLandscape,
-      ended,
-      fullscreen: fullscreenRef.current,
-      suppressed: autoFullscreenSuppressedRef.current,
-      recheck: autoFullscreenRecheck,
-      nativeLandscape: nativeLandscapeRef.current,
-    });
-    if (!isLandscape && nativeLandscapeRef.current !== true) {
-      autoFullscreenSuppressedRef.current = false;
-      // iOS fullscreen opened by rotating closes again when the phone is back in portrait.
-      if (Platform.OS === "ios" && iosFullscreenAutoRef.current && fullscreenRef.current) {
-        closeIosFullscreenRef.current(true);
-      }
-      return;
-    }
-    if (ended || fullscreenRef.current || autoFullscreenSuppressedRef.current) return;
-    let cancelled = false;
-    // Let the rotated layout settle before presenting fullscreen.
-    const timer = setTimeout(async () => {
-      if (cancelled) return;
-      // Window dimensions can lag or miss a real rotation; the native screen
-      // orientation decides, so a quick rotation back does not enter fullscreen.
-      const nativeLandscape = await isScreenLandscapeNow();
-      if (nativeLandscape !== null) nativeLandscapeRef.current = nativeLandscape;
-      const landscapeNow = nativeLandscape ?? isLandscapeRef.current;
-      if (cancelled || !landscapeNow) {
-        console.log("KRISTO_WATCH_AUTO_FULLSCREEN_SKIPPED", { postId, reason: "no-longer-landscape" });
-        return;
-      }
-      if (Platform.OS === "ios") {
-        if (fullscreenRef.current || endedRef.current || autoFullscreenSuppressedRef.current) return;
-        console.log("KRISTO_WATCH_AUTO_FULLSCREEN_ENTER", { postId, ios: true });
-        openIosFullscreenRef.current(true);
-        return;
-      }
-      const view = videoViewRef.current;
-      if (!view || fullscreenRef.current || endedRef.current) return;
-      if (autoFullscreenSuppressedRef.current) return;
-      fullscreenRef.current = true;
-      console.log("KRISTO_WATCH_AUTO_FULLSCREEN_ENTER", { postId });
-      view.enterFullscreen().catch((error: any) => {
-        fullscreenRef.current = false;
-        console.log("KRISTO_WATCH_AUTO_FULLSCREEN_FAILED", {
-          postId,
-          error: String(error?.message || error || "unknown"),
-        });
-      });
-    }, 150);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [isLandscape, ended, postId, autoFullscreenRecheck]);
-
-  // Reconcile with the native screen orientation while Watch is inline. Any
-  // native change re-runs auto-enter, because JS window dimensions may be stale.
-  useEffect(() => {
-    if (isFullscreen || ended) return;
-    let stopped = false;
-    const interval = setInterval(async () => {
-      const nativeLandscape = await isScreenLandscapeNow();
-      if (stopped || nativeLandscape === null) return;
-      const previous = nativeLandscapeRef.current;
-      nativeLandscapeRef.current = nativeLandscape;
-      if (!nativeLandscape) {
-        autoFullscreenSuppressedRef.current = false;
-      }
-      if (nativeLandscape !== previous) {
-        console.log("KRISTO_WATCH_ORIENTATION_RECONCILE", { postId, nativeLandscape });
-        setAutoFullscreenRecheck((n) => n + 1);
-      }
-    }, 1000);
-    return () => {
-      stopped = true;
-      clearInterval(interval);
-    };
-  }, [isFullscreen, ended, postId]);
-
   // Android fullscreen pauses the React host, which stops the 1s progress timer
   // above. timeUpdate is emitted natively by the same player, so it keeps the
   // saved position current while fullscreen.
@@ -853,54 +774,57 @@ function WatchVideoSurface({
   const handleFullscreenEnter = useCallback(() => {
     fullscreenRef.current = true;
     setIsFullscreen(true);
-    console.log("KRISTO_WATCH_FULLSCREEN_ENTER", { postId, landscape: isLandscapeRef.current });
+    console.log("KRISTO_WATCH_FULLSCREEN_ENTER", { postId });
   }, [postId]);
 
-  const handleFullscreenExit = useCallback(
-    (event?: { nativeEvent?: { autoExited?: boolean } }) => {
-      fullscreenRef.current = false;
-      setIsFullscreen(false);
-      // Android reports autoExited when fullscreen closed because the device was
-      // rotated back to portrait. Only a manual exit (Back, button, Done) while the
-      // screen is landscape should hold off auto-enter until portrait is seen.
-      const autoExited = event?.nativeEvent?.autoExited === true;
-      void (async () => {
-        const nativeLandscape = autoExited ? false : await isScreenLandscapeNow();
-        const landscape = nativeLandscape ?? isLandscapeRef.current;
-        if (nativeLandscape !== null) nativeLandscapeRef.current = nativeLandscape;
-        autoFullscreenSuppressedRef.current = !autoExited && landscape;
-        console.log("KRISTO_WATCH_FULLSCREEN_EXIT", {
-          postId,
-          autoExited,
-          landscape,
-          suppressed: autoFullscreenSuppressedRef.current,
-        });
-        setAutoFullscreenRecheck((n) => n + 1);
-      })();
-    },
-    [postId]
-  );
+  const handleFullscreenExit = useCallback(() => {
+    fullscreenRef.current = false;
+    setIsFullscreen(false);
+    console.log("KRISTO_WATCH_FULLSCREEN_EXIT", { postId });
+  }, [postId]);
 
-  const openIosFullscreen = useCallback(
-    (auto: boolean) => {
-      if (fullscreenRef.current || endedRef.current) return;
-      iosFullscreenAutoRef.current = auto;
+  const closeIosFullscreen = useCallback(() => {
+    if (!fullscreenRef.current) return;
+    setIosFullscreenOpen(false);
+    handleFullscreenExit();
+  }, [handleFullscreenExit]);
+  closeIosFullscreenRef.current = closeIosFullscreen;
+
+  // Inline the video has no native controls: a tap (or the fullscreen button) opens fullscreen,
+  // which has the full controls, and swipes on the video scroll Up Next.
+  const [isPlaying, setIsPlaying] = useState(false);
+  useEventListener(player, "playingChange", ({ isPlaying: playing }) => setIsPlaying(playing));
+
+  const handleEnterFullscreen = useCallback(() => {
+    if (fullscreenRef.current || endedRef.current) return;
+    console.log("KRISTO_WATCH_TAP_FULLSCREEN_ENTER", { postId });
+    if (Platform.OS === "ios") {
       setIosFullscreenOpen(true);
       handleFullscreenEnter();
-    },
-    [handleFullscreenEnter]
-  );
-  const closeIosFullscreen = useCallback(
-    (autoExited: boolean) => {
-      if (!fullscreenRef.current) return;
-      iosFullscreenAutoRef.current = false;
-      setIosFullscreenOpen(false);
-      handleFullscreenExit({ nativeEvent: { autoExited } });
-    },
-    [handleFullscreenExit]
-  );
-  openIosFullscreenRef.current = openIosFullscreen;
-  closeIosFullscreenRef.current = closeIosFullscreen;
+      return;
+    }
+    const view = videoViewRef.current;
+    if (!view) return;
+    fullscreenRef.current = true;
+    view.enterFullscreen().catch((error: any) => {
+      fullscreenRef.current = false;
+      console.log("KRISTO_WATCH_TAP_FULLSCREEN_FAILED", {
+        postId,
+        error: String(error?.message || error || "unknown"),
+      });
+    });
+  }, [postId, handleFullscreenEnter]);
+
+  const handleTogglePlay = useCallback(() => {
+    if (isPlaying) {
+      userPausedRef.current = true;
+      safePauseVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
+    } else {
+      userPausedRef.current = false;
+      backgroundPausedRef.current = false;
+      safePlayVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
+    }
+  }, [isPlaying, player, playbackUri]);
 
   const handleReplay = useCallback(() => {
     clearHomeFeedVideoProgress(postId);
@@ -961,29 +885,49 @@ function WatchVideoSurface({
               : styles.video
           }
           contentFit="contain"
-          nativeControls
-          fullscreenOptions={Platform.OS === "ios" ? IOS_NATIVE_FULLSCREEN_OFF : WATCH_FULLSCREEN_OPTIONS}
+          nativeControls={false}
+          fullscreenOptions={
+            Platform.OS === "ios"
+              ? IOS_NATIVE_FULLSCREEN_OFF
+              : isTikTokLayout
+                ? WATCH_VERTICAL_FULLSCREEN_OPTIONS
+                : WATCH_FULLSCREEN_OPTIONS
+          }
           onFullscreenEnter={handleFullscreenEnter}
           onFullscreenExit={handleFullscreenExit}
         />
       ) : null}
-      {Platform.OS === "ios" && !ended && !iosFullscreenOpen ? (
+      {!ended && !isFullscreen ? (
         <Pressable
-          onPress={() => openIosFullscreen(false)}
-          hitSlop={10}
-          style={styles.iosFullscreenButton}
+          style={styles.inlineTapLayer}
+          onPress={handleEnterFullscreen}
           accessibilityRole="button"
-          accessibilityLabel="Fullscreen"
+          accessibilityLabel="Open video fullscreen"
         >
-          <Ionicons name="expand" size={18} color="#FFFFFF" />
+          <View style={styles.inlineControls} pointerEvents="box-none">
+            <Pressable
+              onPress={handleTogglePlay}
+              hitSlop={8}
+              style={styles.inlineControlButton}
+              accessibilityRole="button"
+              accessibilityLabel={isPlaying ? "Pause video" : "Play video"}
+            >
+              <Ionicons name={isPlaying ? "pause" : "play"} size={18} color="#FFFFFF" />
+            </Pressable>
+            <Pressable
+              onPress={handleEnterFullscreen}
+              hitSlop={8}
+              style={styles.inlineControlButton}
+              accessibilityRole="button"
+              accessibilityLabel="Fullscreen"
+            >
+              <Ionicons name="expand" size={18} color="#FFFFFF" />
+            </Pressable>
+          </View>
         </Pressable>
       ) : null}
       {Platform.OS === "ios" ? (
-        <IosWatchFullscreen
-          visible={iosFullscreenOpen}
-          player={player}
-          onClose={() => closeIosFullscreen(false)}
-        />
+        <IosWatchFullscreen visible={iosFullscreenOpen} player={player} onClose={closeIosFullscreen} />
       ) : null}
       {ended ? (
         <Pressable style={styles.replayOverlay} onPress={handleReplay} accessibilityLabel="Replay video">
@@ -1118,12 +1062,21 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     [width, windowHeight, insets.top, isTikTokLayout, videoAspect]
   );
   const scrollRef = useRef<ScrollView | null>(null);
+  const router = useRouter();
+  // Watch is a modal over Home: close it, then open Messages or the call list.
+  const handleInboxOpen = useCallback(
+    (target: HeaderInboxTarget) => {
+      onClose();
+      router.push(HEADER_INBOX_ROUTES[target] as any);
+    },
+    [onClose, router]
+  );
   const [playbackStarted, setPlaybackStarted] = useState(false);
 
   /*
-   * Collapsing chrome (like YouTube): scrolling Up Next down folds the purple header to a slim bar
-   * (back + creator avatar + church name, no "JESUS IS KING") and folds the purple panel under the
-   * video to a thin line. Scrolling up, or reaching the top, opens both again.
+   * Collapsing panel (like YouTube): scrolling Up Next down folds the purple panel under the video
+   * to a thin line; scrolling up, or reaching the top, opens it again. The header (JESUS IS KING,
+   * Messages and missed calls) always stays as it is.
    */
   const collapse = useRef(new Animated.Value(0)).current;
   const collapsedRef = useRef(false);
@@ -1147,6 +1100,16 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
       else if (dy < -6) setChromeCollapsed(false);
     },
     [setChromeCollapsed]
+  );
+  // Scroll offset on the native driver: keeps the video stack pinned while Up Next scrolls.
+  const upNextScrollY = useRef(new Animated.Value(0)).current;
+  const upNextScrollEvent = useMemo(
+    () =>
+      Animated.event([{ nativeEvent: { contentOffset: { y: upNextScrollY } } }], {
+        useNativeDriver: true,
+        listener: handleUpNextScroll,
+      }),
+    [upNextScrollY, handleUpNextScroll]
   );
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
 
@@ -1331,62 +1294,21 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             pointerEvents="none"
           />
           <View style={{ paddingTop: insets.top }}>
-            <Animated.View
-              style={[
-                styles.topBar,
-                { height: collapse.interpolate({ inputRange: [0, 1], outputRange: [52, 44] }) },
-              ]}
-            >
-              <Animated.View
-                style={[
-                  styles.topBarTitleRow,
-                  { opacity: collapse.interpolate({ inputRange: [0, 0.5], outputRange: [1, 0], extrapolate: "clamp" }) },
-                ]}
-                pointerEvents="none"
-              >
-                <Text style={styles.topBarTitleWord} numberOfLines={1}>
-                  JESUS
+            {/* JESUS IS KING stays while scrolling; Messages / missed calls on the right. */}
+            <View style={styles.topBar}>
+              <View style={styles.topBarTitleRow} pointerEvents="none">
+                <Text
+                  style={styles.topBarTitleWord}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}
+                >
+                  JESUS IS KING
                 </Text>
-                <Text style={styles.topBarTitleWord} numberOfLines={1}>
-                  IS
-                </Text>
-                <Text style={styles.topBarTitleWord} numberOfLines={1}>
-                  KING
-                </Text>
-              </Animated.View>
-              {item ? (
-                <>
-                  {/* Expanded: creator avatar on the right of JESUS IS KING. */}
-                  <Animated.View
-                    style={[
-                      styles.headerAvatarRight,
-                      { opacity: collapse.interpolate({ inputRange: [0, 0.5], outputRange: [1, 0], extrapolate: "clamp" }) },
-                    ]}
-                  >
-                    <FeedChurchBrandRow item={item} variant="watch" part="avatar" source="watch-header" />
-                  </Animated.View>
-                  {/* Collapsed: creator avatar + church name next to the back button. */}
-                  <Animated.View
-                    style={[
-                      styles.headerCompactRow,
-                      { opacity: collapse.interpolate({ inputRange: [0.5, 1], outputRange: [0, 1], extrapolate: "clamp" }) },
-                    ]}
-                    pointerEvents="none"
-                  >
-                    <View style={styles.headerCompactAvatar}>
-                      <FeedChurchBrandRow item={item} variant="watch" part="avatar" source="watch-header-compact" />
-                    </View>
-                    <Text
-                      style={styles.headerCompactName}
-                      numberOfLines={2}
-                      adjustsFontSizeToFit
-                      minimumFontScale={0.7}
-                    >
-                      {resolveChurchName(item)}
-                    </Text>
-                  </Animated.View>
-                </>
-              ) : null}
+              </View>
+              <View style={styles.headerInboxIcons}>
+                <HeaderInboxIcons onOpen={handleInboxOpen} />
+              </View>
               <Pressable
                 onPress={onClose}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -1395,24 +1317,27 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
               >
                 <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
               </Pressable>
-            </Animated.View>
+            </View>
           </View>
         </View>
 
         {/*
           * The playing video floats above the page: Up Next scrolls underneath it (never over it),
-          * with a thin gold edge and shadow so the video reads as being in front.
+          * with a thin gold edge and shadow so the video reads as being in front. The video stack
+          * lives inside the scroll view (held in place by translateY = scroll offset), so a swipe
+          * that starts on the video or its panel scrolls Up Next too.
           */}
         <View style={styles.scroll}>
-          <ScrollView
+          <Animated.ScrollView
             ref={scrollRef}
             style={StyleSheet.absoluteFill}
-            onScroll={handleUpNextScroll}
+            onScroll={upNextScrollEvent}
             scrollEventThrottle={16}
-            // Up Next starts below the floating video and slides underneath it while scrolling.
-            contentContainerStyle={{ paddingTop: playerHeight + panelHeight, paddingBottom: insets.bottom + 24 }}
+            contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
             showsVerticalScrollIndicator={false}
           >
+            {/* Up Next starts below the floating video and slides underneath it while scrolling. */}
+            <View style={{ height: playerHeight + panelHeight }} />
             <Text style={styles.upNextLabel}>Up next</Text>
             {watchUpNextRows.map((row) => {
               if (row.kind === "soko") {
@@ -1441,9 +1366,11 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 />
               );
             })}
-          </ScrollView>
 
-          <View style={styles.floatingVideoStack} pointerEvents="box-none">
+          <Animated.View
+            style={[styles.floatingVideoStack, { transform: [{ translateY: upNextScrollY }] }]}
+            pointerEvents="box-none"
+          >
             <View
               style={[
                 styles.playerWrap,
@@ -1508,7 +1435,8 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
               </View>
             </Animated.View>
             </Animated.View>
-          </View>
+          </Animated.View>
+          </Animated.ScrollView>
         </View>
 
         <FeedCommentsSheet
@@ -1569,25 +1497,25 @@ const styles = StyleSheet.create({
     height: 52,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: WATCH_HEADER_SIDE_PADDING,
   },
-  // Equal side insets keep the word row mathematically centered vs the back button.
+  // Equal side insets (the wider right side: Messages + missed calls icons) keep the title
+  // centered and clear of the back button and the icons; it shrinks to fit narrow phones.
   topBarTitleRow: {
     position: "absolute",
-    left: 62,
-    right: 62,
+    left: WATCH_HEADER_TITLE_INSET,
+    right: WATCH_HEADER_TITLE_INSET,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    gap: 14,
   },
   topBarTitleWord: {
     // Exact registered name from @expo-google-fonts/cinzel — no fontWeight (avoids iOS fallback).
     fontFamily: CINZEL_SEMIBOLD_FAMILY,
     color: "#F4D06F",
-    fontSize: 24,
-    lineHeight: 31,
-    letterSpacing: 4,
+    fontSize: 22,
+    lineHeight: 29,
+    letterSpacing: 2,
     textTransform: "uppercase",
     textShadowColor: "rgba(0, 0, 0, 0.45)",
     textShadowOffset: { width: 0, height: 1 },
@@ -1643,14 +1571,22 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     zIndex: 0,
   },
-  iosFullscreenButton: {
-    position: "absolute",
-    top: 10,
-    left: 10,
+  inlineTapLayer: {
+    ...StyleSheet.absoluteFillObject,
     zIndex: 3,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  },
+  inlineControls: {
+    position: "absolute",
+    left: 10,
+    right: 10,
+    bottom: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  inlineControlButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.55)",
@@ -1718,28 +1654,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: "#5A007A",
   },
-  headerAvatarRight: {
+  headerInboxIcons: {
     position: "absolute",
-    right: 12,
-  },
-  headerCompactRow: {
-    position: "absolute",
-    left: 62,
-    right: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  headerCompactAvatar: {
-    transform: [{ scale: 0.82 }],
-  },
-  // Long church names wrap to two lines and shrink a little instead of being cut off.
-  headerCompactName: {
-    flex: 1,
-    color: "#F4D06F",
-    fontSize: 16,
-    lineHeight: 19,
-    fontWeight: "800",
+    right: WATCH_HEADER_SIDE_PADDING,
   },
   currentVideoPanel: {
     borderTopWidth: 1,

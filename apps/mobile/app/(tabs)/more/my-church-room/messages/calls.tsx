@@ -21,6 +21,7 @@ import { useFocusEffect } from "@react-navigation/native";
 
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { markMissedCallsSeen } from "@/src/lib/headerInboxCounts";
 import {
   createPrivateCallToUser,
   fetchPrivateCallHistory,
@@ -334,6 +335,8 @@ export default function CallsHistoryScreen() {
   useFocusEffect(
     useCallback(() => {
       void load(false);
+      // Seeing the call list clears the missed-calls count on the Home / Watch header.
+      void markMissedCallsSeen();
     }, [load])
   );
 

@@ -4,7 +4,9 @@ import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import type { HomeFeedPostKindFilter } from "./homeFeedUtils";
+import { HEADER_INBOX_ICONS_WIDTH, HEADER_INBOX_ROUTES, HeaderInboxIcons } from "./HeaderInboxIcons";
 import { KristoBrandLogo } from "./KristoBrandLogo";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
 import { HOME_FEED_BG } from "./theme";
@@ -20,9 +22,12 @@ const ICON_SIZE = 18;
 const TOP_BAR_ROW_HEIGHT = 52;
 const SEARCH_SIZE = 36;
 const HEADER_SIDE_SIZE = SEARCH_SIZE;
+const TITLE_ROW_PADDING = 16;
+const LOGO_SIDE_INSET = TITLE_ROW_PADDING + HEADER_INBOX_ICONS_WIDTH + 8;
 
 export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Props) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
 
   return (
     <View
@@ -36,7 +41,10 @@ export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Pr
           <KristoBrandLogo />
         </View>
 
-        <View style={styles.sideSpacer} />
+        <HeaderInboxIcons
+          useFocus
+          onOpen={(target) => router.push(HEADER_INBOX_ROUTES[target] as any)}
+        />
       </View>
     </View>
   );
@@ -149,16 +157,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  // Same inset on both sides (the wider right side: Messages + missed calls icons), so the logo
+  // stays centered and never runs under the icons.
   logoCenter: {
     position: "absolute",
-    left: 0,
-    right: 0,
+    left: LOGO_SIDE_INSET,
+    right: LOGO_SIDE_INSET,
     alignItems: "center",
     justifyContent: "center",
-  },
-  sideSpacer: {
-    width: HEADER_SIDE_SIZE,
-    height: HEADER_SIDE_SIZE,
   },
   searchHitArea: {
     width: HEADER_SIDE_SIZE,

@@ -29,6 +29,11 @@ export function youtubeThumbnailHeight(windowWidth: number): number {
 }
 
 const WATCH_TOP_BAR_HEIGHT = 48;
+/**
+ * A vertical video (4:5, 9:16, ...) keeps its own shape but never takes more than this share of
+ * the screen height, so the info panel and Up Next stay in view; tap it for fullscreen.
+ */
+const WATCH_VERTICAL_MAX_SCREEN_SHARE = 0.5;
 const WATCH_PANEL_ESTIMATE_HEIGHT = 210;
 const WATCH_UP_NEXT_PEEK = 100;
 const WATCH_TABLET_UP_NEXT_PEEK = 150;
@@ -57,12 +62,11 @@ export function resolveWatchPlayerHeight(params: {
     windowHeight - topInset - WATCH_TOP_BAR_HEIGHT - WATCH_PANEL_ESTIMATE_HEIGHT - upNextPeek
   );
 
+  const verticalCap = Math.round((windowHeight - topInset) * WATCH_VERTICAL_MAX_SCREEN_SHARE);
   const videoAspect = Number(params.videoAspect || 0);
   if (videoAspect > 0 && videoAspect < 1) {
-    // Vertical video: full width, as tall as its shape allows while leaving the header and a
-    // strip of the page (the header and info panel fold away while scrolling).
-    const cap = Math.round((windowHeight - topInset) * (tablet ? 0.62 : 0.68));
-    return Math.min(Math.round(width / videoAspect), cap);
+    // Vertical video: its own shape (pillarboxed, centered) up to the vertical cap.
+    return Math.min(Math.round(width / videoAspect), verticalCap);
   }
   if (videoAspect >= 1) {
     const byShape = Math.round(width / videoAspect);
@@ -70,9 +74,8 @@ export function resolveWatchPlayerHeight(params: {
   }
 
   if (isTikTokLayout) {
-    const byAspect = Math.round(width / TIKTOK_THUMB_ASPECT);
-    const cap = Math.round(windowHeight * (tablet ? 0.68 : 0.72));
-    return Math.min(byAspect, cap, viewportBudget);
+    // Vertical video whose exact size is not known yet: same cap as above.
+    return Math.min(Math.round(width / TIKTOK_THUMB_ASPECT), verticalCap);
   }
 
   const byWidthAspect = Math.round(width / YOUTUBE_THUMB_ASPECT);
