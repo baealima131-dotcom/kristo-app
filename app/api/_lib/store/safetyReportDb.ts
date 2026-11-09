@@ -954,28 +954,33 @@ export async function ensureSafetyReportSchema() {
         ADD COLUMN IF NOT EXISTS ai_confidence INTEGER
       `;
 
-      await sql`
-        ALTER TABLE kristo_safety_reports
-        DROP CONSTRAINT IF EXISTS
-          kristo_safety_reports_status_check
-      `;
-
-      await sql`
-        ALTER TABLE kristo_safety_reports
-        ADD CONSTRAINT kristo_safety_reports_status_check
-          CHECK (
-            status IN (
-              'open',
-              'assigned',
-              'in_review',
-              'resolved',
-              'escalated',
-              'dismissed',
-              'enforcement_pending',
-              'recovery_required'
+      // DROP + ADD in one transaction behind an advisory lock: instances starting
+      // at the same time wait for each other instead of failing with
+      // "constraint ... already exists".
+      await sql.transaction([
+        sql`SELECT pg_advisory_xact_lock(hashtext('kristo_safety_reports_status_check'))`,
+        sql`
+          ALTER TABLE kristo_safety_reports
+          DROP CONSTRAINT IF EXISTS
+            kristo_safety_reports_status_check
+        `,
+        sql`
+          ALTER TABLE kristo_safety_reports
+          ADD CONSTRAINT kristo_safety_reports_status_check
+            CHECK (
+              status IN (
+                'open',
+                'assigned',
+                'in_review',
+                'resolved',
+                'escalated',
+                'dismissed',
+                'enforcement_pending',
+                'recovery_required'
+              )
             )
-          )
-      `;
+        `,
+      ]);
 
       await sql`
         CREATE TABLE IF NOT EXISTS
@@ -1191,7 +1196,10 @@ export async function ensureSafetyReportSchema() {
           status
         )
       `;
-    })();
+    })().catch((error) => {
+      schemaReady = null; // retry on the next request instead of failing forever
+      throw error;
+    });
   }
 
   await schemaReady;
