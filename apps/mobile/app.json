@@ -40,7 +40,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "versionCode": 110
+      "versionCode": 111
     },
     "web": {
       "bundler": "metro",
