@@ -4,6 +4,7 @@ import {
   AppState,
   Image,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -253,6 +254,95 @@ const WATCH_MODAL_ORIENTATIONS: React.ComponentProps<typeof Modal>["supportedOri
   "landscape-left",
   "landscape-right",
 ];
+// iOS uses Kristo's own fullscreen (IosWatchFullscreen: clear close button, swipe down to go
+// back) instead of the native one, so the native fullscreen button is hidden there.
+const IOS_NATIVE_FULLSCREEN_OFF: NonNullable<React.ComponentProps<typeof VideoView>["fullscreenOptions"]> = {
+  enable: false,
+};
+const IOS_FULLSCREEN_SWIPE_CLOSE_DISTANCE = 120;
+const IOS_FULLSCREEN_SWIPE_CLOSE_VELOCITY = 1.2;
+
+/**
+ * iOS fullscreen for the Watch video. It shows the same player, so playback goes on from the same
+ * position when it closes. Close with the button or by swiping down.
+ */
+function IosWatchFullscreen({
+  visible,
+  player,
+  onClose,
+}: {
+  visible: boolean;
+  player: ReturnType<typeof useVideoPlayer>;
+  onClose: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const dragY = useRef(new Animated.Value(0)).current;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+          gesture.dy > 12 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.5,
+        onPanResponderMove: (_event, gesture) => dragY.setValue(Math.max(0, gesture.dy)),
+        onPanResponderRelease: (_event, gesture) => {
+          if (
+            gesture.dy > IOS_FULLSCREEN_SWIPE_CLOSE_DISTANCE ||
+            gesture.vy > IOS_FULLSCREEN_SWIPE_CLOSE_VELOCITY
+          ) {
+            onCloseRef.current();
+            dragY.setValue(0);
+            return;
+          }
+          Animated.spring(dragY, { toValue: 0, useNativeDriver: true }).start();
+        },
+        onPanResponderTerminate: () =>
+          Animated.spring(dragY, { toValue: 0, useNativeDriver: true }).start(),
+      }),
+    [dragY]
+  );
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="fade"
+      presentationStyle="fullScreen"
+      supportedOrientations={WATCH_MODAL_ORIENTATIONS}
+      onRequestClose={onClose}
+    >
+      <View style={styles.iosFullscreenRoot} {...panResponder.panHandlers}>
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              transform: [{ translateY: dragY }],
+              opacity: dragY.interpolate({ inputRange: [0, 320], outputRange: [1, 0.45], extrapolate: "clamp" }),
+            },
+          ]}
+        >
+          {visible ? (
+            <VideoView
+              player={player}
+              style={StyleSheet.absoluteFill}
+              contentFit="contain"
+              nativeControls
+              fullscreenOptions={IOS_NATIVE_FULLSCREEN_OFF}
+            />
+          ) : null}
+        </Animated.View>
+        <Pressable
+          onPress={onClose}
+          hitSlop={12}
+          style={[styles.iosFullscreenClose, { top: insets.top + 10, left: insets.left + 14 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Close fullscreen"
+        >
+          <Ionicons name="close" size={24} color="#FFFFFF" />
+        </Pressable>
+      </View>
+    </Modal>
+  );
+}
 // Android fullscreen is a separate activity, so the React host reports
 // "background" around the same time onFullscreenEnter arrives.
 const ANDROID_FULLSCREEN_BACKGROUND_GRACE_MS = 350;
@@ -337,6 +427,11 @@ function WatchVideoSurface({
   // events can be missed after quick rotations around fullscreen, so this is
   // the fallback source of truth for auto-enter.
   const nativeLandscapeRef = useRef<boolean | null>(null);
+  // iOS fullscreen (IosWatchFullscreen). auto: opened by rotating to landscape.
+  const [iosFullscreenOpen, setIosFullscreenOpen] = useState(false);
+  const iosFullscreenAutoRef = useRef(false);
+  const openIosFullscreenRef = useRef<(auto: boolean) => void>(() => {});
+  const closeIosFullscreenRef = useRef<(autoExited: boolean) => void>(() => {});
 
   const isWatchAutoPlayBlocked = useCallback(
     () => userPausedRef.current || backgroundPausedRef.current,
@@ -428,7 +523,9 @@ function WatchVideoSurface({
   });
 
   useEventListener(player, "playToEnd", () => {
-    if (fullscreenRef.current) {
+    if (Platform.OS === "ios") {
+      closeIosFullscreenRef.current(false);
+    } else if (fullscreenRef.current) {
       void videoViewRef.current?.exitFullscreen().catch(() => {});
     }
     endedRef.current = true;
@@ -662,6 +759,10 @@ function WatchVideoSurface({
     });
     if (!isLandscape && nativeLandscapeRef.current !== true) {
       autoFullscreenSuppressedRef.current = false;
+      // iOS fullscreen opened by rotating closes again when the phone is back in portrait.
+      if (Platform.OS === "ios" && iosFullscreenAutoRef.current && fullscreenRef.current) {
+        closeIosFullscreenRef.current(true);
+      }
       return;
     }
     if (ended || fullscreenRef.current || autoFullscreenSuppressedRef.current) return;
@@ -676,6 +777,12 @@ function WatchVideoSurface({
       const landscapeNow = nativeLandscape ?? isLandscapeRef.current;
       if (cancelled || !landscapeNow) {
         console.log("KRISTO_WATCH_AUTO_FULLSCREEN_SKIPPED", { postId, reason: "no-longer-landscape" });
+        return;
+      }
+      if (Platform.OS === "ios") {
+        if (fullscreenRef.current || endedRef.current || autoFullscreenSuppressedRef.current) return;
+        console.log("KRISTO_WATCH_AUTO_FULLSCREEN_ENTER", { postId, ios: true });
+        openIosFullscreenRef.current(true);
         return;
       }
       const view = videoViewRef.current;
@@ -774,6 +881,27 @@ function WatchVideoSurface({
     [postId]
   );
 
+  const openIosFullscreen = useCallback(
+    (auto: boolean) => {
+      if (fullscreenRef.current || endedRef.current) return;
+      iosFullscreenAutoRef.current = auto;
+      setIosFullscreenOpen(true);
+      handleFullscreenEnter();
+    },
+    [handleFullscreenEnter]
+  );
+  const closeIosFullscreen = useCallback(
+    (autoExited: boolean) => {
+      if (!fullscreenRef.current) return;
+      iosFullscreenAutoRef.current = false;
+      setIosFullscreenOpen(false);
+      handleFullscreenExit({ nativeEvent: { autoExited } });
+    },
+    [handleFullscreenExit]
+  );
+  openIosFullscreenRef.current = openIosFullscreen;
+  closeIosFullscreenRef.current = closeIosFullscreen;
+
   const handleReplay = useCallback(() => {
     clearHomeFeedVideoProgress(postId);
     console.log("KRISTO_WATCH_VIDEO_REPLAY_FROM_START", { postId });
@@ -823,7 +951,7 @@ function WatchVideoSurface({
           <View style={styles.tikTokBackdropOverlay} pointerEvents="none" />
         </>
       ) : null}
-      {!ended || isFullscreen ? (
+      {(!ended || isFullscreen) && !iosFullscreenOpen ? (
         <VideoView
           ref={videoViewRef}
           player={player}
@@ -834,9 +962,27 @@ function WatchVideoSurface({
           }
           contentFit="contain"
           nativeControls
-          fullscreenOptions={WATCH_FULLSCREEN_OPTIONS}
+          fullscreenOptions={Platform.OS === "ios" ? IOS_NATIVE_FULLSCREEN_OFF : WATCH_FULLSCREEN_OPTIONS}
           onFullscreenEnter={handleFullscreenEnter}
           onFullscreenExit={handleFullscreenExit}
+        />
+      ) : null}
+      {Platform.OS === "ios" && !ended && !iosFullscreenOpen ? (
+        <Pressable
+          onPress={() => openIosFullscreen(false)}
+          hitSlop={10}
+          style={styles.iosFullscreenButton}
+          accessibilityRole="button"
+          accessibilityLabel="Fullscreen"
+        >
+          <Ionicons name="expand" size={18} color="#FFFFFF" />
+        </Pressable>
+      ) : null}
+      {Platform.OS === "ios" ? (
+        <IosWatchFullscreen
+          visible={iosFullscreenOpen}
+          player={player}
+          onClose={() => closeIosFullscreen(false)}
         />
       ) : null}
       {ended ? (
@@ -1496,6 +1642,34 @@ const styles = StyleSheet.create({
   tikTokVideoBackdrop: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 0,
+  },
+  iosFullscreenButton: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    zIndex: 3,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  iosFullscreenRoot: {
+    flex: 1,
+    backgroundColor: "#000000",
+  },
+  iosFullscreenClose: {
+    position: "absolute",
+    zIndex: 5,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.55)",
   },
   tikTokBackdropOverlay: {
     ...StyleSheet.absoluteFillObject,
