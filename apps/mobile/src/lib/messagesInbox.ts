@@ -1,8 +1,4 @@
 import { fetchDirectMessageInbox } from "@/src/lib/directMessagesApi";
-import {
-  fetchPrivateCallHistory,
-  type PrivateCallSession,
-} from "@/src/lib/privateCallService";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 export type MessagesInboxConversation = {
@@ -22,6 +18,9 @@ export type MessagesInboxConversation = {
   isRequestInitiator?: boolean;
 };
 
+/** What the server shows for a conversation that has no message yet. */
+const NO_MESSAGE_PREVIEWS = new Set(["Message request", "No messages yet"]);
+
 function currentUserId(): string {
   const headers = getKristoHeaders() as Record<string, string>;
 
@@ -32,109 +31,30 @@ function currentUserId(): string {
   ).trim();
 }
 
-function formatInboxTimestamp(timestampMs: number): string {
-  if (!Number.isFinite(timestampMs) || timestampMs <= 0) return "";
-
-  const d = new Date(timestampMs);
-  const now = new Date();
-
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-
-  if (sameDay) {
-    return d.toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  }
-
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-
-  const isYesterday =
-    d.getFullYear() === yesterday.getFullYear() &&
-    d.getMonth() === yesterday.getMonth() &&
-    d.getDate() === yesterday.getDate();
-
-  if (isYesterday) return "Yesterday";
-
-  return d.toLocaleDateString([], {
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function callPeerUserId(
-  call: PrivateCallSession,
-  viewerUserId: string
-): string {
-  const callerUserId = String(call.callerUserId || "").trim();
-  const pastorUserId = String(call.pastorUserId || "").trim();
-
-  if (callerUserId === viewerUserId) return pastorUserId;
-  if (pastorUserId === viewerUserId) return callerUserId;
-
-  return "";
-}
-
-function callPreview(
-  call: PrivateCallSession,
-  viewerUserId: string
-): string {
-  const callerUserId = String(call.callerUserId || "").trim();
-  const pastorUserId = String(call.pastorUserId || "").trim();
-  const status = String(call.status || "").trim();
-
-  const outgoing = callerUserId === viewerUserId;
-  const incoming = pastorUserId === viewerUserId;
-
-  if (
-    incoming &&
-    (status === "timeout" ||
-      status === "failed" ||
-      status === "declined")
-  ) {
-    return "↙ Missed voice call";
-  }
-
-  if (outgoing) {
-    return "↗ Outgoing voice call";
-  }
-
-  if (incoming) {
-    return "↙ Incoming voice call";
-  }
-
-  return "Voice call";
-}
-
-function callTimestampMs(call: PrivateCallSession): number {
-  const value =
-    call.endedAt ||
-    call.updatedAt ||
-    call.createdAt;
-
-  const ms = Date.parse(String(value || ""));
-  return Number.isFinite(ms) ? ms : 0;
+/**
+ * Newest last message first. A conversation without any message yet goes below every
+ * conversation that has one (its time is only when the thread was opened or changed).
+ */
+export function compareInboxConversationsByLastMessage(
+  a: { lastMessageMs: number; timestampMs: number; title: string },
+  b: { lastMessageMs: number; timestampMs: number; title: string }
+): number {
+  return (
+    b.lastMessageMs - a.lastMessageMs ||
+    b.timestampMs - a.timestampMs ||
+    a.title.localeCompare(b.title)
+  );
 }
 
 /**
- * V1 person-to-person Messages inbox.
- *
- * Direct-message threads remain the source of conversation rows.
- * Private call history may replace the visible preview and timestamp
- * when the newest call activity is newer than the newest DM activity.
+ * V1 person-to-person Messages inbox, the same for every role: direct-message threads, ordered
+ * by the time of their last message (calls are listed in Calls, not here).
  * Pending message requests are never filtered out locally.
  */
 export async function fetchMessagesInboxConversations(_args: {
   base: string;
 }): Promise<MessagesInboxConversation[]> {
-  const [dmRows, calls] = await Promise.all([
-    fetchDirectMessageInbox(),
-    fetchPrivateCallHistory().catch(() => []),
-  ]);
+  const dmRows = await fetchDirectMessageInbox();
 
   const viewerUserId = currentUserId();
 
@@ -148,30 +68,6 @@ export async function fetchMessagesInboxConversations(_args: {
         row.isRequestReceiver === true
     ).length,
   });
-
-  const latestCallByPeer = new Map<
-    string,
-    PrivateCallSession
-  >();
-
-  for (const call of calls) {
-    const peerUserId = callPeerUserId(
-      call,
-      viewerUserId
-    );
-
-    if (!peerUserId) continue;
-
-    const existing = latestCallByPeer.get(peerUserId);
-
-    if (
-      !existing ||
-      callTimestampMs(call) >
-        callTimestampMs(existing)
-    ) {
-      latestCallByPeer.set(peerUserId, call);
-    }
-  }
 
   const beforeCount = dmRows.length;
   // Keep every API row that has a room identity. Pending requests may arrive
@@ -199,19 +95,7 @@ export async function fetchMessagesInboxConversations(_args: {
   return kept
     .map((row) => {
       const isRequestReceiver = row.isRequestReceiver === true;
-      const call = latestCallByPeer.get(
-        String(row.peerUserId || "").trim()
-      );
-
-      const dmTimestampMs = Number(row.timestampMs || 0);
-      const callMs = call ? callTimestampMs(call) : 0;
-
-      // Do not let call history replace a pending request preview.
-      const callIsNewest =
-        !isRequestReceiver &&
-        Boolean(call) &&
-        callMs > dmTimestampMs;
-
+      const timestampMs = Number(row.timestampMs || 0) || 0;
       const previewFromApi = String(
         row.lastMessageText ||
           row.lastMessagePreview ||
@@ -219,37 +103,35 @@ export async function fetchMessagesInboxConversations(_args: {
       ).trim();
 
       return {
-        id: row.roomId,
-        title: String(row.peerName || row.title || "Member"),
-        subtitle: isRequestReceiver
-          ? "Message request"
-          : String(row.subtitle || "Direct message"),
-        avatarUri: row.avatarUri,
-        lastMessagePreview:
-          callIsNewest && call
-            ? callPreview(call, viewerUserId)
-            : previewFromApi ||
-              (isRequestReceiver ? "Message request" : "No messages yet"),
-        timestampLabel:
-          callIsNewest
-            ? formatInboxTimestamp(callMs)
-            : row.timestampLabel,
-        timestampMs:
-          callIsNewest
-            ? callMs
-            : dmTimestampMs,
-        unreadCount: row.unreadCount,
-        peerUserId: row.peerUserId,
-        churchId: row.churchId,
-        roomKind: "direct" as const,
-        relationshipStatus: row.relationshipStatus,
-        isRequestReceiver,
-        isRequestInitiator: row.isRequestInitiator === true,
+        conversation: {
+          id: row.roomId,
+          title: String(row.peerName || row.title || "Member"),
+          subtitle: isRequestReceiver
+            ? "Message request"
+            : String(row.subtitle || "Direct message"),
+          avatarUri: row.avatarUri,
+          lastMessagePreview:
+            previewFromApi ||
+            (isRequestReceiver ? "Message request" : "No messages yet"),
+          timestampLabel: row.timestampLabel,
+          timestampMs,
+          unreadCount: row.unreadCount,
+          peerUserId: row.peerUserId,
+          churchId: row.churchId,
+          roomKind: "direct" as const,
+          relationshipStatus: row.relationshipStatus,
+          isRequestReceiver,
+          isRequestInitiator: row.isRequestInitiator === true,
+        },
+        // The server's time is the last message's when there is one.
+        lastMessageMs: previewFromApi && !NO_MESSAGE_PREVIEWS.has(previewFromApi) ? timestampMs : 0,
       };
     })
-    .sort(
-      (a, b) =>
-        Number(b.timestampMs || 0) -
-        Number(a.timestampMs || 0)
-    );
+    .sort((a, b) =>
+      compareInboxConversationsByLastMessage(
+        { lastMessageMs: a.lastMessageMs, timestampMs: a.conversation.timestampMs, title: a.conversation.title },
+        { lastMessageMs: b.lastMessageMs, timestampMs: b.conversation.timestampMs, title: b.conversation.title }
+      )
+    )
+    .map((entry) => entry.conversation);
 }
