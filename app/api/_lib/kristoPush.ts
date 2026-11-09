@@ -1,6 +1,7 @@
 import { createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
+import { notifyKristoApnsVoipCall } from "@/app/api/_lib/kristoApnsVoip";
 import { deletePushDevice, pushTokensForUser } from "@/app/api/_lib/store/pushDevicesDb";
 import type { PrivateCallSession } from "@/app/api/_lib/privateCallSessions";
 
@@ -140,9 +141,15 @@ export async function sendKristoPushToUser(userId: string, message: AndroidPushM
   return { sent, skipped: false };
 }
 
-/** Incoming private call: data-only so the app shows its own full-screen call notification. */
+/**
+ * Incoming private call: data-only FCM so Android shows its own full-screen call notification,
+ * and a VoIP push so iOS shows the CallKit incoming call.
+ */
 export async function notifyKristoCallPush(session: PrivateCallSession, title: string) {
   if (session.pastorSourceField === "soko-purchase-call") return;
+  await notifyKristoApnsVoipCall(session, title).catch((error) =>
+    console.log("KRISTO_VOIP_PUSH_FAILED", { callId: session.id, error: String(error?.message || error) })
+  );
   await sendKristoPushToUser(session.pastorUserId, {
     data: {
       type: "private_call_incoming",
