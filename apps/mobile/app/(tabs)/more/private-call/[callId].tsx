@@ -18,7 +18,7 @@ import {
   registerGlobals,
   useRoomContext,
 } from "@livekit/react-native";
-import { Room, RoomEvent } from "livekit-client";
+import { ParticipantEvent, Room, RoomEvent, Track, type TrackPublication } from "livekit-client";
 
 import LiveMainStageSaturnOrbit from "@/src/components/live/LiveMainStageSaturnOrbit";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -56,6 +56,12 @@ import {
   stopCallForegroundService,
 } from "@/src/lib/push/kristoCallNotifications";
 import { consumePendingCallAnswer } from "@/src/lib/push/kristoCallRouting";
+import {
+  endKristoCallKitCall,
+  onKristoCallKitMute,
+  setKristoCallKitMuted,
+  startKristoCallKitCall,
+} from "@/src/lib/ios/kristoCallKit";
 
 import SokoLiveStore from "@/src/components/homeFeed/SokoLiveStore";
 
@@ -599,6 +605,42 @@ function PrivateCallConnectedRoom({
     };
   }, [room, micEnabled, applyMicState]);
 
+  // The button follows the real microphone track (also when it is muted from outside the
+  // button, e.g. the iOS call UI or an audio interruption), and the iOS call UI follows it too.
+  useEffect(() => {
+    if (!room) return;
+    const local = room.localParticipant;
+    const syncFromTrack = (publication: TrackPublication) => {
+      if (publication?.source !== Track.Source.Microphone) return;
+      const enabled = !publication.isMuted;
+      setMicEnabled(enabled);
+      setKristoCallKitMuted(callId, !enabled);
+    };
+    local.on(ParticipantEvent.TrackMuted, syncFromTrack);
+    local.on(ParticipantEvent.TrackUnmuted, syncFromTrack);
+    local.on(ParticipantEvent.LocalTrackPublished, syncFromTrack);
+    return () => {
+      local.off(ParticipantEvent.TrackMuted, syncFromTrack);
+      local.off(ParticipantEvent.TrackUnmuted, syncFromTrack);
+      local.off(ParticipantEvent.LocalTrackPublished, syncFromTrack);
+    };
+  }, [room, callId]);
+
+  // iOS call UI Mute button (works with the screen locked or the app in the background).
+  useEffect(() => {
+    return onKristoCallKitMute(callId, (muted) => {
+      setMicEnabled(!muted);
+      applyMicState(!muted);
+      console.log("KRISTO_PRIVATE_CALL_MUTE_TOGGLE", {
+        callId,
+        currentUserId,
+        muted,
+        micEnabled: !muted,
+        source: "callkit",
+      });
+    });
+  }, [callId, currentUserId, applyMicState]);
+
   useEffect(() => {
     if (durationStartedRef.current) return;
     durationStartedRef.current = true;
@@ -636,6 +678,7 @@ function PrivateCallConnectedRoom({
       setMicEnabled(micEnabled);
       return;
     }
+    setKristoCallKitMuted(callId, !nextMicEnabled);
 
     console.log("KRISTO_PRIVATE_CALL_MUTE_TOGGLE", {
       callId,
@@ -1671,6 +1714,25 @@ export default function PrivateCallScreen() {
       void stopCallForegroundService(id);
     };
   }, [session?.id, session?.status, ongoingPeerName]);
+
+  // iOS: the answered call goes to CallKit, which keeps it running locked / in the background
+  // and gives it the system call UI; its End button ends the Kristo call.
+  const ongoingPeerNameRef = useRef(ongoingPeerName);
+  ongoingPeerNameRef.current = ongoingPeerName;
+  const handleEndCallRef = useRef(handleEndCall);
+  handleEndCallRef.current = handleEndCall;
+  useEffect(() => {
+    if (!session?.id || session.status !== "accepted") return;
+    const id = session.id;
+    void startKristoCallKitCall({
+      callId: id,
+      peerName: ongoingPeerNameRef.current,
+      onEnd: () => void handleEndCallRef.current(),
+    });
+    return () => {
+      endKristoCallKitCall(id);
+    };
+  }, [session?.id, session?.status]);
 
   const handleEnd = handleEndCall;
 

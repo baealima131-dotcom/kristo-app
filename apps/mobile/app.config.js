@@ -9,6 +9,8 @@ module.exports = {
     ...expo,
     extra: {
       ...expo.extra,
+      // iOS incoming calls over VoIP push; see plugins/withIosCalls.
+      kristoIosVoipPush: process.env.KRISTO_IOS_VOIP_PUSH === "1",
     },
     ios: {
       ...expo.ios,
@@ -36,6 +38,7 @@ module.exports = {
       "./plugins/withDevClientMetroPort",
       "./plugins/withAndroidPortraitMainActivity",
       "./plugins/withoutIosPushCapabilities",
+      "./plugins/withIosCalls",
       ...(isProductionEasBuild ? ["./plugins/withAndroidProductionAbis"] : []),
     ],
   },

@@ -3,6 +3,7 @@ import { AppState } from "react-native";
 import { usePathname } from "expo-router";
 
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { startKristoVoipPush } from "@/src/lib/ios/kristoVoipPush";
 import { loadNotifee } from "@/src/lib/push/kristoCallNotifications";
 import { markPendingCallAnswer, openIncomingCallScreen } from "@/src/lib/push/kristoCallRouting";
 import {
@@ -28,7 +29,9 @@ export function KristoPushBridge() {
   const handledResponseIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
-    if (userId) void registerKristoPushDevice();
+    if (!userId) return;
+    void registerKristoPushDevice();
+    startKristoVoipPush();
   }, [userId]);
 
   useEffect(() => {

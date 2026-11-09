@@ -7,11 +7,11 @@ const { withEntitlementsPlist, withInfoPlist } = require("@expo/config-plugins")
  *   Notifications capability, so the iOS build fails;
  * - expo-task-manager adds the `fetch` background mode, which iOS never uses.
  * Plugins listed in app.config run after the built-in ones, so this removes both again (iOS only).
- * Revisit when iOS push (APNs / CallKit) is set up.
+ * With KRISTO_IOS_VOIP_PUSH=1 (VoIP push set up, see withIosCalls) the push entitlement stays.
  */
 module.exports = function withoutIosPushCapabilities(config) {
   config = withEntitlementsPlist(config, (configMod) => {
-    delete configMod.modResults["aps-environment"];
+    if (process.env.KRISTO_IOS_VOIP_PUSH !== "1") delete configMod.modResults["aps-environment"];
     return configMod;
   });
   return withInfoPlist(config, (configMod) => {
