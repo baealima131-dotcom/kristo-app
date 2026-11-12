@@ -1,4 +1,4 @@
-import { apiPost } from "@/src/lib/kristoApi";
+import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 export type SystemAdminVideoMetadata = {
@@ -7,7 +7,9 @@ export type SystemAdminVideoMetadata = {
   url: string;
   title: string;
   creatorName: string;
+  creatorId?: string | null;
   creatorProfileUrl: string | null;
+  detectedLanguageCode?: string;
   creatorAvatarUrl: string | null;
   thumbnailUrl: string | null;
   publishedAt: string | null;
@@ -32,13 +34,51 @@ export async function fetchSystemAdminVideoMetadata(url: string): Promise<System
   return response.metadata as SystemAdminVideoMetadata;
 }
 
+export type SavedSystemAdminVideoLink = {
+  id: string;
+  provider: "youtube" | "tiktok";
+  url: string;
+  title: string;
+  creatorId: string;
+  creatorName: string;
+  creatorProfileUrl: string;
+  creatorAvatarUrl: string;
+  thumbnailUrl: string;
+  publishedAt: string;
+  createdAt: string;
+  countryCode: string;
+  countryName: string;
+  languageCode: string;
+  languageName: string;
+  stats: { views?: number | null; likes?: number | null; comments?: number | null };
+};
+
+export async function fetchSavedSystemAdminVideoLinks(): Promise<SavedSystemAdminVideoLink[]> {
+  const response: any = await apiGet(
+    "/api/system-admin/video-links/metadata",
+    { headers: getKristoHeaders() as any }
+  );
+  if (!response || response.ok !== true || !Array.isArray(response.items)) {
+    throw new Error(String(response?.error || "Video zilizohifadhiwa hazikupatikana."));
+  }
+  return response.items as SavedSystemAdminVideoLink[];
+}
+
 export async function publishSystemAdminVideoLink(
   url: string,
-  country: { code: string; name: string }
+  country: { code: string; name: string },
+  language: { code: string; name: string }
 ): Promise<{ feedItemId: string }> {
   const response: any = await apiPost(
     "/api/system-admin/video-links/metadata",
-    { action: "publish", url, countryCode: country.code, countryName: country.name },
+    {
+      action: "publish",
+      url,
+      countryCode: country.code,
+      countryName: country.name,
+      languageCode: language.code,
+      languageName: language.name,
+    },
     { headers: getKristoHeaders() as any }
   );
 
