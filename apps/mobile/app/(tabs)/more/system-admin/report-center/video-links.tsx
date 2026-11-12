@@ -24,7 +24,6 @@ import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
 import {
   DEFAULT_KRISTO_COUNTRY,
   filterKristoCountries,
-  KRISTO_COUNTRIES,
   type KristoCountry,
 } from "@/src/lib/countries";
 import {
@@ -36,7 +35,6 @@ const BG = "#080C14";
 const TEXT = "rgba(255,255,255,0.96)";
 const MUTED = "rgba(255,255,255,0.60)";
 const GOLD = "#F4D06F";
-const PURPLE = "#A78BFA";
 const BLUE = "#93C5FD";
 const GREEN = "#6EE7B7";
 const RED = "#FB7185";
