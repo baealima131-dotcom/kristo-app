@@ -1,6 +1,6 @@
 import { HomeFeedViewCount } from "./HomeFeedViewCount";
 import React, { memo, useEffect, useMemo, useState } from "react";
-import { Image, Linking, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { ImagePostCarousel } from "./ImagePostCarousel";
@@ -84,8 +84,10 @@ export const FeedYouTubeCard = memo(
   const platformStats = item?.platformStats && typeof item.platformStats === "object" ? item.platformStats : null;
   const formatPlatformCount = (value: unknown) =>
     typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat().format(value) : "—";
-  const platformStatsLine = String(item?.source || "") === "system-admin-video-link" && platformStats
-    ? "YouTube/TikTok  •  " + formatPlatformCount(platformStats.views) + " views  •  " + formatPlatformCount(platformStats.likes) + " likes  •  " + formatPlatformCount(platformStats.comments) + " comments"
+  const isSystemAdminVideo = String(item?.source || "") === "system-admin-video-link";
+  const videoProviderLabel = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
+  const platformStatsLine = isSystemAdminVideo && platformStats
+    ? videoProviderLabel + "  •  " + formatPlatformCount(platformStats.views) + " views  •  " + formatPlatformCount(platformStats.likes) + " likes  •  " + formatPlatformCount(platformStats.comments) + " comments"
     : null;
   const originalDateLabel =
     String(item?.source || "") === "system-admin-video-link" && item?.publishedAt
@@ -132,17 +134,6 @@ export const FeedYouTubeCard = memo(
   }, [postId, videoUri, rowIndex]);
 
   const handleVideoPress = () => {
-    if (String(item?.source || "") === "system-admin-video-link") {
-      const target = String(item?.videoUrl || item?.url || "").trim();
-      try {
-        const parsed = new URL(target);
-        const allowedHosts = ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "tiktok.com", "www.tiktok.com", "m.tiktok.com"];
-        if (parsed.protocol === "https:" && !parsed.username && !parsed.password && allowedHosts.includes(parsed.hostname.toLowerCase())) {
-          void Linking.openURL(parsed.toString());
-        }
-      } catch {}
-      return;
-    }
     const payload = buildHomeFeedVideoOpenPayload(item);
     if (!payload) return;
     onVideoPress?.(payload);
@@ -237,9 +228,9 @@ export const FeedYouTubeCard = memo(
                 {platformStatsLine}{originalDateLabel ? "  •  " + originalDateLabel : ""}
               </Text>
             ) : null}
-            {String(item?.source || "") === "system-admin-video-link" && item?.countryName ? (
+            {isSystemAdminVideo && (item?.countryName || item?.languageName) ? (
               <Text style={premium.statsLine} numberOfLines={1}>
-                {String(item.countryName)}
+                {[item?.countryName, item?.languageName].filter(Boolean).join("  •  ")}
               </Text>
             ) : null}
           </View>
