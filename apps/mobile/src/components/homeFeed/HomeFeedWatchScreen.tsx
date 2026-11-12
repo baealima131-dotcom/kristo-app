@@ -3,6 +3,7 @@ import {
   Animated,
   AppState,
   Image,
+  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -969,33 +970,78 @@ function WatchVideoSurface({
   );
 }
 
-/** Current-video metadata — avatar, church, title, date. */
+function openExternalVideoLink(item: any) {
+  const target = String(item?.videoUrl || item?.url || "").trim();
+  try {
+    const parsed = new URL(target);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || !["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "tiktok.com", "m.tiktok.com"].includes(host)) return;
+    void Linking.openURL(parsed.toString());
+  } catch {}
+}
+
+/** External YouTube/TikTok links keep Kristo's Watch detail and engagement panel. */
+function WatchExternalVideoSurface({ item }: { item: any }) {
+  const provider = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
+  const thumbnail = String(item?.thumbnailUrl || item?.thumbnailUri || item?.posterUri || "").trim();
+  return (
+    <View style={styles.externalVideoSurface}>
+      {thumbnail ? <Image source={{ uri: thumbnail }} style={StyleSheet.absoluteFillObject} resizeMode="cover" /> : null}
+      <LinearGradient colors={["rgba(5,8,15,0.10)", "rgba(5,8,15,0.78)"]} style={StyleSheet.absoluteFillObject} />
+      <View style={styles.externalVideoBadge}>
+        <Ionicons name={provider === "YouTube" ? "logo-youtube" : "musical-notes"} size={17} color="#FFFFFF" />
+        <Text style={styles.externalVideoBadgeText}>{provider}</Text>
+      </View>
+      <Pressable
+        onPress={() => openExternalVideoLink(item)}
+        style={({ pressed }) => [styles.externalVideoOpen, pressed && { opacity: 0.78 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`Fungua video kwenye ${provider}`}
+      >
+        <Ionicons name="play" size={25} color="#111321" />
+        <Text style={styles.externalVideoOpenText}>Fungua kwenye {provider}</Text>
+        <Ionicons name="open-outline" size={18} color="#111321" />
+      </Pressable>
+      <Text style={styles.externalVideoHint}>Taarifa na maoni ya Kristo App yako chini</Text>
+    </View>
+  );
+}
+
+/** Current-video metadata — creator, title, date, country, language, and source statistics. */
 function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle?: string }) {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
+  const externalVideo = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
   const postTitle = resolveHomeFeedVideoTitle(item);
   const titleLine = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle || fallbackTitle;
-  const whenLabel = formatFeedTimestamp(item?.createdAt);
+  const whenLabel = externalVideo && item?.publishedAt
+    ? new Date(String(item.publishedAt)).toLocaleDateString()
+    : formatFeedTimestamp(item?.createdAt);
+  const stats = item?.platformStats && typeof item.platformStats === "object" ? item.platformStats : null;
+  const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat().format(value) : "—";
+  const provider = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
 
   return (
-    <View style={styles.metaRow}>
-      <View style={styles.avatarRing}>
-        <View style={styles.avatarGlow}>
-          <FeedChurchBrandRow item={item} variant="watch" part="avatar" source="watch-screen" />
+    <View>
+      <View style={styles.metaRow}>
+        <View style={styles.avatarRing}>
+          <View style={styles.avatarGlow}>
+            <FeedChurchBrandRow item={item} variant="watch" part="avatar" source="watch-screen" />
+          </View>
+        </View>
+        <View style={styles.metaTextCol}>
+          <FeedChurchBrandRow item={item} variant="watch" part="name" source="watch-screen" />
+          {titleLine ? <Text style={styles.videoTitle} numberOfLines={3}>{titleLine}</Text> : null}
+          {whenLabel ? <Text style={styles.dateMuted} numberOfLines={1}>{whenLabel}</Text> : null}
         </View>
       </View>
-      <View style={styles.metaTextCol}>
-        <FeedChurchBrandRow item={item} variant="watch" part="name" source="watch-screen" />
-        {titleLine ? (
-          <Text style={styles.videoTitle} numberOfLines={3}>
-            {titleLine}
-          </Text>
-        ) : null}
-        {whenLabel ? (
-          <Text style={styles.dateMuted} numberOfLines={1}>
-            {whenLabel}
-          </Text>
-        ) : null}
-      </View>
+      {externalVideo ? (
+        <View style={styles.externalVideoDetails}>
+          <Text style={styles.externalVideoDetailText}>{provider} statistics  ·  {count(stats?.views)} views  ·  {count(stats?.likes)} likes  ·  {count(stats?.comments)} comments</Text>
+          {[item?.countryName, item?.languageName].filter(Boolean).length ? (
+            <Text style={styles.externalVideoDetailText}>{[item?.countryName, item?.languageName].filter(Boolean).join("  ·  ")}</Text>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -1391,14 +1437,18 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 isTikTokLayout ? styles.playerWrapTikTok : null,
               ]}
             >
-              <WatchVideoSurface
-                payload={payload}
-                isTikTokLayout={isTikTokLayout}
-                isLandscape={isLandscape}
-                onPlaybackStarted={handlePlaybackStarted}
-                onVideoAspect={handleVideoAspect}
-                videoAspect={videoAspect}
-              />
+              {String(payload.item?.source || "").trim().toLowerCase() === "system-admin-video-link" ? (
+                <WatchExternalVideoSurface item={payload.item} />
+              ) : (
+                <WatchVideoSurface
+                  payload={payload}
+                  isTikTokLayout={isTikTokLayout}
+                  isLandscape={isLandscape}
+                  onPlaybackStarted={handlePlaybackStarted}
+                  onVideoAspect={handleVideoAspect}
+                  videoAspect={videoAspect}
+                />
+              )}
             </View>
 
             <Animated.View
@@ -1565,6 +1615,48 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  externalVideoSurface: {
+    flex: 1,
+    width: "100%",
+    backgroundColor: "#12031F",
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  externalVideoBadge: {
+    position: "absolute",
+    top: 18,
+    left: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: "rgba(5,8,15,0.72)",
+  },
+  externalVideoBadgeText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
+  externalVideoOpen: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 17,
+    paddingVertical: 13,
+    borderRadius: 24,
+    backgroundColor: HOME_FEED_GOLD,
+  },
+  externalVideoOpenText: { color: "#111321", fontSize: 15, fontWeight: "900" },
+  externalVideoHint: {
+    position: "absolute",
+    bottom: 18,
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 12,
+    fontWeight: "700",
+    textShadowColor: "rgba(0,0,0,0.8)",
+    textShadowRadius: 5,
+  },
+  externalVideoDetails: { paddingHorizontal: YOUTUBE_CARD_H_PADDING, paddingTop: 8, gap: 4 },
+  externalVideoDetailText: { color: HOME_FEED_MUTED, fontSize: 12, lineHeight: 17, fontWeight: "600" },
   playerSurface: {
     flex: 1,
     width: "100%",
