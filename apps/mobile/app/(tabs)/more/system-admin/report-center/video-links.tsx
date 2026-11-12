@@ -17,6 +17,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+import { getSessionSync } from "@/src/lib/kristoSession";
+import { hasOfflineActivationRole } from "@/src/lib/offlineActivationCodes";
+import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
 
 import {
   DEFAULT_KRISTO_COUNTRY,
@@ -82,6 +85,9 @@ function GlassCard({ children, style, borderColor = "rgba(255,255,255,0.13)" }: 
 export default function SystemAdminVideoLinksScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const session = getSessionSync() as any;
+  const platformRole = resolveSessionPlatformRole(session);
+  const allowed = hasOfflineActivationRole(platformRole || "", "System_Admin");
   const [url, setUrl] = React.useState("");
   const [metadata, setMetadata] = React.useState<SystemAdminVideoMetadata | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -93,7 +99,7 @@ export default function SystemAdminVideoLinksScreen() {
 
   const lookup = React.useCallback(async (value: string) => {
     const clean = value.trim();
-    if (!isSupportedVideoLink(clean)) return;
+    if (!allowed || !isSupportedVideoLink(clean)) return;
     const currentRequest = ++requestId.current;
     setLoading(true);
     setError("");
@@ -108,9 +114,14 @@ export default function SystemAdminVideoLinksScreen() {
     } finally {
       if (requestId.current === currentRequest) setLoading(false);
     }
-  }, []);
+  }, [allowed]);
 
   React.useEffect(() => {
+    if (!allowed) {
+      requestId.current += 1;
+      setLoading(false);
+      return;
+    }
     const clean = url.trim();
     if (!clean) {
       requestId.current += 1;
@@ -128,7 +139,7 @@ export default function SystemAdminVideoLinksScreen() {
     }
     const timer = setTimeout(() => void lookup(clean), 650);
     return () => clearTimeout(timer);
-  }, [url, lookup]);
+  }, [allowed, url, lookup]);
 
   const openSafeLink = React.useCallback(async (target: string | null | undefined) => {
     if (!target) return;
@@ -156,6 +167,31 @@ export default function SystemAdminVideoLinksScreen() {
     { label: "Likes", value: metadata ? displayCount(metadata.stats.likes) : "—", icon: "heart-outline" as const, color: RED },
     { label: "Maoni", value: metadata ? displayCount(metadata.stats.comments) : "—", icon: "chatbubble-ellipses-outline" as const, color: GREEN },
   ];
+
+
+  if (!allowed) {
+    return (
+      <View style={styles.screen}>
+        <LinearGradient
+          colors={["#1D143B", "#111321", "#090D16", BG]}
+          locations={[0, 0.28, 0.64, 1]}
+          style={StyleSheet.absoluteFillObject}
+        />
+        <View style={{ paddingTop: insets.top + 28, paddingHorizontal: 18 }}>
+          <GlassCard style={{ padding: 24, alignItems: "center" }}>
+            <Ionicons name="lock-closed-outline" size={28} color={GOLD} />
+            <Text style={[styles.sectionTitle, { marginTop: 12 }]}>Ufikiaji umezuiwa</Text>
+            <Text style={[styles.helper, { marginTop: 7, textAlign: "center" }]}>
+              Sehemu ya Video Link inapatikana kwa System Admin pekee.
+            </Text>
+            <Pressable onPress={() => router.back()} style={styles.openButton}>
+              <Text style={styles.openButtonText}>Rudi Report Center</Text>
+            </Pressable>
+          </GlassCard>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.screen}>
