@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
-import { upsertFeedItem } from "@/app/api/_lib/store/feedDb";
+import { listFeedItems, upsertFeedItem } from "@/app/api/_lib/store/feedDb";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -125,7 +125,9 @@ async function youtubeMetadata(videoId: string) {
     url: `https://www.youtube.com/watch?v=${videoId}`,
     title: String(snippet.title || ""),
     creatorName: String(snippet.channelTitle || ""),
+    creatorId: channelId || null,
     creatorProfileUrl: channelId ? `https://www.youtube.com/channel/${channelId}` : null,
+    detectedLanguageCode: String(snippet.defaultAudioLanguage || snippet.defaultLanguage || "").slice(0, 16),
     creatorAvatarUrl,
     thumbnailUrl:
       item?.snippet?.thumbnails?.high?.url ||
@@ -155,13 +157,53 @@ async function tiktokMetadata(url: URL, videoId: string) {
     url: url.toString(),
     title: String(body.title || ""),
     creatorName: String(body.author_name || ""),
+    creatorId: typeof body.author_url === "string" ? body.author_url : null,
     creatorProfileUrl: typeof body.author_url === "string" ? body.author_url : null,
+    detectedLanguageCode: "",
     creatorAvatarUrl: null,
     thumbnailUrl: typeof body.thumbnail_url === "string" ? body.thumbnail_url : null,
     publishedAt: null,
     stats: { views: null, likes: null, comments: null },
     unavailableFields: ["publishedAt", "views", "likes", "comments"],
   };
+}
+
+export async function GET(req: NextRequest) {
+  const auth = await guardPlatformOfflineActivation(req, ["System_Admin"]);
+  if (auth instanceof NextResponse) return auth;
+
+  const limit = await rateLimit(req, {
+    name: "system-admin-video-links-list",
+    limit: 60,
+    windowMs: 60 * 60 * 1000,
+    key: `system-admin-video-links-list:${auth.viewer.userId}`,
+  });
+  if (!limit.allowed) return json({ ok: false, error: "Jaribu tena baada ya muda mfupi." }, 429);
+
+  const items = (await listFeedItems())
+    .filter((item: any) => String(item?.source || "") === "system-admin-video-link" && !item?.deleted)
+    .sort((a: any, b: any) => String(b?.createdAt || "").localeCompare(String(a?.createdAt || "")))
+    .slice(0, 300)
+    .map((item: any) => ({
+      id: String(item?.id || ""),
+      provider: String(item?.videoDisplayType || item?.provider || "youtube"),
+      url: String(item?.videoUrl || item?.url || ""),
+      title: String(item?.title || ""),
+      creatorId: String(item?.creatorId || ""),
+      creatorName: String(item?.creatorName || item?.actorLabel || ""),
+      creatorProfileUrl: String(item?.creatorProfileUrl || ""),
+      creatorAvatarUrl: String(item?.creatorAvatarUrl || item?.actorAvatarUri || ""),
+      thumbnailUrl: String(item?.thumbnailUrl || item?.thumbnailUri || item?.posterUri || ""),
+      publishedAt: String(item?.publishedAt || ""),
+      createdAt: String(item?.createdAt || ""),
+      countryCode: String(item?.countryCode || ""),
+      countryName: String(item?.countryName || ""),
+      languageCode: String(item?.languageCode || ""),
+      languageName: String(item?.languageName || ""),
+      stats: item?.platformStats && typeof item.platformStats === "object" ? item.platformStats : {},
+    }));
+
+  return json({ ok: true, items });
 }
 
 export async function POST(req: NextRequest) {
@@ -200,8 +242,13 @@ export async function POST(req: NextRequest) {
     if (body?.action === "publish") {
       const countryCode = String(body?.countryCode || "").trim().toUpperCase();
       const countryName = String(body?.countryName || "").trim().slice(0, 80);
+      const languageCode = String(body?.languageCode || "").trim().toLowerCase().slice(0, 12);
+      const languageName = String(body?.languageName || "").trim().slice(0, 80);
       if (!/^[A-Z]{2}$/.test(countryCode) || !countryName) {
         return json({ ok: false, error: "Chagua nchi kabla ya kuongeza video." }, 400);
+      }
+      if (!/^[a-z]{2,3}$/.test(languageCode) || !languageName) {
+        return json({ ok: false, error: "Chagua lugha kabla ya kuongeza video." }, 400);
       }
 
       const now = new Date().toISOString();
@@ -218,6 +265,7 @@ export async function POST(req: NextRequest) {
         title: metadata.title || "Video",
         text: metadata.creatorName || "",
         creatorName: metadata.creatorName,
+        creatorId: metadata.creatorId,
         creatorProfileUrl: metadata.creatorProfileUrl,
         creatorAvatarUrl: metadata.creatorAvatarUrl,
         thumbnailUrl: metadata.thumbnailUrl,
@@ -229,6 +277,8 @@ export async function POST(req: NextRequest) {
         churchName: metadata.creatorName || "Video ya Kristo App",
         countryCode,
         countryName,
+        languageCode,
+        languageName,
         publishedAt: metadata.publishedAt || undefined,
         platformStats: metadata.stats,
         platformUnavailableFields: metadata.unavailableFields || [],
