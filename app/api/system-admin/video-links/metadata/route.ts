@@ -84,8 +84,8 @@ async function youtubeMetadata(videoId: string) {
 
   const { response, body } = await fetchJson(endpoint);
   if (!response.ok) {
-    if (response.status === 404 || response.status === 403) {
-      throw Object.assign(new Error("YouTube could not provide details for this video. Check that the video is public."), { status: 422 });
+    if (response.status === 403) {
+      throw Object.assign(new Error("YouTube API imekataa ombi. Hakiki API key, API restrictions au quota."), { status: 503 });
     }
     throw Object.assign(new Error("YouTube metadata could not be loaded right now."), { status: 502 });
   }
