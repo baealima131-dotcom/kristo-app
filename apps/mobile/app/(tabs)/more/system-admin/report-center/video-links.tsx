@@ -27,8 +27,10 @@ import {
   type KristoCountry,
 } from "@/src/lib/countries";
 import {
+  fetchSavedSystemAdminVideoLinks,
   fetchSystemAdminVideoMetadata,
   publishSystemAdminVideoLink,
+  type SavedSystemAdminVideoLink,
   type SystemAdminVideoMetadata,
 } from "@/src/lib/systemAdminVideoLinksApi";
 
@@ -39,6 +41,20 @@ const GOLD = "#F4D06F";
 const BLUE = "#93C5FD";
 const GREEN = "#6EE7B7";
 const RED = "#FB7185";
+
+const VIDEO_LANGUAGES = [
+  { code: "en", name: "English" },
+  { code: "sw", name: "Kiswahili" },
+  { code: "rn", name: "Kirundi" },
+  { code: "fr", name: "Français" },
+  { code: "es", name: "Español" },
+  { code: "pt", name: "Português" },
+  { code: "ar", name: "العربية" },
+  { code: "ln", name: "Lingála" },
+  { code: "rw", name: "Kinyarwanda" },
+  { code: "am", name: "አማርኛ" },
+] as const;
+type VideoLanguage = (typeof VIDEO_LANGUAGES)[number];
 
 function isSupportedVideoLink(value: string) {
   try {
@@ -96,6 +112,13 @@ export default function SystemAdminVideoLinksScreen() {
   const [country, setCountry] = React.useState<KristoCountry>(DEFAULT_KRISTO_COUNTRY);
   const [countryPickerVisible, setCountryPickerVisible] = React.useState(false);
   const [countrySearch, setCountrySearch] = React.useState("");
+  const [language, setLanguage] = React.useState<VideoLanguage | null>(null);
+  const [languagePickerVisible, setLanguagePickerVisible] = React.useState(false);
+  const [languageSearch, setLanguageSearch] = React.useState("");
+  const [savedLinks, setSavedLinks] = React.useState<SavedSystemAdminVideoLink[]>([]);
+  const [savedLinksError, setSavedLinksError] = React.useState("");
+  const [savedAccountsOpen, setSavedAccountsOpen] = React.useState(false);
+  const [expandedAccountKey, setExpandedAccountKey] = React.useState("");
   const requestId = React.useRef(0);
 
   const lookup = React.useCallback(async (value: string) => {
@@ -108,7 +131,12 @@ export default function SystemAdminVideoLinksScreen() {
     setMetadata(null);
     try {
       const result = await fetchSystemAdminVideoMetadata(clean);
-      if (requestId.current === currentRequest) setMetadata(result);
+      if (requestId.current === currentRequest) {
+        setMetadata(result);
+        const detectedCode = String(result.detectedLanguageCode || "").toLowerCase().split("-")[0];
+        const detected = VIDEO_LANGUAGES.find((item) => item.code === detectedCode);
+        if (detected) setLanguage(detected);
+      }
     } catch (cause: any) {
       if (requestId.current === currentRequest) {
         setError(String(cause?.message || "Taarifa za video hazikupatikana."));
@@ -143,19 +171,56 @@ export default function SystemAdminVideoLinksScreen() {
     return () => clearTimeout(timer);
   }, [allowed, url, lookup]);
 
+  const refreshSavedLinks = React.useCallback(async () => {
+    try {
+      const links = await fetchSavedSystemAdminVideoLinks();
+      setSavedLinks(links);
+      setSavedLinksError("");
+    } catch (cause: any) {
+      setSavedLinksError(String(cause?.message || "Video zilizohifadhiwa hazikupatikana."));
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (allowed) void refreshSavedLinks();
+  }, [allowed, refreshSavedLinks]);
+
+  const savedAccounts = React.useMemo(() => {
+    const grouped = new Map<string, { key: string; creatorName: string; creatorProfileUrl: string; creatorAvatarUrl: string; provider: string; links: SavedSystemAdminVideoLink[] }>();
+    for (const link of savedLinks) {
+      const key = link.creatorId || link.creatorProfileUrl || `${link.provider}:${link.creatorName.toLowerCase()}`;
+      const existing = grouped.get(key);
+      if (existing) existing.links.push(link);
+      else grouped.set(key, {
+        key,
+        creatorName: link.creatorName || "Akaunti isiyojulikana",
+        creatorProfileUrl: link.creatorProfileUrl,
+        creatorAvatarUrl: link.creatorAvatarUrl,
+        provider: link.provider,
+        links: [link],
+      });
+    }
+    return Array.from(grouped.values());
+  }, [savedLinks]);
+
   const publishToHomeFeed = React.useCallback(async () => {
-    if (!metadata || !url.trim() || publishing) return;
+    if (!metadata || !language || !url.trim() || publishing) return;
     setPublishing(true);
     setError("");
     try {
-      await publishSystemAdminVideoLink(url.trim(), { code: country.code, name: country.name });
+      await publishSystemAdminVideoLink(
+        url.trim(),
+        { code: country.code, name: country.name },
+        { code: language.code, name: language.name }
+      );
       setPublished(true);
+      await refreshSavedLinks();
     } catch (cause: any) {
       setError(String(cause?.message || "Video haikuongezwa kwenye Home Feed."));
     } finally {
       setPublishing(false);
     }
-  }, [country.code, country.name, metadata, publishing, url]);
+  }, [country.code, country.name, language, metadata, publishing, refreshSavedLinks, url]);
 
   const openSafeLink = React.useCallback(async (target: string | null | undefined) => {
     if (!target) return;
@@ -176,6 +241,10 @@ export default function SystemAdminVideoLinksScreen() {
   const filteredCountries = React.useMemo(
     () => filterKristoCountries(countrySearch).slice(0, 80),
     [countrySearch]
+  );
+  const filteredLanguages = React.useMemo(
+    () => VIDEO_LANGUAGES.filter((item) => item.name.toLowerCase().includes(languageSearch.trim().toLowerCase())),
+    [languageSearch]
   );
 
   const stats = [
@@ -232,6 +301,60 @@ export default function SystemAdminVideoLinksScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: insets.bottom + 32 }}
       >
+        <GlassCard style={styles.savedAccountsCard} borderColor="rgba(147,197,253,0.2)">
+          <Pressable style={styles.savedAccountsHeading} onPress={() => setSavedAccountsOpen((value) => !value)}>
+            <View style={styles.countryIcon}><Ionicons name="albums-outline" size={21} color={BLUE} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.label}>Akaunti zilizohifadhiwa</Text>
+              <Text style={styles.helper}>{savedAccounts.length} channel/account • {savedLinks.length} video link</Text>
+            </View>
+            <Ionicons name={savedAccountsOpen ? "chevron-up" : "chevron-down"} size={18} color={BLUE} />
+          </Pressable>
+          {savedAccountsOpen ? (
+            <View style={styles.savedAccountsList}>
+              {savedLinksError ? <Text style={styles.savedError}>{savedLinksError}</Text> : null}
+              {savedAccounts.map((account) => (
+                <View key={account.key} style={styles.savedAccountBlock}>
+                  <Pressable
+                    style={styles.savedAccountRow}
+                    onPress={() => setExpandedAccountKey((current) => current === account.key ? "" : account.key)}
+                  >
+                    {account.creatorAvatarUrl ? (
+                      <Image source={{ uri: account.creatorAvatarUrl }} style={styles.savedAvatar} />
+                    ) : <View style={[styles.savedAvatar, styles.savedAvatarFallback]}><Ionicons name="person-outline" size={16} color={BLUE} /></View>}
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.savedAccountName} numberOfLines={1}>{account.creatorName}</Text>
+                      <Text style={styles.savedAccountHint}>{account.provider === "youtube" ? "YouTube" : "TikTok"} • {account.links.length} link</Text>
+                    </View>
+                    <Ionicons name={expandedAccountKey === account.key ? "chevron-up" : "chevron-down"} size={16} color={MUTED} />
+                  </Pressable>
+                  {expandedAccountKey === account.key ? (
+                    <View style={styles.savedLinksList}>
+                      {account.creatorProfileUrl ? (
+                        <Pressable onPress={() => void openSafeLink(account.creatorProfileUrl)} style={styles.savedProfileButton}>
+                          <Ionicons name="person-circle-outline" size={16} color={BLUE} />
+                          <Text style={styles.savedProfileText}>Fungua profile ya channel</Text>
+                        </Pressable>
+                      ) : null}
+                      {account.links.map((link) => (
+                        <Pressable key={link.id} onPress={() => void openSafeLink(link.url)} style={styles.savedLinkRow}>
+                          <Ionicons name="play-circle-outline" size={17} color={GOLD} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.savedLinkTitle} numberOfLines={2}>{link.title || "Video bila kichwa"}</Text>
+                            <Text style={styles.savedLinkHint} numberOfLines={1}>{[link.countryName, link.languageName, link.publishedAt ? new Date(link.publishedAt).toLocaleDateString() : ""].filter(Boolean).join(" • ")}</Text>
+                          </View>
+                          <Ionicons name="open-outline" size={15} color={MUTED} />
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+              {!savedAccounts.length && !savedLinksError ? <Text style={styles.helper}>Bado hujahifadhi video yoyote.</Text> : null}
+            </View>
+          ) : null}
+        </GlassCard>
+
         <GlassCard style={styles.countryCard} borderColor="rgba(244,208,111,0.25)">
           <View style={styles.row}>
             <View style={styles.countryIcon}><Ionicons name="globe-outline" size={21} color={GOLD} /></View>
@@ -246,12 +369,26 @@ export default function SystemAdminVideoLinksScreen() {
           </View>
         </GlassCard>
 
+        <GlassCard style={styles.languageCard} borderColor="rgba(147,197,253,0.22)">
+          <View style={styles.row}>
+            <View style={styles.countryIcon}><Ionicons name="language-outline" size={21} color={BLUE} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.label}>Lugha ya video</Text>
+              <Text style={styles.helper}>Chagua lugha kuu ili video zipatikane kwa urahisi.</Text>
+            </View>
+            <Pressable onPress={() => setLanguagePickerVisible(true)} style={styles.languageButton}>
+              <Text style={styles.languageValue} numberOfLines={1}>{language?.name || "Chagua lugha"}</Text>
+              <Ionicons name="chevron-down" size={17} color={BLUE} />
+            </Pressable>
+          </View>
+        </GlassCard>
+
         <GlassCard style={styles.linkCard} borderColor="rgba(167,139,250,0.30)">
           <Text style={styles.sectionTitle}>Bandika link ya video</Text>
           <Text style={styles.helper}>YouTube au TikTok. Taarifa huanza kujazwa link ikishabandikwa.</Text>
           <TextInput
             value={url}
-            onChangeText={(value) => { setUrl(value); setMetadata(null); setPublished(false); setError(""); }}
+            onChangeText={(value) => { setUrl(value); setMetadata(null); setLanguage(null); setPublished(false); setError(""); }}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
@@ -333,7 +470,7 @@ export default function SystemAdminVideoLinksScreen() {
 
             <Pressable
               onPress={() => void publishToHomeFeed()}
-              disabled={publishing || published}
+              disabled={publishing || published || !language}
               style={({ pressed }) => [
                 styles.publishButton,
                 published && styles.publishedButton,
@@ -348,7 +485,7 @@ export default function SystemAdminVideoLinksScreen() {
               <Ionicons name="open-outline" size={18} color="#0B1020" />
               <Text style={styles.openButtonText}>Fungua video kwenye {metadata.provider === "youtube" ? "YouTube" : "TikTok"}</Text>
             </Pressable>
-            <Text style={styles.countryFooter}>Nchi iliyochaguliwa: {country.flag} {country.name}</Text>
+            <Text style={styles.countryFooter}>Nchi: {country.flag} {country.name}  •  Lugha: {language?.name || "Chagua lugha"}</Text>
           </GlassCard>
         ) : null}
       </ScrollView>
@@ -394,6 +531,47 @@ export default function SystemAdminVideoLinksScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={languagePickerVisible} animationType="slide" transparent onRequestClose={() => setLanguagePickerVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.countryModal, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Chagua lugha ya video</Text>
+              <Pressable onPress={() => setLanguagePickerVisible(false)} hitSlop={10}>
+                <Ionicons name="close" size={25} color={TEXT} />
+              </Pressable>
+            </View>
+            <TextInput
+              value={languageSearch}
+              onChangeText={setLanguageSearch}
+              placeholder="Tafuta lugha…"
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              style={styles.searchInput}
+              autoCorrect={false}
+            />
+            <FlatList
+              data={filteredLanguages}
+              keyExtractor={(item) => item.code}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <Pressable
+                  onPress={() => {
+                    setLanguage(item);
+                    setLanguagePickerVisible(false);
+                    setLanguageSearch("");
+                  }}
+                  style={styles.countryOption}
+                >
+                  <Ionicons name="language-outline" size={18} color={BLUE} />
+                  <Text style={styles.countryName}>{item.name}</Text>
+                  <Text style={styles.countryCode}>{item.code.toUpperCase()}</Text>
+                  {item.code === language?.code ? <Ionicons name="checkmark" size={18} color={GOLD} /> : null}
+                </Pressable>
+              )}
+            />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -406,7 +584,26 @@ const styles = StyleSheet.create({
   title: { marginTop: 2, color: TEXT, fontSize: 26, lineHeight: 32, fontWeight: "900" },
   subtitle: { marginTop: 1, color: MUTED, fontSize: 12, fontWeight: "600" },
   glassCard: { overflow: "hidden", borderRadius: 20, borderWidth: 1, backgroundColor: "rgba(255,255,255,0.055)", padding: 16 },
+  savedAccountsCard: { marginBottom: 12 },
+  savedAccountsHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  savedAccountsList: { marginTop: 12 },
+  savedAccountBlock: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.10)" },
+  savedAccountRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 10 },
+  savedAvatar: { width: 34, height: 34, borderRadius: 17 },
+  savedAvatarFallback: { alignItems: "center", justifyContent: "center", backgroundColor: "rgba(147,197,253,0.12)" },
+  savedAccountName: { color: TEXT, fontSize: 12, fontWeight: "800" },
+  savedAccountHint: { color: MUTED, fontSize: 10, marginTop: 3, fontWeight: "600" },
+  savedLinksList: { paddingBottom: 9, paddingLeft: 44 },
+  savedProfileButton: { minHeight: 34, flexDirection: "row", alignItems: "center", gap: 6 },
+  savedProfileText: { color: BLUE, fontSize: 10, fontWeight: "800" },
+  savedLinkRow: { minHeight: 47, flexDirection: "row", alignItems: "center", gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.08)" },
+  savedLinkTitle: { color: TEXT, fontSize: 10, fontWeight: "700" },
+  savedLinkHint: { color: MUTED, fontSize: 9, marginTop: 2 },
+  savedError: { color: RED, fontSize: 11, paddingVertical: 8 },
   countryCard: { marginBottom: 12 },
+  languageCard: { marginBottom: 12 },
+  languageButton: { maxWidth: 155, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 10, borderRadius: 13, backgroundColor: "rgba(147,197,253,0.10)", borderWidth: 1, borderColor: "rgba(147,197,253,0.23)" },
+  languageValue: { color: "#DCEBFF", fontSize: 11, fontWeight: "800", flexShrink: 1 },
   row: { flexDirection: "row", alignItems: "center", gap: 11 },
   countryIcon: { width: 42, height: 42, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(244,208,111,0.12)" },
   label: { color: TEXT, fontSize: 13, fontWeight: "800" },
