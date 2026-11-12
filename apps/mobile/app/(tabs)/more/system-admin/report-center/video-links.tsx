@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+import { WebView } from "react-native-webview";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { hasOfflineActivationRole } from "@/src/lib/offlineActivationCodes";
 import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
@@ -74,6 +75,44 @@ function isSupportedVideoLink(value: string) {
       (host === "tiktok.com" || host === "m.tiktok.com") &&
       /^\/@[A-Za-z0-9._-]+\/video\/\d+(?:\/|$)/.test(url.pathname)
     );
+  } catch {
+    return false;
+  }
+}
+
+
+function buildVideoEmbedUrl(provider: "youtube" | "tiktok", value: string): string | null {
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port) return null;
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (provider === "youtube" && ["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(host)) {
+      const videoId = host === "youtu.be"
+        ? parsed.pathname.split("/").filter(Boolean)[0] || ""
+        : parsed.pathname === "/watch"
+          ? parsed.searchParams.get("v") || ""
+          : parsed.pathname.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})(?:\/|$)/)?.[1] || "";
+      return /^[A-Za-z0-9_-]{11}$/.test(videoId)
+        ? `https://www.youtube-nocookie.com/embed/${videoId}?playsinline=1&controls=1&rel=0&autoplay=0`
+        : null;
+    }
+    if (provider === "tiktok" && ["tiktok.com", "m.tiktok.com"].includes(host)) {
+      const videoId = parsed.pathname.match(/^\/@[A-Za-z0-9._-]+\/video\/(\d+)(?:\/|$)/)?.[1] || "";
+      return /^\d{8,24}$/.test(videoId)
+        ? `https://www.tiktok.com/player/v1/${videoId}?controls=1&description=1&music_info=1&autoplay=0&loop=0`
+        : null;
+    }
+  } catch {}
+  return null;
+}
+
+function allowVideoEmbedNavigation(request: { url: string; isTopFrame?: boolean }) {
+  if (request.isTopFrame === false) return true;
+  try {
+    const next = new URL(request.url);
+    if (next.protocol !== "https:") return false;
+    const host = next.hostname.toLowerCase().replace(/^www\./, "");
+    return ["youtube.com", "youtube-nocookie.com", "youtu.be", "tiktok.com", "m.tiktok.com"].includes(host);
   } catch {
     return false;
   }
@@ -422,9 +461,29 @@ export default function SystemAdminVideoLinksScreen() {
               <View style={styles.autoBadge}><Ionicons name="checkmark-circle" size={14} color={GREEN} /><Text style={styles.autoBadgeText}>TAARIFA ZIMEJAZWA</Text></View>
             </View>
 
-            {metadata.thumbnailUrl ? (
-              <Image source={{ uri: metadata.thumbnailUrl }} style={styles.thumbnail} resizeMode="cover" />
-            ) : null}
+            <View style={styles.thumbnail}>
+              {buildVideoEmbedUrl(metadata.provider, metadata.url) ? (
+                <WebView
+                  key={metadata.url}
+                  source={{ uri: buildVideoEmbedUrl(metadata.provider, metadata.url)! }}
+                  style={styles.thumbnailPlayer}
+                  containerStyle={styles.thumbnailPlayer}
+                  originWhitelist={["https://*"]}
+                  javaScriptEnabled
+                  domStorageEnabled
+                  allowsInlineMediaPlayback
+                  mediaPlaybackRequiresUserAction
+                  allowsFullscreenVideo
+                  scrollEnabled={false}
+                  bounces={false}
+                  setSupportMultipleWindows={false}
+                  onShouldStartLoadWithRequest={allowVideoEmbedNavigation}
+                  accessibilityLabel={`${metadata.provider} video preview`}
+                />
+              ) : metadata.thumbnailUrl ? (
+                <Image source={{ uri: metadata.thumbnailUrl }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+              ) : null}
+            </View>
 
             <Text style={styles.videoTitle}>{metadata.title || "Video bila kichwa"}</Text>
 
@@ -481,10 +540,7 @@ export default function SystemAdminVideoLinksScreen() {
               <Text style={styles.publishButtonText}>{published ? "Imeongezwa kwenye Home Feed" : publishing ? "Inaongezwa..." : "Ongeza kwenye Home Feed"}</Text>
             </Pressable>
 
-            <Pressable onPress={() => void openSafeLink(metadata.url)} style={({ pressed }) => [styles.openButton, pressed && { opacity: 0.8 }]}>
-              <Ionicons name="open-outline" size={18} color="#0B1020" />
-              <Text style={styles.openButtonText}>Fungua video kwenye {metadata.provider === "youtube" ? "YouTube" : "TikTok"}</Text>
-            </Pressable>
+            <Text style={styles.securityHint}>Bonyeza play ili kutazama video hapa ndani ya Kristo App.</Text>
             <Text style={styles.countryFooter}>Nchi: {country.flag} {country.name}  •  Lugha: {language?.name || "Chagua lugha"}</Text>
           </GlassCard>
         ) : null}
@@ -623,7 +679,8 @@ const styles = StyleSheet.create({
   providerText: { color: TEXT, fontSize: 12, fontWeight: "900" },
   autoBadge: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4 },
   autoBadgeText: { color: GREEN, fontSize: 8, fontWeight: "900", letterSpacing: 0.5 },
-  thumbnail: { width: "100%", height: 190, borderRadius: 14, backgroundColor: "rgba(255,255,255,0.06)" },
+  thumbnail: { width: "100%", height: 190, borderRadius: 14, backgroundColor: "#000000", overflow: "hidden" },
+  thumbnailPlayer: { flex: 1, backgroundColor: "#000000" },
   videoTitle: { marginTop: 13, color: TEXT, fontSize: 18, lineHeight: 24, fontWeight: "900" },
   creatorRow: { marginTop: 15, flexDirection: "row", alignItems: "center", gap: 10 },
   avatar: { width: 42, height: 42, borderRadius: 21 },
