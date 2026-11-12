@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
+import { upsertFeedItem } from "@/app/api/_lib/store/feedDb";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -196,6 +197,47 @@ export async function POST(req: NextRequest) {
       parsed.provider === "youtube"
         ? await youtubeMetadata(parsed.videoId)
         : await tiktokMetadata(parsed.url, parsed.videoId);
+    if (body?.action === "publish") {
+      const countryCode = String(body?.countryCode || "").trim().toUpperCase();
+      const countryName = String(body?.countryName || "").trim().slice(0, 80);
+      if (!/^[A-Z]{2}$/.test(countryCode) || !countryName) {
+        return json({ ok: false, error: "Chagua nchi kabla ya kuongeza video." }, 400);
+      }
+
+      const now = new Date().toISOString();
+      const feedItem = await upsertFeedItem({
+        id: "system-admin-video-" + parsed.provider + "-" + parsed.videoId,
+        churchId: "system-admin-global",
+        type: "video",
+        source: "system-admin-video-link",
+        visibility: "public",
+        mediaType: "video",
+        videoDisplayType: parsed.provider,
+        videoUrl: metadata.url,
+        url: metadata.url,
+        title: metadata.title || "Video",
+        text: metadata.creatorName || "",
+        creatorName: metadata.creatorName,
+        creatorProfileUrl: metadata.creatorProfileUrl,
+        creatorAvatarUrl: metadata.creatorAvatarUrl,
+        thumbnailUrl: metadata.thumbnailUrl,
+        thumbnailUri: metadata.thumbnailUrl,
+        posterUri: metadata.thumbnailUrl,
+        actorLabel: metadata.creatorName || "Mwenye video",
+        actorAvatarUri: metadata.creatorAvatarUrl || undefined,
+        avatarUri: metadata.creatorAvatarUrl || undefined,
+        churchName: metadata.creatorName || "Video ya Kristo App",
+        countryCode,
+        countryName,
+        publishedAt: metadata.publishedAt || undefined,
+        platformStats: metadata.stats,
+        platformUnavailableFields: metadata.unavailableFields || [],
+        createdAt: now,
+        createdBy: String(auth.viewer.userId || "system-admin"),
+      } as any);
+      return json({ ok: true, metadata, published: true, feedItemId: feedItem.id });
+    }
+
     return json({ ok: true, metadata });
   } catch (error: any) {
     const status = Number(error?.status) || 502;
