@@ -60,6 +60,15 @@ import {
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
 
+const VIDEO_LINK_MORE_ITEM: Item = {
+  key: "system_admin_video_link",
+  title: "Video Link",
+  sub: "Paste YouTube or TikTok • add to Home Feed",
+  iconLib: "ion",
+  icon: "videocam-outline",
+  href: "/more/system-admin/report-center/video-links",
+};
+
 type Item = {
   key: string;
   title: string;
@@ -489,6 +498,12 @@ export default function MoreScreen() {
   }, [agentInvitations.length]);
 
   const visibleItems = React.useMemo(() => {
+    const platformRole = String(
+      (session as any)?.platformRole || (session as any)?.offlineActivationRole || ""
+    );
+    const systemAdminVideoItem = hasOfflineActivationRole(platformRole, "System_Admin")
+      ? [VIDEO_LINK_MORE_ITEM]
+      : [];
     let base = hasChurch ? ITEMS : buildNoChurchOnboardingItems();
     base = base.filter((item) => !HIDDEN_MORE_CARD_KEYS.has(item.key));
     if (!isPastor) {
@@ -516,6 +531,7 @@ export default function MoreScreen() {
     }
 
     return [
+      ...systemAdminVideoItem,
       ...base,
       ...offlineActivationItems,
       ...safetyItems,
@@ -525,6 +541,7 @@ export default function MoreScreen() {
         : []),
     ];
   }, [
+    session,
     hasChurch,
     isPastor,
     canShowMediaCard,
