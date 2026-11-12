@@ -3,7 +3,6 @@ import {
   Animated,
   AppState,
   Image,
-  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -16,6 +15,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
+import { WebView } from "react-native-webview";
 import {
   safePauseVideoPlayer,
   safePlayVideoPlayer,
@@ -970,39 +970,72 @@ function WatchVideoSurface({
   );
 }
 
-function openExternalVideoLink(item: any) {
-  const target = String(item?.videoUrl || item?.url || "").trim();
+function buildExternalVideoEmbedUrl(item: any): string | null {
+  const raw = String(item?.videoUrl || item?.url || "").trim();
   try {
-    const parsed = new URL(target);
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port) return null;
     const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password || !["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "tiktok.com", "m.tiktok.com"].includes(host)) return;
-    void Linking.openURL(parsed.toString());
+    if (["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(host)) {
+      const videoId = host === "youtu.be"
+        ? parsed.pathname.split("/").filter(Boolean)[0] || ""
+        : parsed.pathname === "/watch"
+          ? parsed.searchParams.get("v") || ""
+          : parsed.pathname.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})(?:\/|$)/)?.[1] || "";
+      if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return null;
+      return `https://www.youtube-nocookie.com/embed/${videoId}?playsinline=1&controls=1&rel=0&autoplay=0`;
+    }
+    if (["tiktok.com", "m.tiktok.com"].includes(host)) {
+      const videoId = parsed.pathname.match(/^\/@[A-Za-z0-9._-]+\/video\/(\d+)(?:\/|$)/)?.[1] || "";
+      if (!/^\d{8,24}$/.test(videoId)) return null;
+      return `https://www.tiktok.com/player/v1/${videoId}?controls=1&description=1&music_info=1&autoplay=0&loop=0`;
+    }
   } catch {}
+  return null;
 }
 
-/** External YouTube/TikTok links keep Kristo's Watch detail and engagement panel. */
+function allowExternalPlayerNavigation(request: { url: string; isTopFrame?: boolean }) {
+  if (request.isTopFrame === false) return true;
+  try {
+    const next = new URL(request.url);
+    if (next.protocol !== "https:") return false;
+    const host = next.hostname.toLowerCase().replace(/^www\./, "");
+    return ["youtube.com", "youtube-nocookie.com", "youtu.be", "tiktok.com", "m.tiktok.com"].includes(host);
+  } catch {
+    return false;
+  }
+}
+
+/** Plays public YouTube/TikTok links in Kristo's Watch view using the platforms' embed players. */
 function WatchExternalVideoSurface({ item }: { item: any }) {
   const provider = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
-  const thumbnail = String(item?.thumbnailUrl || item?.thumbnailUri || item?.posterUri || "").trim();
+  const embedUrl = buildExternalVideoEmbedUrl(item);
   return (
     <View style={styles.externalVideoSurface}>
-      {thumbnail ? <Image source={{ uri: thumbnail }} style={StyleSheet.absoluteFillObject} resizeMode="cover" /> : null}
-      <LinearGradient colors={["rgba(5,8,15,0.10)", "rgba(5,8,15,0.78)"]} style={StyleSheet.absoluteFillObject} />
-      <View style={styles.externalVideoBadge}>
-        <Ionicons name={provider === "YouTube" ? "logo-youtube" : "musical-notes"} size={17} color="#FFFFFF" />
-        <Text style={styles.externalVideoBadgeText}>{provider}</Text>
-      </View>
-      <Pressable
-        onPress={() => openExternalVideoLink(item)}
-        style={({ pressed }) => [styles.externalVideoOpen, pressed && { opacity: 0.78 }]}
-        accessibilityRole="button"
-        accessibilityLabel={`Fungua video kwenye ${provider}`}
-      >
-        <Ionicons name="play" size={25} color="#111321" />
-        <Text style={styles.externalVideoOpenText}>Fungua kwenye {provider}</Text>
-        <Ionicons name="open-outline" size={18} color="#111321" />
-      </Pressable>
-      <Text style={styles.externalVideoHint}>Taarifa na maoni ya Kristo App yako chini</Text>
+      {embedUrl ? (
+        <WebView
+          key={embedUrl}
+          source={{ uri: embedUrl }}
+          style={styles.externalVideoWebView}
+          containerStyle={styles.externalVideoWebViewContainer}
+          originWhitelist={["https://*"]}
+          javaScriptEnabled
+          domStorageEnabled
+          allowsInlineMediaPlayback
+          mediaPlaybackRequiresUserAction
+          allowsFullscreenVideo
+          scrollEnabled={false}
+          bounces={false}
+          setSupportMultipleWindows={false}
+          onShouldStartLoadWithRequest={allowExternalPlayerNavigation}
+          accessibilityLabel={`${provider} video player`}
+        />
+      ) : (
+        <View style={styles.externalVideoUnavailable}>
+          <Ionicons name="alert-circle-outline" size={26} color={HOME_FEED_GOLD} />
+          <Text style={styles.externalVideoUnavailableText}>Link ya video haiwezi kuchezwa hapa.</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -1618,43 +1651,13 @@ const styles = StyleSheet.create({
   externalVideoSurface: {
     flex: 1,
     width: "100%",
-    backgroundColor: "#12031F",
+    backgroundColor: "#000000",
     overflow: "hidden",
-    alignItems: "center",
-    justifyContent: "center",
   },
-  externalVideoBadge: {
-    position: "absolute",
-    top: 18,
-    left: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 18,
-    backgroundColor: "rgba(5,8,15,0.72)",
-  },
-  externalVideoBadgeText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
-  externalVideoOpen: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 17,
-    paddingVertical: 13,
-    borderRadius: 24,
-    backgroundColor: HOME_FEED_GOLD,
-  },
-  externalVideoOpenText: { color: "#111321", fontSize: 15, fontWeight: "900" },
-  externalVideoHint: {
-    position: "absolute",
-    bottom: 18,
-    color: "rgba(255,255,255,0.92)",
-    fontSize: 12,
-    fontWeight: "700",
-    textShadowColor: "rgba(0,0,0,0.8)",
-    textShadowRadius: 5,
-  },
+  externalVideoWebView: { flex: 1, backgroundColor: "#000000" },
+  externalVideoWebViewContainer: { flex: 1, backgroundColor: "#000000" },
+  externalVideoUnavailable: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 24 },
+  externalVideoUnavailableText: { color: "#FFFFFF", textAlign: "center", fontSize: 14, fontWeight: "700" },
   externalVideoDetails: { paddingHorizontal: YOUTUBE_CARD_H_PADDING, paddingTop: 8, gap: 4 },
   externalVideoDetailText: { color: HOME_FEED_MUTED, fontSize: 12, lineHeight: 17, fontWeight: "600" },
   playerSurface: {
