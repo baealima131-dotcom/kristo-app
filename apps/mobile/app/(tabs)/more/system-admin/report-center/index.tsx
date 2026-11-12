@@ -794,6 +794,49 @@ export default function ReportCenterScreen() {
           </GlassCard>
         ) : (
           <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open YouTube and TikTok Video Link"
+              onPress={() =>
+                router.push(
+                  "/more/system-admin/report-center/video-links" as any
+                )
+              }
+              style={({ pressed }) => ({
+                marginBottom: 14,
+                opacity: pressed ? 0.78 : 1,
+              })}
+            >
+              <GlassCard
+                style={{ padding: 15 }}
+                borderColor="rgba(244,208,111,0.32)"
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                  <View
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 15,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: "rgba(244,208,111,0.12)",
+                    }}
+                  >
+                    <Ionicons name="videocam-outline" size={23} color={GOLD} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: TEXT, fontSize: 14, fontWeight: "900" }}>
+                      Video Link • YouTube & TikTok
+                    </Text>
+                    <Text style={{ marginTop: 4, color: MUTED, fontSize: 11, fontWeight: "600" }}>
+                      Bandika link ili taarifa za video zijazwe zenyewe.
+                    </Text>
+                  </View>
+                  <Ionicons name="arrow-forward" size={19} color={GOLD} />
+                </View>
+              </GlassCard>
+            </Pressable>
+
             {systemDashboardLoading ? (
               <Text
                 style={{

@@ -921,6 +921,15 @@ function uploadedMediaFileExists(uri: unknown) {
 function feedVideoAssetExists(item: any) {
   const isVideo = item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
   if (!isVideo) return true;
+  if (String(item?.source || "") === "system-admin-video-link") {
+    const url = String(item?.videoUrl || "").trim();
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === "https:" && ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "tiktok.com", "www.tiktok.com", "m.tiktok.com"].includes(parsed.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
   return uploadedMediaFileExists(item?.videoUrl);
 }
 

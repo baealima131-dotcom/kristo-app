@@ -179,6 +179,15 @@ export function resolvePlayableHomeFeedMediaUrl(item: any): string {
 /** YouTube Home Feed: playable media only — excludes testimony, announcement, prayer, text-only posts. */
 export function isHomeFeedYoutubeVideoMediaRow(item: any): boolean {
   if (!item) return false;
+  if (String(item?.source || "").trim().toLowerCase() === "system-admin-video-link") {
+    try {
+      const url = new URL(String(item?.videoUrl || item?.url || ""));
+      return url.protocol === "https:" &&
+        ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "tiktok.com", "www.tiktok.com", "m.tiktok.com"].includes(url.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
   if (isExplicitHomeFeedMediaScheduleRow(item)) return true;
   if (isMediaLiveSlotsHomeFeedRow(item)) return true;
 
