@@ -60,15 +60,6 @@ import {
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
 
-const VIDEO_LINK_MORE_ITEM: Item = {
-  key: "system_admin_video_link",
-  title: "Video Link",
-  sub: "Paste YouTube or TikTok • add to Home Feed",
-  iconLib: "ion",
-  icon: "videocam-outline",
-  href: "/more/system-admin/report-center/video-links",
-};
-
 type Item = {
   key: string;
   title: string;
@@ -76,6 +67,15 @@ type Item = {
   iconLib: "ion" | "mci";
   icon: any;
   href: string;
+};
+
+const VIDEO_LINK_MORE_ITEM: Item = {
+  key: "system_admin_video_link",
+  title: "Video Link",
+  sub: "Paste YouTube or TikTok • add to Home Feed",
+  iconLib: "ion",
+  icon: "videocam-outline",
+  href: "/more/system-admin/report-center/video-links",
 };
 
 const AGENT_MORE_ITEM: Item = {
