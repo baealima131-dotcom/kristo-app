@@ -2,6 +2,7 @@ import React, { memo, useCallback, useMemo } from "react";
 import {
   Pressable,
   Platform,
+  Linking,
   StyleSheet,
   Text,
   View,
@@ -58,18 +59,30 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
     () => resolveHomeFeedAvatarCacheContext(item),
     [item]
   );
-  const canOpen = Boolean(churchId);
+  const externalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
+  const externalProfileUrl = String(item?.creatorProfileUrl || "").trim();
+  const canOpen = externalVideoAccount ? Boolean(externalProfileUrl) : Boolean(churchId);
+  const openExternalProfile = useCallback(() => {
+    try {
+      const parsed = new URL(externalProfileUrl);
+      const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || !["youtube.com", "m.youtube.com", "tiktok.com", "vm.tiktok.com"].includes(host)) return;
+      void Linking.openURL(parsed.toString());
+    } catch {}
+  }, [externalProfileUrl]);
 
   const openProfile = useCallback(() => {
     if (!canOpen) return;
-    openChurchProfileFromFeedItem(item, { source });
-  }, [canOpen, item, source]);
+    if (externalVideoAccount) openExternalProfile();
+    else openChurchProfileFromFeedItem(item, { source });
+  }, [canOpen, externalVideoAccount, item, openExternalProfile, source]);
 
   const openAvatarTarget = useCallback(() => {
     if (!canOpen) return;
-    if (avatarOpensOverview) openChurchOverviewFromFeedItem(item, { source: source ? `${source}-avatar` : undefined });
+    if (externalVideoAccount) openExternalProfile();
+    else if (avatarOpensOverview) openChurchOverviewFromFeedItem(item, { source: source ? `${source}-avatar` : undefined });
     else openChurchProfileFromFeedItem(item, { source });
-  }, [avatarOpensOverview, canOpen, item, source]);
+  }, [avatarOpensOverview, canOpen, externalVideoAccount, item, openExternalProfile, source]);
 
   const isWatch = variant === "watch";
   const postId = String(item?.id || "").trim();
