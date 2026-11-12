@@ -20,24 +20,31 @@ export type HeaderInboxTarget = "messages" | "calls";
 export const HeaderInboxIcons = memo(function HeaderInboxIcons({
   onOpen,
   useFocus = false,
+  size = HEADER_INBOX_ICON_SIZE,
+  gap = HEADER_INBOX_ICON_GAP,
 }: {
   onOpen: (target: HeaderInboxTarget) => void;
   useFocus?: boolean;
+  /** Button diameter (Watch uses larger buttons than Home). */
+  size?: number;
+  gap?: number;
 }) {
   const { unreadMessages, missedCalls } = useHeaderInboxCounts();
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, { gap }]}>
       {useFocus ? <RefreshOnFocus /> : null}
       <InboxIcon
         icon="chatbubble-ellipses-outline"
         count={unreadMessages}
         label="Messages"
+        size={size}
         onPress={() => onOpen("messages")}
       />
       <InboxIcon
         icon="call-outline"
         count={missedCalls}
         label="Missed calls"
+        size={size}
         onPress={() => onOpen("calls")}
       />
     </View>
@@ -57,11 +64,13 @@ function InboxIcon({
   icon,
   count,
   label,
+  size,
   onPress,
 }: {
   icon: React.ComponentProps<typeof Ionicons>["name"];
   count: number;
   label: string;
+  size: number;
   onPress: () => void;
 }) {
   const badge = formatProfileCommunicationBadgeCount(count);
@@ -73,7 +82,7 @@ function InboxIcon({
       accessibilityLabel={badge ? `${label}, ${count} new` : label}
       style={({ pressed }) => [styles.icon, pressed ? styles.iconPressed : null]}
     >
-      <Ionicons name={icon} size={19} color="#F6E5B5" />
+      <Ionicons name={icon} size={Math.round(size * 0.52)} color="#F6E5B5" />
       {badge ? (
         <View style={styles.badge} pointerEvents="none">
           <Text style={styles.badgeText} numberOfLines={1}>
