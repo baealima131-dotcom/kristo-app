@@ -68,7 +68,6 @@ import {
 } from "./homeFeedUtils";
 import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
 import {
-  HEADER_INBOX_ICONS_WIDTH,
   HEADER_INBOX_ROUTES,
   HeaderInboxIcons,
   type HeaderInboxTarget,
@@ -273,7 +272,13 @@ const IOS_NATIVE_FULLSCREEN_OFF: NonNullable<React.ComponentProps<typeof VideoVi
   enable: false,
 };
 const WATCH_HEADER_SIDE_PADDING = 12;
-const WATCH_HEADER_TITLE_INSET = WATCH_HEADER_SIDE_PADDING + HEADER_INBOX_ICONS_WIDTH + 8;
+// Watch header buttons match the 42 px back button (Home keeps its smaller ones).
+const WATCH_HEADER_BACK_SIZE = 42;
+const WATCH_HEADER_INBOX_SIZE = 42;
+const WATCH_HEADER_INBOX_GAP = 10;
+const WATCH_HEADER_TITLE_LEFT = WATCH_HEADER_SIDE_PADDING + WATCH_HEADER_BACK_SIZE + 6;
+const WATCH_HEADER_TITLE_RIGHT =
+  WATCH_HEADER_SIDE_PADDING + WATCH_HEADER_INBOX_SIZE * 2 + WATCH_HEADER_INBOX_GAP + 8;
 const IOS_FULLSCREEN_SWIPE_CLOSE_DISTANCE = 120;
 const IOS_FULLSCREEN_SWIPE_CLOSE_VELOCITY = 1.2;
 
@@ -429,7 +434,7 @@ function WatchVideoSurface({
   onPlaybackStartedRef.current = onPlaybackStarted;
   const videoViewRef = useRef<VideoView | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  // Fullscreen opens only when the viewer taps the video or its fullscreen button (never by
+  // Fullscreen opens only from the expand button (never by tapping the picture, never by
   // itself, e.g. on rotating the phone). iOS uses IosWatchFullscreen, Android the native one.
   const fullscreenRef = useRef(false);
   const [iosFullscreenOpen, setIosFullscreenOpen] = useState(false);
@@ -471,9 +476,12 @@ function WatchVideoSurface({
 
   const backdropPlayer = useVideoPlayer(
     useVideoBackdrop && playbackUri ? buildWatchVideoPlayerSource(playbackUri) : null,
+    // iOS blurred background for vertical videos: a still frame of the same video. It never
+    // plays and is silent, so only the main player is heard (no doubled video or echo).
     (p) => {
-      p.loop = true;
+      p.loop = false;
       p.muted = true;
+      p.volume = 0;
     }
   );
 
@@ -602,8 +610,9 @@ function WatchVideoSurface({
             }
           }
           activeBackdrop.muted = true;
-          activeBackdrop.loop = true;
-          tryWatchAutoPlay(activeBackdrop, {
+          activeBackdrop.volume = 0;
+          activeBackdrop.loop = false;
+          safePauseVideoPlayer(activeBackdrop, {
             source: "home-feed-watch-backdrop",
             uri: playbackUri,
           });
@@ -790,10 +799,12 @@ function WatchVideoSurface({
   }, [handleFullscreenExit]);
   closeIosFullscreenRef.current = closeIosFullscreen;
 
-  // Inline the video has no native controls: a tap (or the fullscreen button) opens fullscreen,
-  // which has the full controls, and swipes on the video scroll Up Next.
+  // Inline the video has no native controls: the expand button opens fullscreen (which has the
+  // full controls); touching the picture does nothing, and swipes on the video scroll Up Next.
   const [isPlaying, setIsPlaying] = useState(false);
-  useEventListener(player, "playingChange", ({ isPlaying: playing }) => setIsPlaying(playing));
+  useEventListener(player, "playingChange", ({ isPlaying: playing }) => {
+    setIsPlaying(playing);
+  });
 
   const handleEnterFullscreen = useCallback(() => {
     if (fullscreenRef.current || endedRef.current) return;
@@ -886,6 +897,10 @@ function WatchVideoSurface({
           }
           contentFit="contain"
           nativeControls={false}
+          // Android: render in the normal view tree. The default SurfaceView sits behind the
+          // window and does not follow the floating stack's scroll transform, so the picture
+          // lagged/jumped while scrolling or stayed hidden behind the poster. iOS ignores it.
+          surfaceType="textureView"
           fullscreenOptions={
             Platform.OS === "ios"
               ? IOS_NATIVE_FULLSCREEN_OFF
@@ -898,12 +913,9 @@ function WatchVideoSurface({
         />
       ) : null}
       {!ended && !isFullscreen ? (
-        <Pressable
-          style={styles.inlineTapLayer}
-          onPress={handleEnterFullscreen}
-          accessibilityRole="button"
-          accessibilityLabel="Open video fullscreen"
-        >
+        // Touching the picture does nothing (and swipes scroll Up Next); fullscreen opens only
+        // from the expand button.
+        <View style={styles.inlineTapLayer} pointerEvents="box-none">
           <View style={styles.inlineControls} pointerEvents="box-none">
             <Pressable
               onPress={handleTogglePlay}
@@ -924,7 +936,7 @@ function WatchVideoSurface({
               <Ionicons name="expand" size={18} color="#FFFFFF" />
             </Pressable>
           </View>
-        </Pressable>
+        </View>
       ) : null}
       {Platform.OS === "ios" ? (
         <IosWatchFullscreen visible={iosFullscreenOpen} player={player} onClose={closeIosFullscreen} />
@@ -1078,38 +1090,32 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
    * to a thin line; scrolling up, or reaching the top, opens it again. The header (JESUS IS KING,
    * Messages and missed calls) always stays as it is.
    */
-  const collapse = useRef(new Animated.Value(0)).current;
-  const collapsedRef = useRef(false);
-  const lastScrollYRef = useRef(0);
   const [panelHeight, setPanelHeight] = useState(0);
-  const setChromeCollapsed = useCallback(
-    (next: boolean) => {
-      if (collapsedRef.current === next) return;
-      collapsedRef.current = next;
-      Animated.timing(collapse, { toValue: next ? 1 : 0, duration: 220, useNativeDriver: false }).start();
-    },
-    [collapse]
-  );
-  const handleUpNextScroll = useCallback(
-    (e: { nativeEvent: { contentOffset: { y: number } } }) => {
-      const y = Math.max(0, e.nativeEvent.contentOffset.y);
-      const dy = y - lastScrollYRef.current;
-      lastScrollYRef.current = y;
-      if (y <= 4) setChromeCollapsed(false);
-      else if (dy > 6) setChromeCollapsed(true);
-      else if (dy < -6) setChromeCollapsed(false);
-    },
-    [setChromeCollapsed]
-  );
   // Scroll offset on the native driver: keeps the video stack pinned while Up Next scrolls.
   const upNextScrollY = useRef(new Animated.Value(0)).current;
   const upNextScrollEvent = useMemo(
     () =>
       Animated.event([{ nativeEvent: { contentOffset: { y: upNextScrollY } } }], {
         useNativeDriver: true,
-        listener: handleUpNextScroll,
       }),
-    [upNextScrollY, handleUpNextScroll]
+    [upNextScrollY]
+  );
+  // How far the panel is folded, in px: follows the finger 1:1 (down folds, up unfolds) on the
+  // native driver. It slides up behind the video with a transform, so no layout changes while
+  // scrolling and the video stays still. Overscroll at the top (iOS bounce) is ignored.
+  const panelFoldRange = Math.max(0, panelHeight - 3);
+  const panelFold = useMemo(
+    () =>
+      Animated.diffClamp(
+        upNextScrollY.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, 1],
+          extrapolateLeft: "clamp",
+        }),
+        0,
+        Math.max(1, panelFoldRange)
+      ),
+    [upNextScrollY, panelFoldRange]
   );
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
 
@@ -1265,9 +1271,12 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   useEffect(() => {
     if (!payload?.postId) return;
     scrollRef.current?.scrollTo({ y: 0, animated: false });
-    lastScrollYRef.current = 0;
-    setChromeCollapsed(false);
-  }, [payload?.postId, setChromeCollapsed]);
+    // The floating video follows the native scroll offset. When Watch closes, Animated copies the
+    // last offset back into upNextScrollY; a reopened Watch starts at 0 with no scroll event, so
+    // without this the video stack sits off-screen (black area, audio playing) until a scroll.
+    // Back to 0 also unfolds the panel (panelFold follows the same value).
+    upNextScrollY.setValue(0);
+  }, [payload?.postId, upNextScrollY]);
 
   if (!payload) return null;
 
@@ -1307,7 +1316,11 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 </Text>
               </View>
               <View style={styles.headerInboxIcons}>
-                <HeaderInboxIcons onOpen={handleInboxOpen} />
+                <HeaderInboxIcons
+                  onOpen={handleInboxOpen}
+                  size={WATCH_HEADER_INBOX_SIZE}
+                  gap={WATCH_HEADER_INBOX_GAP}
+                />
               </View>
               <Pressable
                 onPress={onClose}
@@ -1391,15 +1404,19 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             <Animated.View
               style={[
                 styles.currentVideoPanelFold,
-                panelHeight > 0
-                  ? { height: collapse.interpolate({ inputRange: [0, 1], outputRange: [panelHeight, 3] }) }
-                  : null,
+                { transform: [{ translateY: Animated.multiply(panelFold, -1) }] },
               ]}
             >
             <Animated.View
               style={[
                 styles.currentVideoPanel,
-                { opacity: collapse.interpolate({ inputRange: [0, 0.6], outputRange: [1, 0], extrapolate: "clamp" }) },
+                {
+                  opacity: panelFold.interpolate({
+                    inputRange: [0, Math.max(1, panelFoldRange * 0.6)],
+                    outputRange: [1, 0],
+                    extrapolate: "clamp",
+                  }),
+                },
               ]}
               onLayout={(e) => {
                 const h = Math.round(e.nativeEvent.layout.height);
@@ -1499,12 +1516,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: WATCH_HEADER_SIDE_PADDING,
   },
-  // Equal side insets (the wider right side: Messages + missed calls icons) keep the title
-  // centered and clear of the back button and the icons; it shrinks to fit narrow phones.
+  // The title sits between the back button and the (wider) Messages + missed calls buttons, so it
+  // is a little left of center and never under them; it shrinks to fit narrow phones.
   topBarTitleRow: {
     position: "absolute",
-    left: WATCH_HEADER_TITLE_INSET,
-    right: WATCH_HEADER_TITLE_INSET,
+    left: WATCH_HEADER_TITLE_LEFT,
+    right: WATCH_HEADER_TITLE_RIGHT,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
@@ -1523,10 +1540,10 @@ const styles = StyleSheet.create({
   },
   backButton: {
     position: "absolute",
-    left: 12,
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    left: WATCH_HEADER_SIDE_PADDING,
+    width: WATCH_HEADER_BACK_SIZE,
+    height: WATCH_HEADER_BACK_SIZE,
+    borderRadius: WATCH_HEADER_BACK_SIZE / 2,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(20, 0, 32, 0.55)",
@@ -1541,6 +1558,8 @@ const styles = StyleSheet.create({
   playerWrap: {
     width: "100%",
     backgroundColor: "#000000",
+    // Above the purple panel, which folds up behind the video.
+    zIndex: 2,
   },
   playerWrapTikTok: {
     alignItems: "center",
@@ -1644,15 +1663,15 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 10,
     elevation: 24,
-    backgroundColor: "#000000",
+  },
+  // Folds to a thin purple line while Up Next is scrolled down. The gold edge and shadow sit here
+  // so they follow the panel's bottom edge as it folds.
+  currentVideoPanelFold: {
+    zIndex: 1,
+    backgroundColor: "#5A007A",
     borderBottomWidth: 1,
     borderBottomColor: "rgba(244,208,111,0.55)",
     boxShadow: "0 8px 18px rgba(0,0,0,0.65), 0 2px 10px rgba(168,85,247,0.35)",
-  },
-  // Folds to a thin purple line while Up Next is scrolled down.
-  currentVideoPanelFold: {
-    overflow: "hidden",
-    backgroundColor: "#5A007A",
   },
   headerInboxIcons: {
     position: "absolute",
