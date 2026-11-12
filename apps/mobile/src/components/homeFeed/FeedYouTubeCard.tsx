@@ -1,6 +1,6 @@
 import { HomeFeedViewCount } from "./HomeFeedViewCount";
 import React, { memo, useEffect, useMemo, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { Image, Linking, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { ImagePostCarousel } from "./ImagePostCarousel";
@@ -81,6 +81,16 @@ export const FeedYouTubeCard = memo(
   const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle;
   const caption = churchRoomPost ? resolveChurchRoomFeedCaption(item) : postBody;
   const statsLine = formatFeedMetaLine(item, whenLabel);
+  const platformStats = item?.platformStats && typeof item.platformStats === "object" ? item.platformStats : null;
+  const formatPlatformCount = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat().format(value) : "—";
+  const platformStatsLine = String(item?.source || "") === "system-admin-video-link" && platformStats
+    ? "YouTube/TikTok  •  " + formatPlatformCount(platformStats.views) + " views  •  " + formatPlatformCount(platformStats.likes) + " likes  •  " + formatPlatformCount(platformStats.comments) + " comments"
+    : null;
+  const originalDateLabel =
+    String(item?.source || "") === "system-admin-video-link" && item?.publishedAt
+      ? new Date(String(item.publishedAt)).toLocaleDateString()
+      : null;
   const video = isVideoPost(item);
   const videoUri = useMemo(
     () => resolveVideoUri(item),
@@ -122,6 +132,17 @@ export const FeedYouTubeCard = memo(
   }, [postId, videoUri, rowIndex]);
 
   const handleVideoPress = () => {
+    if (String(item?.source || "") === "system-admin-video-link") {
+      const target = String(item?.videoUrl || item?.url || "").trim();
+      try {
+        const parsed = new URL(target);
+        const allowedHosts = ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "tiktok.com", "www.tiktok.com", "m.tiktok.com"];
+        if (parsed.protocol === "https:" && !parsed.username && !parsed.password && allowedHosts.includes(parsed.hostname.toLowerCase())) {
+          void Linking.openURL(parsed.toString());
+        }
+      } catch {}
+      return;
+    }
     const payload = buildHomeFeedVideoOpenPayload(item);
     if (!payload) return;
     onVideoPress?.(payload);
@@ -209,6 +230,16 @@ export const FeedYouTubeCard = memo(
             {statsLine ? (
               <Text style={premium.statsLine} numberOfLines={1}>
                 {statsLine}
+              </Text>
+            ) : null}
+            {platformStatsLine ? (
+              <Text style={premium.statsLine} numberOfLines={2}>
+                {platformStatsLine}{originalDateLabel ? "  •  " + originalDateLabel : ""}
+              </Text>
+            ) : null}
+            {String(item?.source || "") === "system-admin-video-link" && item?.countryName ? (
+              <Text style={premium.statsLine} numberOfLines={1}>
+                {String(item.countryName)}
               </Text>
             ) : null}
           </View>
