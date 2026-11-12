@@ -31,3 +31,19 @@ export async function fetchSystemAdminVideoMetadata(url: string): Promise<System
   }
   return response.metadata as SystemAdminVideoMetadata;
 }
+
+export async function publishSystemAdminVideoLink(
+  url: string,
+  country: { code: string; name: string }
+): Promise<{ feedItemId: string }> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    { action: "publish", url, countryCode: country.code, countryName: country.name },
+    { headers: getKristoHeaders() as any }
+  );
+
+  if (!response || response.ok !== true || response.published !== true || !response.feedItemId) {
+    throw new Error(String(response?.error || "Video haikuongezwa kwenye Home Feed."));
+  }
+  return { feedItemId: String(response.feedItemId) };
+}
