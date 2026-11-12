@@ -28,6 +28,7 @@ import {
 } from "@/src/lib/countries";
 import {
   fetchSystemAdminVideoMetadata,
+  publishSystemAdminVideoLink,
   type SystemAdminVideoMetadata,
 } from "@/src/lib/systemAdminVideoLinksApi";
 
@@ -89,6 +90,8 @@ export default function SystemAdminVideoLinksScreen() {
   const [url, setUrl] = React.useState("");
   const [metadata, setMetadata] = React.useState<SystemAdminVideoMetadata | null>(null);
   const [loading, setLoading] = React.useState(false);
+  const [publishing, setPublishing] = React.useState(false);
+  const [published, setPublished] = React.useState(false);
   const [error, setError] = React.useState("");
   const [country, setCountry] = React.useState<KristoCountry>(DEFAULT_KRISTO_COUNTRY);
   const [countryPickerVisible, setCountryPickerVisible] = React.useState(false);
@@ -96,6 +99,7 @@ export default function SystemAdminVideoLinksScreen() {
   const requestId = React.useRef(0);
 
   const lookup = React.useCallback(async (value: string) => {
+    setPublished(false);
     const clean = value.trim();
     if (!allowed || !isSupportedVideoLink(clean)) return;
     const currentRequest = ++requestId.current;
@@ -138,6 +142,20 @@ export default function SystemAdminVideoLinksScreen() {
     const timer = setTimeout(() => void lookup(clean), 650);
     return () => clearTimeout(timer);
   }, [allowed, url, lookup]);
+
+  const publishToHomeFeed = React.useCallback(async () => {
+    if (!metadata || !url.trim() || publishing) return;
+    setPublishing(true);
+    setError("");
+    try {
+      await publishSystemAdminVideoLink(url.trim(), { code: country.code, name: country.name });
+      setPublished(true);
+    } catch (cause: any) {
+      setError(String(cause?.message || "Video haikuongezwa kwenye Home Feed."));
+    } finally {
+      setPublishing(false);
+    }
+  }, [country.code, country.name, metadata, publishing, url]);
 
   const openSafeLink = React.useCallback(async (target: string | null | undefined) => {
     if (!target) return;
@@ -233,7 +251,7 @@ export default function SystemAdminVideoLinksScreen() {
           <Text style={styles.helper}>YouTube au TikTok. Taarifa huanza kujazwa link ikishabandikwa.</Text>
           <TextInput
             value={url}
-            onChangeText={setUrl}
+            onChangeText={(value) => { setUrl(value); setMetadata(null); setPublished(false); setError(""); }}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
@@ -312,6 +330,19 @@ export default function SystemAdminVideoLinksScreen() {
             {metadata.provider === "tiktok" ? (
               <Text style={styles.apiNote}>TikTok imetoa kichwa na akaunti kupitia oEmbed. Tarehe na takwimu zake hazipatikani kwa njia hii.</Text>
             ) : null}
+
+            <Pressable
+              onPress={() => void publishToHomeFeed()}
+              disabled={publishing || published}
+              style={({ pressed }) => [
+                styles.publishButton,
+                published && styles.publishedButton,
+                (pressed || publishing) && { opacity: 0.82 },
+              ]}
+            >
+              {publishing ? <ActivityIndicator size="small" color="#0B1020" /> : <Ionicons name={published ? "checkmark-circle" : "add-circle-outline"} size={19} color="#0B1020" />}
+              <Text style={styles.publishButtonText}>{published ? "Imeongezwa kwenye Home Feed" : publishing ? "Inaongezwa..." : "Ongeza kwenye Home Feed"}</Text>
+            </Pressable>
 
             <Pressable onPress={() => void openSafeLink(metadata.url)} style={({ pressed }) => [styles.openButton, pressed && { opacity: 0.8 }]}>
               <Ionicons name="open-outline" size={18} color="#0B1020" />
@@ -412,6 +443,9 @@ const styles = StyleSheet.create({
   statValue: { color: TEXT, fontSize: 13, fontWeight: "900" },
   statLabel: { color: MUTED, fontSize: 9, fontWeight: "700" },
   apiNote: { marginTop: 11, color: "rgba(255,255,255,0.48)", fontSize: 10, lineHeight: 15, fontWeight: "600" },
+  publishButton: { marginTop: 14, minHeight: 50, borderRadius: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: GOLD },
+  publishedButton: { backgroundColor: GREEN },
+  publishButtonText: { color: "#0B1020", fontSize: 13, fontWeight: "900" },
   openButton: { marginTop: 15, minHeight: 48, borderRadius: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: GOLD },
   openButtonText: { color: "#0B1020", fontSize: 13, fontWeight: "900" },
   countryFooter: { marginTop: 10, textAlign: "center", color: MUTED, fontSize: 10, fontWeight: "700" },
