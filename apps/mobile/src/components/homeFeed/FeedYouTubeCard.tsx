@@ -7,6 +7,7 @@ import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActionsInline } from "./PostActionsInline";
 import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import {
+  formatActionCount,
   formatFeedMetaLine,
   formatFeedTimestamp,
   isChurchRoomMemberFeedPost,
@@ -75,6 +76,8 @@ export const FeedYouTubeCard = memo(
   const youtubeViews = platformCount((platformStats as any).views ?? (platformStats as any).viewCount);
   const youtubeLikes = platformCount((platformStats as any).likes ?? (platformStats as any).likeCount);
   const youtubeComments = platformCount((platformStats as any).comments ?? (platformStats as any).commentCount);
+  const youtubeShares = platformCount((platformStats as any).shares);
+  const youtubePlaylistAdds = (platformStats as any).playlistAdds == null ? null : platformCount((platformStats as any).playlistAdds);
   const appViewCount = useHomeFeedPostViewCount(
     String(item?.id || ""),
     Number(item?.viewCount || 0)
@@ -82,6 +85,7 @@ export const FeedYouTubeCard = memo(
   const viewCount = appViewCount + youtubeViews;
   const likeCount = engagement.likeCount + youtubeLikes;
   const commentCount = engagement.commentCount + youtubeComments;
+  const shareCount = Number(item?.shareCount || 0) + youtubeShares;
   const { width: windowWidth } = useWindowDimensions();
   // Full-width frame that follows the video's own shape (tall videos are capped at 4:5 and
   // shown whole inside it, never squeezed or cropped).
@@ -227,6 +231,11 @@ export const FeedYouTubeCard = memo(
                 {statsLine}
               </Text>
             ) : null}
+            {isExternalVideo && (youtubeShares > 0 || youtubePlaylistAdds !== null) ? (
+              <Text style={premium.statsLine} numberOfLines={1}>
+                YouTube · {formatActionCount(youtubeShares)} shares{youtubePlaylistAdds !== null ? ` · ${formatActionCount(youtubePlaylistAdds)} playlist adds` : ""}
+              </Text>
+            ) : null}
 
           </View>
         </View>
@@ -238,7 +247,7 @@ export const FeedYouTubeCard = memo(
         liked={engagement.likedByMe || engagement.liked}
         likeCount={likeCount}
         commentCount={commentCount}
-        shareCount={Number(item?.shareCount || 0)}
+        shareCount={shareCount}
         saved={engagement.saved}
         reported={engagement.reported}
         onLike={onLike}
