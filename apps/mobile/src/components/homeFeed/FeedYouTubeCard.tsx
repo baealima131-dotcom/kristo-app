@@ -64,16 +64,17 @@ export const FeedYouTubeCard = memo(
 }: Props) {
   const engagement = useHomeFeedRowEngagement(item);
   const isExternalVideo = String(item?.source || "").trim() === "system-admin-video-link";
-  const platformStats = isExternalVideo && item?.platformStats && typeof item.platformStats === "object"
-    ? item.platformStats
+  const rawPlatformStats = item?.platformStats ?? item?.stats ?? {};
+  const platformStats = isExternalVideo && rawPlatformStats && typeof rawPlatformStats === "object"
+    ? rawPlatformStats
     : {};
   const platformCount = (value: unknown) => {
     const count = Number(value);
     return Number.isFinite(count) && count >= 0 ? count : 0;
   };
-  const youtubeViews = platformCount((platformStats as any).views);
-  const youtubeLikes = platformCount((platformStats as any).likes);
-  const youtubeComments = platformCount((platformStats as any).comments);
+  const youtubeViews = platformCount((platformStats as any).views ?? (platformStats as any).viewCount);
+  const youtubeLikes = platformCount((platformStats as any).likes ?? (platformStats as any).likeCount);
+  const youtubeComments = platformCount((platformStats as any).comments ?? (platformStats as any).commentCount);
   const appViewCount = useHomeFeedPostViewCount(
     String(item?.id || ""),
     Number(item?.viewCount || 0)
