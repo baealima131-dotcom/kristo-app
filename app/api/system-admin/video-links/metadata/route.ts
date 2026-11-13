@@ -281,6 +281,7 @@ export async function POST(req: NextRequest) {
         languageName,
         publishedAt: metadata.publishedAt || undefined,
         platformStats: metadata.stats,
+        platformStatsUpdatedAt: now,
         platformUnavailableFields: metadata.unavailableFields || [],
         createdAt: now,
         createdBy: String(auth.viewer.userId || "system-admin"),
