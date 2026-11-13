@@ -130,6 +130,8 @@ async function youtubeMetadata(videoId: string) {
     detectedLanguageCode: String(snippet.defaultAudioLanguage || snippet.defaultLanguage || "").slice(0, 16),
     creatorAvatarUrl,
     thumbnailUrl:
+      item?.snippet?.thumbnails?.maxres?.url ||
+      item?.snippet?.thumbnails?.standard?.url ||
       item?.snippet?.thumbnails?.high?.url ||
       item?.snippet?.thumbnails?.medium?.url ||
       item?.snippet?.thumbnails?.default?.url ||
