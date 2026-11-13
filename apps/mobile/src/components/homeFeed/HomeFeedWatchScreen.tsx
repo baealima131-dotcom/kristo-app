@@ -157,15 +157,16 @@ function WatchPanelActions({
 }) {
   const engagement = useHomeFeedRowEngagement(item);
   const externalVideo = String(item?.source || "").trim() === "system-admin-video-link";
-  const platformStats = externalVideo && item?.platformStats && typeof item.platformStats === "object"
-    ? item.platformStats
+  const rawPlatformStats = item?.platformStats ?? item?.stats ?? {};
+  const platformStats = externalVideo && rawPlatformStats && typeof rawPlatformStats === "object"
+    ? rawPlatformStats
     : {};
   const platformCount = (value: unknown) => {
     const count = Number(value);
     return Number.isFinite(count) && count >= 0 ? count : 0;
   };
-  const likeCount = engagement.likeCount + platformCount((platformStats as any).likes);
-  const commentCount = engagement.commentCount + platformCount((platformStats as any).comments);
+  const likeCount = engagement.likeCount + platformCount((platformStats as any).likes ?? (platformStats as any).likeCount);
+  const commentCount = engagement.commentCount + platformCount((platformStats as any).comments ?? (platformStats as any).commentCount);
 
   return (
     <View style={styles.watchActionsRow}>
@@ -1073,10 +1074,11 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
   const postId = String(item?.id || "").trim();
   const serverViewCount = Number(item?.viewCount || 0);
   const viewCount = useHomeFeedPostViewCount(postId, serverViewCount);
-  const platformStats = externalVideo && item?.platformStats && typeof item.platformStats === "object"
-    ? item.platformStats
+  const rawPlatformStats = item?.platformStats ?? item?.stats ?? {};
+  const platformStats = externalVideo && rawPlatformStats && typeof rawPlatformStats === "object"
+    ? rawPlatformStats
     : {};
-  const youtubeViews = Number((platformStats as any).views);
+  const youtubeViews = Number((platformStats as any).views ?? (platformStats as any).viewCount);
   const combinedViewCount = viewCount + (Number.isFinite(youtubeViews) && youtubeViews > 0 ? youtubeViews : 0);
 
   useEffect(() => {
