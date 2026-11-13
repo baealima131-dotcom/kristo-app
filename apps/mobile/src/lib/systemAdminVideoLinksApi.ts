@@ -36,6 +36,7 @@ export async function fetchSystemAdminVideoMetadata(url: string): Promise<System
 
 export type SavedSystemAdminVideoLink = {
   id: string;
+  hidden: boolean;
   provider: "youtube" | "tiktok";
   url: string;
   title: string;
@@ -62,6 +63,28 @@ export async function fetchSavedSystemAdminVideoLinks(): Promise<SavedSystemAdmi
     throw new Error(String(response?.error || "Video zilizohifadhiwa hazikupatikana."));
   }
   return response.items as SavedSystemAdminVideoLink[];
+}
+
+export async function setSystemAdminVideoLinkHidden(id: string, hidden: boolean): Promise<void> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    { action: "hide", id, hidden },
+    { headers: getKristoHeaders() as any }
+  );
+  if (!response || response.ok !== true || response.hidden !== hidden) {
+    throw new Error(String(response?.error || "Hali ya video haikubadilishwa."));
+  }
+}
+
+export async function deleteSystemAdminVideoLink(id: string): Promise<void> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    { action: "delete", id },
+    { headers: getKristoHeaders() as any }
+  );
+  if (!response || response.ok !== true || response.deleted !== true) {
+    throw new Error(String(response?.error || "Video haikuondolewa kwenye Home Feed."));
+  }
 }
 
 export async function publishSystemAdminVideoLink(
