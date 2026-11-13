@@ -160,16 +160,19 @@ export async function GET(req: Request) {
         const accessToken = await refreshYoutubeAccessToken(connection.refreshToken);
         if (accessToken) oauthByChannel.set(connection.channelId, accessToken);
       }
-      for (const item of refreshItems) {
-        const accessToken = oauthByChannel.get(String(item?.creatorId || ""));
-        const videoId = parseYouTubeId(item?.videoUrl || item?.url);
-        if (!accessToken || !videoId) continue;
-        try {
-          const analytics = await loadYoutubeAnalyticsStats(accessToken, videoId, analyticsStartDate(item?.publishedAt), new Date(nowMs).toISOString().slice(0, 10));
-          if (analytics) youtubeAnalyticsByItemId.set(String(item?.id || ""), analytics);
-        } catch {
-          // Public counters still refresh if channel analytics is unavailable for this video.
-        }
+      for (let offset = 0; offset < refreshItems.length; offset += 5) {
+        const batch = refreshItems.slice(offset, offset + 5);
+        await Promise.all(batch.map(async (item: any) => {
+          const accessToken = oauthByChannel.get(String(item?.creatorId || ""));
+          const videoId = parseYouTubeId(item?.videoUrl || item?.url);
+          if (!accessToken || !videoId) return;
+          try {
+            const analytics = await loadYoutubeAnalyticsStats(accessToken, videoId, analyticsStartDate(item?.publishedAt), new Date(nowMs).toISOString().slice(0, 10));
+            if (analytics) youtubeAnalyticsByItemId.set(String(item?.id || ""), analytics);
+          } catch {
+            // Public counters still refresh if channel analytics is unavailable for this video.
+          }
+        }));
       }
     } catch {
       // OAuth connections are optional; public YouTube counters continue to refresh.
