@@ -2680,7 +2680,7 @@ function isDeletedFeedItem(item: any) {
 }
 
 function isHiddenByReportsFeedItem(item: any) {
-  return item?.hiddenByReports === true;
+  return item?.hiddenByReports === true || item?.hiddenBySystemAdmin === true;
 }
 
 function isDiscoverableFeedItem(item: any, viewerChurchId: string) {

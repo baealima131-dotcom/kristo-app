@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
-import { upsertFeedItem } from "@/app/api/_lib/store/feedDb";
+import { listFeedItems, upsertFeedItem } from "@/app/api/_lib/store/feedDb";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -165,6 +165,49 @@ async function tiktokMetadata(url: URL, videoId: string) {
   };
 }
 
+export async function GET(req: NextRequest) {
+  const auth = await guardPlatformOfflineActivation(req, ["System_Admin"]);
+  if (auth instanceof NextResponse) return auth;
+
+  const limit = await rateLimit(req, {
+    name: "system-admin-video-links-list",
+    limit: 60,
+    windowMs: 60 * 60 * 1000,
+    key: `system-admin-video-links-list:${auth.viewer.userId}`,
+  });
+  if (!limit.allowed) return json({ ok: false, error: "Jaribu tena baada ya muda mfupi." }, 429);
+
+  const items = (await listFeedItems())
+    .filter((item: any) =>
+      String(item?.source || "") === "system-admin-video-link" &&
+      item?.deleted !== true &&
+      !String(item?.deletedAt || "").trim()
+    )
+    .sort((a: any, b: any) => String(b?.createdAt || "").localeCompare(String(a?.createdAt || "")))
+    .slice(0, 300)
+    .map((item: any) => ({
+      id: String(item?.id || ""),
+      hidden: item?.hiddenBySystemAdmin === true,
+      provider: String(item?.videoDisplayType || item?.provider || "youtube"),
+      url: String(item?.videoUrl || item?.url || ""),
+      title: String(item?.title || ""),
+      creatorId: String(item?.creatorId || ""),
+      creatorName: String(item?.creatorName || item?.actorLabel || ""),
+      creatorProfileUrl: String(item?.creatorProfileUrl || ""),
+      creatorAvatarUrl: String(item?.creatorAvatarUrl || item?.actorAvatarUri || ""),
+      thumbnailUrl: String(item?.thumbnailUrl || item?.thumbnailUri || item?.posterUri || ""),
+      publishedAt: String(item?.publishedAt || ""),
+      createdAt: String(item?.createdAt || ""),
+      countryCode: String(item?.countryCode || ""),
+      countryName: String(item?.countryName || ""),
+      languageCode: String(item?.languageCode || ""),
+      languageName: String(item?.languageName || ""),
+      stats: item?.platformStats && typeof item.platformStats === "object" ? item.platformStats : {},
+    }));
+
+  return json({ ok: true, items });
+}
+
 export async function POST(req: NextRequest) {
   const auth = await guardPlatformOfflineActivation(req, ["System_Admin"]);
   if (auth instanceof NextResponse) return auth;
@@ -186,6 +229,43 @@ export async function POST(req: NextRequest) {
     body = raw ? JSON.parse(raw) : {};
   } catch {
     return json({ ok: false, error: "Invalid request." }, 400);
+  }
+
+  const action = String(body?.action || "").trim().toLowerCase();
+  if (action === "hide" || action === "delete") {
+    const id = String(body?.id || "").trim();
+    const youtubePrefix = "system-admin-video-youtube-";
+    const tiktokPrefix = "system-admin-video-tiktok-";
+    const youtubeId = id.startsWith(youtubePrefix) ? id.slice(youtubePrefix.length) : "";
+    const tiktokId = id.startsWith(tiktokPrefix) ? id.slice(tiktokPrefix.length) : "";
+    const validId = /^[A-Za-z0-9_-]{11}$/.test(youtubeId) ||
+      (tiktokId.length >= 8 && tiktokId.length <= 24 && Array.from(tiktokId).every((char) => char >= "0" && char <= "9"));
+    if (!validId) return json({ ok: false, error: "Video haikutambuliwa." }, 400);
+
+    const existing = (await listFeedItems()).find(
+      (item: any) => String(item?.id || "") === id && String(item?.source || "") === "system-admin-video-link"
+    );
+    if (!existing) return json({ ok: false, error: "Video haikupatikana." }, 404);
+
+    const now = new Date().toISOString();
+    if (action === "delete") {
+      await upsertFeedItem({
+        ...existing,
+        deleted: true,
+        deletedAt: now,
+        deletedBy: String(auth.viewer.userId || "system-admin"),
+      } as any);
+      return json({ ok: true, deleted: true });
+    }
+
+    const hidden = body?.hidden === true;
+    await upsertFeedItem({
+      ...existing,
+      hiddenBySystemAdmin: hidden,
+      hiddenBySystemAdminAt: hidden ? now : null,
+      hiddenBySystemAdminBy: hidden ? String(auth.viewer.userId || "system-admin") : null,
+    } as any);
+    return json({ ok: true, hidden });
   }
 
   const parsed = parseVideoUrl(body?.url);
