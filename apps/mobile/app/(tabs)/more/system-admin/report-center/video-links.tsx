@@ -5,7 +5,9 @@ import {
   FlatList,
   Image,
   Linking,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -162,6 +164,7 @@ export default function SystemAdminVideoLinksScreen() {
   const [expandedAccountKey, setExpandedAccountKey] = React.useState("");
   const [updatingSavedLinkId, setUpdatingSavedLinkId] = React.useState("");
   const requestId = React.useRef(0);
+  const scrollRef = React.useRef<ScrollView | null>(null);
 
   const lookup = React.useCallback(async (value: string) => {
     setPublished(false);
@@ -381,7 +384,14 @@ export default function SystemAdminVideoLinksScreen() {
         </View>
       </View>
 
+      <KeyboardAvoidingView
+        style={styles.keyboardArea}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+      >
       <ScrollView
+        ref={scrollRef}
+        automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: insets.bottom + 32 }}
@@ -530,6 +540,9 @@ export default function SystemAdminVideoLinksScreen() {
             placeholder="https://youtu.be/... au https://www.tiktok.com/..."
             placeholderTextColor="rgba(255,255,255,0.36)"
             style={styles.urlInput}
+            onFocus={() => {
+              setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 250);
+            }}
             accessibilityLabel="Bandika link ya YouTube au TikTok"
           />
           {loading ? (
@@ -641,6 +654,7 @@ export default function SystemAdminVideoLinksScreen() {
           </GlassCard>
         ) : null}
       </ScrollView>
+      </KeyboardAvoidingView>
 
       <Modal visible={countryPickerVisible} animationType="slide" transparent onRequestClose={() => setCountryPickerVisible(false)}>
         <View style={styles.modalOverlay}>
@@ -730,6 +744,7 @@ export default function SystemAdminVideoLinksScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG },
+  keyboardArea: { flex: 1 },
   header: { paddingHorizontal: 16, paddingBottom: 10, flexDirection: "row", alignItems: "center", gap: 12 },
   backButton: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.075)", borderWidth: 1, borderColor: "rgba(244,208,111,0.24)" },
   eyebrow: { color: GOLD, fontSize: 9, fontWeight: "900", letterSpacing: 1.7 },
