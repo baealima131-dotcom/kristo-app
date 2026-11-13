@@ -46,7 +46,11 @@ import {
   YOUTUBE_CARD_H_PADDING,
   resolveWatchPlayerHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
-import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import {
+  resolveHomeFeedVideoDisplayType,
+  resolveHomeFeedVideoDisplayTypeFromDimensions,
+  type HomeFeedVideoDisplayType,
+} from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import {
   formatFeedTimestamp,
@@ -251,12 +255,14 @@ function buildWatchVideoPlayerSource(uri: string) {
 
 function WatchVideoSurface({
   payload,
-  isTikTokLayout = false,
+  displayType = "youtube",
   onPlaybackStarted,
+  onDisplayTypeDetected,
 }: {
   payload: HomeFeedVideoOpenPayload;
-  isTikTokLayout?: boolean;
+  displayType?: HomeFeedVideoDisplayType;
   onPlaybackStarted?: () => void;
+  onDisplayTypeDetected?: (displayType: HomeFeedVideoDisplayType) => void;
 }) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
@@ -274,6 +280,17 @@ function WatchVideoSurface({
   const backgroundPausedRef = useRef(false);
   const onPlaybackStartedRef = useRef(onPlaybackStarted);
   onPlaybackStartedRef.current = onPlaybackStarted;
+  const onDisplayTypeDetectedRef = useRef(onDisplayTypeDetected);
+  onDisplayTypeDetectedRef.current = onDisplayTypeDetected;
+
+  const reportTrackDisplayType = useCallback((track: any) => {
+    const width = Number(track?.size?.width || 0);
+    const height = Number(track?.size?.height || 0);
+    const detected = resolveHomeFeedVideoDisplayTypeFromDimensions(width, height);
+    if (detected) onDisplayTypeDetectedRef.current?.(detected);
+  }, []);
+
+  const isTikTokLayout = displayType === "tiktok";
 
   const isWatchAutoPlayBlocked = useCallback(
     () => userPausedRef.current || backgroundPausedRef.current,
@@ -321,6 +338,14 @@ function WatchVideoSurface({
   const backdropPlayerRef = useRef(backdropPlayer);
   playerRef.current = player;
   backdropPlayerRef.current = backdropPlayer;
+
+  useEventListener(player, "videoTrackChange", (event: any) => {
+    reportTrackDisplayType(event?.videoTrack);
+  });
+
+  useEffect(() => {
+    reportTrackDisplayType((player as any)?.videoTrack);
+  }, [player, reportTrackDisplayType]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -577,8 +602,8 @@ function WatchVideoSurface({
       {!ended ? (
         <VideoView
           player={player}
-          style={isTikTokLayout ? styles.videoOverBackdrop : styles.video}
-          contentFit="contain"
+          style={displayType === "youtube" ? styles.video : styles.videoPortrait}
+          contentFit={displayType === "tiktok" ? "cover" : "contain"}
           nativeControls
         />
       ) : null}
@@ -679,7 +704,12 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 }: Props) {
   const insets = useSafeAreaInsets();
   const { width, height: windowHeight } = useWindowDimensions();
-  const displayType = resolveHomeFeedVideoDisplayType(payload?.item);
+  const initialDisplayType = resolveHomeFeedVideoDisplayType(payload?.item || payload);
+  const [displayType, setDisplayType] = useState<HomeFeedVideoDisplayType>(initialDisplayType);
+  useEffect(() => {
+    setDisplayType(resolveHomeFeedVideoDisplayType(payload?.item || payload));
+  }, [payload?.postId]);
+  const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
   const playerHeight = useMemo(
     () =>
@@ -687,13 +717,16 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         windowWidth: width,
         windowHeight,
         topInset: insets.top,
-        isTikTokLayout,
+        isPortraitLayout,
       }),
-    [width, windowHeight, insets.top, isTikTokLayout]
+    [width, windowHeight, insets.top, isPortraitLayout]
   );
   const scrollRef = useRef<ScrollView | null>(null);
   const [playbackStarted, setPlaybackStarted] = useState(false);
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
+  const handleDisplayTypeDetected = useCallback((next: HomeFeedVideoDisplayType) => {
+    setDisplayType((current) => (current === next ? current : next));
+  }, []);
 
   const item = payload?.item;
 
@@ -870,8 +903,9 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         >
           <WatchVideoSurface
             payload={payload}
-            isTikTokLayout={isTikTokLayout}
+            displayType={displayType}
             onPlaybackStarted={handlePlaybackStarted}
+            onDisplayTypeDetected={handleDisplayTypeDetected}
           />
         </View>
 
@@ -1061,9 +1095,9 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
   },
-  videoOverBackdrop: {
+  videoPortrait: {
     height: "100%",
-    aspectRatio: 9 / 16,
+    aspectRatio: 4 / 5,
     alignSelf: "center",
     zIndex: 2,
     backgroundColor: "transparent",
