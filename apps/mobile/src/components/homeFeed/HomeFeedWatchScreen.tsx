@@ -83,6 +83,7 @@ import { FeedReportSheet } from "./FeedReportSheet";
 import { HomeFeedShareSheet } from "./HomeFeedShareSheet";
 import { ShareToChatSheet } from "./ShareToChatSheet";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
+import { recordQualifiedHomeFeedPostView, useHomeFeedPostViewCount } from "@/src/lib/homeFeedPostViews";
 import type { HomeFeedSharePayload } from "@/src/lib/homeFeedShare";
 import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import { formatActionCount } from "./homeFeedUtils";
@@ -1050,7 +1051,7 @@ function WatchExternalVideoSurface({ item }: { item: any }) {
   );
 }
 
-/** Current-video metadata — creator, title, date, country, language, and source statistics. */
+/** Current-video metadata — creator, title, date, and Kristo App view count. */
 function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle?: string }) {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const externalVideo = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
@@ -1059,9 +1060,22 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
   const whenLabel = externalVideo && item?.publishedAt
     ? new Date(String(item.publishedAt)).toLocaleDateString()
     : formatFeedTimestamp(item?.createdAt);
-  const stats = item?.platformStats && typeof item.platformStats === "object" ? item.platformStats : null;
-  const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat().format(value) : "—";
-  const provider = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
+  const postId = String(item?.id || "").trim();
+  const serverViewCount = Number(item?.viewCount || 0);
+  const viewCount = useHomeFeedPostViewCount(postId, serverViewCount);
+
+  useEffect(() => {
+    if (!externalVideo || !postId) return;
+    const timer = setTimeout(() => {
+      void recordQualifiedHomeFeedPostView({
+        postId,
+        serverCount: serverViewCount,
+        dwellMs: 3000,
+        mediaKind: "video",
+      });
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [externalVideo, postId, serverViewCount]);
 
   return (
     <View>
@@ -1079,10 +1093,8 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
       </View>
       {externalVideo ? (
         <View style={styles.externalVideoDetails}>
-          <Text style={styles.externalVideoDetailText}>{provider} statistics  ·  {count(stats?.views)} views  ·  {count(stats?.likes)} likes  ·  {count(stats?.comments)} comments</Text>
-          {[item?.countryName, item?.languageName].filter(Boolean).length ? (
-            <Text style={styles.externalVideoDetailText}>{[item?.countryName, item?.languageName].filter(Boolean).join("  ·  ")}</Text>
-          ) : null}
+          <Ionicons name="eye-outline" size={16} color={HOME_FEED_MUTED} />
+          <Text style={styles.externalVideoDetailText}>{formatActionCount(viewCount)} views</Text>
         </View>
       ) : null}
     </View>
@@ -1668,7 +1680,7 @@ const styles = StyleSheet.create({
   externalVideoWebViewContainer: { flex: 1, backgroundColor: "#000000" },
   externalVideoUnavailable: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 24 },
   externalVideoUnavailableText: { color: "#FFFFFF", textAlign: "center", fontSize: 14, fontWeight: "700" },
-  externalVideoDetails: { paddingHorizontal: YOUTUBE_CARD_H_PADDING, paddingTop: 8, gap: 4 },
+  externalVideoDetails: { flexDirection: "row", alignItems: "center", paddingHorizontal: YOUTUBE_CARD_H_PADDING, paddingTop: 8, gap: 6 },
   externalVideoDetailText: { color: HOME_FEED_MUTED, fontSize: 12, lineHeight: 17, fontWeight: "600" },
   playerSurface: {
     flex: 1,
