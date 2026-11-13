@@ -156,19 +156,29 @@ function WatchPanelActions({
   onReport: () => void;
 }) {
   const engagement = useHomeFeedRowEngagement(item);
+  const externalVideo = String(item?.source || "").trim() === "system-admin-video-link";
+  const platformStats = externalVideo && item?.platformStats && typeof item.platformStats === "object"
+    ? item.platformStats
+    : {};
+  const platformCount = (value: unknown) => {
+    const count = Number(value);
+    return Number.isFinite(count) && count >= 0 ? count : 0;
+  };
+  const likeCount = engagement.likeCount + platformCount((platformStats as any).likes);
+  const commentCount = engagement.commentCount + platformCount((platformStats as any).comments);
 
   return (
     <View style={styles.watchActionsRow}>
       <WatchPanelAction
         icon={engagement.likedByMe || engagement.liked ? "heart" : "heart-outline"}
-        label={formatActionCount(engagement.likeCount)}
+        label={formatActionCount(likeCount)}
         active={engagement.likedByMe || engagement.liked}
         activeColor="#FF6B8A"
         onPress={onLike}
       />
       <WatchPanelAction
         icon="chatbubble-ellipses-outline"
-        label={formatActionCount(engagement.commentCount)}
+        label={formatActionCount(commentCount)}
         onPress={onComment}
       />
       <WatchPanelAction
@@ -1063,6 +1073,11 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
   const postId = String(item?.id || "").trim();
   const serverViewCount = Number(item?.viewCount || 0);
   const viewCount = useHomeFeedPostViewCount(postId, serverViewCount);
+  const platformStats = externalVideo && item?.platformStats && typeof item.platformStats === "object"
+    ? item.platformStats
+    : {};
+  const youtubeViews = Number((platformStats as any).views);
+  const combinedViewCount = viewCount + (Number.isFinite(youtubeViews) && youtubeViews > 0 ? youtubeViews : 0);
 
   useEffect(() => {
     if (!externalVideo || !postId) return;
@@ -1094,7 +1109,7 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
       {externalVideo ? (
         <View style={styles.externalVideoDetails}>
           <Ionicons name="eye-outline" size={16} color={HOME_FEED_MUTED} />
-          <Text style={styles.externalVideoDetailText}>{formatActionCount(viewCount)} views</Text>
+          <Text style={styles.externalVideoDetailText}>{formatActionCount(combinedViewCount)} views</Text>
         </View>
       ) : null}
     </View>
