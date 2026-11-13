@@ -1,0 +1,115 @@
+import { apiGet, apiPost } from "@/src/lib/kristoApi";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+
+export type SystemAdminVideoMetadata = {
+  provider: "youtube" | "tiktok" | "facebook";
+  videoId: string;
+  url: string;
+  title: string;
+  creatorName: string;
+  creatorId?: string | null;
+  creatorProfileUrl: string | null;
+  detectedLanguageCode?: string;
+  creatorAvatarUrl: string | null;
+  thumbnailUrl: string | null;
+  publishedAt: string | null;
+  stats: {
+    views: number | null;
+    likes: number | null;
+    comments: number | null;
+  };
+  unavailableFields?: string[];
+  /** Facebook: the link as pasted (opened by "Fungua Facebook") and the video's shape. */
+  originalUrl?: string;
+  orientation?: "vertical" | "landscape";
+};
+
+export async function fetchSystemAdminVideoMetadata(url: string): Promise<SystemAdminVideoMetadata> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    { url },
+    { headers: getKristoHeaders() as any }
+  );
+
+  if (!response || response.ok !== true || !response.metadata) {
+    throw new Error(String(response?.error || "Taarifa za video hazikupatikana."));
+  }
+  return response.metadata as SystemAdminVideoMetadata;
+}
+
+export type SavedSystemAdminVideoLink = {
+  id: string;
+  hidden: boolean;
+  provider: "youtube" | "tiktok" | "facebook";
+  url: string;
+  title: string;
+  creatorId: string;
+  creatorName: string;
+  creatorProfileUrl: string;
+  creatorAvatarUrl: string;
+  thumbnailUrl: string;
+  publishedAt: string;
+  createdAt: string;
+  countryCode: string;
+  countryName: string;
+  languageCode: string;
+  languageName: string;
+  stats: { views?: number | null; likes?: number | null; comments?: number | null };
+};
+
+export async function fetchSavedSystemAdminVideoLinks(): Promise<SavedSystemAdminVideoLink[]> {
+  const response: any = await apiGet(
+    "/api/system-admin/video-links/metadata",
+    { headers: getKristoHeaders() as any }
+  );
+  if (!response || response.ok !== true || !Array.isArray(response.items)) {
+    throw new Error(String(response?.error || "Video zilizohifadhiwa hazikupatikana."));
+  }
+  return response.items as SavedSystemAdminVideoLink[];
+}
+
+export async function setSystemAdminVideoLinkHidden(id: string, hidden: boolean): Promise<void> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    { action: "hide", id, hidden },
+    { headers: getKristoHeaders() as any }
+  );
+  if (!response || response.ok !== true || response.hidden !== hidden) {
+    throw new Error(String(response?.error || "Hali ya video haikubadilishwa."));
+  }
+}
+
+export async function deleteSystemAdminVideoLink(id: string): Promise<void> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    { action: "delete", id },
+    { headers: getKristoHeaders() as any }
+  );
+  if (!response || response.ok !== true || response.deleted !== true) {
+    throw new Error(String(response?.error || "Video haikuondolewa kwenye Home Feed."));
+  }
+}
+
+export async function publishSystemAdminVideoLink(
+  url: string,
+  country: { code: string; name: string },
+  language: { code: string; name: string }
+): Promise<{ feedItemId: string }> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    {
+      action: "publish",
+      url,
+      countryCode: country.code,
+      countryName: country.name,
+      languageCode: language.code,
+      languageName: language.name,
+    },
+    { headers: getKristoHeaders() as any }
+  );
+
+  if (!response || response.ok !== true || response.published !== true || !response.feedItemId) {
+    throw new Error(String(response?.error || "Video haikuongezwa kwenye Home Feed."));
+  }
+  return { feedItemId: String(response.feedItemId) };
+}

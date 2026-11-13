@@ -13,6 +13,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { isFacebookVideoHost } from "@/src/lib/facebookVideoLink";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   logMediaPosterCacheHit,
@@ -353,6 +354,14 @@ function logPosterPipelineDiag(params: {
   });
 }
 
+function isFacebookVideoHostUrl(value: string): boolean {
+  try {
+    return isFacebookVideoHost(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function FeedVideoPosterImage(props: FeedVideoPosterImageProps) {
   if (props.youtubeMode) {
     return <YouTubeFeedVideoPoster {...props} />;
@@ -502,6 +511,12 @@ function YouTubeFeedVideoPoster({
   const tryGenerateFrame = React.useCallback(async () => {
     if (!resolvedVideoUrl || isProcessing || frameGenAttemptedRef.current) return;
     frameGenAttemptedRef.current = true;
+    // A Facebook link is a web page, not a video file, and Facebook provides no thumbnail:
+    // keep Kristo's branded cover instead of trying to read frames from it.
+    if (isFacebookVideoHostUrl(resolvedVideoUrl)) {
+      settleOnPlaceholder("facebook-link-no-thumbnail");
+      return;
+    }
     if (!loadStartLoggedRef.current) {
       loadStartLoggedRef.current = true;
       logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, "generated-frame");

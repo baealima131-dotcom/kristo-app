@@ -177,6 +177,16 @@ export function resolvePlayableHomeFeedMediaUrl(item: any): string {
 /** YouTube Home Feed: playable media only — excludes testimony, announcement, prayer, text-only posts. */
 export function isHomeFeedYoutubeVideoMediaRow(item: any): boolean {
   if (!item) return false;
+  // System admin video links: public YouTube, TikTok or Facebook pages played with official embeds.
+  if (String(item?.source || "").trim().toLowerCase() === "system-admin-video-link") {
+    try {
+      const url = new URL(String(item?.videoUrl || item?.url || ""));
+      return url.protocol === "https:" &&
+        ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "tiktok.com", "www.tiktok.com", "m.tiktok.com", "www.facebook.com"].includes(url.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
   if (isExplicitHomeFeedMediaScheduleRow(item)) return true;
   if (isMediaLiveSlotsHomeFeedRow(item)) return true;
 
@@ -1864,7 +1874,10 @@ export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
   const initial = String(resolveChurchName(item) || "K").trim().charAt(0).toUpperCase() || "K";
   const churchMediaFirst = churchRoomPost || isHomeFeedChurchMediaPost(item);
   const cacheBustAt = homeFeedAvatarCacheBustAt(item);
-  const sources = homeFeedAvatarSourceFields(item, churchMediaFirst);
+  const isExternalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
+  const sources = isExternalVideoAccount
+    ? [item?.creatorAvatarUrl, item?.actorAvatarUri, item?.avatarUri, item?.authorAvatarUri]
+    : homeFeedAvatarSourceFields(item, churchMediaFirst);
 
   const uris: string[] = [];
   for (const raw of sources) {
@@ -1883,6 +1896,10 @@ export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
 export function resolveHomeFeedAvatarCacheKey(item: any): string {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const authorUserId = String(item?.createdBy || item?.authorUserId || "").trim();
+  if (String(item?.source || "").trim().toLowerCase() === "system-admin-video-link") {
+    const creatorKey = String(item?.creatorId || item?.creatorProfileUrl || item?.creatorName || "").trim();
+    if (creatorKey) return `external-video-account:${creatorKey.toLowerCase()}`;
+  }
 
   if (churchRoomPost && authorUserId) {
     return `user:${authorUserId}`;
@@ -1907,6 +1924,11 @@ export type HomeFeedAvatarCacheContext = HomeFeedDisplayAvatar & {
 export function resolveHomeFeedAvatarCacheContext(item: any): HomeFeedAvatarCacheContext {
   const display = resolveHomeFeedDisplayAvatar(item);
   const remoteUris = [display.uri, display.backupUri].filter(Boolean);
+  // External video accounts (YouTube/TikTok/Facebook links) all share the system admin church id.
+  // Without the creator's own picture, show the initial instead of any cached picture.
+  if (remoteUris.length === 0 && String(item?.source || "").trim().toLowerCase() === "system-admin-video-link") {
+    return { ...display, cacheKey: "", remoteUris, avatarUpdatedAt: homeFeedAvatarCacheBustAt(item) };
+  }
   const cacheKey =
     resolveHomeFeedAvatarCacheKey(item) ||
     (display.uri ? homeFeedAvatarUrlCacheKey(display.uri) : "") ||

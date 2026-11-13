@@ -1,3 +1,5 @@
+import { isVerticalFacebookVideoItem } from "@/src/lib/facebookVideoLink";
+
 export type HomeFeedVideoDisplayType = "youtube" | "tiktok" | "portrait45";
 
 function displayTypeFromValue(value: unknown): HomeFeedVideoDisplayType | null {
@@ -54,6 +56,10 @@ function resolveAspectRatio(item: any): number | null {
 export function resolveHomeFeedVideoDisplayTypeHint(
   item: any
 ): HomeFeedVideoDisplayType | null {
+  // Facebook links: Reels use the vertical layout, other Facebook videos the landscape one.
+  if (String(item?.videoDisplayType || "").trim().toLowerCase() === "facebook") {
+    return isVerticalFacebookVideoItem(item) ? "tiktok" : "youtube";
+  }
   const explicit = displayTypeFromValue(item?.videoDisplayType ?? item?.displayType);
   if (explicit) return explicit;
 

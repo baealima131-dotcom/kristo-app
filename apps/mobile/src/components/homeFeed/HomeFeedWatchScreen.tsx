@@ -2,6 +2,7 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "
 import {
   AppState,
   Image,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -12,6 +13,15 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
+import { WebView } from "react-native-webview";
+import {
+  buildFacebookEmbedHtml,
+  buildFacebookEmbedPluginUrl,
+  facebookOpenUrl,
+  isFacebookPlayerHost,
+  isFacebookVideoLinkItem,
+} from "@/src/lib/facebookVideoLink";
+import { recordQualifiedHomeFeedPostView } from "@/src/lib/homeFeedPostViews";
 import {
   safePauseVideoPlayer,
   safePlayVideoPlayer,
@@ -640,11 +650,219 @@ function WatchVideoSurface({
 }
 
 /** Current-video metadata — avatar, church, title, date. */
+function buildExternalVideoEmbedUrl(item: any): string | null {
+  const raw = String(item?.videoUrl || item?.url || "").trim();
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port) return null;
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(host)) {
+      const videoId = host === "youtu.be"
+        ? parsed.pathname.split("/").filter(Boolean)[0] || ""
+        : parsed.pathname === "/watch"
+          ? parsed.searchParams.get("v") || ""
+          : parsed.pathname.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})(?:\/|$)/)?.[1] || "";
+      if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return null;
+      return `https://www.youtube-nocookie.com/embed/${videoId}?playsinline=1&controls=1&rel=0&autoplay=1`;
+    }
+    if (["tiktok.com", "m.tiktok.com"].includes(host)) {
+      const videoId = parsed.pathname.match(/^\/@[A-Za-z0-9._-]+\/video\/(\d+)(?:\/|$)/)?.[1] || "";
+      if (!/^\d{8,24}$/.test(videoId)) return null;
+      return `https://www.tiktok.com/player/v1/${videoId}?controls=1&description=1&music_info=1&autoplay=1&loop=0`;
+    }
+  } catch {}
+  return null;
+}
+
+function allowExternalPlayerNavigation(request: { url: string; isTopFrame?: boolean }) {
+  if (request.isTopFrame === false) return true;
+  try {
+    const next = new URL(request.url);
+    if (next.protocol !== "https:") return false;
+    const host = next.hostname.toLowerCase().replace(/^www\./, "");
+    return ["youtube.com", "youtube-nocookie.com", "youtu.be", "tiktok.com", "m.tiktok.com"].includes(host);
+  } catch {
+    return false;
+  }
+}
+
+const FACEBOOK_EMBED_BASE_URL = "https://kristo-app.vercel.app/watch/facebook-embed";
+const FACEBOOK_OPEN_BAR_HEIGHT = 36;
+
+function openFacebookLink(item: any) {
+  const target = facebookOpenUrl(item);
+  if (target) void Linking.openURL(target).catch(() => {});
+}
+
+/**
+ * Plays a confirmed public Facebook video or Reel with Facebook's official Embedded Video Player.
+ * The original link is always one tap away ("Fungua Facebook"), and replaces the player when the
+ * embed cannot load. Private videos are never attempted: only oEmbed-confirmed posts reach here.
+ */
+function WatchFacebookVideoSurface({ item }: { item: any }) {
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  const [failed, setFailed] = useState(false);
+  const pluginUrl = size ? buildFacebookEmbedPluginUrl(item, size) : null;
+  const canOpen = Boolean(facebookOpenUrl(item));
+
+  useEffect(() => {
+    setFailed(false);
+  }, [item?.id]);
+
+  const allowNavigation = useCallback(
+    (request: { url: string; isTopFrame?: boolean }) => {
+      if (request.url === "about:blank" || request.url.startsWith(FACEBOOK_EMBED_BASE_URL)) return true;
+      try {
+        const next = new URL(request.url);
+        if (next.protocol !== "https:" || !isFacebookPlayerHost(next.hostname)) return false;
+        // The player itself runs in its iframe; anything that tries to replace the page
+        // (title, page name, "Watch on Facebook") opens in Facebook instead.
+        if (request.isTopFrame === false) return true;
+        void Linking.openURL(next.toString()).catch(() => {});
+      } catch {}
+      return false;
+    },
+    []
+  );
+
+  const showPlayer = Boolean(pluginUrl) && !failed;
+  return (
+    <View
+      style={styles.externalVideoSurface}
+      onLayout={(event) => {
+        const { width } = event.nativeEvent.layout;
+        const height = event.nativeEvent.layout.height - (canOpen ? FACEBOOK_OPEN_BAR_HEIGHT : 0);
+        if (width > 0 && height > 0 && (!size || Math.abs(size.width - width) > 2 || Math.abs(size.height - height) > 2)) {
+          setSize({ width, height });
+        }
+      }}
+    >
+      {showPlayer ? (
+        <View style={styles.facebookPlayerColumn}>
+        <WebView
+          key={pluginUrl!}
+          source={{ html: buildFacebookEmbedHtml(pluginUrl!), baseUrl: FACEBOOK_EMBED_BASE_URL }}
+          style={styles.externalVideoWebView}
+          containerStyle={styles.externalVideoWebViewContainer}
+          originWhitelist={["https://*", "about:blank"]}
+          javaScriptEnabled
+          domStorageEnabled
+          allowsInlineMediaPlayback
+          mediaPlaybackRequiresUserAction={false}
+          allowsFullscreenVideo
+          scrollEnabled={false}
+          bounces={false}
+          setSupportMultipleWindows={false}
+          onShouldStartLoadWithRequest={allowNavigation}
+          onError={() => setFailed(true)}
+          onHttpError={() => setFailed(true)}
+          accessibilityLabel="Facebook video player"
+        />
+        {canOpen ? (
+          <Pressable
+            onPress={() => openFacebookLink(item)}
+            style={styles.facebookOpenBar}
+            accessibilityRole="button"
+            accessibilityLabel="Fungua Facebook"
+          >
+            <Ionicons name="logo-facebook" size={14} color="#FFFFFF" />
+            <Text style={styles.facebookOpenChipText}>Fungua Facebook</Text>
+          </Pressable>
+        ) : null}
+        </View>
+      ) : size && (failed || !pluginUrl) ? (
+        <View style={styles.externalVideoUnavailable}>
+          <Ionicons name="logo-facebook" size={28} color="#FFFFFF" />
+          <Text style={styles.externalVideoUnavailableText}>Video hii ya Facebook haiwezi kuchezwa hapa.</Text>
+          {canOpen ? (
+            <Pressable
+              onPress={() => openFacebookLink(item)}
+              style={styles.facebookOpenButton}
+              accessibilityRole="button"
+              accessibilityLabel="Fungua Facebook"
+            >
+              <Ionicons name="open-outline" size={16} color="#FFFFFF" />
+              <Text style={styles.facebookOpenButtonText}>Fungua Facebook</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** Plays public YouTube/TikTok links in Kristo's Watch view using the platforms' embed players. */
+function WatchExternalVideoSurface({ item }: { item: any }) {
+  if (isFacebookVideoLinkItem(item)) {
+    return <WatchFacebookVideoSurface item={item} />;
+  }
+  const provider = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
+  const embedUrl = buildExternalVideoEmbedUrl(item);
+  // YouTube requires a client identity Referer for native WebView embeds (Error 153).
+  // Use Kristo's registered iOS bundle ID in the HTTPS Referer as YouTube specifies.
+  const playerSource = provider === "YouTube" && embedUrl
+    ? {
+        uri: embedUrl,
+        headers: { Referer: "https://com.princefariji.kristoapp.free" },
+      }
+    : embedUrl
+      ? { uri: embedUrl }
+      : null;
+  return (
+    <View style={styles.externalVideoSurface}>
+      {embedUrl ? (
+        <WebView
+          key={embedUrl}
+          source={playerSource!}
+          style={styles.externalVideoWebView}
+          containerStyle={styles.externalVideoWebViewContainer}
+          originWhitelist={["https://*"]}
+          javaScriptEnabled
+          domStorageEnabled
+          allowsInlineMediaPlayback
+          mediaPlaybackRequiresUserAction={false}
+          allowsFullscreenVideo
+          scrollEnabled={false}
+          bounces={false}
+          setSupportMultipleWindows={false}
+          onShouldStartLoadWithRequest={allowExternalPlayerNavigation}
+          accessibilityLabel={`${provider} video player`}
+        />
+      ) : (
+        <View style={styles.externalVideoUnavailable}>
+          <Ionicons name="alert-circle-outline" size={26} color={HOME_FEED_GOLD} />
+          <Text style={styles.externalVideoUnavailableText}>Link ya video haiwezi kuchezwa hapa.</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
 function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle?: string }) {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const postTitle = resolveHomeFeedVideoTitle(item);
   const titleLine = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle || fallbackTitle;
-  const whenLabel = formatFeedTimestamp(item?.createdAt);
+  // Video links show the platform's publish date; the embed player reports no playback, so a
+  // Kristo view is counted after 3 seconds on screen.
+  const externalVideo = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
+  const whenLabel = externalVideo && item?.publishedAt
+    ? new Date(String(item.publishedAt)).toLocaleDateString()
+    : formatFeedTimestamp(item?.createdAt);
+  const postId = String(item?.id || "").trim();
+  const serverViewCount = Number(item?.viewCount || 0);
+
+  useEffect(() => {
+    if (!externalVideo || !postId) return;
+    const timer = setTimeout(() => {
+      void recordQualifiedHomeFeedPostView({
+        postId,
+        serverCount: serverViewCount,
+        dwellMs: 3000,
+        mediaKind: "video",
+      });
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [externalVideo, postId, serverViewCount]);
 
   return (
     <View style={styles.metaRow}>
@@ -919,12 +1137,16 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             isTikTokLayout ? styles.playerWrapTikTok : null,
           ]}
         >
-          <WatchVideoSurface
-            payload={payload}
-            displayType={displayType}
-            onPlaybackStarted={handlePlaybackStarted}
-            onDisplayTypeDetected={handleDisplayTypeDetected}
-          />
+          {String(payload.item?.source || "").trim().toLowerCase() === "system-admin-video-link" ? (
+            <WatchExternalVideoSurface item={payload.item} />
+          ) : (
+            <WatchVideoSurface
+              payload={payload}
+              displayType={displayType}
+              onPlaybackStarted={handlePlaybackStarted}
+              onDisplayTypeDetected={handleDisplayTypeDetected}
+            />
+          )}
         </View>
 
         <View style={styles.currentVideoPanel}>
@@ -1037,6 +1259,39 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 });
 
 const styles = StyleSheet.create({
+  externalVideoSurface: {
+    flex: 1,
+    width: "100%",
+    backgroundColor: "#000000",
+    overflow: "hidden",
+  },
+  externalVideoWebView: { flex: 1, backgroundColor: "#000000" },
+  externalVideoWebViewContainer: { flex: 1, backgroundColor: "#000000" },
+  externalVideoUnavailable: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 24 },
+  externalVideoUnavailableText: { color: "#FFFFFF", textAlign: "center", fontSize: 14, fontWeight: "700" },
+  facebookOpenButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginTop: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "#1877F2",
+  },
+  facebookOpenButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
+  facebookPlayerColumn: { flex: 1 },
+  facebookOpenBar: {
+    height: FACEBOOK_OPEN_BAR_HEIGHT,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#111318",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.12)",
+  },
+  facebookOpenChipText: { color: "#FFFFFF", fontSize: 12, fontWeight: "800" },
   screen: {
     flex: 1,
     backgroundColor: HOME_FEED_BG,
