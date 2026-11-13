@@ -235,9 +235,13 @@ export async function POST(req: NextRequest) {
   const action = String(body?.action || "").trim().toLowerCase();
   if (action === "hide" || action === "delete") {
     const id = String(body?.id || "").trim();
-    if (!/^system-admin-video-(youtube-[A-Za-z0-9_-]{11}|tiktok-\\d{8,24})$/.test(id)) {
-      return json({ ok: false, error: "Video haikutambuliwa." }, 400);
-    }
+    const youtubePrefix = "system-admin-video-youtube-";
+    const tiktokPrefix = "system-admin-video-tiktok-";
+    const youtubeId = id.startsWith(youtubePrefix) ? id.slice(youtubePrefix.length) : "";
+    const tiktokId = id.startsWith(tiktokPrefix) ? id.slice(tiktokPrefix.length) : "";
+    const validId = /^[A-Za-z0-9_-]{11}$/.test(youtubeId) ||
+      (tiktokId.length >= 8 && tiktokId.length <= 24 && Array.from(tiktokId).every((char) => char >= "0" && char <= "9"));
+    if (!validId) return json({ ok: false, error: "Video haikutambuliwa." }, 400);
     const existing = (await listFeedItems()).find(
       (item: any) => String(item?.id || "") === id && String(item?.source || "") === "system-admin-video-link"
     );
