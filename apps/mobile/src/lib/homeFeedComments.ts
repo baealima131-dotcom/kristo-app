@@ -381,6 +381,46 @@ export async function fetchFeedComments(postId: string, options?: { bypassCache?
   }
 }
 
+export type YouTubeVideoComment = {
+  id: string;
+  authorName: string;
+  authorAvatarUrl: string;
+  text: string;
+  publishedAt: string;
+  likeCount: number;
+  replyCount: number;
+};
+
+export async function fetchYouTubeVideoComments(postId: string) {
+  const cleanPostId = normalizeCommentPostId(postId);
+  if (!cleanPostId) return { ok: false as const, error: "Missing post id", comments: [] as YouTubeVideoComment[] };
+  try {
+    const res: any = await apiGet(
+      `/api/church/video-link-comments?postId=${encodeURIComponent(cleanPostId)}`,
+      { headers: sessionHeaders() },
+      { screen: "HomeFeedYouTubeComments", throttleMs: 0, dedupe: false }
+    );
+    if (!res?.ok) {
+      return { ok: false as const, error: String(res?.error || "Could not load YouTube comments."), comments: [] as YouTubeVideoComment[] };
+    }
+    const comments = (Array.isArray(res?.comments) ? res.comments : [])
+      .slice(0, 100)
+      .map((row: any) => ({
+        id: String(row?.id || ""),
+        authorName: String(row?.authorName || "YouTube user"),
+        authorAvatarUrl: String(row?.authorAvatarUrl || ""),
+        text: String(row?.text || ""),
+        publishedAt: String(row?.publishedAt || ""),
+        likeCount: Math.max(0, Number(row?.likeCount) || 0),
+        replyCount: Math.max(0, Number(row?.replyCount) || 0),
+      }))
+      .filter((row: YouTubeVideoComment) => row.id && row.text);
+    return { ok: true as const, comments, unavailable: String(res?.unavailable || "") };
+  } catch (error: any) {
+    return { ok: false as const, error: String(error?.message || "Could not load YouTube comments."), comments: [] as YouTubeVideoComment[] };
+  }
+}
+
 export async function reloadFeedCommentsAfterPost(postId: string) {
   const cleanPostId = normalizeCommentPostId(postId);
   console.log("KRISTO_COMMENTS_RELOAD_AFTER_POST", { postId: cleanPostId });
