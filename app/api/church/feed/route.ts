@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { normalizeVideoDimensions, probeRemoteVideoDimensions } from "@/lib/videoDimensions";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveActorIdentity } from "@/app/api/_lib/notificationActor";
@@ -967,6 +968,17 @@ function applyVideoMetadataFields(item: any, body?: any) {
   if (bitrateEstimate) {
     item.bitrateEstimate = Math.round(bitrateEstimate);
   }
+  // Display dimensions (rotation applied) let clients pick the 4:5 or 16:9 frame before playback.
+  const dimensions =
+    normalizeVideoDimensions(body?.videoWidth, body?.videoHeight) ??
+    normalizeVideoDimensions(item?.videoWidth, item?.videoHeight);
+  if (dimensions) {
+    item.videoWidth = dimensions.width;
+    item.videoHeight = dimensions.height;
+  } else {
+    delete item.videoWidth;
+    delete item.videoHeight;
+  }
   if (faststart) {
     item.faststart = true;
     item.faststartPending = false;
@@ -991,6 +1003,7 @@ function withVideoMetadataReturnFields(item: any) {
     Number(next?.durationMs || 0) > 0 ||
     Number(next?.sizeBytes || 0) > 0 ||
     Number(next?.bitrateEstimate || 0) > 0 ||
+    Number(next?.videoWidth || 0) > 0 ||
     next?.faststart === true;
 
   if (hasMetadata) {
@@ -1001,6 +1014,8 @@ function withVideoMetadataReturnFields(item: any) {
       sizeBytes: Number(next?.sizeBytes || 0) || null,
       fileSizeBytes: Number(next?.fileSizeBytes || 0) || null,
       bitrateEstimate: Number(next?.bitrateEstimate || 0) || null,
+      videoWidth: Number(next?.videoWidth || 0) || null,
+      videoHeight: Number(next?.videoHeight || 0) || null,
       faststart: next?.faststart === true,
       source: String(next?.source || ""),
     });
@@ -5099,6 +5114,20 @@ const ministryId = resolveScheduleMinistryId(null, body);
 
   if (type === "video" || videoUrl) {
     applyVideoMetadataFields(item as any, body);
+    // Older app versions do not send dimensions: read them from the uploaded file's header
+    // (bounded, best effort; the post is saved either way).
+    if (!(item as any).videoWidth && String(videoUrl || "").trim()) {
+      const probed = await probeRemoteVideoDimensions(String(videoUrl), { timeoutMs: 3000 }).catch(() => null);
+      if (probed) {
+        (item as any).videoWidth = probed.width;
+        (item as any).videoHeight = probed.height;
+      }
+      console.log("KRISTO_VIDEO_DIMENSIONS_PROBED", {
+        id: item.id,
+        videoWidth: probed?.width ?? null,
+        videoHeight: probed?.height ?? null,
+      });
+    }
   }
 
   if ((type === "video" || videoUrl) && (item as any).faststart !== true) {

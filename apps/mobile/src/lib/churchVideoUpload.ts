@@ -401,6 +401,14 @@ export function buildChurchVideoPublishMetadata(params: {
   };
 }
 
+/** Valid display dimensions as publish fields, or nothing when unknown/invalid. */
+export function videoDimensionFields(width: unknown, height: unknown): { videoWidth?: number; videoHeight?: number } {
+  const w = Math.round(Math.abs(Number(width)));
+  const h = Math.round(Math.abs(Number(height)));
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0 || w > 16384 || h > 16384) return {};
+  return { videoWidth: w, videoHeight: h };
+}
+
 export type PublishedFeedPost = {
   item: Record<string, unknown>;
   backendFeedId: string;
@@ -464,6 +472,9 @@ export async function publishChurchVideoFeedPost(params: {
   faststartPending?: boolean;
   faststartReason?: string | null;
   videoDisplayType?: HomeFeedVideoDisplayType;
+  /** Display width/height of the video (rotation applied). */
+  videoWidth?: number;
+  videoHeight?: number;
 }) {
   const poster = String(params.posterUri || params.videoPosterUri || params.thumbnailUri || "").trim();
   const branded = !poster || isBrandedVideoPosterUri(poster);
@@ -496,6 +507,7 @@ export async function publishChurchVideoFeedPost(params: {
     ...(String(params.caption || "").trim() ? { text: String(params.caption).trim() } : {}),
     videoUrl: params.videoUrl,
     videoDisplayType: params.videoDisplayType === "tiktok" ? "tiktok" : "youtube",
+    ...videoDimensionFields(params.videoWidth, params.videoHeight),
     ...(metadata.durationMs ? { durationMs: metadata.durationMs } : {}),
     ...(metadata.sizeBytes > 0 ? { sizeBytes: metadata.sizeBytes } : {}),
     ...(publishBitrateEstimate ? { bitrateEstimate: publishBitrateEstimate } : {}),
