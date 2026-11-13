@@ -1,8 +1,6 @@
 export type HomeFeedVideoDisplayType = "youtube" | "tiktok" | "portrait45";
 
-export function normalizeHomeFeedVideoDisplayType(
-  value: unknown
-): HomeFeedVideoDisplayType {
+function displayTypeFromValue(value: unknown): HomeFeedVideoDisplayType | null {
   const raw = String(value || "")
     .trim()
     .toLowerCase();
@@ -10,7 +8,16 @@ export function normalizeHomeFeedVideoDisplayType(
   if (["portrait45", "portrait_4_5", "portrait-4:5", "4:5", "4x5", "portrait"].includes(raw)) {
     return "portrait45";
   }
-  return "youtube";
+  if (["youtube", "landscape", "horizontal", "16:9", "16/9"].includes(raw)) {
+    return "youtube";
+  }
+  return null;
+}
+
+export function normalizeHomeFeedVideoDisplayType(
+  value: unknown
+): HomeFeedVideoDisplayType {
+  return displayTypeFromValue(value) || "youtube";
 }
 
 export function resolveHomeFeedVideoDisplayTypeFromDimensions(
@@ -44,16 +51,19 @@ function resolveAspectRatio(item: any): number | null {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
-export function resolveHomeFeedVideoDisplayType(item: any): HomeFeedVideoDisplayType {
-  const rawType = item?.videoDisplayType ?? item?.displayType;
-  const raw = String(rawType || "").trim().toLowerCase();
-  if (raw) return normalizeHomeFeedVideoDisplayType(raw);
+export function resolveHomeFeedVideoDisplayTypeHint(
+  item: any
+): HomeFeedVideoDisplayType | null {
+  const explicit = displayTypeFromValue(item?.videoDisplayType ?? item?.displayType);
+  if (explicit) return explicit;
 
   const aspect = resolveAspectRatio(item);
-  if (aspect != null) {
-    return resolveHomeFeedVideoDisplayTypeFromDimensions(aspect, 1) || "youtube";
-  }
-  return "youtube";
+  if (aspect == null) return null;
+  return resolveHomeFeedVideoDisplayTypeFromDimensions(aspect, 1);
+}
+
+export function resolveHomeFeedVideoDisplayType(item: any): HomeFeedVideoDisplayType {
+  return resolveHomeFeedVideoDisplayTypeHint(item) || "youtube";
 }
 
 export function isTikTokStyleHomeFeedVideo(item: any): boolean {

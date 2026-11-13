@@ -49,6 +49,7 @@ import {
 import {
   resolveHomeFeedVideoDisplayType,
   resolveHomeFeedVideoDisplayTypeFromDimensions,
+  resolveHomeFeedVideoDisplayTypeHint,
   type HomeFeedVideoDisplayType,
 } from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
@@ -255,12 +256,12 @@ function buildWatchVideoPlayerSource(uri: string) {
 
 function WatchVideoSurface({
   payload,
-  displayType = "youtube",
+  displayType,
   onPlaybackStarted,
   onDisplayTypeDetected,
 }: {
   payload: HomeFeedVideoOpenPayload;
-  displayType?: HomeFeedVideoDisplayType;
+  displayType?: HomeFeedVideoDisplayType | null;
   onPlaybackStarted?: () => void;
   onDisplayTypeDetected?: (displayType: HomeFeedVideoDisplayType) => void;
 }) {
@@ -341,6 +342,9 @@ function WatchVideoSurface({
 
   useEventListener(player, "videoTrackChange", (event: any) => {
     reportTrackDisplayType(event?.videoTrack);
+  });
+  useEventListener(player, "statusChange", () => {
+    reportTrackDisplayType((player as any)?.videoTrack);
   });
 
   useEffect(() => {
@@ -704,10 +708,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 }: Props) {
   const insets = useSafeAreaInsets();
   const { width, height: windowHeight } = useWindowDimensions();
-  const initialDisplayType = resolveHomeFeedVideoDisplayType(payload?.item || payload);
-  const [displayType, setDisplayType] = useState<HomeFeedVideoDisplayType>(initialDisplayType);
+  const initialDisplayType = resolveHomeFeedVideoDisplayTypeHint(payload?.item || payload);
+  const [displayType, setDisplayType] = useState<HomeFeedVideoDisplayType | null>(initialDisplayType);
   useEffect(() => {
-    setDisplayType(resolveHomeFeedVideoDisplayType(payload?.item || payload));
+    setDisplayType(resolveHomeFeedVideoDisplayTypeHint(payload?.item || payload));
   }, [payload?.postId]);
   const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
@@ -725,7 +729,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const [playbackStarted, setPlaybackStarted] = useState(false);
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
   const handleDisplayTypeDetected = useCallback((next: HomeFeedVideoDisplayType) => {
-    setDisplayType((current) => (current === next ? current : next));
+    setDisplayType((current) => {
+      if (next === "youtube" && current != null && current !== "youtube") return current;
+      return current === next ? current : next;
+    });
   }, []);
 
   const item = payload?.item;
