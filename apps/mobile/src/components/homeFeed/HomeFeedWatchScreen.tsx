@@ -1010,12 +1010,22 @@ function allowExternalPlayerNavigation(request: { url: string; isTopFrame?: bool
 function WatchExternalVideoSurface({ item }: { item: any }) {
   const provider = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
   const embedUrl = buildExternalVideoEmbedUrl(item);
+  // YouTube requires a client identity Referer for native WebView embeds (Error 153).
+  // Use Kristo's registered iOS bundle ID in the HTTPS Referer as YouTube specifies.
+  const playerSource = provider === "YouTube" && embedUrl
+    ? {
+        uri: embedUrl,
+        headers: { Referer: "https://com.princefariji.kristoapp.free" },
+      }
+    : embedUrl
+      ? { uri: embedUrl }
+      : null;
   return (
     <View style={styles.externalVideoSurface}>
       {embedUrl ? (
         <WebView
           key={embedUrl}
-          source={{ uri: embedUrl }}
+          source={playerSource!}
           style={styles.externalVideoWebView}
           containerStyle={styles.externalVideoWebViewContainer}
           originWhitelist={["https://*"]}
