@@ -15,6 +15,7 @@ import {
 export const YOUTUBE_CARD_H_PADDING = 12;
 export const YOUTUBE_THUMB_ASPECT = 16 / 9;
 export const TIKTOK_THUMB_ASPECT = 9 / 16;
+export const WATCH_PORTRAIT_FRAME_ASPECT = 4 / 5;
 export const YOUTUBE_ACTIONS_HEIGHT = 48;
 export const YOUTUBE_META_BLOCK_HEIGHT = 88;
 
@@ -48,7 +49,7 @@ export function resolveWatchPlayerHeight(params: {
   windowHeight: number;
   topInset?: number;
   isTikTokLayout?: boolean;
-  /** Video width / height when known: the player follows the video's own shape. */
+  /** Actual video shape is used to choose portrait vs landscape, not to resize the Watch frame. */
   videoAspect?: number;
 }): number {
   const width = Math.max(280, params.windowWidth);
@@ -64,27 +65,17 @@ export function resolveWatchPlayerHeight(params: {
 
   const verticalCap = Math.round((windowHeight - topInset) * WATCH_VERTICAL_MAX_SCREEN_SHARE);
   const videoAspect = Number(params.videoAspect || 0);
-  if (videoAspect > 0 && videoAspect < 1) {
-    // Vertical video: its own shape (pillarboxed, centered) up to the vertical cap.
-    return Math.min(Math.round(width / videoAspect), verticalCap);
-  }
-  if (videoAspect >= 1) {
-    const byShape = Math.round(width / videoAspect);
-    return tablet ? Math.min(viewportBudget, Math.max(byShape, Math.round(windowHeight * 0.5))) : Math.min(byShape, viewportBudget);
+  const isPortraitVideo = videoAspect > 0 ? videoAspect < 1 : isTikTokLayout;
+  if (isPortraitVideo) {
+    // All vertical media uses the same 4:5 Watch frame, whether the source is 4:5 or 9:16.
+    return Math.min(Math.round(width / WATCH_PORTRAIT_FRAME_ASPECT), verticalCap);
   }
 
-  if (isTikTokLayout) {
-    // Vertical video whose exact size is not known yet: same cap as above.
-    return Math.min(Math.round(width / TIKTOK_THUMB_ASPECT), verticalCap);
-  }
-
-  const byWidthAspect = Math.round(width / YOUTUBE_THUMB_ASPECT);
-  if (!tablet) {
-    return Math.min(byWidthAspect, viewportBudget);
-  }
-
-  const tabletImmersive = Math.round(windowHeight * 0.5);
-  return Math.min(viewportBudget, Math.max(byWidthAspect, tabletImmersive));
+  // Landscape media always keeps the standard 16:9 Watch frame.
+  const byShape = Math.round(width / YOUTUBE_THUMB_ASPECT);
+  return tablet
+    ? Math.min(viewportBudget, Math.max(byShape, Math.round(windowHeight * 0.5)))
+    : Math.min(byShape, viewportBudget);
 }
 
 export function tiktokThumbnailWidth(windowWidth: number): number {
