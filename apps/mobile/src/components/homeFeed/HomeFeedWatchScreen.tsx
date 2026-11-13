@@ -48,6 +48,7 @@ import {
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import {
   YOUTUBE_CARD_H_PADDING,
+  WATCH_PORTRAIT_FRAME_ASPECT,
   resolveHomeFeedVideoAspect,
   resolveWatchPlayerHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
@@ -879,11 +880,7 @@ function WatchVideoSurface({
         <VideoView
           ref={videoViewRef}
           player={player}
-          style={
-            isTikTokLayout
-              ? [styles.videoOverBackdrop, videoAspect && videoAspect > 0 ? { aspectRatio: videoAspect } : null]
-              : styles.video
-          }
+          style={isTikTokLayout ? styles.videoOverBackdrop : styles.video}
           contentFit="contain"
           nativeControls={false}
           fullscreenOptions={
@@ -1562,7 +1559,7 @@ const styles = StyleSheet.create({
   videoOverBackdrop: {
     height: "100%",
     maxWidth: "100%",
-    aspectRatio: 9 / 16,
+    aspectRatio: WATCH_PORTRAIT_FRAME_ASPECT,
     alignSelf: "center",
     zIndex: 2,
     backgroundColor: "transparent",
