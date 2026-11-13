@@ -48,7 +48,7 @@ export type HomeFeedVideoOpenPayload = {
   videoUri: string;
   posterUri?: string;
   videoDurationMs?: number;
-  videoDisplayType?: "youtube" | "tiktok";
+  videoDisplayType?: "youtube" | "tiktok" | "portrait45";
   /** Full feed row — preserves church, caption, and engagement metadata on Watch Screen. */
   item: any;
 };
