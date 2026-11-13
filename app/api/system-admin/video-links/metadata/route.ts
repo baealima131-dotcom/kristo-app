@@ -188,6 +188,7 @@ export async function GET(req: NextRequest) {
     .slice(0, 300)
     .map((item: any) => ({
       id: String(item?.id || ""),
+      hidden: item?.hiddenBySystemAdmin === true,
       provider: String(item?.videoDisplayType || item?.provider || "youtube"),
       url: String(item?.videoUrl || item?.url || ""),
       title: String(item?.title || ""),
@@ -229,6 +230,38 @@ export async function POST(req: NextRequest) {
     body = raw ? JSON.parse(raw) : {};
   } catch {
     return json({ ok: false, error: "Invalid request." }, 400);
+  }
+
+  const action = String(body?.action || "").trim().toLowerCase();
+  if (action === "hide" || action === "delete") {
+    const id = String(body?.id || "").trim();
+    if (!/^system-admin-video-(youtube-[A-Za-z0-9_-]{11}|tiktok-\\d{8,24})$/.test(id)) {
+      return json({ ok: false, error: "Video haikutambuliwa." }, 400);
+    }
+    const existing = (await listFeedItems()).find(
+      (item: any) => String(item?.id || "") === id && String(item?.source || "") === "system-admin-video-link"
+    );
+    if (!existing) return json({ ok: false, error: "Video haikupatikana." }, 404);
+
+    const now = new Date().toISOString();
+    if (action === "delete") {
+      await upsertFeedItem({
+        ...existing,
+        deleted: true,
+        deletedAt: now,
+        deletedBy: String(auth.viewer.userId || "system-admin"),
+      } as any);
+      return json({ ok: true, deleted: true });
+    }
+
+    const hidden = body?.hidden === true;
+    await upsertFeedItem({
+      ...existing,
+      hiddenBySystemAdmin: hidden,
+      hiddenBySystemAdminAt: hidden ? now : null,
+      hiddenBySystemAdminBy: hidden ? String(auth.viewer.userId || "system-admin") : null,
+    } as any);
+    return json({ ok: true, hidden });
   }
 
   const parsed = parseVideoUrl(body?.url);
