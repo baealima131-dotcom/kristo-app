@@ -350,6 +350,7 @@ export default function HomeFeedScreen() {
     useState<any | null>(null);
   const [commentsSheetOpen, setCommentsSheetOpen] = useState(false);
   const [commentTargetPostId, setCommentTargetPostId] = useState("");
+  const [commentTargetYoutube, setCommentTargetYoutube] = useState(false);
   const [commentRailCount, setCommentRailCount] = useState(0);
   const [shareSheetOpen, setShareSheetOpen] = useState(false);
   const [shareToChatOpen, setShareToChatOpen] = useState(false);
@@ -3748,6 +3749,10 @@ export default function HomeFeedScreen() {
     }
 
     setCommentTargetPostId(postId);
+    setCommentTargetYoutube(
+      String(item?.source || "") === "system-admin-video-link" &&
+      String(item?.videoDisplayType || item?.provider || "").toLowerCase() === "youtube"
+    );
     setCommentRailCount(resolveHomeFeedDiscussionCount(item, postId));
     setCommentsSheetOpen(true);
   }, []);
@@ -4020,6 +4025,7 @@ export default function HomeFeedScreen() {
         <FeedCommentsSheet
           visible={commentsSheetOpen}
           postId={commentTargetPostId}
+          youtubeVideo={commentTargetYoutube}
           railDiscussionCount={commentRailCount}
           onClose={() => setCommentsSheetOpen(false)}
           onDiscussionCountChange={handleDiscussionCountChange}
