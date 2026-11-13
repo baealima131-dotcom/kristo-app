@@ -386,6 +386,28 @@ export default function SystemAdminVideoLinksScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: insets.bottom + 32 }}
       >
+        <LinearGradient
+          colors={["rgba(66,43,102,0.92)", "rgba(24,27,43,0.97)", "rgba(13,20,31,0.98)"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.studioHero}
+        >
+          <View style={styles.heroTopline}>
+            <View style={styles.heroMark}><Ionicons name="musical-notes" size={19} color={GOLD} /></View>
+            <View style={styles.heroHeading}>
+              <Text style={styles.heroEyebrow}>KRISTO MEDIA STUDIO</Text>
+              <Text style={styles.heroTitle}>Video publishing desk</Text>
+            </View>
+            <View style={styles.studioStatus}><View style={styles.statusDot} /><Text style={styles.studioStatusText}>STUDIO</Text></View>
+          </View>
+          <Text style={styles.heroCopy}>Tayarisha video ya Kristo App: chagua hadhira, kagua taarifa, kisha ichapishe kwenye Home Feed.</Text>
+          <View style={styles.heroDivider} />
+          <View style={styles.heroFoot}>
+            <View style={styles.heroFeature}><Ionicons name="sparkles-outline" size={14} color={GOLD} /><Text style={styles.heroFeatureText}>SMART METADATA</Text></View>
+            <View style={styles.heroFeature}><Ionicons name="play-circle-outline" size={14} color={BLUE} /><Text style={styles.heroFeatureText}>IN-APP PREVIEW</Text></View>
+          </View>
+          <View pointerEvents="none" style={styles.heroGlow} />
+        </LinearGradient>
         <GlassCard style={styles.savedAccountsCard} borderColor="rgba(147,197,253,0.2)">
           <Pressable style={styles.savedAccountsHeading} onPress={() => setSavedAccountsOpen((value) => !value)}>
             <View style={styles.countryIcon}><Ionicons name="albums-outline" size={21} color={BLUE} /></View>
@@ -709,73 +731,88 @@ export default function SystemAdminVideoLinksScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG },
   header: { paddingHorizontal: 16, paddingBottom: 10, flexDirection: "row", alignItems: "center", gap: 12 },
-  backButton: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
-  eyebrow: { color: GOLD, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
-  title: { marginTop: 2, color: TEXT, fontSize: 26, lineHeight: 32, fontWeight: "900" },
-  subtitle: { marginTop: 1, color: MUTED, fontSize: 12, fontWeight: "600" },
-  glassCard: { overflow: "hidden", borderRadius: 20, borderWidth: 1, backgroundColor: "rgba(255,255,255,0.055)", padding: 16 },
-  savedAccountsCard: { marginBottom: 12 },
+  backButton: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.075)", borderWidth: 1, borderColor: "rgba(244,208,111,0.24)" },
+  eyebrow: { color: GOLD, fontSize: 9, fontWeight: "900", letterSpacing: 1.7 },
+  title: { marginTop: 2, color: TEXT, fontSize: 27, lineHeight: 33, fontWeight: "900", letterSpacing: -0.6 },
+  subtitle: { marginTop: 2, color: "rgba(235,232,246,0.64)", fontSize: 12, fontWeight: "600" },
+  studioHero: { position: "relative", overflow: "hidden", marginBottom: 14, padding: 16, borderRadius: 21, borderWidth: 1, borderColor: "rgba(244,208,111,0.38)", backgroundColor: "#171B2B" },
+  heroTopline: { flexDirection: "row", alignItems: "center", gap: 10 },
+  heroMark: { width: 40, height: 40, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(244,208,111,0.13)", borderWidth: 1, borderColor: "rgba(244,208,111,0.22)" },
+  heroHeading: { flex: 1 },
+  heroEyebrow: { color: GOLD, fontSize: 8, fontWeight: "900", letterSpacing: 1.7 },
+  heroTitle: { marginTop: 3, color: TEXT, fontSize: 16, fontWeight: "900", letterSpacing: -0.2 },
+  studioStatus: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 20, backgroundColor: "rgba(110,231,183,0.10)", borderWidth: 1, borderColor: "rgba(110,231,183,0.23)" },
+  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: GREEN },
+  studioStatusText: { color: GREEN, fontSize: 8, fontWeight: "900", letterSpacing: 0.9 },
+  heroCopy: { marginTop: 12, maxWidth: 330, color: "rgba(255,255,255,0.70)", fontSize: 11, lineHeight: 16, fontWeight: "600" },
+  heroDivider: { height: 1, marginTop: 13, backgroundColor: "rgba(255,255,255,0.10)" },
+  heroFoot: { flexDirection: "row", gap: 17, marginTop: 10 },
+  heroFeature: { flexDirection: "row", alignItems: "center", gap: 5 },
+  heroFeatureText: { color: "rgba(255,255,255,0.60)", fontSize: 8, fontWeight: "900", letterSpacing: 0.65 },
+  heroGlow: { position: "absolute", right: -42, top: -55, width: 140, height: 140, borderRadius: 70, backgroundColor: "rgba(244,208,111,0.045)" },
+  glassCard: { overflow: "hidden", borderRadius: 19, borderWidth: 1, backgroundColor: "rgba(20,25,39,0.82)", padding: 15, shadowColor: "#000000", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.18, shadowRadius: 16, elevation: 4 },
+  savedAccountsCard: { marginBottom: 12, backgroundColor: "rgba(20,28,44,0.92)" },
   savedAccountsHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
-  savedAccountsList: { marginTop: 12 },
-  savedAccountBlock: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.10)" },
+  savedAccountsList: { marginTop: 13, paddingTop: 3 },
+  savedAccountBlock: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(147,197,253,0.14)" },
   savedAccountRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 10 },
-  savedAvatar: { width: 34, height: 34, borderRadius: 17 },
+  savedAvatar: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, borderColor: "rgba(244,208,111,0.28)" },
   savedAvatarFallback: { alignItems: "center", justifyContent: "center", backgroundColor: "rgba(147,197,253,0.12)" },
   savedAccountName: { color: TEXT, fontSize: 12, fontWeight: "800" },
   savedAccountHint: { color: MUTED, fontSize: 10, marginTop: 3, fontWeight: "600" },
-  savedLinksList: { paddingBottom: 9, paddingLeft: 44 },
-  savedLinkBlock: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.07)" },
-  savedLinkActions: { flexDirection: "row", gap: 8, paddingBottom: 8, paddingLeft: 24 },
-  savedLinkAction: { minHeight: 30, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)" },
+  savedLinksList: { paddingBottom: 9, paddingLeft: 46 },
+  savedLinkBlock: { paddingTop: 1, borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.08)" },
+  savedLinkActions: { flexDirection: "row", gap: 8, paddingBottom: 9, paddingLeft: 23 },
+  savedLinkAction: { minHeight: 31, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: "rgba(255,255,255,0.06)" },
   savedLinkActionText: { color: BLUE, fontSize: 10, fontWeight: "800" },
-  savedProfileButton: { minHeight: 34, flexDirection: "row", alignItems: "center", gap: 6 },
+  savedProfileButton: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: 6 },
   savedProfileText: { color: BLUE, fontSize: 10, fontWeight: "800" },
-  savedLinkRow: { minHeight: 47, flexDirection: "row", alignItems: "center", gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.08)" },
+  savedLinkRow: { minHeight: 50, flexDirection: "row", alignItems: "center", gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.08)" },
   savedLinkTitle: { color: TEXT, fontSize: 10, fontWeight: "700" },
   savedLinkHint: { color: MUTED, fontSize: 9, marginTop: 2 },
   savedError: { color: RED, fontSize: 11, paddingVertical: 8 },
-  countryCard: { marginBottom: 12 },
-  languageCard: { marginBottom: 12 },
-  languageButton: { maxWidth: 155, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 10, borderRadius: 13, backgroundColor: "rgba(147,197,253,0.10)", borderWidth: 1, borderColor: "rgba(147,197,253,0.23)" },
+  countryCard: { marginBottom: 11, backgroundColor: "rgba(33,30,35,0.78)" },
+  languageCard: { marginBottom: 12, backgroundColor: "rgba(22,29,43,0.86)" },
+  languageButton: { maxWidth: 155, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 11, paddingVertical: 10, borderRadius: 12, backgroundColor: "rgba(147,197,253,0.10)", borderWidth: 1, borderColor: "rgba(147,197,253,0.25)" },
   languageValue: { color: "#DCEBFF", fontSize: 11, fontWeight: "800", flexShrink: 1 },
   row: { flexDirection: "row", alignItems: "center", gap: 11 },
-  countryIcon: { width: 42, height: 42, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(244,208,111,0.12)" },
-  label: { color: TEXT, fontSize: 13, fontWeight: "800" },
-  helper: { marginTop: 4, color: MUTED, fontSize: 11, lineHeight: 16, fontWeight: "600" },
-  countryButton: { maxWidth: 165, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 10, borderRadius: 13, backgroundColor: "rgba(244,208,111,0.10)", borderWidth: 1, borderColor: "rgba(244,208,111,0.23)" },
+  countryIcon: { width: 42, height: 42, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(244,208,111,0.12)", borderWidth: 1, borderColor: "rgba(244,208,111,0.12)" },
+  label: { color: TEXT, fontSize: 13, fontWeight: "800", letterSpacing: -0.1 },
+  helper: { marginTop: 4, color: "rgba(255,255,255,0.57)", fontSize: 11, lineHeight: 16, fontWeight: "600" },
+  countryButton: { maxWidth: 165, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 11, paddingVertical: 10, borderRadius: 12, backgroundColor: "rgba(244,208,111,0.10)", borderWidth: 1, borderColor: "rgba(244,208,111,0.27)" },
   countryValue: { color: "#FFF3C4", fontSize: 11, fontWeight: "800", flexShrink: 1 },
-  linkCard: { marginBottom: 13 },
-  sectionTitle: { color: TEXT, fontSize: 16, fontWeight: "900" },
-  urlInput: { minHeight: 52, marginTop: 13, paddingHorizontal: 13, borderRadius: 14, borderWidth: 1, borderColor: "rgba(167,139,250,0.30)", backgroundColor: "rgba(0,0,0,0.20)", color: TEXT, fontSize: 13 },
+  linkCard: { marginBottom: 13, backgroundColor: "rgba(25,22,39,0.90)" },
+  sectionTitle: { color: TEXT, fontSize: 16, fontWeight: "900", letterSpacing: -0.2 },
+  urlInput: { minHeight: 52, marginTop: 13, paddingHorizontal: 14, borderRadius: 14, borderWidth: 1, borderColor: "rgba(167,139,250,0.36)", backgroundColor: "rgba(4,7,14,0.52)", color: TEXT, fontSize: 13 },
   loadingRow: { marginTop: 13, flexDirection: "row", alignItems: "center", gap: 9 },
   loadingText: { color: MUTED, fontSize: 12, fontWeight: "700" },
-  errorBox: { marginTop: 13, padding: 11, borderRadius: 12, flexDirection: "row", gap: 8, backgroundColor: "rgba(251,113,133,0.08)" },
+  errorBox: { marginTop: 13, padding: 11, borderRadius: 12, flexDirection: "row", gap: 8, backgroundColor: "rgba(251,113,133,0.09)", borderWidth: 1, borderColor: "rgba(251,113,133,0.17)" },
   errorText: { flex: 1, color: "#FDA4AF", fontSize: 12, lineHeight: 17, fontWeight: "700" },
-  securityHint: { marginTop: 10, color: "rgba(255,255,255,0.42)", fontSize: 10, lineHeight: 15, fontWeight: "600" },
-  previewCard: { marginTop: 2 },
-  providerPill: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 },
+  securityHint: { marginTop: 10, color: "rgba(255,255,255,0.46)", fontSize: 10, lineHeight: 15, fontWeight: "600" },
+  previewCard: { marginTop: 2, padding: 15, backgroundColor: "rgba(18,27,36,0.95)" },
+  providerPill: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 12, paddingBottom: 10, borderBottomWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
   providerText: { color: TEXT, fontSize: 12, fontWeight: "900" },
-  autoBadge: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4 },
+  autoBadge: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 20, backgroundColor: "rgba(110,231,183,0.09)" },
   autoBadgeText: { color: GREEN, fontSize: 8, fontWeight: "900", letterSpacing: 0.5 },
-  thumbnail: { width: "100%", height: 190, borderRadius: 14, backgroundColor: "#000000", overflow: "hidden" },
-  thumbnailPlayer: { flex: 1, backgroundColor: "#000000" },
-  videoTitle: { marginTop: 13, color: TEXT, fontSize: 18, lineHeight: 24, fontWeight: "900" },
-  creatorRow: { marginTop: 15, flexDirection: "row", alignItems: "center", gap: 10 },
-  avatar: { width: 42, height: 42, borderRadius: 21 },
+  thumbnail: { width: "100%", height: 190, borderRadius: 15, backgroundColor: "#05070C", overflow: "hidden", borderWidth: 1, borderColor: "rgba(244,208,111,0.30)" },
+  thumbnailPlayer: { flex: 1, backgroundColor: "#05070C" },
+  videoTitle: { marginTop: 14, color: TEXT, fontSize: 18, lineHeight: 24, fontWeight: "900", letterSpacing: -0.3 },
+  creatorRow: { marginTop: 14, flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: 14, backgroundColor: "rgba(255,255,255,0.035)" },
+  avatar: { width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: "rgba(244,208,111,0.30)" },
   avatarFallback: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(147,197,253,0.12)", borderWidth: 1, borderColor: "rgba(147,197,253,0.23)" },
   creatorCaption: { color: MUTED, fontSize: 10, fontWeight: "700" },
   creatorName: { marginTop: 3, color: TEXT, fontSize: 13, fontWeight: "900" },
-  profileButton: { flexDirection: "row", alignItems: "center", gap: 5, padding: 9, borderRadius: 11, backgroundColor: "rgba(147,197,253,0.08)" },
+  profileButton: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 9, borderRadius: 11, backgroundColor: "rgba(147,197,253,0.10)", borderWidth: 1, borderColor: "rgba(147,197,253,0.14)" },
   profileButtonText: { color: BLUE, fontSize: 11, fontWeight: "800" },
-  dateRow: { marginTop: 14, paddingTop: 13, borderTopWidth: 1, borderColor: "rgba(255,255,255,0.08)", flexDirection: "row", alignItems: "center", gap: 7 },
+  dateRow: { marginTop: 13, paddingTop: 12, borderTopWidth: 1, borderColor: "rgba(255,255,255,0.09)", flexDirection: "row", alignItems: "center", gap: 7 },
   dateLabel: { color: MUTED, flex: 1, fontSize: 11, fontWeight: "700" },
   dateValue: { color: TEXT, fontSize: 11, fontWeight: "800" },
-  statsRow: { flexDirection: "row", gap: 8, marginTop: 12 },
-  statBox: { flex: 1, minHeight: 74, borderRadius: 14, alignItems: "center", justifyContent: "center", gap: 3, backgroundColor: "rgba(255,255,255,0.045)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
+  statsRow: { flexDirection: "row", gap: 8, marginTop: 11 },
+  statBox: { flex: 1, minHeight: 70, borderRadius: 13, alignItems: "center", justifyContent: "center", gap: 3, backgroundColor: "rgba(255,255,255,0.045)", borderWidth: 1, borderColor: "rgba(255,255,255,0.09)" },
   statValue: { color: TEXT, fontSize: 13, fontWeight: "900" },
   statLabel: { color: MUTED, fontSize: 9, fontWeight: "700" },
   apiNote: { marginTop: 11, color: "rgba(255,255,255,0.48)", fontSize: 10, lineHeight: 15, fontWeight: "600" },
-  publishButton: { marginTop: 14, minHeight: 50, borderRadius: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: GOLD },
+  publishButton: { marginTop: 14, minHeight: 50, borderRadius: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: GOLD, shadowColor: GOLD, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 10, elevation: 3 },
   publishedButton: { backgroundColor: GREEN },
   publishButtonText: { color: "#0B1020", fontSize: 13, fontWeight: "900" },
   openButton: { marginTop: 15, minHeight: 48, borderRadius: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: GOLD },
