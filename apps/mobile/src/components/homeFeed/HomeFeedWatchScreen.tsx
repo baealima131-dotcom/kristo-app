@@ -995,12 +995,12 @@ function buildExternalVideoEmbedUrl(item: any): string | null {
           ? parsed.searchParams.get("v") || ""
           : parsed.pathname.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})(?:\/|$)/)?.[1] || "";
       if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return null;
-      return `https://www.youtube-nocookie.com/embed/${videoId}?playsinline=1&controls=1&rel=0&autoplay=0`;
+      return `https://www.youtube-nocookie.com/embed/${videoId}?playsinline=1&controls=1&rel=0&autoplay=1`;
     }
     if (["tiktok.com", "m.tiktok.com"].includes(host)) {
       const videoId = parsed.pathname.match(/^\/@[A-Za-z0-9._-]+\/video\/(\d+)(?:\/|$)/)?.[1] || "";
       if (!/^\d{8,24}$/.test(videoId)) return null;
-      return `https://www.tiktok.com/player/v1/${videoId}?controls=1&description=1&music_info=1&autoplay=0&loop=0`;
+      return `https://www.tiktok.com/player/v1/${videoId}?controls=1&description=1&music_info=1&autoplay=1&loop=0`;
     }
   } catch {}
   return null;
@@ -1044,7 +1044,7 @@ function WatchExternalVideoSurface({ item }: { item: any }) {
           javaScriptEnabled
           domStorageEnabled
           allowsInlineMediaPlayback
-          mediaPlaybackRequiresUserAction
+          mediaPlaybackRequiresUserAction={false}
           allowsFullscreenVideo
           scrollEnabled={false}
           bounces={false}
