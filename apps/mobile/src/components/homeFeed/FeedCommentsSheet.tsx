@@ -30,6 +30,8 @@ import {
   commentCacheKey,
   enrichCommentsFromLocalProfiles,
   fetchFeedComments,
+  fetchYouTubeVideoComments,
+  type YouTubeVideoComment,
   mergeCommentsAfterSuccessfulPost,
   normalizeCommentPostId,
   reloadFeedCommentsAfterPost,
@@ -103,6 +105,7 @@ function resolveAvatarUriForNode(node: FeedCommentNode) {
 type Props = {
   visible: boolean;
   postId: string;
+  youtubeVideo?: boolean;
   railDiscussionCount?: number;
   onClose: () => void;
   onDiscussionCountChange: (postId: string, count: number) => void;
@@ -817,6 +820,7 @@ function CommentReportSheet({
 export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   visible,
   postId,
+  youtubeVideo = false,
   railDiscussionCount = 0,
   onClose,
   onDiscussionCountChange,
@@ -831,12 +835,16 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   const commentsRef = useRef<FeedCommentNode[]>([]);
   const postIdRef = useRef(postId);
   const railCountRef = useRef(railDiscussionCount);
+  const youtubeVideoRef = useRef(youtubeVideo);
   const lastOpenScopeKeyRef = useRef("");
   const viewerUserId = sessionUserId();
 
   const [loading, setLoading] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [comments, setComments] = useState<FeedCommentNode[]>([]);
+  const [youtubeComments, setYoutubeComments] = useState<YouTubeVideoComment[]>([]);
+  const [youtubeCommentsLoading, setYoutubeCommentsLoading] = useState(false);
+  const [youtubeCommentsError, setYoutubeCommentsError] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [replyTo, setReplyTo] = useState<FeedCommentNode | null>(null);
@@ -860,6 +868,7 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   onDiscussionCountChangeRef.current = onDiscussionCountChange;
   postIdRef.current = postId;
   railCountRef.current = railDiscussionCount;
+  youtubeVideoRef.current = youtubeVideo;
   commentsRef.current = comments;
 
   const runCommentLoad = useCallback(async () => {
@@ -877,6 +886,10 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
     setLoading(true);
     setError("");
     setInitialLoadDone(false);
+    setYoutubeComments([]);
+    setYoutubeCommentsError("");
+    const loadYoutubeComments = youtubeVideoRef.current;
+    setYoutubeCommentsLoading(loadYoutubeComments);
 
     const isStaleLoad = () => {
       if (seq !== loadSeqRef.current) return true;
@@ -973,12 +986,27 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
       }
     };
 
+    const youtubeCommentsTask = loadYoutubeComments
+      ? fetchYouTubeVideoComments(cleanPostId).then((result) => {
+          if (isStaleLoad()) return;
+          setYoutubeComments(result.ok ? result.comments.slice(0, 100) : []);
+          setYoutubeCommentsError(result.ok ? "" : result.error);
+          setYoutubeCommentsLoading(false);
+        }).catch(() => {
+          if (isStaleLoad()) return;
+          setYoutubeComments([]);
+          setYoutubeCommentsError("Could not load YouTube comments.");
+          setYoutubeCommentsLoading(false);
+        })
+      : Promise.resolve();
+
     try {
-      await applyFetch(false);
+      await Promise.all([applyFetch(false), youtubeCommentsTask]);
     } catch {
       if (!isStaleLoad()) {
         setLoading(false);
         setInitialLoadDone(true);
+        setYoutubeCommentsLoading(false);
       }
     }
   }, []);
@@ -1304,6 +1332,58 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
                 keyboardDismissMode="interactive"
                 showsVerticalScrollIndicator={false}
               >
+                {youtubeVideo ? (
+                  <View style={{ marginBottom: 22 }}>
+                    <Text style={{ color: HOME_FEED_GOLD_SOFT, fontSize: 16, fontWeight: "800", marginBottom: 10 }}>
+                      YouTube comments {youtubeComments.length ? `(${youtubeComments.length})` : ""}
+                    </Text>
+                    {youtubeCommentsLoading ? (
+                      <View style={styles.loadingRow}>
+                        <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
+                        <Text style={styles.loadingText}>Loading YouTube comments...</Text>
+                      </View>
+                    ) : youtubeCommentsError ? (
+                      <Text style={styles.emptyText}>{youtubeCommentsError}</Text>
+                    ) : youtubeComments.length ? (
+                      youtubeComments.map((comment) => {
+                        const avatarUri = String(comment.authorAvatarUrl || "").trim();
+                        const publishedAt = Date.parse(comment.publishedAt);
+                        return (
+                          <View key={comment.id} style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 16 }}>
+                            {avatarUri ? (
+                              <Image source={{ uri: avatarUri }} style={{ width: 34, height: 34, borderRadius: 17, marginRight: 10 }} />
+                            ) : (
+                              <View style={{ width: 34, height: 34, borderRadius: 17, marginRight: 10, backgroundColor: "rgba(255,255,255,0.12)", alignItems: "center", justifyContent: "center" }}>
+                                <Text style={{ color: "#FFFFFF", fontWeight: "800" }}>
+                                  {String(comment.authorName || "Y").trim().charAt(0).toUpperCase()}
+                                </Text>
+                              </View>
+                            )}
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "800" }}>
+                                {comment.authorName}
+                                {Number.isFinite(publishedAt) ? (
+                                  <Text style={{ color: HOME_FEED_MUTED, fontWeight: "500" }}>
+                                    {"  ·  "}{new Date(publishedAt).toLocaleDateString()}
+                                  </Text>
+                                ) : null}
+                              </Text>
+                              <Text style={{ color: "rgba(255,255,255,0.9)", fontSize: 14, lineHeight: 20, marginTop: 4 }}>
+                                {comment.text}
+                              </Text>
+                              <Text style={{ color: HOME_FEED_MUTED, fontSize: 12, marginTop: 5 }}>
+                                {comment.likeCount} likes{comment.replyCount ? `  ·  ${comment.replyCount} replies` : ""}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })
+                    ) : (
+                      <Text style={styles.emptyText}>No public YouTube comments yet.</Text>
+                    )}
+                  </View>
+                ) : null}
+
                 {loading || !initialLoadDone ? (
                   <View style={styles.loadingRow}>
                     <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
