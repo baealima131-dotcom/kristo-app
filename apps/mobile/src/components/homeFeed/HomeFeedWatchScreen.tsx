@@ -167,7 +167,6 @@ function WatchPanelActions({
   };
   const likeCount = engagement.likeCount + platformCount((platformStats as any).likes ?? (platformStats as any).likeCount);
   const commentCount = engagement.commentCount + platformCount((platformStats as any).comments ?? (platformStats as any).commentCount);
-  const shareCount = Number(item?.shareCount || 0) + platformCount((platformStats as any).shares);
 
   return (
     <View style={styles.watchActionsRow}>
@@ -185,7 +184,7 @@ function WatchPanelActions({
       />
       <WatchPanelAction
         icon="arrow-redo-outline"
-        label={formatActionCount(shareCount)}
+        label={formatActionCount(Number(item?.shareCount || 0))}
         onPress={onShare}
       />
       <WatchPanelAction
@@ -1081,12 +1080,6 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
     : {};
   const youtubeViews = Number((platformStats as any).views ?? (platformStats as any).viewCount);
   const combinedViewCount = viewCount + (Number.isFinite(youtubeViews) && youtubeViews > 0 ? youtubeViews : 0);
-  const youtubeShares = Number((platformStats as any).shares);
-  const youtubePlaylistAdds = (platformStats as any).playlistAdds == null ? null : Number((platformStats as any).playlistAdds);
-  const hasYoutubeAnalytics = externalVideo && (
-    (Number.isFinite(youtubeShares) && youtubeShares > 0) ||
-    (youtubePlaylistAdds !== null && Number.isFinite(youtubePlaylistAdds))
-  );
 
   useEffect(() => {
     if (!externalVideo || !postId) return;
@@ -1122,11 +1115,6 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
                 </View>
               ) : null}
             </View>
-          ) : null}
-          {hasYoutubeAnalytics ? (
-            <Text style={styles.externalVideoAnalytics} numberOfLines={1}>
-              YouTube · {formatActionCount(Number.isFinite(youtubeShares) ? youtubeShares : 0)} shares{youtubePlaylistAdds !== null && Number.isFinite(youtubePlaylistAdds) ? ` · ${formatActionCount(youtubePlaylistAdds)} playlist adds` : ""}
-            </Text>
           ) : null}
         </View>
       </View>
@@ -1719,7 +1707,6 @@ const styles = StyleSheet.create({
   externalVideoUnavailableText: { color: "#FFFFFF", textAlign: "center", fontSize: 14, fontWeight: "700" },
   externalVideoDetails: { flexDirection: "row", alignItems: "center", marginLeft: 9, gap: 4 },
   externalVideoDetailText: { color: HOME_FEED_MUTED, fontSize: 12, lineHeight: 17, fontWeight: "600" },
-  externalVideoAnalytics: { color: HOME_FEED_MUTED, fontSize: 10, lineHeight: 14, fontWeight: "600", marginTop: 2 },
   playerSurface: {
     flex: 1,
     width: "100%",
