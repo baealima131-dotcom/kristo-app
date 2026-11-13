@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/church-voice-notes",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/refresh-video-link-stats",
+      "schedule": "0 12 * * *"
     }
   ],
   "headers": [

@@ -51,6 +51,7 @@ function parseVideoUrl(raw: unknown): { provider: Provider; url: URL; videoId: s
 }
 
 function safeCount(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
   const result = Number(value);
   return Number.isFinite(result) && result >= 0 ? result : null;
 }
