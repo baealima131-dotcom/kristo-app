@@ -7,6 +7,7 @@ import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActionsInline } from "./PostActionsInline";
 import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import {
+  formatActionCount,
   formatFeedMetaLine,
   formatFeedTimestamp,
   isChurchRoomMemberFeedPost,
