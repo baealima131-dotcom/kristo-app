@@ -10,7 +10,6 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -31,8 +30,6 @@ import {
   type KristoCountry,
 } from "@/src/lib/countries";
 import {
-  createYoutubeAnalyticsInvite,
-  fetchConnectedYoutubeChannelIds,
   fetchSavedSystemAdminVideoLinks,
   fetchSystemAdminVideoMetadata,
   publishSystemAdminVideoLink,
@@ -163,8 +160,6 @@ export default function SystemAdminVideoLinksScreen() {
   const [languageSearch, setLanguageSearch] = React.useState("");
   const [savedLinks, setSavedLinks] = React.useState<SavedSystemAdminVideoLink[]>([]);
   const [savedLinksError, setSavedLinksError] = React.useState("");
-  const [connectedYoutubeChannelIds, setConnectedYoutubeChannelIds] = React.useState<string[]>([]);
-  const [creatingYoutubeInviteFor, setCreatingYoutubeInviteFor] = React.useState("");
   const [savedAccountsOpen, setSavedAccountsOpen] = React.useState(false);
   const [expandedAccountKey, setExpandedAccountKey] = React.useState("");
   const [updatingSavedLinkId, setUpdatingSavedLinkId] = React.useState("");
@@ -229,33 +224,11 @@ export default function SystemAdminVideoLinksScreen() {
     } catch (cause: any) {
       setSavedLinksError(String(cause?.message || "Video zilizohifadhiwa hazikupatikana."));
     }
-    try {
-      setConnectedYoutubeChannelIds(await fetchConnectedYoutubeChannelIds());
-    } catch {
-      setConnectedYoutubeChannelIds([]);
-    }
   }, []);
 
   React.useEffect(() => {
     if (allowed) void refreshSavedLinks();
   }, [allowed, refreshSavedLinks]);
-
-  const inviteYoutubeChannelOwner = React.useCallback(async (link: SavedSystemAdminVideoLink) => {
-    if (creatingYoutubeInviteFor || !link.id) return;
-    setCreatingYoutubeInviteFor(link.id);
-    try {
-      const invite = await createYoutubeAnalyticsInvite(link.id);
-      await Share.share({
-        title: "Unganisha YouTube channel",
-        message: `Habari. Kristo App inaomba ruhusa ya kusoma takwimu za YouTube Analytics za channel yako (${invite.creatorName}). Huhitaji Kristo App; fungua link hii kwenye browser na uidhinishe kwa Google: ${invite.connectUrl}`,
-        url: invite.connectUrl,
-      });
-    } catch (cause: any) {
-      Alert.alert("Mwaliko haukutumwa", String(cause?.message || "Jaribu tena baadaye."));
-    } finally {
-      setCreatingYoutubeInviteFor("");
-    }
-  }, [creatingYoutubeInviteFor]);
 
   const toggleSavedLinkVisibility = React.useCallback(async (link: SavedSystemAdminVideoLink) => {
     if (updatingSavedLinkId) return;
@@ -468,37 +441,12 @@ export default function SystemAdminVideoLinksScreen() {
                     ) : <View style={[styles.savedAvatar, styles.savedAvatarFallback]}><Ionicons name="person-outline" size={16} color={BLUE} /></View>}
                     <View style={{ flex: 1 }}>
                       <Text style={styles.savedAccountName} numberOfLines={1}>{account.creatorName}</Text>
-                      <Text style={styles.savedAccountHint}>{account.provider === "youtube" ? "YouTube" : "TikTok"} • {account.links.length} link{account.provider === "youtube" && connectedYoutubeChannelIds.includes(account.links[0]?.creatorId || "") ? " • Analytics imeunganishwa" : ""}</Text>
+                      <Text style={styles.savedAccountHint}>{account.provider === "youtube" ? "YouTube" : "TikTok"} • {account.links.length} link</Text>
                     </View>
                     <Ionicons name={expandedAccountKey === account.key ? "chevron-up" : "chevron-down"} size={16} color={MUTED} />
                   </Pressable>
                   {expandedAccountKey === account.key ? (
                     <View style={styles.savedLinksList}>
-                      {account.provider === "youtube" ? (
-                        <View style={styles.youtubeConnectCard}>
-                          {connectedYoutubeChannelIds.includes(account.links[0]?.creatorId || "") ? (
-                            <View style={styles.youtubeConnectedRow}>
-                              <Ionicons name="checkmark-circle" size={17} color={GREEN} />
-                              <Text style={styles.youtubeConnectedText}>Mmiliki ameunganisha YouTube Analytics</Text>
-                            </View>
-                          ) : (
-                            <>
-                              <Text style={styles.youtubeConnectTitle}>Takwimu za mmiliki wa channel</Text>
-                              <Text style={styles.youtubeConnectHint}>Tengeneza link ya mwaliko. Mmiliki anaweza kuidhinisha kwenye browser bila kusakinisha Kristo App.</Text>
-                              <Pressable
-                                onPress={() => void inviteYoutubeChannelOwner(account.links[0])}
-                                disabled={Boolean(creatingYoutubeInviteFor)}
-                                style={styles.youtubeInviteButton}
-                              >
-                                {creatingYoutubeInviteFor === account.links[0]?.id
-                                  ? <ActivityIndicator size="small" color="#10121A" />
-                                  : <Ionicons name="link-outline" size={16} color="#10121A" />}
-                                <Text style={styles.youtubeInviteButtonText}>Tengeneza link ya mwaliko</Text>
-                              </Pressable>
-                            </>
-                          )}
-                        </View>
-                      ) : null}
                       {account.creatorProfileUrl ? (
                         <Pressable onPress={() => void openSafeLink(account.creatorProfileUrl)} style={styles.savedProfileButton}>
                           <Ionicons name="person-circle-outline" size={16} color={BLUE} />
@@ -828,13 +776,6 @@ const styles = StyleSheet.create({
   savedAccountName: { color: TEXT, fontSize: 12, fontWeight: "800" },
   savedAccountHint: { color: MUTED, fontSize: 10, marginTop: 3, fontWeight: "600" },
   savedLinksList: { paddingBottom: 9, paddingLeft: 46 },
-  youtubeConnectCard: { marginBottom: 10, padding: 11, borderRadius: 13, backgroundColor: "rgba(110,231,183,0.065)", borderWidth: 1, borderColor: "rgba(110,231,183,0.17)" },
-  youtubeConnectTitle: { color: TEXT, fontSize: 11, fontWeight: "900" },
-  youtubeConnectHint: { marginTop: 4, color: MUTED, fontSize: 10, lineHeight: 14, fontWeight: "600" },
-  youtubeConnectedRow: { minHeight: 34, flexDirection: "row", alignItems: "center", gap: 7 },
-  youtubeConnectedText: { color: GREEN, fontSize: 10, fontWeight: "800" },
-  youtubeInviteButton: { minHeight: 36, alignSelf: "flex-start", marginTop: 9, paddingHorizontal: 11, borderRadius: 10, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: GOLD },
-  youtubeInviteButtonText: { color: "#10121A", fontSize: 10, fontWeight: "900" },
   savedLinkBlock: { paddingTop: 1, borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.08)" },
   savedLinkActions: { flexDirection: "row", gap: 8, paddingBottom: 9, paddingLeft: 23 },
   savedLinkAction: { minHeight: 31, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: "rgba(255,255,255,0.06)" },
