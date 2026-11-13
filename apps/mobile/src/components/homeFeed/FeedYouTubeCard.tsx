@@ -63,10 +63,24 @@ export const FeedYouTubeCard = memo(
   shouldLoadImages = true,
 }: Props) {
   const engagement = useHomeFeedRowEngagement(item);
-  const viewCount = useHomeFeedPostViewCount(
+  const isExternalVideo = String(item?.source || "").trim() === "system-admin-video-link";
+  const platformStats = isExternalVideo && item?.platformStats && typeof item.platformStats === "object"
+    ? item.platformStats
+    : {};
+  const platformCount = (value: unknown) => {
+    const count = Number(value);
+    return Number.isFinite(count) && count >= 0 ? count : 0;
+  };
+  const youtubeViews = platformCount((platformStats as any).views);
+  const youtubeLikes = platformCount((platformStats as any).likes);
+  const youtubeComments = platformCount((platformStats as any).comments);
+  const appViewCount = useHomeFeedPostViewCount(
     String(item?.id || ""),
     Number(item?.viewCount || 0)
   );
+  const viewCount = appViewCount + youtubeViews;
+  const likeCount = engagement.likeCount + youtubeLikes;
+  const commentCount = engagement.commentCount + youtubeComments;
   const { width: windowWidth } = useWindowDimensions();
   // Full-width frame that follows the video's own shape (tall videos are capped at 4:5 and
   // shown whole inside it, never squeezed or cropped).
@@ -221,8 +235,8 @@ export const FeedYouTubeCard = memo(
 
       <PostActionsInline
         liked={engagement.likedByMe || engagement.liked}
-        likeCount={engagement.likeCount}
-        commentCount={engagement.commentCount}
+        likeCount={likeCount}
+        commentCount={commentCount}
         shareCount={Number(item?.shareCount || 0)}
         saved={engagement.saved}
         reported={engagement.reported}
