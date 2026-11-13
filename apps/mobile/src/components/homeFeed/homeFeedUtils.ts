@@ -2269,6 +2269,23 @@ export function resolveYouTubeFeedMetadataPosterUri(
   const video = String(videoUrl || resolveVideoUri(item) || "").trim();
   if (!video) return "";
 
+  // Try YouTube's highest-resolution standard thumbnail first. If a video does not
+  // have a max-resolution image, the poster loader falls back to the saved metadata cover.
+  try {
+    const parsed = new URL(video);
+    const host = parsed.hostname.toLowerCase().replace(/^www\\./, "");
+    if (["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(host)) {
+      const videoId = host === "youtu.be"
+        ? parsed.pathname.split("/").filter(Boolean)[0] || ""
+        : parsed.pathname === "/watch"
+          ? parsed.searchParams.get("v") || ""
+          : parsed.pathname.match(/^\\/(?:shorts|embed|live)\\/([A-Za-z0-9_-]{11})(?:\\/|$)/)?.[1] || "";
+      if (/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+        return `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
+      }
+    }
+  } catch {}
+
   const cached = resolveCachedMediaPoster(pid, video);
   if (cached && !isInferredPosterUriForVideo(cached, video)) {
     return cached;
