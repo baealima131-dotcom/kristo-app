@@ -1105,15 +1105,19 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
         <View style={styles.metaTextCol}>
           <FeedChurchBrandRow item={item} variant="watch" part="name" source="watch-screen" />
           {titleLine ? <Text style={styles.videoTitle} numberOfLines={3}>{titleLine}</Text> : null}
-          {whenLabel ? <Text style={styles.dateMuted} numberOfLines={1}>{whenLabel}</Text> : null}
+          {whenLabel || externalVideo ? (
+            <View style={styles.metaStatsLine}>
+              {whenLabel ? <Text style={styles.dateMuted} numberOfLines={1}>{whenLabel}</Text> : null}
+              {externalVideo ? (
+                <View style={styles.externalVideoDetails}>
+                  <Ionicons name="eye-outline" size={15} color={HOME_FEED_MUTED} />
+                  <Text style={styles.externalVideoDetailText}>{formatActionCount(combinedViewCount)} views</Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       </View>
-      {externalVideo ? (
-        <View style={styles.externalVideoDetails}>
-          <Ionicons name="eye-outline" size={16} color={HOME_FEED_MUTED} />
-          <Text style={styles.externalVideoDetailText}>{formatActionCount(combinedViewCount)} views</Text>
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -1701,7 +1705,7 @@ const styles = StyleSheet.create({
   externalVideoWebViewContainer: { flex: 1, backgroundColor: "#000000" },
   externalVideoUnavailable: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 24 },
   externalVideoUnavailableText: { color: "#FFFFFF", textAlign: "center", fontSize: 14, fontWeight: "700" },
-  externalVideoDetails: { flexDirection: "row", alignItems: "center", paddingHorizontal: YOUTUBE_CARD_H_PADDING, paddingTop: 8, gap: 6 },
+  externalVideoDetails: { flexDirection: "row", alignItems: "center", marginLeft: 9, gap: 4 },
   externalVideoDetailText: { color: HOME_FEED_MUTED, fontSize: 12, lineHeight: 17, fontWeight: "600" },
   playerSurface: {
     flex: 1,
@@ -1909,12 +1913,18 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     letterSpacing: 0.05,
   },
+  metaStatsLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 0,
+    marginTop: 2,
+  },
   dateMuted: {
+    flexShrink: 1,
     color: WATCH_DATE_COLOR,
     fontSize: 11,
     lineHeight: 15,
     fontWeight: "500",
-    marginTop: 2,
   },
   actionsDivider: {
     height: 1,
