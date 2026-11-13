@@ -708,11 +708,15 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 }: Props) {
   const insets = useSafeAreaInsets();
   const { width, height: windowHeight } = useWindowDimensions();
-  const initialDisplayType = resolveHomeFeedVideoDisplayTypeHint(payload?.item || payload);
-  const [displayType, setDisplayType] = useState<HomeFeedVideoDisplayType | null>(initialDisplayType);
-  useEffect(() => {
-    setDisplayType(resolveHomeFeedVideoDisplayTypeHint(payload?.item || payload));
-  }, [payload?.postId]);
+  const activePostId = String(payload?.postId || "").trim();
+  const displayTypeHint = resolveHomeFeedVideoDisplayTypeHint(payload?.item || payload);
+  const [detectedDisplayType, setDetectedDisplayType] = useState<{
+    postId: string;
+    type: HomeFeedVideoDisplayType;
+  } | null>(null);
+  const displayType =
+    displayTypeHint ||
+    (detectedDisplayType?.postId === activePostId ? detectedDisplayType.type : null);
   const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
   const playerHeight = useMemo(
@@ -728,12 +732,19 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const scrollRef = useRef<ScrollView | null>(null);
   const [playbackStarted, setPlaybackStarted] = useState(false);
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
-  const handleDisplayTypeDetected = useCallback((next: HomeFeedVideoDisplayType) => {
-    setDisplayType((current) => {
-      if (next === "youtube" && current != null && current !== "youtube") return current;
-      return current === next ? current : next;
-    });
-  }, []);
+  const handleDisplayTypeDetected = useCallback(
+    (next: HomeFeedVideoDisplayType) => {
+      setDetectedDisplayType((current) => {
+        const currentType = current?.postId === activePostId ? current.type : null;
+        if (next === "youtube" && currentType != null && currentType !== "youtube") {
+          return current;
+        }
+        if (current?.postId === activePostId && currentType === next) return current;
+        return { postId: activePostId, type: next };
+      });
+    },
+    [activePostId]
+  );
 
   const item = payload?.item;
 
