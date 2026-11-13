@@ -2273,13 +2273,16 @@ export function resolveYouTubeFeedMetadataPosterUri(
   // have a max-resolution image, the poster loader falls back to the saved metadata cover.
   try {
     const parsed = new URL(video);
-    const host = parsed.hostname.toLowerCase().replace(/^www\\./, "");
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
     if (["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(host)) {
+      const pathParts = parsed.pathname.split("/").filter(Boolean);
       const videoId = host === "youtu.be"
-        ? parsed.pathname.split("/").filter(Boolean)[0] || ""
-        : parsed.pathname === "/watch"
+        ? pathParts[0] || ""
+        : pathParts[0] === "watch"
           ? parsed.searchParams.get("v") || ""
-          : parsed.pathname.match(/^\\/(?:shorts|embed|live)\\/([A-Za-z0-9_-]{11})(?:\\/|$)/)?.[1] || "";
+          : ["shorts", "embed", "live"].includes(pathParts[0] || "")
+            ? pathParts[1] || ""
+            : "";
       if (/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
         return `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
       }
