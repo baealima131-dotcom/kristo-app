@@ -110,29 +110,3 @@ export async function publishSystemAdminVideoLink(
   }
   return { feedItemId: String(response.feedItemId) };
 }
-
-export async function fetchConnectedYoutubeChannelIds(): Promise<string[]> {
-  const response: any = await apiGet(
-    "/api/system-admin/video-links/youtube-analytics",
-    { headers: getKristoHeaders() as any }
-  );
-  if (!response || response.ok !== true || !Array.isArray(response.connectedChannelIds)) {
-    throw new Error(String(response?.error || "Hali ya channel za YouTube haikupatikana."));
-  }
-  return response.connectedChannelIds.map((id: unknown) => String(id || "")).filter(Boolean);
-}
-
-export async function createYoutubeAnalyticsInvite(videoItemId: string): Promise<{ connectUrl: string; creatorName: string }> {
-  const response: any = await apiPost(
-    "/api/system-admin/video-links/youtube-analytics",
-    { videoItemId },
-    { headers: getKristoHeaders() as any }
-  );
-  if (!response || response.ok !== true || !response.connectUrl) {
-    throw new Error(String(response?.error || "Link ya mwaliko haikutengenezwa."));
-  }
-  return {
-    connectUrl: String(response.connectUrl),
-    creatorName: String(response.creatorName || "YouTube channel"),
-  };
-}
