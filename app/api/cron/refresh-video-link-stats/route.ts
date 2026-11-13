@@ -130,9 +130,8 @@ export async function GET(req: Request) {
           continue;
         }
         for (const item of rows) {
-          const previous = item?.platformStats && typeof item.platformStats === "object"
-            ? item.platformStats
-            : {};
+          const previousStats = item?.platformStats ?? item?.stats ?? {};
+          const previous = previousStats && typeof previousStats === "object" ? previousStats : {};
           await upsertFeedItem({
             ...item,
             platformStats: {
