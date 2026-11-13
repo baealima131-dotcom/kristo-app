@@ -37,17 +37,16 @@ function isTabletLayout(windowWidth: number, windowHeight: number): boolean {
   return Math.min(windowWidth, windowHeight) >= 600;
 }
 
-/** Immersive Watch player height — tablets use more vertical space than phone 16:9 alone. */
+/** Watch keeps landscape media at 16:9 and both portrait formats in a 4:5 frame. */
 export function resolveWatchPlayerHeight(params: {
   windowWidth: number;
   windowHeight: number;
   topInset?: number;
-  isTikTokLayout?: boolean;
+  isPortraitLayout?: boolean;
 }): number {
   const width = Math.max(280, params.windowWidth);
   const windowHeight = Math.max(480, params.windowHeight);
   const topInset = Math.max(0, params.topInset ?? 0);
-  const isTikTokLayout = params.isTikTokLayout === true;
   const tablet = isTabletLayout(width, windowHeight);
   const upNextPeek = tablet ? WATCH_TABLET_UP_NEXT_PEEK : WATCH_UP_NEXT_PEEK;
   const viewportBudget = Math.max(
@@ -55,19 +54,13 @@ export function resolveWatchPlayerHeight(params: {
     windowHeight - topInset - WATCH_TOP_BAR_HEIGHT - WATCH_PANEL_ESTIMATE_HEIGHT - upNextPeek
   );
 
-  if (isTikTokLayout) {
-    const byAspect = Math.round(width / TIKTOK_THUMB_ASPECT);
+  if (params.isPortraitLayout) {
+    const byAspect = Math.round(width / (4 / 5));
     const cap = Math.round(windowHeight * (tablet ? 0.68 : 0.72));
     return Math.min(byAspect, cap, viewportBudget);
   }
 
-  const byWidthAspect = Math.round(width / YOUTUBE_THUMB_ASPECT);
-  if (!tablet) {
-    return Math.min(byWidthAspect, viewportBudget);
-  }
-
-  const tabletImmersive = Math.round(windowHeight * 0.5);
-  return Math.min(viewportBudget, Math.max(byWidthAspect, tabletImmersive));
+  return Math.min(Math.round(width / YOUTUBE_THUMB_ASPECT), viewportBudget);
 }
 
 export function tiktokThumbnailWidth(windowWidth: number): number {
