@@ -81,18 +81,7 @@ export const FeedYouTubeCard = memo(
   const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle;
   const caption = churchRoomPost ? resolveChurchRoomFeedCaption(item) : postBody;
   const statsLine = formatFeedMetaLine(item, whenLabel);
-  const platformStats = item?.platformStats && typeof item.platformStats === "object" ? item.platformStats : null;
-  const formatPlatformCount = (value: unknown) =>
-    typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat().format(value) : "—";
-  const isSystemAdminVideo = String(item?.source || "") === "system-admin-video-link";
-  const videoProviderLabel = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
-  const platformStatsLine = isSystemAdminVideo && platformStats
-    ? videoProviderLabel + "  •  " + formatPlatformCount(platformStats.views) + " views  •  " + formatPlatformCount(platformStats.likes) + " likes  •  " + formatPlatformCount(platformStats.comments) + " comments"
-    : null;
-  const originalDateLabel =
-    String(item?.source || "") === "system-admin-video-link" && item?.publishedAt
-      ? new Date(String(item.publishedAt)).toLocaleDateString()
-      : null;
+
   const video = isVideoPost(item);
   const videoUri = useMemo(
     () => resolveVideoUri(item),
@@ -223,16 +212,7 @@ export const FeedYouTubeCard = memo(
                 {statsLine}
               </Text>
             ) : null}
-            {platformStatsLine ? (
-              <Text style={premium.statsLine} numberOfLines={2}>
-                {platformStatsLine}{originalDateLabel ? "  •  " + originalDateLabel : ""}
-              </Text>
-            ) : null}
-            {isSystemAdminVideo && (item?.countryName || item?.languageName) ? (
-              <Text style={premium.statsLine} numberOfLines={1}>
-                {[item?.countryName, item?.languageName].filter(Boolean).join("  •  ")}
-              </Text>
-            ) : null}
+
           </View>
         </View>
 
