@@ -31,6 +31,8 @@ import {
   fetchSavedSystemAdminVideoLinks,
   fetchSystemAdminVideoMetadata,
   publishSystemAdminVideoLink,
+  setSystemAdminVideoLinkHidden,
+  deleteSystemAdminVideoLink,
   type SavedSystemAdminVideoLink,
   type SystemAdminVideoMetadata,
 } from "@/src/lib/systemAdminVideoLinksApi";
@@ -158,6 +160,7 @@ export default function SystemAdminVideoLinksScreen() {
   const [savedLinksError, setSavedLinksError] = React.useState("");
   const [savedAccountsOpen, setSavedAccountsOpen] = React.useState(false);
   const [expandedAccountKey, setExpandedAccountKey] = React.useState("");
+  const [updatingSavedLinkId, setUpdatingSavedLinkId] = React.useState("");
   const requestId = React.useRef(0);
 
   const lookup = React.useCallback(async (value: string) => {
@@ -223,6 +226,49 @@ export default function SystemAdminVideoLinksScreen() {
   React.useEffect(() => {
     if (allowed) void refreshSavedLinks();
   }, [allowed, refreshSavedLinks]);
+
+  const toggleSavedLinkVisibility = React.useCallback(async (link: SavedSystemAdminVideoLink) => {
+    if (updatingSavedLinkId) return;
+    setUpdatingSavedLinkId(link.id);
+    setSavedLinksError("");
+    try {
+      await setSystemAdminVideoLinkHidden(link.id, !link.hidden);
+      setSavedLinks((current) => current.map((item) => item.id === link.id ? { ...item, hidden: !link.hidden } : item));
+    } catch (cause: any) {
+      setSavedLinksError(String(cause?.message || "Hali ya video haikubadilishwa."));
+    } finally {
+      setUpdatingSavedLinkId("");
+    }
+  }, [updatingSavedLinkId]);
+
+  const confirmDeleteSavedLink = React.useCallback((link: SavedSystemAdminVideoLink) => {
+    Alert.alert(
+      "Ondoa video kwenye Kristo App?",
+      "Video itaondolewa kwenye Home Feed na orodha hii. Video yenyewe itaendelea kuwepo YouTube au TikTok.",
+      [
+        { text: "Ghairi", style: "cancel" },
+        {
+          text: "Ondoa video",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              if (updatingSavedLinkId) return;
+              setUpdatingSavedLinkId(link.id);
+              setSavedLinksError("");
+              try {
+                await deleteSystemAdminVideoLink(link.id);
+                setSavedLinks((current) => current.filter((item) => item.id !== link.id));
+              } catch (cause: any) {
+                setSavedLinksError(String(cause?.message || "Video haikuondolewa."));
+              } finally {
+                setUpdatingSavedLinkId("");
+              }
+            })();
+          },
+        },
+      ]
+    );
+  }, [updatingSavedLinkId]);
 
   const savedAccounts = React.useMemo(() => {
     const grouped = new Map<string, { key: string; creatorName: string; creatorProfileUrl: string; creatorAvatarUrl: string; provider: string; links: SavedSystemAdminVideoLink[] }>();
@@ -376,14 +422,42 @@ export default function SystemAdminVideoLinksScreen() {
                         </Pressable>
                       ) : null}
                       {account.links.map((link) => (
-                        <Pressable key={link.id} onPress={() => void openSafeLink(link.url)} style={styles.savedLinkRow}>
-                          <Ionicons name="play-circle-outline" size={17} color={GOLD} />
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.savedLinkTitle} numberOfLines={2}>{link.title || "Video bila kichwa"}</Text>
-                            <Text style={styles.savedLinkHint} numberOfLines={1}>{[link.countryName, link.languageName, link.publishedAt ? new Date(link.publishedAt).toLocaleDateString() : ""].filter(Boolean).join(" • ")}</Text>
+                        <View key={link.id} style={styles.savedLinkBlock}>
+                          <Pressable onPress={() => void openSafeLink(link.url)} style={styles.savedLinkRow}>
+                            <Ionicons name="play-circle-outline" size={17} color={GOLD} />
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.savedLinkTitle} numberOfLines={2}>{link.title || "Video bila kichwa"}</Text>
+                              <Text style={styles.savedLinkHint} numberOfLines={1}>{[link.countryName, link.languageName, link.publishedAt ? new Date(link.publishedAt).toLocaleDateString() : ""].filter(Boolean).join(" • ")}</Text>
+                            </View>
+                            <Ionicons name="open-outline" size={15} color={MUTED} />
+                          </Pressable>
+                          <View style={styles.savedLinkActions}>
+                            <Pressable
+                              onPress={() => void toggleSavedLinkVisibility(link)}
+                              disabled={Boolean(updatingSavedLinkId)}
+                              style={styles.savedLinkAction}
+                              accessibilityRole="button"
+                              accessibilityLabel={link.hidden ? "Onyesha video kwenye Home Feed" : "Ficha video kwenye Home Feed"}
+                            >
+                              {updatingSavedLinkId === link.id ? (
+                                <ActivityIndicator size="small" color={BLUE} />
+                              ) : (
+                                <Ionicons name={link.hidden ? "eye-outline" : "eye-off-outline"} size={14} color={BLUE} />
+                              )}
+                              <Text style={styles.savedLinkActionText}>{link.hidden ? "Onyesha" : "Ficha"}</Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => confirmDeleteSavedLink(link)}
+                              disabled={Boolean(updatingSavedLinkId)}
+                              style={styles.savedLinkAction}
+                              accessibilityRole="button"
+                              accessibilityLabel="Ondoa video kwenye Kristo App"
+                            >
+                              <Ionicons name="trash-outline" size={14} color={RED} />
+                              <Text style={[styles.savedLinkActionText, { color: RED }]}>Ondoa</Text>
+                            </Pressable>
                           </View>
-                          <Ionicons name="open-outline" size={15} color={MUTED} />
-                        </Pressable>
+                        </View>
                       ))}
                     </View>
                   ) : null}
@@ -650,6 +724,10 @@ const styles = StyleSheet.create({
   savedAccountName: { color: TEXT, fontSize: 12, fontWeight: "800" },
   savedAccountHint: { color: MUTED, fontSize: 10, marginTop: 3, fontWeight: "600" },
   savedLinksList: { paddingBottom: 9, paddingLeft: 44 },
+  savedLinkBlock: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.07)" },
+  savedLinkActions: { flexDirection: "row", gap: 8, paddingBottom: 8, paddingLeft: 24 },
+  savedLinkAction: { minHeight: 30, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)" },
+  savedLinkActionText: { color: BLUE, fontSize: 10, fontWeight: "800" },
   savedProfileButton: { minHeight: 34, flexDirection: "row", alignItems: "center", gap: 6 },
   savedProfileText: { color: BLUE, fontSize: 10, fontWeight: "800" },
   savedLinkRow: { minHeight: 47, flexDirection: "row", alignItems: "center", gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.08)" },
