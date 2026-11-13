@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { timingSafeEqual } from "crypto";
 
 import { listFeedItems, upsertFeedItem } from "@/app/api/_lib/store/feedDb";
+import { getYoutubeChannelConnections } from "@/app/api/_lib/store/youtubeChannelOAuthDb";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,6 +75,44 @@ async function loadStats(videoIds: string[], key: string) {
   return stats;
 }
 
+async function refreshYoutubeAccessToken(refreshToken: string): Promise<string | null> {
+  const clientId = String(process.env.YOUTUBE_OAUTH_CLIENT_ID || "").trim();
+  const clientSecret = String(process.env.YOUTUBE_OAUTH_CLIENT_SECRET || "").trim();
+  if (!clientId || !clientSecret) return null;
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(12000),
+  });
+  const body: any = await response.json().catch(() => null);
+  return response.ok && body?.access_token ? String(body.access_token) : null;
+}
+
+async function loadYoutubeAnalyticsStats(accessToken: string, videoId: string, startDate: string, endDate: string): Promise<{ shares: number; playlistAdds: number } | null> {
+  const endpoint = new URL("https://youtubeanalytics.googleapis.com/v2/reports");
+  endpoint.searchParams.set("ids", "channel==MINE");
+  endpoint.searchParams.set("startDate", startDate);
+  endpoint.searchParams.set("endDate", endDate);
+  endpoint.searchParams.set("metrics", "shares,videosAddedToPlaylists");
+  endpoint.searchParams.set("dimensions", "video");
+  endpoint.searchParams.set("filters", "video==" + videoId);
+  const response = await fetch(endpoint, {
+    headers: { Authorization: "Bearer " + accessToken, Accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(12000),
+  });
+  const body: any = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(body?.rows) || !body.rows.length) return null;
+  return { shares: safeCount(body.rows[0][1]) ?? 0, playlistAdds: safeCount(body.rows[0][2]) ?? 0 };
+}
+
+function analyticsStartDate(value: unknown): string {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : "2008-01-01";
+}
+
 /** Vercel Cron refreshes public YouTube counters once daily; app counters remain live in Kristo. */
 export async function GET(req: Request) {
   if (!String(process.env.CRON_SECRET || "").trim()) {
@@ -111,6 +150,31 @@ export async function GET(req: Request) {
 
     let refreshed = 0;
     let failed = 0;
+    const youtubeAnalyticsByItemId = new Map<string, { shares: number; playlistAdds: number }>();
+    try {
+      const connections = await getYoutubeChannelConnections();
+      const oauthByChannel = new Map<string, string>();
+      for (const connection of connections) {
+        const channelItems = refreshItems.filter((item: any) => String(item?.creatorId || "") === connection.channelId && parseYouTubeId(item?.videoUrl || item?.url));
+        if (!channelItems.length) continue;
+        const accessToken = await refreshYoutubeAccessToken(connection.refreshToken);
+        if (accessToken) oauthByChannel.set(connection.channelId, accessToken);
+      }
+      for (const item of refreshItems) {
+        const accessToken = oauthByChannel.get(String(item?.creatorId || ""));
+        const videoId = parseYouTubeId(item?.videoUrl || item?.url);
+        if (!accessToken || !videoId) continue;
+        try {
+          const analytics = await loadYoutubeAnalyticsStats(accessToken, videoId, analyticsStartDate(item?.publishedAt), new Date(nowMs).toISOString().slice(0, 10));
+          if (analytics) youtubeAnalyticsByItemId.set(String(item?.id || ""), analytics);
+        } catch {
+          // Public counters still refresh if channel analytics is unavailable for this video.
+        }
+      }
+    } catch {
+      // OAuth connections are optional; public YouTube counters continue to refresh.
+    }
+
     const videoIds = [...byVideo.keys()];
     for (let offset = 0; offset < videoIds.length; offset += 50) {
       const batch = videoIds.slice(offset, offset + 50);
@@ -138,6 +202,15 @@ export async function GET(req: Request) {
               views: stats.views ?? safeCount(previous.views),
               likes: stats.likes ?? safeCount(previous.likes),
               comments: stats.comments ?? safeCount(previous.comments),
+              ...(youtubeAnalyticsByItemId.has(String(item?.id || ""))
+                ? {
+                    shares: youtubeAnalyticsByItemId.get(String(item?.id || ""))!.shares,
+                    playlistAdds: youtubeAnalyticsByItemId.get(String(item?.id || ""))!.playlistAdds,
+                  }
+                : {
+                    ...(safeCount(previous.shares) !== null ? { shares: safeCount(previous.shares) } : {}),
+                    ...(safeCount(previous.playlistAdds) !== null ? { playlistAdds: safeCount(previous.playlistAdds) } : {}),
+                  }),
             },
             platformStatsUpdatedAt: new Date(nowMs).toISOString(),
           } as any);
