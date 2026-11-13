@@ -1581,6 +1581,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         <FeedCommentsSheet
           visible={commentsSheetOpen}
           postId={commentTargetPostId}
+          youtubeVideo={
+            String(item?.source || "") === "system-admin-video-link" &&
+            String(item?.videoDisplayType || item?.provider || "").toLowerCase() === "youtube"
+          }
           railDiscussionCount={commentRailCount}
           onClose={onCloseComments}
           onDiscussionCountChange={onDiscussionCountChange}
