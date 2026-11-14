@@ -140,3 +140,75 @@ export function isFacebookPlayerHost(hostname: string): boolean {
   const host = String(hostname || "").toLowerCase();
   return host === "facebook.com" || host.endsWith(".facebook.com") || host.endsWith(".fbcdn.net") || host === "fb.watch";
 }
+
+function facebookCount(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
+}
+
+/**
+ * Platform counts to show next to Kristo's own engagement for an external video link.
+ *
+ * Facebook: a count Meta's Graph API returned (platformStats) wins; when Graph has none, the
+ * count a System Admin entered from Facebook (facebookManualStats) is used; otherwise it stays
+ * empty. Every other post returns its platformStats unchanged.
+ */
+export function resolveExternalPlatformStats(item: any): Record<string, unknown> {
+  const raw = item?.platformStats ?? item?.stats ?? {};
+  const platform = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  if (!isFacebookVideoLinkItem(item)) return platform;
+  const manualRaw = item?.facebookManualStats;
+  const manual = manualRaw && typeof manualRaw === "object" ? manualRaw : {};
+  return {
+    views: facebookCount(platform.views),
+    likes: facebookCount(platform.likes) ?? facebookCount(manual.likes),
+    comments: facebookCount(platform.comments) ?? facebookCount(manual.comments),
+  };
+}
+
+/** Shown instead of a count the platform withholds on purpose (YouTube: likes hidden, comments off). */
+export const PLATFORM_COUNT_HIDDEN_LABEL = "Imefichwa";
+
+/**
+ * Which counts the platform withholds on purpose for an external video link (saved by the server as
+ * platformHiddenFields). Missing counts for other reasons (no API key, lookup failed) are not "hidden".
+ */
+export function externalPlatformHiddenCounts(item: any): { likes: boolean; comments: boolean } {
+  const raw: unknown[] = Array.isArray(item?.platformHiddenFields) ? item.platformHiddenFields : [];
+  const fields = raw.map((value) => String(value || "").trim().toLowerCase());
+  return { likes: fields.includes("likes"), comments: fields.includes("comments") };
+}
+
+/**
+ * Label for a like/comment count: when the platform hides its count and nobody on Kristo has
+ * added any, say it is hidden instead of showing 0. Kristo's own likes/comments still show.
+ */
+export function externalCountLabel(count: number, hidden: boolean, format: (value: number) => string): string {
+  return hidden && count <= 0 ? PLATFORM_COUNT_HIDDEN_LABEL : format(count);
+}
+
+/**
+ * Facebook posts can be years old: when the post date is from an earlier calendar year, show the
+ * year too ("Dec 5, 2014"). Returns "" for this year's posts (the usual feed label applies) and for
+ * missing or invalid dates.
+ */
+export function formatFacebookOlderYearDate(publishedAt: unknown, now: Date = new Date()): string {
+  const ms = Date.parse(String(publishedAt || ""));
+  if (!Number.isFinite(ms)) return "";
+  const posted = new Date(ms);
+  if (posted.getFullYear() >= now.getFullYear()) return "";
+  return posted.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+/**
+ * The cover a System Admin uploaded for a Facebook link (facebookCoverUrl), or "" when there is
+ * none. Release builds accept https only; development builds also accept a local http test server.
+ */
+export function facebookAdminCoverUri(item: any): string {
+  if (!isFacebookVideoLinkItem(item)) return "";
+  const value = String(item?.facebookCoverUrl || "").trim();
+  if (/^https:\/\//i.test(value)) return value;
+  if (typeof __DEV__ !== "undefined" && __DEV__ && /^http:\/\//i.test(value)) return value;
+  return "";
+}

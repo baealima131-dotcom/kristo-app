@@ -1,5 +1,6 @@
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { resolveUploadFileSize, uploadFileToSignedUrlWithRetry } from "@/src/lib/churchVideoUpload";
 
 export type SystemAdminVideoMetadata = {
   provider: "youtube" | "tiktok" | "facebook";
@@ -55,7 +56,38 @@ export type SavedSystemAdminVideoLink = {
   languageCode: string;
   languageName: string;
   stats: { views?: number | null; likes?: number | null; comments?: number | null };
+  /** Facebook only: counts a System Admin read on Facebook, and when they were checked. */
+  manualStats?: FacebookManualStats | null;
+  /** Facebook only: "vertical" for Reels. */
+  orientation?: string;
+  /** Facebook only: optional cover uploaded by a System Admin (blurred beside Reels in Watch). */
+  coverUrl?: string;
 };
+
+export type FacebookManualStats = { likes: number | null; comments: number | null; checkedAt: string };
+/** Admin input as typed; an empty string means "not entered". */
+export type FacebookManualStatsInput = { likes: string; comments: string };
+
+/** Mirrors the server rule: digits, optionally grouped with spaces, commas or dots; or empty. */
+export function isValidManualCountInput(value: string): boolean {
+  const text = String(value || "").trim();
+  return !text || /^\d{1,3}([ ,.]?\d{3})*$|^\d+$/.test(text);
+}
+
+export async function updateFacebookManualStats(
+  id: string,
+  manualStats: FacebookManualStatsInput
+): Promise<FacebookManualStats | null> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    { action: "facebook-manual-stats", id, manualStats },
+    { headers: getKristoHeaders() as any }
+  );
+  if (!response || response.ok !== true) {
+    throw new Error(String(response?.error || "Hesabu za Facebook hazikuhifadhiwa."));
+  }
+  return (response.manualStats as FacebookManualStats | null) ?? null;
+}
 
 export async function fetchSavedSystemAdminVideoLinks(): Promise<SavedSystemAdminVideoLink[]> {
   const response: any = await apiGet(
@@ -93,7 +125,9 @@ export async function deleteSystemAdminVideoLink(id: string): Promise<void> {
 export async function publishSystemAdminVideoLink(
   url: string,
   country: { code: string; name: string },
-  language: { code: string; name: string }
+  language: { code: string; name: string },
+  manualStats?: FacebookManualStatsInput,
+  facebookCoverUrl?: string
 ): Promise<{ feedItemId: string }> {
   const response: any = await apiPost(
     "/api/system-admin/video-links/metadata",
@@ -104,6 +138,8 @@ export async function publishSystemAdminVideoLink(
       countryName: country.name,
       languageCode: language.code,
       languageName: language.name,
+      ...(manualStats ? { manualStats } : {}),
+      ...(facebookCoverUrl ? { facebookCoverUrl } : {}),
     },
     { headers: getKristoHeaders() as any }
   );
@@ -112,4 +148,52 @@ export async function publishSystemAdminVideoLink(
     throw new Error(String(response?.error || "Video haikuongezwa kwenye Home Feed."));
   }
   return { feedItemId: String(response.feedItemId) };
+}
+
+/**
+ * Upload a cover image for a Facebook link to Kristo's poster storage through a signed URL the
+ * System Admin route issues. Returns the stored image's public URL.
+ */
+export async function uploadFacebookCoverImage(localUri: string): Promise<string> {
+  const fileSize = await resolveUploadFileSize(localUri);
+  if (!(fileSize > 0)) throw new Error("Picha ya cover haikusomeka.");
+  const contentType = "image/jpeg";
+  const session = await uploadFileToSignedUrlWithRetry({
+    fileUri: localUri,
+    contentType,
+    label: "poster",
+    maxRetries: 2,
+    resolveUploadSession: async () => {
+      const response: any = await apiPost(
+        "/api/system-admin/video-links/metadata",
+        { action: "facebook-cover-upload-url", fileName: `facebook-cover-${Date.now()}.jpg`, contentType, fileSize },
+        { headers: getKristoHeaders() as any }
+      );
+      if (!response || response.ok !== true || !response.uploadUrl || !response.publicUrl) {
+        throw new Error(String(response?.error || "Upload ya cover haikuweza kuanza."));
+      }
+      return {
+        uploadUrl: String(response.uploadUrl),
+        publicUrl: String(response.publicUrl),
+        videoUrl: String(response.publicUrl),
+        contentType: String(response.contentType || contentType),
+      };
+    },
+  });
+  const url = String(session.publicUrl || "").trim();
+  if (!url) throw new Error("Cover haikuhifadhiwa.");
+  return url;
+}
+
+/** Set (or clear with null) the cover of a saved Facebook link. */
+export async function setFacebookCover(id: string, coverUrl: string | null): Promise<string | null> {
+  const response: any = await apiPost(
+    "/api/system-admin/video-links/metadata",
+    { action: "facebook-cover", id, coverUrl },
+    { headers: getKristoHeaders() as any }
+  );
+  if (!response || response.ok !== true) {
+    throw new Error(String(response?.error || "Cover haikuhifadhiwa."));
+  }
+  return response.coverUrl ? String(response.coverUrl) : null;
 }

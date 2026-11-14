@@ -15,11 +15,21 @@ import {
 import { VideoView, useVideoPlayer } from "expo-video";
 import { WebView } from "react-native-webview";
 import {
-  buildFacebookEmbedHtml,
-  buildFacebookEmbedPluginUrl,
+  buildFacebookSdkPlayerHtml,
+  buildYouTubePlayerHtml,
+  parseExternalPlayerMessage,
+  YOUTUBE_CLIENT_ORIGIN,
+  youtubeVideoIdFromUrl,
+} from "@/src/lib/externalVideoPlayerHtml";
+import {
   facebookOpenUrl,
   isFacebookPlayerHost,
+  parseFacebookVideoUrl,
   isFacebookVideoLinkItem,
+  isVerticalFacebookVideoItem,
+  externalCountLabel,
+  externalPlatformHiddenCounts,
+  resolveExternalPlatformStats,
 } from "@/src/lib/facebookVideoLink";
 import { recordQualifiedHomeFeedPostView } from "@/src/lib/homeFeedPostViews";
 import {
@@ -105,6 +115,8 @@ type Props = {
   visible: boolean;
   payload: HomeFeedVideoOpenPayload | null;
   relatedItems: any[];
+  /** Called when the viewer scrolls near the end of Up Next, to add more videos. */
+  onUpNextEndReached?: () => void;
   sokoProducts: SokoHomeProduct[];
   onClose: () => void;
   onSelectRelated: (payload: HomeFeedVideoOpenPayload) => void;
@@ -154,19 +166,32 @@ function WatchPanelActions({
   onReport: () => void;
 }) {
   const engagement = useHomeFeedRowEngagement(item);
+  const externalVideo = String(item?.source || "").trim() === "system-admin-video-link";
+  // Facebook: Graph counts first, then counts a System Admin entered; others unchanged.
+  const platformStats = externalVideo ? resolveExternalPlatformStats(item) : {};
+  const platformCount = (value: unknown) => {
+    const count = Number(value);
+    return Number.isFinite(count) && count >= 0 ? count : 0;
+  };
+  const likeCount = engagement.likeCount + platformCount((platformStats as any).likes ?? (platformStats as any).likeCount);
+  const commentCount = engagement.commentCount + platformCount((platformStats as any).comments ?? (platformStats as any).commentCount);
+  // YouTube hid likes or turned comments off: say so instead of showing 0.
+  const hiddenCounts = externalVideo ? externalPlatformHiddenCounts(item) : { likes: false, comments: false };
 
   return (
     <View style={styles.watchActionsRow}>
       <WatchPanelAction
         icon={engagement.likedByMe || engagement.liked ? "heart" : "heart-outline"}
-        label={formatActionCount(engagement.likeCount)}
+        label={externalCountLabel(likeCount, hiddenCounts.likes, formatActionCount)}
+        countLabel
         active={engagement.likedByMe || engagement.liked}
         activeColor="#FF6B8A"
         onPress={onLike}
       />
       <WatchPanelAction
         icon="chatbubble-ellipses-outline"
-        label={formatActionCount(engagement.commentCount)}
+        label={externalCountLabel(commentCount, hiddenCounts.comments, formatActionCount)}
+        countLabel
         onPress={onComment}
       />
       <WatchPanelAction
@@ -196,12 +221,15 @@ function WatchPanelAction({
   onPress,
   active,
   activeColor = HOME_FEED_GOLD_SOFT,
+  countLabel,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   active?: boolean;
   activeColor?: string;
+  /** Like and comment numbers: larger digits in the same line height. */
+  countLabel?: boolean;
 }) {
   return (
     <Pressable style={styles.watchAction} onPress={onPress} hitSlop={8}>
@@ -211,7 +239,11 @@ function WatchPanelAction({
         color={active ? activeColor : "rgba(255,255,255,0.68)"}
       />
       <Text
-        style={[styles.watchActionLabel, active ? styles.watchActionLabelActive : null]}
+        style={[
+          styles.watchActionLabel,
+          countLabel ? styles.watchActionCountLabel : null,
+          active ? styles.watchActionLabelActive : null,
+        ]}
         numberOfLines={1}
       >
         {label}
@@ -687,90 +719,178 @@ function allowExternalPlayerNavigation(request: { url: string; isTopFrame?: bool
 }
 
 const FACEBOOK_EMBED_BASE_URL = "https://kristo-app.vercel.app/watch/facebook-embed";
-const FACEBOOK_OPEN_BAR_HEIGHT = 36;
+/** Facebook Reels are vertical (9:16) videos: they get the same Watch frame as uploaded vertical videos. */
+const FACEBOOK_REEL_VIDEO_ASPECT = 9 / 16;
+
+/** True for a Facebook Reel / vertical Facebook video link. */
+function isFacebookVerticalItem(item: any): boolean {
+  return isFacebookVideoLinkItem(item) && isVerticalFacebookVideoItem(item);
+}
+
+/** The Reel's cover set by a System Admin, else another picture saved on the post. */
+function facebookBackdropImageUri(item: any): string {
+  for (const raw of [item?.facebookCoverUrl, item?.thumbnailUrl, item?.thumbnailUri, item?.posterUri, item?.videoPosterUri]) {
+    const value = String(raw || "").trim();
+    // Local test servers in development builds may serve http; release builds accept https only.
+    if (/^https:\/\//i.test(value) || (__DEV__ && /^http:\/\//i.test(value))) return value;
+  }
+  return "";
+}
 
 function openFacebookLink(item: any) {
   const target = facebookOpenUrl(item);
   if (target) void Linking.openURL(target).catch(() => {});
 }
 
+/** A picture usable as the video's cover in Watch (https; a local http test server in dev only). */
+function usableCoverUri(raw: unknown): string {
+  const value = String(raw || "").trim();
+  return /^https:\/\//i.test(value) || (__DEV__ && /^http:\/\//i.test(value)) ? value : "";
+}
+
+/** Cover shown when an external video ends: the admin cover (Facebook) or the video thumbnail. */
+function externalVideoCoverUri(item: any): string {
+  for (const raw of [item?.facebookCoverUrl, item?.thumbnailUrl, item?.thumbnailUri, item?.posterUri, item?.videoPosterUri]) {
+    const uri = usableCoverUri(raw);
+    if (uri) return uri;
+  }
+  return "";
+}
+
 /**
- * Plays a confirmed public Facebook video or Reel with Facebook's official Embedded Video Player.
- * The original link is always one tap away ("Fungua Facebook"), and replaces the player when the
- * embed cannot load. Private videos are never attempted: only oEmbed-confirmed posts reach here.
+ * Covers the player when the video has ended (instead of the platform's end screen or
+ * suggestions). A tap plays the same video again; the next video never starts by itself.
+ */
+function ExternalVideoEndCover({ coverUri, onReplay }: { coverUri: string; onReplay: () => void }) {
+  return (
+    <Pressable
+      style={[StyleSheet.absoluteFillObject, styles.externalEndCover]}
+      onPress={onReplay}
+      accessibilityRole="button"
+      accessibilityLabel="Cheza video tena"
+    >
+      {coverUri ? (
+        <>
+          <Image source={{ uri: coverUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" blurRadius={28} />
+          <View style={styles.tikTokBackdropOverlay} />
+          <Image source={{ uri: coverUri }} style={StyleSheet.absoluteFillObject} resizeMode="contain" />
+        </>
+      ) : null}
+      <View style={styles.externalEndReplayButton}>
+        <Ionicons name="play" size={30} color="#FFFFFF" />
+      </View>
+    </Pressable>
+  );
+}
+
+/** Messages from the player page: playing / ended / error. */
+function useExternalPlayerState(resetKey: string) {
+  const webViewRef = useRef<WebView>(null);
+  const [ended, setEnded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setEnded(false);
+    setFailed(false);
+  }, [resetKey]);
+  const onMessage = useCallback((event: { nativeEvent: { data: string } }) => {
+    const message = parseExternalPlayerMessage(event?.nativeEvent?.data);
+    if (!message) return;
+    if (message.type === "ended") setEnded(true);
+    if (message.type === "playing") setEnded(false);
+    if (message.type === "error") setFailed(true);
+  }, []);
+  const replay = useCallback(() => {
+    setEnded(false);
+    webViewRef.current?.injectJavaScript("window.kristoReplay && window.kristoReplay(); true;");
+  }, []);
+  return { webViewRef, ended, failed, setFailed, onMessage, replay };
+}
+
+/**
+ * Plays a confirmed public Facebook video or Reel with Facebook's official Embedded Video Player
+ * (JS SDK): it starts by itself in Watch, Facebook's controls hide while it plays and return on a
+ * tap, and when it ends the post's cover covers the player (tap to play again). Reels keep 9:16,
+ * centred over the cover blurred at the sides. If the embed cannot load, "Fungua Facebook" opens
+ * the original link. Only oEmbed-confirmed public posts reach here.
  */
 function WatchFacebookVideoSurface({ item }: { item: any }) {
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
-  const [failed, setFailed] = useState(false);
-  const pluginUrl = size ? buildFacebookEmbedPluginUrl(item, size) : null;
+  const vertical = isFacebookVerticalItem(item);
+  const playerSize = size && vertical
+    ? { width: Math.min(size.width, Math.round(size.height * FACEBOOK_REEL_VIDEO_ASPECT)), height: size.height }
+    : size;
+  const href = parseFacebookVideoUrl(item?.videoUrl || item?.url)?.url || "";
+  const html = playerSize && href ? buildFacebookSdkPlayerHtml(href, playerSize.width) : null;
+  const backdropUri = vertical ? facebookBackdropImageUri(item) : "";
+  const coverUri = externalVideoCoverUri(item);
   const canOpen = Boolean(facebookOpenUrl(item));
+  const { webViewRef, ended, failed, setFailed, onMessage, replay } = useExternalPlayerState(String(item?.id || ""));
 
-  useEffect(() => {
-    setFailed(false);
-  }, [item?.id]);
+  const allowNavigation = useCallback((request: { url: string; isTopFrame?: boolean }) => {
+    if (request.url === "about:blank" || request.url.startsWith(FACEBOOK_EMBED_BASE_URL)) return true;
+    try {
+      const next = new URL(request.url);
+      if (next.protocol !== "https:" || !isFacebookPlayerHost(next.hostname)) return false;
+      // The player runs in its own frame; a link that would replace the page (title, page name,
+      // "Watch on Facebook") opens in Facebook instead.
+      if (request.isTopFrame === false) return true;
+      void Linking.openURL(next.toString()).catch(() => {});
+    } catch {}
+    return false;
+  }, []);
 
-  const allowNavigation = useCallback(
-    (request: { url: string; isTopFrame?: boolean }) => {
-      if (request.url === "about:blank" || request.url.startsWith(FACEBOOK_EMBED_BASE_URL)) return true;
-      try {
-        const next = new URL(request.url);
-        if (next.protocol !== "https:" || !isFacebookPlayerHost(next.hostname)) return false;
-        // The player itself runs in its iframe; anything that tries to replace the page
-        // (title, page name, "Watch on Facebook") opens in Facebook instead.
-        if (request.isTopFrame === false) return true;
-        void Linking.openURL(next.toString()).catch(() => {});
-      } catch {}
-      return false;
-    },
-    []
-  );
-
-  const showPlayer = Boolean(pluginUrl) && !failed;
+  const showPlayer = Boolean(html) && !failed;
   return (
     <View
-      style={styles.externalVideoSurface}
+      style={[styles.externalVideoSurface, vertical ? styles.facebookReelSurface : null]}
       onLayout={(event) => {
-        const { width } = event.nativeEvent.layout;
-        const height = event.nativeEvent.layout.height - (canOpen ? FACEBOOK_OPEN_BAR_HEIGHT : 0);
+        const { width, height } = event.nativeEvent.layout;
         if (width > 0 && height > 0 && (!size || Math.abs(size.width - width) > 2 || Math.abs(size.height - height) > 2)) {
           setSize({ width, height });
         }
       }}
     >
+      {vertical && showPlayer ? (
+        <>
+          {backdropUri ? (
+            <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+              <Image source={{ uri: backdropUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" blurRadius={28} />
+            </View>
+          ) : null}
+          <View style={styles.tikTokBackdropOverlay} pointerEvents="none" />
+        </>
+      ) : null}
       {showPlayer ? (
-        <View style={styles.facebookPlayerColumn}>
-        <WebView
-          key={pluginUrl!}
-          source={{ html: buildFacebookEmbedHtml(pluginUrl!), baseUrl: FACEBOOK_EMBED_BASE_URL }}
-          style={styles.externalVideoWebView}
-          containerStyle={styles.externalVideoWebViewContainer}
-          originWhitelist={["https://*", "about:blank"]}
-          javaScriptEnabled
-          domStorageEnabled
-          allowsInlineMediaPlayback
-          mediaPlaybackRequiresUserAction={false}
-          allowsFullscreenVideo
-          scrollEnabled={false}
-          bounces={false}
-          setSupportMultipleWindows={false}
-          onShouldStartLoadWithRequest={allowNavigation}
-          onError={() => setFailed(true)}
-          onHttpError={() => setFailed(true)}
-          accessibilityLabel="Facebook video player"
-        />
-        {canOpen ? (
-          <Pressable
-            onPress={() => openFacebookLink(item)}
-            style={styles.facebookOpenBar}
-            accessibilityRole="button"
-            accessibilityLabel="Fungua Facebook"
-          >
-            <Ionicons name="logo-facebook" size={14} color="#FFFFFF" />
-            <Text style={styles.facebookOpenChipText}>Fungua Facebook</Text>
-          </Pressable>
-        ) : null}
+        <View
+          style={
+            vertical && playerSize
+              ? [styles.facebookReelPlayer, { width: playerSize.width, height: playerSize.height }]
+              : styles.facebookPlayerColumn
+          }
+        >
+          <WebView
+            ref={webViewRef}
+            key={html!}
+            source={{ html: html!, baseUrl: FACEBOOK_EMBED_BASE_URL }}
+            style={styles.externalVideoWebView}
+            containerStyle={styles.externalVideoWebViewContainer}
+            originWhitelist={["https://*", "about:blank"]}
+            javaScriptEnabled
+            domStorageEnabled
+            allowsInlineMediaPlayback
+            mediaPlaybackRequiresUserAction={false}
+            allowsFullscreenVideo
+            scrollEnabled={false}
+            bounces={false}
+            setSupportMultipleWindows={false}
+            onShouldStartLoadWithRequest={allowNavigation}
+            onMessage={onMessage}
+            onError={() => setFailed(true)}
+            onHttpError={() => setFailed(true)}
+            accessibilityLabel="Facebook video player"
+          />
         </View>
-      ) : size && (failed || !pluginUrl) ? (
+      ) : size && (failed || !html) ? (
         <View style={styles.externalVideoUnavailable}>
           <Ionicons name="logo-facebook" size={28} color="#FFFFFF" />
           <Text style={styles.externalVideoUnavailableText}>Video hii ya Facebook haiwezi kuchezwa hapa.</Text>
@@ -787,33 +907,84 @@ function WatchFacebookVideoSurface({ item }: { item: any }) {
           ) : null}
         </View>
       ) : null}
+      {showPlayer && ended ? <ExternalVideoEndCover coverUri={coverUri} onReplay={replay} /> : null}
     </View>
   );
 }
 
-/** Plays public YouTube/TikTok links in Kristo's Watch view using the platforms' embed players. */
+/** Top-frame navigation away from YouTube's player page opens in YouTube instead of Watch. */
+function allowYouTubePlayerNavigation(request: { url: string; isTopFrame?: boolean }) {
+  if (request.url === "about:blank" || request.url.startsWith(YOUTUBE_CLIENT_ORIGIN)) return true;
+  if (request.isTopFrame === false) return true;
+  try {
+    const next = new URL(request.url);
+    const host = next.hostname.toLowerCase().replace(/^www\./, "");
+    if (next.protocol === "https:" && ["youtube.com", "m.youtube.com", "youtu.be", "youtube-nocookie.com"].includes(host)) {
+      void Linking.openURL(next.toString()).catch(() => {});
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * Public YouTube links play through YouTube's official IFrame Player API: the video starts by
+ * itself in Watch, YouTube's controls hide while it plays and return on a tap, and when it ends
+ * the post's cover covers the player (tap to play again; nothing else starts by itself).
+ */
+function WatchYouTubeVideoSurface({ item, videoId }: { item: any; videoId: string }) {
+  const html = buildYouTubePlayerHtml(videoId);
+  const coverUri = externalVideoCoverUri(item);
+  const { webViewRef, ended, failed, onMessage, replay } = useExternalPlayerState(`${item?.id || ""}:${videoId}`);
+  return (
+    <View style={styles.externalVideoSurface}>
+      {html && !failed ? (
+        <WebView
+          ref={webViewRef}
+          key={videoId}
+          source={{ html, baseUrl: YOUTUBE_CLIENT_ORIGIN }}
+          style={styles.externalVideoWebView}
+          containerStyle={styles.externalVideoWebViewContainer}
+          originWhitelist={["https://*", "about:blank"]}
+          javaScriptEnabled
+          domStorageEnabled
+          allowsInlineMediaPlayback
+          mediaPlaybackRequiresUserAction={false}
+          allowsFullscreenVideo
+          scrollEnabled={false}
+          bounces={false}
+          setSupportMultipleWindows={false}
+          onShouldStartLoadWithRequest={allowYouTubePlayerNavigation}
+          onMessage={onMessage}
+          accessibilityLabel="YouTube video player"
+        />
+      ) : (
+        <View style={styles.externalVideoUnavailable}>
+          <Ionicons name="alert-circle-outline" size={26} color={HOME_FEED_GOLD} />
+          <Text style={styles.externalVideoUnavailableText}>Video hii ya YouTube haiwezi kuchezwa hapa.</Text>
+        </View>
+      )}
+      {html && !failed && ended ? <ExternalVideoEndCover coverUri={coverUri} onReplay={replay} /> : null}
+    </View>
+  );
+}
+
+/** Plays public YouTube/TikTok/Facebook links in Kristo's Watch view using the platforms' players. */
 function WatchExternalVideoSurface({ item }: { item: any }) {
   if (isFacebookVideoLinkItem(item)) {
     return <WatchFacebookVideoSurface item={item} />;
   }
-  const provider = String(item?.videoDisplayType || item?.provider || "youtube").toLowerCase() === "tiktok" ? "TikTok" : "YouTube";
+  const youtubeId = youtubeVideoIdFromUrl(item?.videoUrl || item?.url);
+  if (youtubeId) {
+    return <WatchYouTubeVideoSurface item={item} videoId={youtubeId} />;
+  }
+  // TikTok: its embed player (no public end-of-video event to place a cover).
   const embedUrl = buildExternalVideoEmbedUrl(item);
-  // YouTube requires a client identity Referer for native WebView embeds (Error 153).
-  // Use Kristo's registered iOS bundle ID in the HTTPS Referer as YouTube specifies.
-  const playerSource = provider === "YouTube" && embedUrl
-    ? {
-        uri: embedUrl,
-        headers: { Referer: "https://com.princefariji.kristoapp.free" },
-      }
-    : embedUrl
-      ? { uri: embedUrl }
-      : null;
   return (
     <View style={styles.externalVideoSurface}>
       {embedUrl ? (
         <WebView
           key={embedUrl}
-          source={playerSource!}
+          source={{ uri: embedUrl }}
           style={styles.externalVideoWebView}
           containerStyle={styles.externalVideoWebViewContainer}
           originWhitelist={["https://*"]}
@@ -826,7 +997,7 @@ function WatchExternalVideoSurface({ item }: { item: any }) {
           bounces={false}
           setSupportMultipleWindows={false}
           onShouldStartLoadWithRequest={allowExternalPlayerNavigation}
-          accessibilityLabel={`${provider} video player`}
+          accessibilityLabel="TikTok video player"
         />
       ) : (
         <View style={styles.externalVideoUnavailable}>
@@ -892,6 +1063,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   visible,
   payload,
   relatedItems,
+  onUpNextEndReached,
   sokoProducts,
   onClose,
   onSelectRelated,
@@ -937,8 +1109,11 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     (detectedDisplayType?.postId === activePostId ? detectedDisplayType.type : null);
   const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
+  const facebookReel = isFacebookVerticalItem(payload?.item);
   const playerHeight = useMemo(
     () =>
+      // A Reel uses the same short vertical frame as an uploaded vertical video (e.g. 320x568).
+      // Facebook's player may show narrow bars beside the video; the frame is not made taller for that.
       resolveWatchPlayerHeight({
         windowWidth: width,
         windowHeight,
@@ -949,6 +1124,21 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   );
   const scrollRef = useRef<ScrollView | null>(null);
   const [playbackStarted, setPlaybackStarted] = useState(false);
+  // Near the end of Up Next (about two cards left), ask once per list length for more videos.
+  const upNextEndReachedRef = useRef(onUpNextEndReached);
+  upNextEndReachedRef.current = onUpNextEndReached;
+  const upNextLengthRef = useRef(relatedItems.length);
+  upNextLengthRef.current = relatedItems.length;
+  const upNextRequestedForLengthRef = useRef(-1);
+  const handleUpNextScroll = useCallback((event: any) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event?.nativeEvent || {};
+    if (!contentSize || !layoutMeasurement) return;
+    const remaining = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    const length = upNextLengthRef.current;
+    if (remaining > 1400 || !length || upNextRequestedForLengthRef.current === length) return;
+    upNextRequestedForLengthRef.current = length;
+    upNextEndReachedRef.current?.();
+  }, []);
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
   const handleDisplayTypeDetected = useCallback(
     (next: HomeFeedVideoDisplayType) => {
@@ -1037,6 +1227,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     return rows;
   }, [relatedItems, sokoProducts]);
 
+  // A new video starts a new Up Next list: allow asking for more again.
+  useEffect(() => {
+    upNextRequestedForLengthRef.current = -1;
+  }, [activePostId]);
   const handleRelatedVideoPress = useCallback(
     (next: HomeFeedVideoOpenPayload) => {
       scrollRef.current?.scrollTo({ y: 0, animated: false });
@@ -1184,6 +1378,8 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           style={styles.scroll}
           contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
           showsVerticalScrollIndicator={false}
+          onScroll={handleUpNextScroll}
+          scrollEventThrottle={64}
         >
           <Text style={styles.upNextLabel}>Up next</Text>
           {watchUpNextRows.map((row) => {
@@ -1281,17 +1477,6 @@ const styles = StyleSheet.create({
   },
   facebookOpenButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
   facebookPlayerColumn: { flex: 1 },
-  facebookOpenBar: {
-    height: FACEBOOK_OPEN_BAR_HEIGHT,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    backgroundColor: "#111318",
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(255,255,255,0.12)",
-  },
-  facebookOpenChipText: { color: "#FFFFFF", fontSize: 12, fontWeight: "800" },
   screen: {
     flex: 1,
     backgroundColor: HOME_FEED_BG,
@@ -1355,6 +1540,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  // Cover over an external player whose video has ended: tap to play it again.
+  externalEndCover: { zIndex: 5, backgroundColor: "#12031F", alignItems: "center", justifyContent: "center" },
+  externalEndReplayButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.9)",
+    paddingLeft: 4,
+  },
+  // Reel frame: Watch's dark purple (not black) shows beside the player when no picture is saved.
+  facebookReelSurface: { alignItems: "center", justifyContent: "center", backgroundColor: "#12031F" },
+  facebookReelPlayer: { zIndex: 2, backgroundColor: "#000000" },
   playerSurface: {
     flex: 1,
     width: "100%",
@@ -1547,6 +1748,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 13,
     fontWeight: "600",
+  },
+  // Bigger like/comment digits; lineHeight stays 13 (from watchActionLabel) so the row keeps its height.
+  watchActionCountLabel: {
+    fontSize: 13.5,
   },
   watchActionLabelActive: {
     color: HOME_FEED_GOLD_SOFT,

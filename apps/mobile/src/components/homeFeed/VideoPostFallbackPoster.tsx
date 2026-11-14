@@ -41,6 +41,7 @@ import { logActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 import {
   collectFeedVideoPosterCandidates,
   describePosterResolution,
+  itemHasStoredFeedVideoCover,
   type PosterMetadataSnapshot,
   snapshotPosterMetadata,
   resolveYouTubeFeedMetadataPosterUri,
@@ -288,6 +289,13 @@ type FeedVideoPosterImageProps = {
   allowImageLoad?: boolean;
   /** Fires when a cover is ready for play overlay (poster faded in or settled placeholder). */
   onPosterCoverReady?: (ready: boolean) => void;
+  /**
+   * Uploaded videos: when the post has a saved cover (chosen or uploaded with the video), that
+   * cover fills the frame ("cover") from the first paint, whether it comes from the network or a
+   * local cached copy. Without a saved cover, the fallback picture from the video keeps the card's
+   * fit (whole for vertical videos), and a fallback that turns out taller than wide is shown whole.
+   */
+  uploadedVideoCover?: boolean;
 };
 
 type PosterLoadState = "idle" | "probing" | "loading" | "loaded" | "failed" | "generating";
@@ -379,8 +387,16 @@ function YouTubeFeedVideoPoster({
   videoDurationMs,
   allowImageLoad = true,
   onPosterCoverReady,
+  uploadedVideoCover = false,
 }: FeedVideoPosterImageProps) {
   const resolvedVideoUrl = String(videoUrl || "").trim();
+  // Known from the post data on the first render; no image is loaded or measured to decide it.
+  const hasSavedCover = React.useMemo(
+    () => uploadedVideoCover && itemHasStoredFeedVideoCover(item),
+    [item, uploadedVideoCover]
+  );
+  // Fallback picture (no saved cover) that loaded taller than wide; never delays the paint.
+  const [tallPosterUri, setTallPosterUri] = React.useState("");
   const status = String(mediaStatus || "").trim().toLowerCase();
   const isProcessing = status === "processing" || status === "uploading";
 
@@ -485,6 +501,11 @@ function YouTubeFeedVideoPoster({
         restoreLoadedPoster();
         return;
       }
+      // A saved cover already on screen stays there: its local cached copy finishing later must
+      // not hide it and fade it in again.
+      if (hasSavedCover && nextSource === "cache" && coverReadyRef.current && loadedUriRef.current) {
+        return;
+      }
       if (!loadStartLoggedRef.current) {
         loadStartLoggedRef.current = true;
         logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, nextSource);
@@ -505,7 +526,7 @@ function YouTubeFeedVideoPoster({
       setPosterFadedIn(false);
       fadeOpacity.setValue(0);
     },
-    [fadeOpacity, postId, resolvedVideoUrl, restoreLoadedPoster]
+    [fadeOpacity, hasSavedCover, postId, resolvedVideoUrl, restoreLoadedPoster]
   );
 
   const tryGenerateFrame = React.useCallback(async () => {
@@ -803,6 +824,11 @@ function YouTubeFeedVideoPoster({
   ]);
 
   const showPosterImage = Boolean(displayUri);
+  const posterResizeMode: ImageResizeMode = hasSavedCover
+    ? "cover"
+    : uploadedVideoCover && displayUri && tallPosterUri === displayUri
+      ? "contain"
+      : resizeMode;
 
   return (
     <View style={style}>
@@ -811,7 +837,7 @@ function YouTubeFeedVideoPoster({
         <Animated.Image
           source={{ uri: displayUri }}
           style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}
-          resizeMode={resizeMode}
+          resizeMode={posterResizeMode}
           onLoadStart={() => {
             markHomeFeedPosterPipelineStage(postId, "image_request_started", {
               posterUri: displayUri,
@@ -819,7 +845,15 @@ function YouTubeFeedVideoPoster({
               source: `${loadSource}:native`,
             });
           }}
-          onLoad={handleImageLoad}
+          onLoad={(event) => {
+            if (uploadedVideoCover && !hasSavedCover) {
+              const source = (event?.nativeEvent as any)?.source;
+              const width = Number(source?.width || 0);
+              const height = Number(source?.height || 0);
+              setTallPosterUri(width > 0 && height > width * 1.02 ? displayUri : "");
+            }
+            handleImageLoad();
+          }}
           onError={handleImageError}
         />
       ) : null}

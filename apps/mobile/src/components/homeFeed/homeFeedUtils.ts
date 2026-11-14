@@ -1868,6 +1868,13 @@ function pickHomeFeedAvatarUri(raw: unknown, cacheBustAt?: number) {
   return bust > 0 ? avatarCacheBust(base, bust) : base;
 }
 
+function isFacebookLinkRow(item: any) {
+  return (
+    String(item?.videoDisplayType || item?.provider || "").trim().toLowerCase() === "facebook" ||
+    String(item?.id || "").startsWith("system-admin-video-facebook-")
+  );
+}
+
 /** Church/media posts: church logo first; Church Room posts always use church avatar. */
 export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
@@ -1876,7 +1883,16 @@ export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
   const cacheBustAt = homeFeedAvatarCacheBustAt(item);
   const isExternalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
   const sources = isExternalVideoAccount
-    ? [item?.creatorAvatarUrl, item?.actorAvatarUri, item?.avatarUri, item?.authorAvatarUri]
+    ? [
+        item?.creatorAvatarUrl,
+        item?.actorAvatarUri,
+        item?.avatarUri,
+        item?.authorAvatarUri,
+        // Facebook links have no official page picture without Graph access: the video's cover
+        // (the one the admin uploaded, else its saved thumbnail) stands in until one exists.
+        // Never an invented picture; with no cover at all the initial of the real name shows.
+        ...(isFacebookLinkRow(item) ? [item?.facebookCoverUrl, item?.thumbnailUrl, item?.posterUrl] : []),
+      ]
     : homeFeedAvatarSourceFields(item, churchMediaFirst);
 
   const uris: string[] = [];
@@ -2255,6 +2271,37 @@ export function collectFeedVideoPosterCandidates(item: any, postId = ""): string
   push(inferPosterUriFromVideoUrl(video));
 
   return out;
+}
+
+/**
+ * True when the post itself carries a saved cover (the cover chosen or uploaded with the video).
+ * Decided from the post data alone, so it is known on the first render without loading or
+ * measuring any image. Frames pulled from the video, inferred URLs and branded placeholders
+ * do not count.
+ */
+export function itemHasStoredFeedVideoCover(item: any): boolean {
+  if (!item || typeof item !== "object") return false;
+  const video = resolveVideoUri(item);
+  for (const raw of [
+    item?.posterUri,
+    item?.videoPosterUri,
+    item?.thumbnailUri,
+    item?.thumbnailUrl,
+    item?.mediaPosterUri,
+    item?.posterUrl,
+    item?.coverUrl,
+    item?.coverImage,
+    item?.coverImageUrl,
+    item?.previewUrl,
+    item?.thumbnail,
+    item?.poster,
+  ]) {
+    const resolved = homeFeedMediaUrl(raw);
+    if (!resolved || isBrandedPosterUri(resolved)) continue;
+    if (video && isInferredPosterUriForVideo(resolved, video)) continue;
+    return true;
+  }
+  return false;
 }
 
 export function resolveBestFeedPosterUri(item: any, postId = ""): string {

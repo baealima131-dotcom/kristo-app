@@ -2672,7 +2672,8 @@ function isDeletedFeedItem(item: any) {
 }
 
 function isHiddenByReportsFeedItem(item: any) {
-  return item?.hiddenByReports === true;
+  // Also leaves out video links a System Admin hid from the Home Feed.
+  return item?.hiddenByReports === true || item?.hiddenBySystemAdmin === true;
 }
 
 function isDiscoverableFeedItem(item: any, viewerChurchId: string) {

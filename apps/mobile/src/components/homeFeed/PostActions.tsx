@@ -64,6 +64,7 @@ export const PostActions = memo(function PostActions({
         <ActionButton
           label={formatActionCount(likeCount)}
           variant="count"
+          primaryCount
           onPress={handleLike}
           active={liked}
         >
@@ -82,7 +83,7 @@ export const PostActions = memo(function PostActions({
           </Animated.View>
         </ActionButton>
 
-        <ActionButton label={formatActionCount(commentCount)} variant="count" onPress={onComment}>
+        <ActionButton label={formatActionCount(commentCount)} variant="count" primaryCount onPress={onComment}>
           <View style={premium.verticalIconWrap}>
             <Ionicons name="chatbubble-ellipses-outline" size={ICON_SIZE} color="#FFFFFF" />
           </View>
@@ -136,6 +137,7 @@ function ActionButton({
   onPress,
   active,
   labelActive,
+  primaryCount,
 }: {
   children: React.ReactNode;
   label: string;
@@ -143,10 +145,13 @@ function ActionButton({
   onPress: () => void;
   active?: boolean;
   labelActive?: boolean;
+  /** Like and comment numbers: larger digits. */
+  primaryCount?: boolean;
 }) {
   const isCount = variant === "count";
   const labelStyle = [
     isCount ? premium.verticalCountLabel : premium.verticalTextLabel,
+    primaryCount ? premium.verticalPrimaryCountLabel : null,
     active || labelActive ? premium.verticalLabelActive : null,
   ];
 

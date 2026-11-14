@@ -10,6 +10,9 @@ type Props = {
   likeCount: number;
   commentCount: number;
   shareCount: number;
+  /** Text shown instead of the like/comment number (e.g. when YouTube hides that count). */
+  likeLabel?: string;
+  commentLabel?: string;
   saved: boolean;
   reported: boolean;
   onLike: () => void;
@@ -24,6 +27,8 @@ export const PostActionsInline = memo(function PostActionsInline({
   likeCount,
   commentCount,
   shareCount,
+  likeLabel,
+  commentLabel,
   saved,
   reported,
   onLike,
@@ -37,14 +42,16 @@ export const PostActionsInline = memo(function PostActionsInline({
       <View style={premium.inlineActionRow}>
         <InlineAction
           icon={liked ? "heart" : "heart-outline"}
-          label={formatActionCount(likeCount)}
+          label={likeLabel ?? formatActionCount(likeCount)}
+          countLabel
           active={liked}
           activeColor="#FF6B8A"
           onPress={onLike}
         />
         <InlineAction
           icon="chatbubble-ellipses-outline"
-          label={formatActionCount(commentCount)}
+          label={commentLabel ?? formatActionCount(commentCount)}
+          countLabel
           onPress={onComment}
         />
         <InlineAction
@@ -75,12 +82,15 @@ function InlineAction({
   onPress,
   active,
   activeColor = HOME_FEED_GOLD_SOFT,
+  countLabel,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   active?: boolean;
   activeColor?: string;
+  /** Like and comment numbers: larger digits in the same line height. */
+  countLabel?: boolean;
 }) {
   return (
     <Pressable style={premium.inlineAction} onPress={onPress} hitSlop={8}>
@@ -90,7 +100,11 @@ function InlineAction({
         color={active ? activeColor : "rgba(255,255,255,0.72)"}
       />
       <Text
-        style={[premium.inlineLabel, active ? premium.inlineLabelActive : null]}
+        style={[
+          premium.inlineLabel,
+          countLabel ? premium.inlineCountLabel : null,
+          active ? premium.inlineLabelActive : null,
+        ]}
         numberOfLines={1}
       >
         {label}

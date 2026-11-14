@@ -3,13 +3,18 @@ import type { NextRequest } from "next/server";
 
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
-import { listFeedItems, upsertFeedItem } from "@/app/api/_lib/store/feedDb";
+import { getFeedItemById, listFeedItems, upsertFeedItem } from "@/app/api/_lib/store/feedDb";
 import {
   fetchFacebookOEmbedVideo,
   parseFacebookVideoUrl,
   type ParsedFacebookVideoLink,
 } from "@/lib/facebookVideoLink";
 import { fetchFacebookGraphVideoStats } from "@/lib/facebookGraphVideoStats";
+import {
+  createPresignedPosterUpload,
+  getVideoStorageConfig,
+  MAX_POSTER_UPLOAD_BYTES,
+} from "@/app/api/_lib/media/objectStorage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -85,9 +90,50 @@ async function fetchJson(url: URL, timeoutMs = 9000) {
   }
 }
 
+/**
+ * Public YouTube video details from YouTube's official oEmbed endpoint (no API key needed).
+ * Gives title, channel and thumbnail; date and counts need the YouTube Data API key.
+ */
+async function youtubeOEmbedMetadata(videoId: string) {
+  const endpoint = new URL("https://www.youtube.com/oembed");
+  endpoint.search = new URLSearchParams({
+    url: `https://www.youtube.com/watch?v=${videoId}`,
+    format: "json",
+  }).toString();
+  const { response, body } = await fetchJson(endpoint);
+  if (response.status === 401 || response.status === 403) {
+    throw Object.assign(new Error("Video hii ya YouTube haiwezi kuwekwa nje ya YouTube (embedding imezimwa au ni private)."), { status: 422 });
+  }
+  if (response.status === 404 || response.status === 400) {
+    throw Object.assign(new Error("No public YouTube video was found at that link."), { status: 404 });
+  }
+  if (!response.ok || !body || typeof body !== "object") {
+    throw Object.assign(new Error("YouTube metadata could not be loaded right now."), { status: 502 });
+  }
+  const authorUrl = typeof body.author_url === "string" && /^https:\/\/(www\.)?youtube\.com\//i.test(body.author_url)
+    ? body.author_url
+    : null;
+  return {
+    provider: "youtube" as const,
+    videoId,
+    url: `https://www.youtube.com/watch?v=${videoId}`,
+    title: String(body.title || ""),
+    creatorName: String(body.author_name || ""),
+    creatorId: authorUrl,
+    creatorProfileUrl: authorUrl,
+    detectedLanguageCode: "",
+    creatorAvatarUrl: null,
+    thumbnailUrl: typeof body.thumbnail_url === "string" ? body.thumbnail_url : null,
+    publishedAt: null,
+    stats: { views: null, likes: null, comments: null },
+    unavailableFields: ["publishedAt", "creatorAvatarUrl", "views", "likes", "comments"],
+  };
+}
+
 async function youtubeMetadata(videoId: string) {
   const key = String(process.env.YOUTUBE_DATA_API_KEY || "").trim();
-  if (!key) throw Object.assign(new Error("YouTube metadata is not configured on the server."), { status: 503 });
+  // Without the Data API key, fall back to oEmbed so links still work (no date or counts).
+  if (!key) return youtubeOEmbedMetadata(videoId);
 
   const endpoint = new URL("https://www.googleapis.com/youtube/v3/videos");
   endpoint.search = new URLSearchParams({
@@ -109,6 +155,13 @@ async function youtubeMetadata(videoId: string) {
 
   const snippet = item.snippet || {};
   const statistics = item.statistics || {};
+  const stats = {
+    views: safeCount(statistics.viewCount),
+    likes: safeCount(statistics.likeCount),
+    comments: safeCount(statistics.commentCount),
+  };
+  // YouTube answered but left a count out: the owner hid likes or turned comments off.
+  const hiddenFields = (["likes", "comments"] as const).filter((field) => stats[field] === null);
   const channelId = String(snippet.channelId || "");
   let creatorAvatarUrl: string | null = null;
 
@@ -150,11 +203,14 @@ async function youtubeMetadata(videoId: string) {
       item?.snippet?.thumbnails?.default?.url ||
       null,
     publishedAt: snippet.publishedAt ? String(snippet.publishedAt) : null,
-    stats: {
-      views: safeCount(statistics.viewCount),
-      likes: safeCount(statistics.likeCount),
-      comments: safeCount(statistics.commentCount),
-    },
+    stats,
+    unavailableFields: [
+      ...(creatorAvatarUrl ? [] : ["creatorAvatarUrl"]),
+      ...(snippet.publishedAt ? [] : ["publishedAt"]),
+      ...(stats.views === null ? ["views"] : []),
+      ...hiddenFields,
+    ],
+    hiddenFields,
   };
 }
 
@@ -222,6 +278,72 @@ async function facebookMetadata(input: ParsedFacebookVideoLink, originalUrl: str
   };
 }
 
+const FACEBOOK_ITEM_PREFIX = "system-admin-video-facebook-";
+const MAX_MANUAL_COUNT = 1_000_000_000_000;
+
+/**
+ * A count a System Admin read on Facebook. Empty means "not entered" (null). Accepts digits with
+ * optional spaces, commas or dots used as thousands separators; anything else is invalid.
+ */
+function parseManualCount(value: unknown): { ok: true; value: number | null } | { ok: false } {
+  if (value === null || value === undefined) return { ok: true, value: null };
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 0 && value <= MAX_MANUAL_COUNT ? { ok: true, value } : { ok: false };
+  }
+  const text = String(value).trim();
+  if (!text) return { ok: true, value: null };
+  if (!/^\d{1,3}([ ,.]?\d{3})*$|^\d+$/.test(text)) return { ok: false };
+  const count = Number(text.replace(/[ ,.]/g, ""));
+  return Number.isSafeInteger(count) && count <= MAX_MANUAL_COUNT ? { ok: true, value: count } : { ok: false };
+}
+
+/** Facebook counts entered by a System Admin, stamped with when they were checked. */
+function readManualStatsInput(input: unknown, userId: string):
+  | { ok: true; stats: { likes: number | null; comments: number | null; checkedAt: string; updatedBy: string } | null }
+  | { ok: false } {
+  const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const likes = parseManualCount(source.likes);
+  const comments = parseManualCount(source.comments);
+  if (!likes.ok || !comments.ok) return { ok: false };
+  if (likes.value === null && comments.value === null) return { ok: true, stats: null };
+  return {
+    ok: true,
+    stats: { likes: likes.value, comments: comments.value, checkedAt: new Date().toISOString(), updatedBy: userId },
+  };
+}
+
+function manualStatsForList(item: any) {
+  const raw = item?.facebookManualStats;
+  if (!raw || typeof raw !== "object") return null;
+  const count = (value: unknown) => {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  };
+  const likes = count(raw.likes);
+  const comments = count(raw.comments);
+  if (likes === null && comments === null) return null;
+  return { likes, comments, checkedAt: String(raw.checkedAt || "") };
+}
+
+/** Covers for Facebook links live in the existing poster storage, in their own folder. */
+const FACEBOOK_COVER_FOLDER = "system-admin-video-covers";
+const FACEBOOK_COVER_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+/** Only a cover uploaded to Kristo's own storage (this folder) may be saved on a post. */
+function trustedFacebookCoverUrl(value: unknown): string | null {
+  const url = String(value || "").trim();
+  if (!url || url.length > 2048) return null;
+  const base = String(getVideoStorageConfig()?.publicBaseUrl || "").replace(/\/+$/, "");
+  if (!base) return null;
+  const prefix = `${base}/church-video-posters/${FACEBOOK_COVER_FOLDER}/`;
+  if (!url.startsWith(prefix)) return null;
+  const rest = url.slice(prefix.length);
+  return /^[A-Za-z0-9._-]+$/.test(rest) ? url : null;
+}
+
+const MANUAL_COUNT_ERROR = "Hesabu za Facebook ziwe namba kamili (mf. 1250 au 1,250), au ziachwe tupu.";
+
 export async function GET(req: NextRequest) {
   const auth = await guardPlatformOfflineActivation(req, ["System_Admin"]);
   if (auth instanceof NextResponse) return auth;
@@ -258,6 +380,8 @@ export async function GET(req: NextRequest) {
       languageCode: String(item?.languageCode || ""),
       languageName: String(item?.languageName || ""),
       stats: item?.platformStats && typeof item.platformStats === "object" ? item.platformStats : {},
+      manualStats: manualStatsForList(item),
+      coverUrl: String(item?.facebookCoverUrl || ""),
     }));
 
   return json({ ok: true, items });
@@ -287,6 +411,62 @@ export async function POST(req: NextRequest) {
   }
 
   const action = String(body?.action || "").trim().toLowerCase();
+  if (action === "facebook-cover-upload-url") {
+    // Signed upload for an optional Facebook Reel cover (System Admin only, images only).
+    const contentType = String(body?.contentType || "").trim().toLowerCase();
+    const fileSize = Number(body?.fileSize || 0);
+    if (!FACEBOOK_COVER_TYPES.has(contentType)) {
+      return json({ ok: false, error: "Cover iwe picha ya JPG, PNG au WebP." }, 400);
+    }
+    if (!Number.isFinite(fileSize) || fileSize <= 0 || fileSize > MAX_POSTER_UPLOAD_BYTES) {
+      return json({ ok: false, error: `Cover isizidi MB ${Math.floor(MAX_POSTER_UPLOAD_BYTES / (1024 * 1024))}.` }, 400);
+    }
+    try {
+      const signed = await createPresignedPosterUpload({
+        churchId: FACEBOOK_COVER_FOLDER,
+        userId: String(auth.viewer.userId || "system-admin"),
+        fileName: String(body?.fileName || "facebook-cover.jpg").slice(0, 120),
+        contentType,
+        fileSize,
+      });
+      return json({ ok: true, uploadUrl: signed.uploadUrl, publicUrl: signed.publicUrl, contentType: signed.contentType });
+    } catch {
+      return json({ ok: false, error: "Upload ya cover haikuweza kuanza." }, 500);
+    }
+  }
+
+  if (action === "facebook-cover") {
+    // Set or clear the cover of a saved Facebook link.
+    const id = String(body?.id || "").trim();
+    if (!id.startsWith(FACEBOOK_ITEM_PREFIX) || !/^\d{5,25}$/.test(id.slice(FACEBOOK_ITEM_PREFIX.length))) {
+      return json({ ok: false, error: "Cover hii inaweza kuwekwa kwa video za Facebook pekee." }, 400);
+    }
+    const clear = body?.coverUrl === null || body?.coverUrl === "";
+    const coverUrl = clear ? null : trustedFacebookCoverUrl(body?.coverUrl);
+    if (!clear && !coverUrl) return json({ ok: false, error: "Cover haikutambuliwa." }, 400);
+    const existing = await getFeedItemById(id);
+    if (!existing || String((existing as any)?.source || "") !== "system-admin-video-link" || (existing as any)?.deleted) {
+      return json({ ok: false, error: "Video haikupatikana." }, 404);
+    }
+    await upsertFeedItem({ ...existing, facebookCoverUrl: coverUrl } as any);
+    return json({ ok: true, coverUrl });
+  }
+
+  if (action === "facebook-manual-stats") {
+    // Edit (or clear) the Facebook counts an admin entered. Facebook links only.
+    const id = String(body?.id || "").trim();
+    if (!id.startsWith(FACEBOOK_ITEM_PREFIX) || !/^\d{5,25}$/.test(id.slice(FACEBOOK_ITEM_PREFIX.length))) {
+      return json({ ok: false, error: "Hesabu hizi zinaweza kuwekwa kwa video za Facebook pekee." }, 400);
+    }
+    const manual = readManualStatsInput(body?.manualStats, String(auth.viewer.userId || "system-admin"));
+    if (!manual.ok) return json({ ok: false, error: MANUAL_COUNT_ERROR }, 400);
+    const existing = await getFeedItemById(id);
+    if (!existing || String((existing as any)?.source || "") !== "system-admin-video-link" || (existing as any)?.deleted) {
+      return json({ ok: false, error: "Video haikupatikana." }, 404);
+    }
+    await upsertFeedItem({ ...existing, facebookManualStats: manual.stats } as any);
+    return json({ ok: true, manualStats: manualStatsForList({ facebookManualStats: manual.stats }) });
+  }
   if (action === "hide" || action === "delete") {
     const id = String(body?.id || "").trim();
     const youtubePrefix = "system-admin-video-youtube-";
@@ -349,12 +529,30 @@ export async function POST(req: NextRequest) {
         return json({ ok: false, error: "Chagua lugha kabla ya kuongeza video." }, 400);
       }
 
+      // Facebook only: optional counts the admin saw on Facebook. Publishing the same video again
+      // without new counts keeps the ones entered before.
+      const itemId = "system-admin-video-" + parsed.provider + "-" + String(metadata.videoId || parsed.videoId);
+      let facebookManualStats: unknown = undefined;
+      let facebookCoverUrl: string | null | undefined = undefined;
+      if (parsed.provider === "facebook") {
+        if (body?.facebookCoverUrl) {
+          facebookCoverUrl = trustedFacebookCoverUrl(body.facebookCoverUrl);
+          if (!facebookCoverUrl) return json({ ok: false, error: "Cover haikutambuliwa." }, 400);
+        }
+        const manual = readManualStatsInput(body?.manualStats, String(auth.viewer.userId || "system-admin"));
+        if (!manual.ok) return json({ ok: false, error: MANUAL_COUNT_ERROR }, 400);
+        const previous = manual.stats && facebookCoverUrl ? null : await getFeedItemById(itemId).catch(() => null);
+        facebookManualStats = manual.stats ?? (previous as any)?.facebookManualStats ?? null;
+        // Re-publishing without a new cover keeps the one saved before.
+        facebookCoverUrl = facebookCoverUrl ?? (previous as any)?.facebookCoverUrl ?? null;
+      }
+
       const now = new Date().toISOString();
       const feedItem = await upsertFeedItem({
         // Facebook share links carry no id until oEmbed confirms the video.
-        id: "system-admin-video-" + parsed.provider + "-" + String(metadata.videoId || parsed.videoId),
+        id: itemId,
         ...(parsed.provider === "facebook"
-          ? { originalUrl: metadata.originalUrl, videoOrientation: metadata.orientation }
+          ? { originalUrl: metadata.originalUrl, videoOrientation: metadata.orientation, facebookManualStats, facebookCoverUrl }
           : {}),
         churchId: "system-admin-global",
         type: "video",
@@ -385,6 +583,8 @@ export async function POST(req: NextRequest) {
         platformStats: metadata.stats,
         platformStatsUpdatedAt: now,
         platformUnavailableFields: metadata.unavailableFields || [],
+        // Counts the platform withholds on purpose (YouTube: likes hidden, comments turned off).
+        platformHiddenFields: metadata.hiddenFields || [],
         createdAt: now,
         createdBy: String(auth.viewer.userId || "system-admin"),
       } as any);

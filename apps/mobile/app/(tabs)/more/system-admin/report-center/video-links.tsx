@@ -20,6 +20,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { WebView } from "react-native-webview";
+import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import {
   buildFacebookEmbedHtml,
   buildFacebookEmbedPluginUrl,
@@ -40,6 +42,10 @@ import {
   fetchSystemAdminVideoMetadata,
   publishSystemAdminVideoLink,
   setSystemAdminVideoLinkHidden,
+  updateFacebookManualStats,
+  uploadFacebookCoverImage,
+  setFacebookCover,
+  isValidManualCountInput,
   deleteSystemAdminVideoLink,
   type SavedSystemAdminVideoLink,
   type SystemAdminVideoMetadata,
@@ -97,13 +103,18 @@ const FACEBOOK_PREVIEW_BASE_URL = "https://kristo-app.vercel.app/system-admin/fa
 function buildVideoEmbedSource(
   provider: "youtube" | "tiktok" | "facebook",
   value: string
-): { uri: string } | { html: string; baseUrl: string } | null {
+): { uri: string; headers?: Record<string, string> } | { html: string; baseUrl: string } | null {
   if (provider === "facebook") {
     const pluginUrl = buildFacebookEmbedPluginUrl({ videoUrl: value }, { width: 340, height: 190 }, { autoplay: false });
     return pluginUrl ? { html: buildFacebookEmbedHtml(pluginUrl), baseUrl: FACEBOOK_PREVIEW_BASE_URL } : null;
   }
   const uri = buildVideoEmbedUrl(provider, value);
-  return uri ? { uri } : null;
+  if (!uri) return null;
+  // YouTube rejects native WebView embeds without a client identity Referer (Error 153);
+  // send the same one Watch uses (Kristo's bundle ID). TikTok needs none.
+  return provider === "youtube"
+    ? { uri, headers: { Referer: "https://com.princefariji.kristoapp.free" } }
+    : { uri };
 }
 
 function buildVideoEmbedUrl(provider: "youtube" | "tiktok", value: string): string | null {
@@ -163,6 +174,72 @@ function displayCount(value: number | null | undefined) {
   }
 }
 
+/** Let the admin pick a picture, saved as a JPEG of at most 1080px wide for upload. */
+async function pickFacebookCoverImage(): Promise<string | null> {
+  const picked = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 1 });
+  if (picked.canceled || !picked.assets?.[0]?.uri) return null;
+  const asset = picked.assets[0];
+  const resize = Number(asset.width || 0) > 1080 ? [{ resize: { width: 1080 } }] : [];
+  const out = await ImageManipulator.manipulateAsync(asset.uri, resize, {
+    compress: 0.82,
+    format: ImageManipulator.SaveFormat.JPEG,
+  });
+  return out.uri;
+}
+
+function formatManualStatsLine(stats: { likes: number | null; comments: number | null; checkedAt: string }) {
+  const parts = [
+    stats.likes != null ? `${displayCount(stats.likes)} reactions` : "",
+    stats.comments != null ? `${displayCount(stats.comments)} maoni` : "",
+  ].filter(Boolean);
+  const checked = Date.parse(stats.checkedAt);
+  const when = Number.isFinite(checked) ? ` • zilikaguliwa ${new Date(checked).toLocaleDateString()}` : "";
+  return `Hesabu za Facebook (admin): ${parts.join(" • ")}${when}`;
+}
+
+function ManualFacebookStatsInputs({
+  likes,
+  comments,
+  onChangeLikes,
+  onChangeComments,
+}: {
+  likes: string;
+  comments: string;
+  onChangeLikes: (value: string) => void;
+  onChangeComments: (value: string) => void;
+}) {
+  return (
+    <View style={styles.manualStatsRow}>
+      <View style={styles.manualStatsField}>
+        <Text style={styles.manualStatsLabel}>Reactions / likes</Text>
+        <TextInput
+          value={likes}
+          onChangeText={onChangeLikes}
+          keyboardType="number-pad"
+          placeholder="Mf. 1250"
+          placeholderTextColor="rgba(255,255,255,0.35)"
+          style={styles.manualStatsInput}
+          maxLength={20}
+          accessibilityLabel="Reactions au likes za Facebook"
+        />
+      </View>
+      <View style={styles.manualStatsField}>
+        <Text style={styles.manualStatsLabel}>Maoni</Text>
+        <TextInput
+          value={comments}
+          onChangeText={onChangeComments}
+          keyboardType="number-pad"
+          placeholder="Mf. 48"
+          placeholderTextColor="rgba(255,255,255,0.35)"
+          style={styles.manualStatsInput}
+          maxLength={20}
+          accessibilityLabel="Maoni ya Facebook"
+        />
+      </View>
+    </View>
+  );
+}
+
 function GlassCard({ children, style, borderColor = "rgba(255,255,255,0.13)" }: any) {
   return (
     <View style={[styles.glassCard, { borderColor }, style]}>
@@ -194,6 +271,17 @@ export default function SystemAdminVideoLinksScreen() {
   const [savedAccountsOpen, setSavedAccountsOpen] = React.useState(false);
   const [expandedAccountKey, setExpandedAccountKey] = React.useState("");
   const [updatingSavedLinkId, setUpdatingSavedLinkId] = React.useState("");
+  // Optional Facebook counts the admin read on Facebook (new link, and editing a saved link).
+  const [manualLikes, setManualLikes] = React.useState("");
+  const [manualComments, setManualComments] = React.useState("");
+  const [editingStatsId, setEditingStatsId] = React.useState("");
+  const [editLikes, setEditLikes] = React.useState("");
+  const [editComments, setEditComments] = React.useState("");
+  const [editStatsError, setEditStatsError] = React.useState("");
+  // Optional Facebook Reel cover: uploaded to Kristo's poster storage, blurred beside the Reel in Watch.
+  const [coverUrl, setCoverUrl] = React.useState("");
+  const [coverUploading, setCoverUploading] = React.useState(false);
+  const [coverError, setCoverError] = React.useState("");
   const requestId = React.useRef(0);
   const scrollRef = React.useRef<ScrollView | null>(null);
 
@@ -205,6 +293,10 @@ export default function SystemAdminVideoLinksScreen() {
     setLoading(true);
     setError("");
     setMetadata(null);
+    setManualLikes("");
+    setManualComments("");
+    setCoverUrl("");
+    setCoverError("");
     try {
       const result = await fetchSystemAdminVideoMetadata(clean);
       if (requestId.current === currentRequest) {
@@ -275,6 +367,68 @@ export default function SystemAdminVideoLinksScreen() {
     }
   }, [updatingSavedLinkId]);
 
+  const pickNewCover = React.useCallback(async () => {
+    if (coverUploading) return;
+    setCoverError("");
+    try {
+      const local = await pickFacebookCoverImage();
+      if (!local) return;
+      setCoverUploading(true);
+      setCoverUrl(await uploadFacebookCoverImage(local));
+    } catch (cause: any) {
+      setCoverError(String(cause?.message || "Cover haikupakiwa."));
+    } finally {
+      setCoverUploading(false);
+    }
+  }, [coverUploading]);
+
+  const changeSavedCover = React.useCallback(async (link: SavedSystemAdminVideoLink, remove = false) => {
+    if (updatingSavedLinkId) return;
+    setSavedLinksError("");
+    try {
+      const local = remove ? null : await pickFacebookCoverImage();
+      if (!remove && !local) return;
+      setUpdatingSavedLinkId(link.id);
+      const uploaded = local ? await uploadFacebookCoverImage(local) : null;
+      const saved = await setFacebookCover(link.id, uploaded);
+      setSavedLinks((current) => current.map((item) => item.id === link.id ? { ...item, coverUrl: saved || "" } : item));
+    } catch (cause: any) {
+      setSavedLinksError(String(cause?.message || "Cover haikuhifadhiwa."));
+    } finally {
+      setUpdatingSavedLinkId("");
+    }
+  }, [updatingSavedLinkId]);
+
+  const startEditingStats = React.useCallback((link: SavedSystemAdminVideoLink) => {
+    if (editingStatsId === link.id) {
+      setEditingStatsId("");
+      return;
+    }
+    setEditingStatsId(link.id);
+    setEditLikes(link.manualStats?.likes != null ? String(link.manualStats.likes) : "");
+    setEditComments(link.manualStats?.comments != null ? String(link.manualStats.comments) : "");
+    setEditStatsError("");
+  }, [editingStatsId]);
+
+  const saveEditedStats = React.useCallback(async (link: SavedSystemAdminVideoLink) => {
+    if (updatingSavedLinkId) return;
+    if (!isValidManualCountInput(editLikes) || !isValidManualCountInput(editComments)) {
+      setEditStatsError("Weka namba kamili (mf. 1250 au 1,250), au acha tupu.");
+      return;
+    }
+    setUpdatingSavedLinkId(link.id);
+    setEditStatsError("");
+    try {
+      const manualStats = await updateFacebookManualStats(link.id, { likes: editLikes.trim(), comments: editComments.trim() });
+      setSavedLinks((current) => current.map((item) => item.id === link.id ? { ...item, manualStats } : item));
+      setEditingStatsId("");
+    } catch (cause: any) {
+      setEditStatsError(String(cause?.message || "Hesabu za Facebook hazikuhifadhiwa."));
+    } finally {
+      setUpdatingSavedLinkId("");
+    }
+  }, [editComments, editLikes, updatingSavedLinkId]);
+
   const confirmDeleteSavedLink = React.useCallback((link: SavedSystemAdminVideoLink) => {
     Alert.alert(
       "Ondoa video kwenye Kristo App?",
@@ -324,13 +478,20 @@ export default function SystemAdminVideoLinksScreen() {
 
   const publishToHomeFeed = React.useCallback(async () => {
     if (!metadata || !language || !url.trim() || publishing) return;
+    const facebookCounts = metadata.provider === "facebook";
+    if (facebookCounts && (!isValidManualCountInput(manualLikes) || !isValidManualCountInput(manualComments))) {
+      setError("Hesabu za Facebook ziwe namba kamili (mf. 1250 au 1,250), au ziachwe tupu.");
+      return;
+    }
     setPublishing(true);
     setError("");
     try {
       await publishSystemAdminVideoLink(
         url.trim(),
         { code: country.code, name: country.name },
-        { code: language.code, name: language.name }
+        { code: language.code, name: language.name },
+        facebookCounts ? { likes: manualLikes.trim(), comments: manualComments.trim() } : undefined,
+        facebookCounts && coverUrl ? coverUrl : undefined
       );
       setPublished(true);
       await refreshSavedLinks();
@@ -339,7 +500,7 @@ export default function SystemAdminVideoLinksScreen() {
     } finally {
       setPublishing(false);
     }
-  }, [country.code, country.name, language, metadata, publishing, refreshSavedLinks, url]);
+  }, [country.code, country.name, coverUrl, language, manualComments, manualLikes, metadata, publishing, refreshSavedLinks, url]);
 
   const openSafeLink = React.useCallback(async (target: string | null | undefined) => {
     if (!target) return;
@@ -491,6 +652,11 @@ export default function SystemAdminVideoLinksScreen() {
                             <View style={{ flex: 1 }}>
                               <Text style={styles.savedLinkTitle} numberOfLines={2}>{link.title || "Video bila kichwa"}</Text>
                               <Text style={styles.savedLinkHint} numberOfLines={1}>{[link.countryName, link.languageName, link.publishedAt ? new Date(link.publishedAt).toLocaleDateString() : ""].filter(Boolean).join(" • ")}</Text>
+                              {link.provider === "facebook" && link.manualStats ? (
+                                <Text style={styles.savedLinkHint} numberOfLines={2}>
+                                  {formatManualStatsLine(link.manualStats)}
+                                </Text>
+                              ) : null}
                             </View>
                             <Ionicons name="open-outline" size={15} color={MUTED} />
                           </Pressable>
@@ -509,6 +675,45 @@ export default function SystemAdminVideoLinksScreen() {
                               )}
                               <Text style={styles.savedLinkActionText}>{link.hidden ? "Onyesha" : "Ficha"}</Text>
                             </Pressable>
+                            {link.provider === "facebook" ? (
+                              <Pressable
+                                onPress={() => startEditingStats(link)}
+                                disabled={Boolean(updatingSavedLinkId)}
+                                style={styles.savedLinkAction}
+                                accessibilityRole="button"
+                                accessibilityLabel="Hariri hesabu za Facebook"
+                              >
+                                <Ionicons name="create-outline" size={14} color={BLUE} />
+                                <Text style={styles.savedLinkActionText}>Hesabu</Text>
+                              </Pressable>
+                            ) : null}
+                            {link.provider === "facebook" && link.orientation === "vertical" ? (
+                              <Pressable
+                                onPress={() => void changeSavedCover(link)}
+                                disabled={Boolean(updatingSavedLinkId)}
+                                style={styles.savedLinkAction}
+                                accessibilityRole="button"
+                                accessibilityLabel={link.coverUrl ? "Badilisha cover ya Reel" : "Weka cover ya Reel"}
+                              >
+                                {link.coverUrl ? (
+                                  <Image source={{ uri: link.coverUrl }} style={styles.savedCoverThumb} />
+                                ) : (
+                                  <Ionicons name="image-outline" size={14} color={BLUE} />
+                                )}
+                                <Text style={styles.savedLinkActionText}>Cover</Text>
+                              </Pressable>
+                            ) : null}
+                            {link.provider === "facebook" && link.coverUrl ? (
+                              <Pressable
+                                onPress={() => void changeSavedCover(link, true)}
+                                disabled={Boolean(updatingSavedLinkId)}
+                                style={styles.savedLinkAction}
+                                accessibilityRole="button"
+                                accessibilityLabel="Ondoa cover ya Reel"
+                              >
+                                <Ionicons name="close-circle-outline" size={14} color={MUTED} />
+                              </Pressable>
+                            ) : null}
                             <Pressable
                               onPress={() => confirmDeleteSavedLink(link)}
                               disabled={Boolean(updatingSavedLinkId)}
@@ -520,6 +725,32 @@ export default function SystemAdminVideoLinksScreen() {
                               <Text style={[styles.savedLinkActionText, { color: RED }]}>Ondoa</Text>
                             </Pressable>
                           </View>
+                          {link.provider === "facebook" && editingStatsId === link.id ? (
+                            <View style={styles.savedStatsEditor}>
+                              <ManualFacebookStatsInputs
+                                likes={editLikes}
+                                comments={editComments}
+                                onChangeLikes={setEditLikes}
+                                onChangeComments={setEditComments}
+                              />
+                              {editStatsError ? <Text style={styles.savedError}>{editStatsError}</Text> : null}
+                              <Text style={styles.manualStatsHint}>Acha sehemu zote tupu kisha hifadhi ili kuondoa hesabu hizi.</Text>
+                              <Pressable
+                                onPress={() => void saveEditedStats(link)}
+                                disabled={Boolean(updatingSavedLinkId)}
+                                style={[styles.savedLinkAction, { alignSelf: "flex-start", marginTop: 8 }]}
+                                accessibilityRole="button"
+                                accessibilityLabel="Hifadhi hesabu za Facebook"
+                              >
+                                {updatingSavedLinkId === link.id ? (
+                                  <ActivityIndicator size="small" color={BLUE} />
+                                ) : (
+                                  <Ionicons name="checkmark-outline" size={14} color={BLUE} />
+                                )}
+                                <Text style={styles.savedLinkActionText}>Hifadhi hesabu</Text>
+                              </Pressable>
+                            </View>
+                          ) : null}
                         </View>
                       ))}
                     </View>
@@ -672,9 +903,57 @@ export default function SystemAdminVideoLinksScreen() {
             {metadata.provider === "tiktok" ? (
               <Text style={styles.apiNote}>TikTok imetoa kichwa na akaunti kupitia oEmbed. Tarehe na takwimu zake hazipatikani kwa njia hii.</Text>
             ) : null}
+            {metadata.provider === "facebook" && metadata.orientation === "vertical" ? (
+              <View style={styles.manualStatsBox}>
+                <Text style={styles.manualStatsTitle}>Cover ya Reel (hiari)</Text>
+                <View style={styles.coverRow}>
+                  {coverUrl ? (
+                    <Image source={{ uri: coverUrl }} style={styles.coverPreview} />
+                  ) : (
+                    <View style={[styles.coverPreview, styles.coverPreviewEmpty]}>
+                      <Ionicons name="image-outline" size={20} color={MUTED} />
+                    </View>
+                  )}
+                  <View style={{ flex: 1, gap: 6 }}>
+                    <Pressable
+                      onPress={() => void pickNewCover()}
+                      disabled={coverUploading}
+                      style={[styles.savedLinkAction, { alignSelf: "flex-start" }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={coverUrl ? "Badilisha cover ya Reel" : "Chagua cover ya Reel"}
+                    >
+                      {coverUploading ? <ActivityIndicator size="small" color={BLUE} /> : <Ionicons name="cloud-upload-outline" size={14} color={BLUE} />}
+                      <Text style={styles.savedLinkActionText}>{coverUploading ? "Inapakia..." : coverUrl ? "Badilisha picha" : "Chagua picha"}</Text>
+                    </Pressable>
+                    {coverUrl && !coverUploading ? (
+                      <Pressable onPress={() => setCoverUrl("")} style={[styles.savedLinkAction, { alignSelf: "flex-start" }]} accessibilityRole="button" accessibilityLabel="Ondoa cover">
+                        <Ionicons name="close-circle-outline" size={14} color={MUTED} />
+                        <Text style={[styles.savedLinkActionText, { color: MUTED }]}>Ondoa</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+                {coverError ? <Text style={styles.savedError}>{coverError}</Text> : null}
+                <Text style={styles.manualStatsHint}>Itaonyeshwa ikiwa imefifishwa pembeni ya Reel kwenye Watch. Bila cover, pembeni zitabaki zambarau-nzito.</Text>
+              </View>
+            ) : null}
+            {metadata.provider === "facebook" ? (
+              <View style={styles.manualStatsBox}>
+                <Text style={styles.manualStatsTitle}>Hesabu ulizoona Facebook (hiari)</Text>
+                <ManualFacebookStatsInputs
+                  likes={manualLikes}
+                  comments={manualComments}
+                  onChangeLikes={setManualLikes}
+                  onChangeComments={setManualComments}
+                />
+                <Text style={styles.manualStatsHint}>
+                  Zitaonyeshwa zikijumlishwa na engagement ya Kristo App, na tarehe ya kuzikagua inahifadhiwa. Graph API ikileta hesabu halisi, hizo ndizo zitatumika. Ukiacha tupu, sehemu hiyo itabaki tupu.
+                </Text>
+              </View>
+            ) : null}
             {metadata.provider === "facebook" ? (
               <Text style={styles.apiNote}>
-                Facebook imethibitisha kupitia oEmbed rasmi kwamba video hii ni ya umma. API hii haitoi picha wala likes, views au maoni ya Facebook, kwa hiyo Kristo App itaonyesha engagement yake pekee. Link ya asili imehifadhiwa kwa ajili ya “Fungua Facebook”.
+                Facebook imethibitisha kupitia oEmbed rasmi kwamba video hii ni ya umma. oEmbed haitoi picha wala likes, views au maoni. Link ya asili imehifadhiwa kwa ajili ya “Fungua Facebook”.
               </Text>
             ) : null}
 
@@ -868,6 +1147,18 @@ const styles = StyleSheet.create({
   statBox: { flex: 1, minHeight: 70, borderRadius: 13, alignItems: "center", justifyContent: "center", gap: 3, backgroundColor: "rgba(255,255,255,0.045)", borderWidth: 1, borderColor: "rgba(255,255,255,0.09)" },
   statValue: { color: TEXT, fontSize: 13, fontWeight: "900" },
   statLabel: { color: MUTED, fontSize: 9, fontWeight: "700" },
+  manualStatsBox: { marginTop: 12, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: "rgba(110,168,254,0.28)", backgroundColor: "rgba(110,168,254,0.06)" },
+  manualStatsTitle: { color: TEXT, fontSize: 11, fontWeight: "800" },
+  manualStatsRow: { flexDirection: "row", gap: 8, marginTop: 8 },
+  manualStatsField: { flex: 1 },
+  manualStatsLabel: { color: MUTED, fontSize: 9, fontWeight: "700", marginBottom: 4 },
+  manualStatsInput: { minHeight: 42, paddingHorizontal: 11, borderRadius: 11, color: TEXT, fontSize: 13, backgroundColor: "rgba(4,7,14,0.52)", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
+  manualStatsHint: { marginTop: 8, color: "rgba(255,255,255,0.48)", fontSize: 9, lineHeight: 13, fontWeight: "600" },
+  coverRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 },
+  coverPreview: { width: 54, height: 96, borderRadius: 8, backgroundColor: "rgba(4,7,14,0.52)" },
+  coverPreviewEmpty: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
+  savedCoverThumb: { width: 14, height: 20, borderRadius: 3 },
+  savedStatsEditor: { paddingBottom: 10, paddingLeft: 23, paddingRight: 4 },
   apiNote: { marginTop: 11, color: "rgba(255,255,255,0.48)", fontSize: 10, lineHeight: 15, fontWeight: "600" },
   publishButton: { marginTop: 14, minHeight: 50, borderRadius: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: GOLD, shadowColor: GOLD, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 10, elevation: 3 },
   publishedButton: { backgroundColor: GREEN },
