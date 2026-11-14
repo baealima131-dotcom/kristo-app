@@ -9,6 +9,7 @@ import {
   parseFacebookVideoUrl,
   type ParsedFacebookVideoLink,
 } from "@/lib/facebookVideoLink";
+import { fetchFacebookGraphVideoStats } from "@/lib/facebookGraphVideoStats";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -192,6 +193,15 @@ async function facebookMetadata(input: ParsedFacebookVideoLink, originalUrl: str
       { status: 422 }
     );
   }
+  // Counts come only from Meta's Graph API, and only when the app's access allows it; a
+  // missing value stays null (shown as unavailable) and never blocks the video.
+  const graph = await fetchFacebookGraphVideoStats(confirmed.videoId, { timeoutMs: 5000 }).catch(() => null);
+  const stats = { views: null, likes: graph?.likes ?? null, comments: graph?.comments ?? null };
+  const publishedAt = graph?.publishedAt || confirmed.publishedAt;
+  const unavailableFields = ["thumbnailUrl", "creatorAvatarUrl", "views"];
+  if (stats.likes === null) unavailableFields.push("likes");
+  if (stats.comments === null) unavailableFields.push("comments");
+  if (!publishedAt) unavailableFields.push("publishedAt");
   return {
     provider: "facebook" as const,
     videoId: confirmed.videoId,
@@ -204,11 +214,11 @@ async function facebookMetadata(input: ParsedFacebookVideoLink, originalUrl: str
     creatorProfileUrl: confirmed.creatorProfileUrl,
     detectedLanguageCode: "",
     creatorAvatarUrl: null,
-    // Facebook's oEmbed returns no thumbnail and no public counts: never invent them.
+    // Facebook's oEmbed returns no thumbnail and no counts: never invent them.
     thumbnailUrl: null,
-    publishedAt: confirmed.publishedAt,
-    stats: { views: null, likes: null, comments: null },
-    unavailableFields: ["thumbnailUrl", "creatorAvatarUrl", "views", "likes", "comments"],
+    publishedAt,
+    stats,
+    unavailableFields,
   };
 }
 

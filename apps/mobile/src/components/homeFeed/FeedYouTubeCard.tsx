@@ -75,7 +75,11 @@ export const FeedYouTubeCard = memo(
 
   const postId = String(item?.id || "").trim();
   const posterFieldsKey = posterMetadataFingerprint(item);
-  const whenLabel = formatFeedTimestamp(item?.createdAt);
+  // Facebook links show when the video was posted on Facebook (when known), like Watch does.
+  const facebookLink = isExternalVideo && String(item?.videoDisplayType || item?.provider || "").toLowerCase() === "facebook";
+  const whenLabel = formatFeedTimestamp(
+    facebookLink && item?.publishedAt ? String(item.publishedAt) : item?.createdAt
+  );
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const postTitle = resolveHomeFeedVideoTitle(item);
   const postBody = resolvePostBody(item);
