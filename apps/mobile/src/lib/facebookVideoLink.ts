@@ -90,7 +90,10 @@ export function parseFacebookVideoUrl(raw: unknown): ParsedFacebookVideoLink | n
 /** Post saved from a Facebook link (system admin video link with provider "facebook"). */
 export function isFacebookVideoLinkItem(item: any): boolean {
   if (String(item?.source || "").trim().toLowerCase() !== "system-admin-video-link") return false;
-  return String(item?.videoDisplayType || item?.provider || "").trim().toLowerCase() === "facebook";
+  const platform = String(item?.videoDisplayType || item?.provider || "").trim().toLowerCase();
+  if (platform) return platform === "facebook";
+  // A row without its platform (e.g. from an older cache): recognise the Facebook link itself.
+  return Boolean(parseFacebookVideoUrl(item?.videoUrl || item?.url));
 }
 
 /** Facebook Reels are vertical; other Facebook videos use the landscape frame. */

@@ -122,6 +122,8 @@ export function homeFeedRowCardFingerprint(row: any): string {
     String(row?.commentCount || ""),
     String(row?.shareCount || ""),
     String(row?.homeFeedRecycleKey || ""),
+    // Which platform plays a video link (a cached row without it must be replaced).
+    String(row?.videoDisplayType || ""),
     // External video links: a new admin cover, channel picture, post date or platform counts must
     // also replace the cached row (otherwise the card keeps the old cover/avatar/counts).
     String(row?.facebookCoverUrl || ""),

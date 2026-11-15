@@ -483,6 +483,8 @@ function InactiveVideoPoster({
           posterMetadata={posterMetadata}
           videoDurationMs={videoDurationMs}
           enableVideoFrameFallback
+          // The cover fills the frame with a blurred copy of itself and is shown whole on top.
+          blurFill
         />
       );
     }

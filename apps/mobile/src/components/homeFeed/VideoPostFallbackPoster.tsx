@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { Image as ExpoImage } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { isFacebookVideoHost } from "@/src/lib/facebookVideoLink";
@@ -296,7 +297,63 @@ type FeedVideoPosterImageProps = {
    * fit (whole for vertical videos), and a fallback that turns out taller than wide is shown whole.
    */
   uploadedVideoCover?: boolean;
+  /**
+   * Home Feed cards: the cover fills the whole frame with a blurred, enlarged copy of itself, and
+   * the whole cover is shown on top (never cropped or stretched). Used for uploaded, YouTube and
+   * Facebook video covers.
+   */
+  blurFill?: boolean;
 };
+
+/**
+ * Blurred, enlarged copy of a cover that fills the frame. Drawn with expo-image: React Native's
+ * Image blur cannot process wide-colour 16-bit PNG covers (common for covers saved from an iPhone)
+ * on Android and leaves the layer empty; expo-image decodes and blurs them correctly.
+ */
+function BlurredCoverFill({ uri }: { uri: string }) {
+  return (
+    <ExpoImage
+      source={{ uri }}
+      style={StyleSheet.absoluteFillObject}
+      contentFit="cover"
+      blurRadius={24}
+      cachePolicy="memory-disk"
+      transition={0}
+      accessible={false}
+    />
+  );
+}
+
+/**
+ * A cover drawn whole over a blurred, enlarged copy of itself that fills the frame. The front
+ * image carries the load/error handlers so callers keep their loading logic.
+ */
+function BlurFilledCover({
+  uri,
+  onLoadStart,
+  onLoad,
+  onError,
+}: {
+  uri: string;
+  onLoadStart?: () => void;
+  onLoad?: (event: any) => void;
+  onError?: () => void;
+}) {
+  return (
+    <>
+      <BlurredCoverFill uri={uri} />
+      <View style={styles.blurFillDim} />
+      <Image
+        source={{ uri }}
+        style={StyleSheet.absoluteFillObject}
+        resizeMode="contain"
+        onLoadStart={onLoadStart}
+        onLoad={onLoad}
+        onError={onError}
+      />
+    </>
+  );
+}
 
 type PosterLoadState = "idle" | "probing" | "loading" | "loaded" | "failed" | "generating";
 
@@ -388,6 +445,7 @@ function YouTubeFeedVideoPoster({
   allowImageLoad = true,
   onPosterCoverReady,
   uploadedVideoCover = false,
+  blurFill = false,
 }: FeedVideoPosterImageProps) {
   const resolvedVideoUrl = String(videoUrl || "").trim();
   // Known from the post data on the first render; no image is loaded or measured to decide it.
@@ -833,7 +891,23 @@ function YouTubeFeedVideoPoster({
   return (
     <View style={style}>
       {!posterFadedIn ? <HomeFeedPosterGradientPlaceholder /> : null}
-      {showPosterImage ? (
+      {showPosterImage && blurFill ? (
+        <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}>
+          <BlurFilledCover
+            uri={displayUri}
+            onLoadStart={() => {
+              markHomeFeedPosterPipelineStage(postId, "image_request_started", {
+                posterUri: displayUri,
+                videoUrl: resolvedVideoUrl,
+                source: `${loadSource}:native`,
+              });
+            }}
+            onLoad={() => handleImageLoad()}
+            onError={handleImageError}
+          />
+        </Animated.View>
+      ) : null}
+      {showPosterImage && !blurFill ? (
         <Animated.Image
           source={{ uri: displayUri }}
           style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}
@@ -876,6 +950,7 @@ function LegacyFeedVideoPosterImage({
   previewLoadTimeoutMs = getHomeFeedPosterLoadTimeoutMs(),
   posterMetadata,
   videoDurationMs,
+  blurFill = false,
 }: FeedVideoPosterImageProps) {
   const resolvedVideoUrl = String(videoUrl || "").trim();
   const status = String(mediaStatus || "").trim().toLowerCase();
@@ -1253,10 +1328,16 @@ function LegacyFeedVideoPosterImage({
 
   return (
     <View style={style}>
+      {blurFill ? (
+        <>
+          <BlurredCoverFill uri={activeDisplayUri} />
+          <View style={styles.blurFillDim} />
+        </>
+      ) : null}
       <Image
         source={{ uri: activeDisplayUri }}
         style={StyleSheet.absoluteFillObject}
-        resizeMode={resizeMode}
+        resizeMode={blurFill ? "contain" : resizeMode}
         onLoad={() => {
           if (activeDisplayUri === clientThumbUri) {
             setClientThumbState("loaded");
@@ -1301,6 +1382,8 @@ function LegacyFeedVideoPosterImage({
 }
 
 const styles = StyleSheet.create({
+  // Dims the blurred copy behind a whole cover so the cover stands out (Home Feed cards).
+  blurFillDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(18,3,31,0.28)" },
   content: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",

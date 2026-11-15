@@ -170,7 +170,8 @@ export function slimHomeFeedPageCacheRow(row: unknown): Record<string, unknown> 
   // Every external video link (YouTube, TikTok, Facebook): keep the platform post date, the
   // channel picture and the platform counts, so cached cards match fresh ones.
   if (String(input.source || "").trim().toLowerCase() === "system-admin-video-link") {
-    for (const key of ["publishedAt", "creatorAvatarUrl", "creatorName", "creatorProfileUrl"] as const) {
+    // videoDisplayType says which platform (youtube/facebook/tiktok) plays the link in Watch.
+    for (const key of ["videoDisplayType", "publishedAt", "creatorAvatarUrl", "creatorName", "creatorProfileUrl"] as const) {
       const value = trimCacheString(input[key], key);
       if (value) out[key] = value;
     }

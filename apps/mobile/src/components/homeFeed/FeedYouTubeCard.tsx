@@ -6,6 +6,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActionsInline } from "./PostActionsInline";
 import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
+import { Image as ExpoImage } from "expo-image";
 import {
   formatFeedMetaLine,
   formatFeedTimestamp,
@@ -28,7 +29,6 @@ import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
 import {
   homeFeedVideoThumbnailHeight,
-  tiktokThumbnailWidth,
 } from "@/src/lib/homeFeedYouTubeLayout";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { markHomeFeedPosterPipelineStage } from "@/src/lib/homeFeedPosterPipelineTrace";
@@ -94,7 +94,6 @@ export const FeedYouTubeCard = memo(
   const { width: windowWidth } = useWindowDimensions();
   const displayType = resolveHomeFeedVideoDisplayType(item);
   const thumbHeight = homeFeedVideoThumbnailHeight(windowWidth, displayType);
-  const tiktokThumbWidth = tiktokThumbnailWidth(windowWidth);
 
   const postId = String(item?.id || "").trim();
   const posterFieldsKey = posterMetadataFingerprint(item);
@@ -169,10 +168,9 @@ export const FeedYouTubeCard = memo(
       >
         {video && videoUri ? (
           <Pressable
-            style={[
-              styles.thumbPress,
-              displayType === "tiktok" ? { width: tiktokThumbWidth, height: thumbHeight } : null,
-            ]}
+            // The video cover uses the whole frame (also for vertical videos): the cover is shown
+            // whole in the middle over a blurred copy of itself that fills the sides.
+            style={styles.thumbPress}
             onPress={handleVideoPress}
             accessibilityLabel="Play video"
           >
@@ -326,11 +324,14 @@ function VideoThumbnail({
     <>
       {showFacebookCover ? (
         <View style={StyleSheet.absoluteFillObject}>
-          <Image
+          <ExpoImage
             source={{ uri: facebookCover }}
             style={StyleSheet.absoluteFillObject}
-            resizeMode="cover"
+            contentFit="cover"
             blurRadius={24}
+            cachePolicy="memory-disk"
+            transition={0}
+            accessible={false}
           />
           <View style={styles.facebookCoverDim} />
           <Image
@@ -352,6 +353,9 @@ function VideoThumbnail({
         posterMetadata={posterMetadata}
         videoDurationMs={videoDurationMs}
         youtubeMode
+        // Every video cover (uploaded, YouTube, Facebook) fills the frame with a blurred copy of
+        // itself and is shown whole on top.
+        blurFill
         allowImageLoad={shouldLoadImages}
         onPosterCoverReady={setCoverReady}
         // Uploaded videos only (not YouTube/TikTok/Facebook links): the saved cover fills the
@@ -424,6 +428,7 @@ const styles = StyleSheet.create({
   facebookCoverDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(18,3,31,0.28)" },
   thumbPress: {
     flex: 1,
+    alignSelf: "stretch",
     borderRadius: HOME_FEED_THUMB_RADIUS,
     overflow: "hidden",
     backgroundColor: "#1a1a1a",
