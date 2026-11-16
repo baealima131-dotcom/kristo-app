@@ -3889,19 +3889,10 @@ export default function MediaStudioScreen() {
                     </Pressable>
                     {videoPostCustomCoverUri ? (
                       <Pressable
-                        onPress={() => {
-                          setVideoPostCustomCoverUri("");
-                          const uri = String(
-                            videoPostCoverOptions[videoPostSelectedCoverIndex] ||
-                              videoPostCoverOptions[0] ||
-                              videoPostPosterUri ||
-                              ""
-                          ).trim();
-                          if (uri) setVideoPostPosterUri(uri);
-                        }}
+                        onPress={() => setVideoPostCustomCoverUri("")}
                         style={({ pressed }) => [s.videoCoverUseGeneratedBtn, pressed ? s.pressed : null]}
                       >
-                        <Text style={s.videoCoverUseGeneratedText}>Use generated covers instead</Text>
+                        <Text style={s.videoCoverUseGeneratedText}>Remove Custom Cover</Text>
                       </Pressable>
                     ) : null}
 
