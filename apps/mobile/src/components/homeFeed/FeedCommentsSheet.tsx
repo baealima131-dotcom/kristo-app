@@ -30,6 +30,8 @@ import {
   commentCacheKey,
   enrichCommentsFromLocalProfiles,
   fetchFeedComments,
+  fetchYouTubeVideoComments,
+  type YouTubeVideoComment,
   mergeCommentsAfterSuccessfulPost,
   normalizeCommentPostId,
   reloadFeedCommentsAfterPost,
@@ -103,6 +105,7 @@ function resolveAvatarUriForNode(node: FeedCommentNode) {
 type Props = {
   visible: boolean;
   postId: string;
+  youtubeVideoId?: string | null;
   railDiscussionCount?: number;
   onClose: () => void;
   onDiscussionCountChange: (postId: string, count: number) => void;
@@ -817,6 +820,7 @@ function CommentReportSheet({
 export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   visible,
   postId,
+  youtubeVideoId = "",
   railDiscussionCount = 0,
   onClose,
   onDiscussionCountChange,
@@ -842,6 +846,52 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   const [replyTo, setReplyTo] = useState<FeedCommentNode | null>(null);
   const [error, setError] = useState("");
   const [reportCommentId, setReportCommentId] = useState("");
+  const [youtubeComments, setYoutubeComments] = useState<YouTubeVideoComment[]>([]);
+  const [youtubeCommentsLoading, setYoutubeCommentsLoading] = useState(false);
+  const [youtubeCommentsLoadingMore, setYoutubeCommentsLoadingMore] = useState(false);
+  const [youtubeCommentsDisabled, setYoutubeCommentsDisabled] = useState(false);
+  const [youtubeCommentsError, setYoutubeCommentsError] = useState("");
+  const [youtubeCommentsPageToken, setYoutubeCommentsPageToken] = useState<string | null>(null);
+  const youtubeCommentsRequestRef = useRef(0);
+  const cleanYoutubeVideoId = String(youtubeVideoId || "").trim();
+
+  useEffect(() => {
+    const requestId = ++youtubeCommentsRequestRef.current;
+    setYoutubeComments([]);
+    setYoutubeCommentsPageToken(null);
+    setYoutubeCommentsDisabled(false);
+    setYoutubeCommentsError("");
+    if (!visible || !/^[A-Za-z0-9_-]{11}$/.test(cleanYoutubeVideoId)) {
+      setYoutubeCommentsLoading(false);
+      return;
+    }
+    setYoutubeCommentsLoading(true);
+    void fetchYouTubeVideoComments(cleanYoutubeVideoId).then((result) => {
+      if (requestId !== youtubeCommentsRequestRef.current) return;
+      setYoutubeComments(result.comments);
+      setYoutubeCommentsDisabled(result.commentsDisabled);
+      setYoutubeCommentsPageToken(result.nextPageToken);
+      setYoutubeCommentsError(result.ok ? "" : String(result.error || ""));
+      setYoutubeCommentsLoading(false);
+    });
+    return () => {
+      if (requestId === youtubeCommentsRequestRef.current) youtubeCommentsRequestRef.current += 1;
+    };
+  }, [visible, cleanYoutubeVideoId]);
+
+  const loadMoreYoutubeComments = useCallback(async () => {
+    const pageToken = youtubeCommentsPageToken;
+    if (!cleanYoutubeVideoId || !pageToken || youtubeCommentsLoadingMore) return;
+    setYoutubeCommentsLoadingMore(true);
+    const result = await fetchYouTubeVideoComments(cleanYoutubeVideoId, pageToken);
+    if (result.ok) {
+      setYoutubeComments((current) => [...current, ...result.comments]);
+      setYoutubeCommentsPageToken(result.nextPageToken);
+    } else {
+      setYoutubeCommentsError(String(result.error || "YouTube comments could not be loaded."));
+    }
+    setYoutubeCommentsLoadingMore(false);
+  }, [cleanYoutubeVideoId, youtubeCommentsPageToken, youtubeCommentsLoadingMore]);
 
   useEffect(() => {
     console.log("KRISTO_COMMENT_SHEET_VISIBLE", {
@@ -1304,6 +1354,65 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
                 keyboardDismissMode="interactive"
                 showsVerticalScrollIndicator={false}
               >
+                {cleanYoutubeVideoId ? (
+                  <View style={styles.youtubeCommentsSection}>
+                    <Text style={styles.youtubeCommentsTitle}>YouTube comments</Text>
+                    {youtubeCommentsLoading ? (
+                      <View style={styles.youtubeCommentsStatus}>
+                        <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="small" />
+                        <Text style={styles.loadingText}>Loading YouTube comments...</Text>
+                      </View>
+                    ) : youtubeCommentsDisabled ? (
+                      <Text style={styles.youtubeCommentsStatusText}>Comments are turned off for this video.</Text>
+                    ) : youtubeCommentsError ? (
+                      <Text style={styles.youtubeCommentsStatusText}>{youtubeCommentsError}</Text>
+                    ) : youtubeComments.length ? (
+                      youtubeComments.map((comment) => (
+                        <View key={comment.id} style={styles.youtubeCommentRow}>
+                          {comment.authorAvatarUrl ? (
+                            <Image source={{ uri: comment.authorAvatarUrl }} style={styles.youtubeCommentAvatar} />
+                          ) : (
+                            <View style={[styles.youtubeCommentAvatar, styles.youtubeCommentAvatarFallback]}>
+                              <Text style={styles.youtubeCommentInitial}>
+                                {comment.authorName.trim().charAt(0).toUpperCase() || "Y"}
+                              </Text>
+                            </View>
+                          )}
+                          <View style={styles.youtubeCommentContent}>
+                            <View style={styles.youtubeCommentMeta}>
+                              <Text style={styles.youtubeCommentAuthor} numberOfLines={1}>{comment.authorName}</Text>
+                              <Text style={styles.youtubeCommentTime}>
+                                {formatCommentTime(comment.publishedAt)}
+                              </Text>
+                            </View>
+                            <Text style={styles.youtubeCommentText}>{comment.text}</Text>
+                            {comment.likeCount > 0 || comment.replyCount > 0 ? (
+                              <Text style={styles.youtubeCommentCounts}>
+                                {comment.likeCount > 0 ? `♥ ${comment.likeCount}` : ""}
+                                {comment.likeCount > 0 && comment.replyCount > 0 ? "   " : ""}
+                                {comment.replyCount > 0 ? `${comment.replyCount} replies` : ""}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                      ))
+                    ) : (
+                      <Text style={styles.youtubeCommentsStatusText}>No public YouTube comments yet.</Text>
+                    )}
+                    {youtubeCommentsPageToken && !youtubeCommentsLoading ? (
+                      <Pressable onPress={loadMoreYoutubeComments} style={styles.youtubeCommentsMore}>
+                        {youtubeCommentsLoadingMore ? (
+                          <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="small" />
+                        ) : (
+                          <Text style={styles.youtubeCommentsMoreText}>Load more YouTube comments</Text>
+                        )}
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ) : null}
+                {cleanYoutubeVideoId ? (
+                  <Text style={styles.youtubeCommentsTitle}>Kristo App comments</Text>
+                ) : null}
                 {loading || !initialLoadDone ? (
                   <View style={styles.loadingRow}>
                     <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
@@ -1666,6 +1775,94 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
     maxHeight: "100%",
+  },
+  youtubeCommentsSection: {
+    marginBottom: 16,
+    paddingBottom: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(217,179,95,0.26)",
+  },
+  youtubeCommentsTitle: {
+    color: HOME_FEED_GOLD_SOFT,
+    fontSize: 15,
+    fontWeight: "900",
+    marginBottom: 10,
+  },
+  youtubeCommentsStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 8,
+  },
+  youtubeCommentsStatusText: {
+    color: HOME_FEED_MUTED,
+    fontSize: 13,
+    lineHeight: 19,
+    paddingVertical: 6,
+  },
+  youtubeCommentRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginTop: 10,
+  },
+  youtubeCommentAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginRight: 10,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  youtubeCommentAvatarFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  youtubeCommentInitial: {
+    color: HOME_FEED_GOLD_SOFT,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  youtubeCommentContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+  youtubeCommentMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  youtubeCommentAuthor: {
+    color: "rgba(255,255,255,0.9)",
+    fontSize: 13,
+    fontWeight: "800",
+    flexShrink: 1,
+    marginRight: 8,
+  },
+  youtubeCommentTime: {
+    color: HOME_FEED_MUTED,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  youtubeCommentText: {
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  youtubeCommentCounts: {
+    color: HOME_FEED_MUTED,
+    fontSize: 11,
+    marginTop: 5,
+  },
+  youtubeCommentsMore: {
+    alignSelf: "flex-start",
+    minHeight: 38,
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    marginTop: 6,
+  },
+  youtubeCommentsMoreText: {
+    color: HOME_FEED_GOLD_SOFT,
+    fontSize: 13,
+    fontWeight: "800",
   },
   reportSheetTitle: {
     color: "#FFFFFF",

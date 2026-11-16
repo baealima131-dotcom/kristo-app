@@ -1572,6 +1572,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         <FeedCommentsSheet
           visible={commentsSheetOpen}
           postId={commentTargetPostId}
+          youtubeVideoId={youtubeVideoIdFromUrl(item?.videoUrl || item?.url)}
           railDiscussionCount={commentRailCount}
           onClose={onCloseComments}
           onDiscussionCountChange={onDiscussionCountChange}

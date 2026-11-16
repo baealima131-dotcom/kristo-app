@@ -31,6 +31,62 @@ function sessionHeaders() {
   });
 }
 
+export type YouTubeVideoComment = {
+  id: string;
+  authorName: string;
+  authorAvatarUrl: string;
+  authorChannelUrl: string;
+  text: string;
+  publishedAt: string;
+  likeCount: number;
+  replyCount: number;
+};
+
+export async function fetchYouTubeVideoComments(
+  videoId: string,
+  pageToken?: string
+): Promise<{
+  ok: boolean;
+  comments: YouTubeVideoComment[];
+  commentsDisabled: boolean;
+  nextPageToken: string | null;
+  error?: string;
+}> {
+  const query = new URLSearchParams({ videoId: String(videoId || "").trim() });
+  if (pageToken) query.set("pageToken", pageToken);
+  try {
+    const res: any = await apiGet(
+      `/api/youtube/comments?${query.toString()}`,
+      { headers: sessionHeaders() },
+      { screen: "HomeFeedYouTubeComments", throttleMs: 0, dedupe: false }
+    );
+    if (!res?.ok) {
+      return {
+        ok: false,
+        comments: [],
+        commentsDisabled: false,
+        nextPageToken: null,
+        error: String(res?.error || "YouTube comments could not be loaded."),
+      };
+    }
+    const data = res?.data || {};
+    return {
+      ok: true,
+      comments: Array.isArray(data.comments) ? data.comments : [],
+      commentsDisabled: data.commentsDisabled === true,
+      nextPageToken: typeof data.nextPageToken === "string" ? data.nextPageToken : null,
+    };
+  } catch {
+    return {
+      ok: false,
+      comments: [],
+      commentsDisabled: false,
+      nextPageToken: null,
+      error: "YouTube comments could not be loaded.",
+    };
+  }
+}
+
 export function userHasActiveChurchMembership(session?: any) {
   return Boolean(String(session?.churchId || session?.activeChurchId || "").trim());
 }
