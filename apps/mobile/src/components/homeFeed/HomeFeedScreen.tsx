@@ -44,6 +44,7 @@ import { FeedCommentsSheet } from "./FeedCommentsSheet";
 import { HomeFeedShareSheet } from "./HomeFeedShareSheet";
 import { ShareToChatSheet } from "./ShareToChatSheet";
 import { HomeFeedWatchScreen } from "./HomeFeedWatchScreen";
+import { youtubeVideoIdFromUrl } from "@/src/lib/externalVideoPlayerHtml";
 import { HomeFeedTopBar } from "./HomeFeedTopBar";
 import { HomeFeedSearchSheet } from "./HomeFeedSearchSheet";
 import {
@@ -346,6 +347,7 @@ export default function HomeFeedScreen() {
     useState<any | null>(null);
   const [commentsSheetOpen, setCommentsSheetOpen] = useState(false);
   const [commentTargetPostId, setCommentTargetPostId] = useState("");
+  const [commentTargetItem, setCommentTargetItem] = useState<any | null>(null);
   const [commentRailCount, setCommentRailCount] = useState(0);
   const [shareSheetOpen, setShareSheetOpen] = useState(false);
   const [shareToChatOpen, setShareToChatOpen] = useState(false);
@@ -3679,6 +3681,7 @@ export default function HomeFeedScreen() {
     }
 
     setCommentTargetPostId(postId);
+    setCommentTargetItem(item);
     setCommentRailCount(resolveHomeFeedDiscussionCount(item, postId));
     setCommentsSheetOpen(true);
   }, []);
@@ -3946,8 +3949,12 @@ export default function HomeFeedScreen() {
         <FeedCommentsSheet
           visible={commentsSheetOpen}
           postId={commentTargetPostId}
+          youtubeVideoId={youtubeVideoIdFromUrl(commentTargetItem?.videoUrl || commentTargetItem?.url)}
           railDiscussionCount={commentRailCount}
-          onClose={() => setCommentsSheetOpen(false)}
+          onClose={() => {
+            setCommentsSheetOpen(false);
+            setCommentTargetItem(null);
+          }}
           onDiscussionCountChange={handleDiscussionCountChange}
           onDiscussionCountBump={handleDiscussionCountBump}
         />
