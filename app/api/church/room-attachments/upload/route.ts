@@ -122,6 +122,7 @@ export async function POST(req: Request) {
         key: storageKey,
         body: bytes,
         contentType: mime,
+        ...(voiceNote ? { cacheControl: "public, max-age=300, must-revalidate" } : {}),
       });
       url = uploaded.publicUrl;
     } else if (!isServerlessRuntime()) {
