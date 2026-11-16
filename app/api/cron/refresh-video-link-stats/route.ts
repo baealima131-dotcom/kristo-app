@@ -51,6 +51,13 @@ function parseYouTubeId(value: unknown): string {
   }
 }
 
+function youtubeVideoIdForItem(item: any): string {
+  const postId = String(item?.id || "").trim();
+  const canonicalId =
+    postId.match(/^system-admin-video-youtube-([A-Za-z0-9_-]{11})$/)?.[1] || "";
+  return canonicalId || parseYouTubeId(item?.videoUrl || item?.url);
+}
+
 function safeCount(value: unknown): number | null {
   const count = Number(value);
   return Number.isFinite(count) && count >= 0 ? count : null;
@@ -119,7 +126,7 @@ async function refreshYouTube(items: any[], key: string, nowMs: number) {
   const dueItems = allDueItems.slice(0, YOUTUBE_MAX_VIDEOS_PER_RUN);
   const byVideo = new Map<string, any[]>();
   for (const item of dueItems) {
-    const videoId = parseYouTubeId(item?.videoUrl || item?.url);
+    const videoId = youtubeVideoIdForItem(item);
     if (!videoId) continue;
     const rows = byVideo.get(videoId) || [];
     rows.push(item);
