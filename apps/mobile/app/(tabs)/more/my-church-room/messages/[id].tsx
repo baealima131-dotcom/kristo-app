@@ -2233,8 +2233,10 @@ function MessageActionsSheet({
 
 function MessageVoiceAttachment({
   attachment,
+  avatarUri,
 }: {
   attachment: MsgAttachment;
+  avatarUri?: string;
 }) {
   const expiresAt = Number(attachment.expiresAt || 0);
   const expired =
@@ -2252,12 +2254,12 @@ function MessageVoiceAttachment({
   const duration = Math.max(0, Number(attachment.durationSec || 0));
   const timeLabel = duration
     ? formatAppointmentVoiceDuration(duration)
-    : "Voice message";
+    : "0:00";
   const playbackDuration = Math.max(0, Number(status.duration || duration));
   const progress = playbackDuration > 0
     ? Math.min(1, Math.max(0, Number(status.currentTime || 0) / playbackDuration))
     : 0;
-  const waveform = [8, 13, 10, 17, 11, 20, 14, 9, 16, 12, 21, 14, 10, 18, 12, 8, 15, 20, 11, 16, 9, 14, 18, 10];
+  const waveform = [8, 12, 16, 10, 19, 13, 8, 15, 20, 11, 17, 9, 14, 19, 12, 7, 15, 21, 11, 17, 9, 14, 18, 10];
 
   if (expired || !source) {
     return (
@@ -2273,12 +2275,12 @@ function MessageVoiceAttachment({
   return (
     <View
       style={{
-        width: 224,
+        width: 268,
         maxWidth: "100%",
-        minHeight: 48,
+        minHeight: 62,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
+        gap: 9,
         paddingVertical: 3,
       }}
     >
@@ -2297,43 +2299,53 @@ function MessageVoiceAttachment({
         accessibilityLabel={status.playing ? "Pause voice message" : "Play voice message"}
         hitSlop={8}
         style={({ pressed }) => ({
-          width: 38,
+          width: 34,
           height: 38,
-          borderRadius: 19,
           alignItems: "center",
           justifyContent: "center",
-          backgroundColor: "rgba(244,208,111,0.20)",
-          opacity: pressed ? 0.78 : 1,
+          opacity: pressed ? 0.72 : 1,
         })}
       >
         <Ionicons
           name={status.playing ? "pause" : "play"}
-          size={19}
-          color="#F4D06F"
-          style={!status.playing ? { marginLeft: 2 } : undefined}
+          size={24}
+          color="rgba(255,255,255,0.88)"
+          style={!status.playing ? { marginLeft: 3 } : undefined}
         />
       </Pressable>
       <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
-        <View style={{ height: 23, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
+        <View style={{ height: 24, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
           {waveform.map((height, index) => (
             <View
               key={index}
               style={{
-                width: 3,
+                width: 2.5,
                 height,
                 borderRadius: 2,
                 backgroundColor: index / waveform.length <= progress
-                  ? "#F4D06F"
-                  : "rgba(255,255,255,0.52)",
+                  ? "#54A9FF"
+                  : "rgba(255,255,255,0.38)",
               }}
             />
           ))}
         </View>
-        <Text style={{ marginTop: 3, color: "rgba(255,255,255,0.70)", fontSize: 10, fontWeight: "700" }}>
-          {status.playing && playbackDuration > 0
-            ? `${formatAppointmentVoiceDuration(status.currentTime)} / ${formatAppointmentVoiceDuration(playbackDuration)}`
-            : timeLabel}
-        </Text>
+        <View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+          <Text style={{ color: "rgba(255,255,255,0.66)", fontSize: 10, fontWeight: "700" }}>
+            {status.playing && playbackDuration > 0
+              ? formatAppointmentVoiceDuration(Math.max(0, playbackDuration - Number(status.currentTime || 0)))
+              : timeLabel}
+          </Text>
+        </View>
+      </View>
+      <View style={{ width: 34, height: 38, position: "relative", alignItems: "center", justifyContent: "center" }}>
+        {avatarUri ? (
+          <Image source={{ uri: avatarUri }} style={{ width: 32, height: 32, borderRadius: 16 }} />
+        ) : (
+          <Ionicons name="person-circle" size={32} color="rgba(255,255,255,0.58)" />
+        )}
+        <View style={{ position: "absolute", right: -2, bottom: -1, width: 15, height: 15, borderRadius: 8, backgroundColor: "rgba(7,20,35,0.96)", alignItems: "center", justifyContent: "center" }}>
+          <Ionicons name="mic" size={10} color="#54A9FF" />
+        </View>
       </View>
     </View>
   );
@@ -2429,9 +2441,11 @@ function MessageVoiceRecorderButton({
 function MessageAttachmentsBlock({
   attachments,
   onPreviewImage,
+  avatarUri,
 }: {
   attachments: MsgAttachment[];
   onPreviewImage?: (uri: string) => void;
+  avatarUri?: string;
 }) {
   if (!attachments?.length) return null;
 
@@ -2466,7 +2480,7 @@ function MessageAttachmentsBlock({
           const metaLabel = metaParts.join(" • ");
 
           if (a.voiceNote === true) {
-            return <MessageVoiceAttachment key={a.id} attachment={a} />;
+            return <MessageVoiceAttachment key={a.id} attachment={a} avatarUri={avatarUri} />;
           }
 
           if (a.kind === "image" && imageUri) {
@@ -6711,7 +6725,7 @@ function Bubble({
             ) : null}
             {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} />
+            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} avatarUri={senderAvatar.uri} />
 
             <View style={s.msgMetaRow}>
               <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
