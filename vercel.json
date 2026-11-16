@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/refresh-video-link-stats",
       "schedule": "0 */3 * * *"
+    },
+    {
+      "path": "/api/cron/expire-message-voice-notes",
+      "schedule": "0 */3 * * *"
     }
   ],
   "headers": [
