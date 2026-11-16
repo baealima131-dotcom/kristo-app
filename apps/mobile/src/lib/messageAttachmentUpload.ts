@@ -8,6 +8,8 @@ export type PendingMessageAttachment = {
   name: string;
   mime: string;
   size?: number;
+  voiceNote?: boolean;
+  durationSec?: number;
 };
 
 /**
@@ -136,6 +138,7 @@ export async function uploadMessageAttachment(
     name: item.name,
     type: item.mime || (item.kind === "image" ? "image/jpeg" : "application/octet-stream"),
   } as any);
+  if (item.voiceNote) fd.append("voiceNote", "1");
 
   const res: any = await apiPost("/api/church/room-attachments/upload", fd, {
     headers: {
@@ -170,6 +173,13 @@ export async function uploadMessageAttachment(
     size: typeof res.data.size === "number" ? res.data.size : item.size,
     fileName: String(res.data.filename || item.name),
     mimeType: String(res.data.mime || res.data.mimeType || item.mime),
+    ...(item.voiceNote
+      ? {
+          voiceNote: true,
+          durationSec: item.durationSec,
+          expiresAt: Number(res.data.expiresAt || 0) || undefined,
+        }
+      : {}),
   };
 
   if (item.kind === "image") {
