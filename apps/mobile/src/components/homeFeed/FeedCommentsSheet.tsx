@@ -888,7 +888,7 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
       setYoutubeComments((current) => [...current, ...result.comments]);
       setYoutubeCommentsPageToken(result.nextPageToken);
     } else {
-      setYoutubeCommentsError(String(result.error || "YouTube comments could not be loaded."));
+      setYoutubeCommentsError(String(result.error || "Comments could not be loaded."));
     }
     setYoutubeCommentsLoadingMore(false);
   }, [cleanYoutubeVideoId, youtubeCommentsPageToken, youtubeCommentsLoadingMore]);
@@ -1356,11 +1356,11 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
               >
                 {cleanYoutubeVideoId ? (
                   <View style={styles.youtubeCommentsSection}>
-                    <Text style={styles.youtubeCommentsTitle}>YouTube comments</Text>
+                    <Text style={styles.youtubeCommentsTitle}>Comments</Text>
                     {youtubeCommentsLoading ? (
                       <View style={styles.youtubeCommentsStatus}>
                         <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="small" />
-                        <Text style={styles.loadingText}>Loading YouTube comments...</Text>
+                        <Text style={styles.loadingText}>Loading comments...</Text>
                       </View>
                     ) : youtubeCommentsDisabled ? (
                       <Text style={styles.youtubeCommentsStatusText}>Comments are turned off for this video.</Text>
@@ -1397,14 +1397,14 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
                         </View>
                       ))
                     ) : (
-                      <Text style={styles.youtubeCommentsStatusText}>No public YouTube comments yet.</Text>
+                      <Text style={styles.youtubeCommentsStatusText}>No comments yet.</Text>
                     )}
                     {youtubeCommentsPageToken && !youtubeCommentsLoading ? (
                       <Pressable onPress={loadMoreYoutubeComments} style={styles.youtubeCommentsMore}>
                         {youtubeCommentsLoadingMore ? (
                           <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="small" />
                         ) : (
-                          <Text style={styles.youtubeCommentsMoreText}>Load more YouTube comments</Text>
+                          <Text style={styles.youtubeCommentsMoreText}>Load more comments</Text>
                         )}
                       </Pressable>
                     ) : null}
