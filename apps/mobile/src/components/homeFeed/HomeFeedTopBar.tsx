@@ -37,7 +37,8 @@ export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Pr
   useEffect(() => {
     let active = true;
     const refreshCounts = async () => {
-      const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\\/+$/, "");
+      let base = String(process.env.EXPO_PUBLIC_API_BASE || "");
+      while (base.endsWith("/")) base = base.slice(0, -1);
       if (!base) return;
       try {
         const snapshot = await fetchProfileCommunicationInboxSnapshot({ base });
