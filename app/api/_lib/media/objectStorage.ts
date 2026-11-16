@@ -486,6 +486,36 @@ export async function completeMultipartVideoUpload(params: {
  * have the bytes on the server and want a durable public URL without writing
  * to the local (read-only on Vercel) filesystem.
  */
+/** Delete only a room-attachment object referenced by its configured public URL. */
+export async function deleteRoomAttachmentObjectByPublicUrl(publicUrl: string): Promise<boolean> {
+  const config = getVideoStorageConfig();
+  if (!config) throw new Error(videoStorageConfigError());
+
+  const normalized = String(publicUrl || "").trim().split("?")[0];
+  const base = config.publicBaseUrl.replace(/\/+$/, "");
+  if (!normalized.startsWith(`${base}/`)) return false;
+
+  let key = normalized.slice(base.length + 1);
+  try {
+    key = key.split("/").map((part) => decodeURIComponent(part)).join("/");
+  } catch {
+    return false;
+  }
+  if (!key.startsWith("uploads/room-attachments/")) return false;
+
+  const client = createStorageClient(config);
+  const result = await client.send(
+    new DeleteObjectsCommand({
+      Bucket: config.bucket,
+      Delete: { Objects: [{ Key: key }], Quiet: true },
+    })
+  );
+  if (result.Errors?.length) {
+    throw new Error("Could not remove the expired voice message.");
+  }
+  return true;
+}
+
 export async function uploadBufferToStorage(params: {
   key: string;
   body: Buffer;
