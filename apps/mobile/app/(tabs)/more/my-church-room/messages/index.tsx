@@ -246,8 +246,8 @@ function ConversationRow({
             {!isRequest && item.lastMessageStatus ? (
               <Ionicons
                 name={item.lastMessageStatus === "read" ? "checkmark-done" : "checkmark"}
-                size={15}
-                color={item.lastMessageStatus === "read" ? "#42B9FF" : "rgba(225,238,235,0.62)"}
+                size={17}
+                color={item.lastMessageStatus === "read" ? "#35B8FF" : "rgba(225,238,235,0.82)"}
                 style={s.messageReceipt}
                 accessibilityLabel={item.lastMessageStatus === "read" ? "Read" : "Sent"}
               />
