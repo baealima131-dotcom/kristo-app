@@ -14,6 +14,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import {
+  setAudioModeAsync,
+  useAudioPlayer,
+  useAudioPlayerStatus,
+} from "expo-audio";
+import {
   RoomContext,
   registerGlobals,
   useRoomContext,
@@ -22,6 +27,7 @@ import { Room, RoomEvent } from "livekit-client";
 
 import LiveMainStageSaturnOrbit from "@/src/components/live/LiveMainStageSaturnOrbit";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { ensurePrivateCallRingingAudioFiles, type PrivateCallRingingAudioUris } from "@/src/lib/privateCallRingingAudio";
 import {
   PrivateCallAudioRenderer,
   PrivateCallLiveKitRoomDiagnostics,
@@ -405,6 +411,97 @@ function PrivateCallOutgoingRinging({ callId }: { callId: string }) {
       <Text style={styles.outgoingCallingLabel}>Calling…</Text>
     </View>
   );
+}
+
+
+function PrivateCallRingingAudio({ callId }: { callId: string }) {
+  const [audioUris, setAudioUris] = useState<PrivateCallRingingAudioUris | null>(null);
+  const waittonePlayer = useAudioPlayer(
+    audioUris?.waittone ? { uri: audioUris.waittone } : null
+  );
+  const unavailablePlayer = useAudioPlayer(
+    audioUris?.unavailable ? { uri: audioUris.unavailable } : null
+  );
+  const waittoneStatus = useAudioPlayerStatus(waittonePlayer);
+  const startedCallRef = useRef("");
+
+  useEffect(() => {
+    let active = true;
+    void ensurePrivateCallRingingAudioFiles()
+      .then((uris) => {
+        if (active) setAudioUris(uris);
+      })
+      .catch((error: any) => {
+        console.warn("KRISTO_PRIVATE_CALL_PROMPT_AUDIO_LOAD_FAILED", {
+          callId,
+          error: String(error?.message || error),
+        });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [callId]);
+
+  useEffect(() => {
+    if (!audioUris || !waittoneStatus.isLoaded || startedCallRef.current === callId) {
+      return;
+    }
+
+    startedCallRef.current = callId;
+    let active = true;
+
+    void setAudioModeAsync({
+      playsInSilentMode: true,
+      allowsRecording: false,
+    }).catch((error: any) => {
+      console.warn("KRISTO_PRIVATE_CALL_PROMPT_AUDIO_MODE_FAILED", {
+        callId,
+        error: String(error?.message || error),
+      });
+    });
+
+    void waittonePlayer.seekTo(0)
+      .then(() => {
+        if (active) waittonePlayer.play();
+      })
+      .catch((error: any) => {
+        console.warn("KRISTO_PRIVATE_CALL_WAITTONE_PLAY_FAILED", {
+          callId,
+          error: String(error?.message || error),
+        });
+      });
+
+    const unavailableTimer = setTimeout(() => {
+      if (!active) return;
+      waittonePlayer.pause();
+      void unavailablePlayer.seekTo(0)
+        .then(() => {
+          if (active) unavailablePlayer.play();
+        })
+        .catch((error: any) => {
+          console.warn("KRISTO_PRIVATE_CALL_UNAVAILABLE_PROMPT_PLAY_FAILED", {
+            callId,
+            error: String(error?.message || error),
+          });
+        });
+    }, 30_000);
+
+    return () => {
+      active = false;
+      clearTimeout(unavailableTimer);
+      waittonePlayer.pause();
+      unavailablePlayer.pause();
+    };
+  }, [
+    audioUris,
+    callId,
+    unavailablePlayer,
+    waittonePlayer,
+    waittoneStatus.isLoaded,
+  ]);
+
+  return null;
 }
 
 function formatCallDuration(totalSeconds: number): string {
@@ -1715,6 +1812,7 @@ export default function PrivateCallScreen() {
           <>
             <Text style={styles.title}>{displayName}</Text>
             <PrivateCallOutgoingRinging callId={session.id} />
+            <PrivateCallRingingAudio callId={session.id} />
             <Pressable onPress={handleEnd} style={styles.secondaryBtn}>
               <Text style={styles.secondaryBtnText}>Cancel Call</Text>
             </Pressable>
