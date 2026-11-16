@@ -2350,6 +2350,92 @@ function MessageVoiceAttachment({
     </View>
   );
 }
+
+function PendingVoiceComposerPreview({
+  uri,
+  durationSec,
+  onDelete,
+}: {
+  uri: string;
+  durationSec?: number;
+  onDelete: () => void;
+}) {
+  const player = useAudioPlayer(uri ? { uri } : null, { updateInterval: 150 });
+  const status = useAudioPlayerStatus(player);
+  const duration = Math.max(0, Number(status.duration || durationSec || 0));
+  const progress = duration > 0
+    ? Math.min(1, Math.max(0, Number(status.currentTime || 0) / duration))
+    : 0;
+  const bars = [7, 12, 9, 16, 10, 18, 12, 7, 15, 10, 17, 8, 13, 18, 9, 14];
+
+  return (
+    <View style={{ flex: 1, minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={status.playing ? "Pause voice preview" : "Play voice preview"}
+        onPress={() => {
+          if (status.playing) {
+            player.pause();
+          } else {
+            if (duration > 0 && Number(status.currentTime || 0) >= duration) void player.seekTo(0);
+            player.play();
+          }
+        }}
+        style={({ pressed }) => ({
+          width: 38,
+          height: 38,
+          borderRadius: 19,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "rgba(126,87,232,0.28)",
+          opacity: pressed ? 0.76 : 1,
+        })}
+      >
+        <Ionicons name={status.playing ? "pause" : "play"} size={19} color="#E8D8FF" style={!status.playing ? { marginLeft: 2 } : undefined} />
+      </Pressable>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <View style={{ height: 22, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
+          {bars.map((height, index) => (
+            <View
+              key={index}
+              style={{
+                width: 2.5,
+                height,
+                borderRadius: 2,
+                backgroundColor: index / bars.length <= progress ? "#A78BFA" : "rgba(255,255,255,0.38)",
+              }}
+            />
+          ))}
+        </View>
+        <Text style={{ marginTop: 2, color: "rgba(255,255,255,0.62)", fontSize: 10, fontWeight: "700" }}>
+          {status.playing && duration > 0
+            ? formatAppointmentVoiceDuration(Math.max(0, duration - Number(status.currentTime || 0)))
+            : formatAppointmentVoiceDuration(Number(durationSec || duration || 0))}
+        </Text>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Delete voice recording"
+        onPress={onDelete}
+        hitSlop={8}
+        style={({ pressed }) => ({
+          width: 36,
+          height: 36,
+          borderRadius: 18,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "rgba(255,75,92,0.14)",
+          borderWidth: 1,
+          borderColor: "rgba(255,75,92,0.30)",
+          opacity: pressed ? 0.72 : 1,
+        })}
+      >
+        <Ionicons name="trash-outline" size={17} color="#FF5B65" />
+      </Pressable>
+    </View>
+  );
+}
+
 function MessageVoiceRecorderButton({
   disabled,
   onRecorded,
@@ -8504,6 +8590,7 @@ export default function MessageThreadScreen() {
   }, [draft, isPersonToPersonDm, backendRoomId]);
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
   const [voiceRecording, setVoiceRecording] = useState(false);
+  const pendingVoice = pending.find((attachment) => attachment.voiceNote);
   const [attachUploading, setAttachUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dmConversationSettings, setDmConversationSettings] =
@@ -14546,14 +14633,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             </View>
           );
         })() : null}
-        {voiceRecording || pending.some((attachment) => attachment.voiceNote) ? (
-          <Text style={{ color: voiceRecording ? "#FF7B86" : "rgba(217,179,95,0.96)", fontSize: 11, fontWeight: "800", marginHorizontal: 8, marginBottom: 6 }}>
-            {voiceRecording
-              ? "Recording voice message · tap the red button to finish"
-              : "Voice message ready · tap send to send"}
-          </Text>
-        ) : null}
-        {pending.length ? (
+        {pending.some((attachment) => !attachment.voiceNote) ? (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -14561,7 +14641,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             style={s.pendingStrip}
             contentContainerStyle={s.pendingStripContent}
           >
-            {pending.map((a) => (
+            {pending.filter((a) => !a.voiceNote).map((a) => (
               <View key={a.id} style={s.pendingChip}>
                 {a.kind === "image" ? (
                   <Image source={{ uri: a.localUri }} style={s.pendingChipThumb as ImageStyle} resizeMode="cover" />
@@ -14757,6 +14837,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               },
             ]}
           >
+            {!pendingVoice ? (
             <View
               style={[
                 s.composerActions,
@@ -14800,6 +14881,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               </Pressable>
 
             </View>
+            ) : null}
 
             <View
               style={[
@@ -14807,6 +14889,17 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 composerExpanded ? s.inputWrapExpanded : null,
               ]}
             >
+              {pendingVoice ? (
+                <PendingVoiceComposerPreview
+                  uri={pendingVoice.localUri}
+                  durationSec={pendingVoice.durationSec}
+                  onDelete={() => removePending(pendingVoice.id)}
+                />
+              ) : voiceRecording ? (
+                <Text style={{ color: "#FF7B86", fontSize: 13, fontWeight: "800", paddingHorizontal: 10 }}>
+                  Recording voice message…
+                </Text>
+              ) : (
               <TextInput
                 ref={inputRef}
 
@@ -14850,6 +14943,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 scrollEnabled={composerExpanded}
                 autoCorrect
               />
+              )}
             </View>
 
             <View
