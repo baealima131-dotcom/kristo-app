@@ -121,6 +121,10 @@ const WATCH_DATE_COLOR = "rgba(255,255,255,0.45)";
 const AVATAR_RING_SIZE = AVATAR_SIZE + 6;
 const WATCH_PANEL_TOP_RADIUS = 38;
 
+function formatFullViewCount(value: number): string {
+  return Math.max(0, Math.floor(Number(value) || 0)).toLocaleString("en-US");
+}
+
 type Props = {
   visible: boolean;
   payload: HomeFeedVideoOpenPayload | null;
@@ -196,7 +200,7 @@ function WatchPanelActions({
   const commentLabel = externalVideo
     ? externalCountDisplay(engagement.commentCount, externalPlatformCount(item, "comments"), hiddenCounts.comments, formatActionCount)
     : externalCountLabel(commentCount, hiddenCounts.comments, formatActionCount);
-  const viewLabel = externalCountDisplay(kristoViewCount, externalPlatformCount(item, "views"), false, formatActionCount);
+  const viewLabel = externalCountDisplay(kristoViewCount, externalPlatformCount(item, "views"), false, formatFullViewCount);
 
   return (
     <View style={styles.watchActionsRow}>
