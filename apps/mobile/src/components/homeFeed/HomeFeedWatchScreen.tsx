@@ -1204,9 +1204,9 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     postId: string;
     type: HomeFeedVideoDisplayType;
   } | null>(null);
-  const displayType =
-    displayTypeHint ||
-    (detectedDisplayType?.postId === activePostId ? detectedDisplayType.type : null);
+  const detectedType =
+    detectedDisplayType?.postId === activePostId ? detectedDisplayType.type : null;
+  const displayType = detectedType || displayTypeHint;
   const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
   const facebookReel = isFacebookVerticalItem(payload?.item);
