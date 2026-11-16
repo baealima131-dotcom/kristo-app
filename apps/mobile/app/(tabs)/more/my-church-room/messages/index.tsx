@@ -34,6 +34,8 @@ const TEXT = "rgba(255,255,255,0.94)";
 const GOLD = "rgba(217,179,95,0.92)";
 const PAD = 16;
 
+let messagesInboxMemoryCache: MessagesInboxConversation[] | null = null;
+
 const MESSAGE_GLASS = [
   {
     colors: [
@@ -204,8 +206,10 @@ export default function MessagesScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [conversations, setConversations] = useState<MessagesInboxConversation[]>([]);
+  const [loading, setLoading] = useState(messagesInboxMemoryCache === null);
+  const [conversations, setConversations] = useState<MessagesInboxConversation[]>(
+    messagesInboxMemoryCache || []
+  );
   const [composeOpen, setComposeOpen] = useState(false);
 
   useEffect(() => {
@@ -238,17 +242,20 @@ export default function MessagesScreen() {
   const refreshInbox = useCallback(async () => {
     const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
     if (!base) {
-      setConversations([]);
-      setLoading(false);
+      if (messagesInboxMemoryCache === null) {
+        setConversations([]);
+        setLoading(false);
+      }
       return;
     }
 
-    setLoading(true);
+    if (messagesInboxMemoryCache === null) setLoading(true);
     try {
       const rows = await fetchMessagesInboxConversations({ base });
+      messagesInboxMemoryCache = rows;
       setConversations(rows);
     } catch {
-      setConversations([]);
+      // Keep the last inbox visible if a quiet refresh fails.
     } finally {
       setLoading(false);
     }
@@ -422,7 +429,7 @@ export default function MessagesScreen() {
         </View>
       </View>
 
-      {loading ? (
+      {loading && conversations.length === 0 ? (
         <View style={s.loadingWrap}>
           <ActivityIndicator color={GOLD} />
         </View>
