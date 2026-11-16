@@ -13,6 +13,10 @@ export type MsgAttachment = {
   fileName?: string;
   mimeType?: string;
   url?: string;
+  voiceNote?: boolean;
+  durationSec?: number;
+  expiresAt?: number;
+  expired?: boolean;
 };
 
 export type AppointmentRequestStatus =
