@@ -14761,26 +14761,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   color={GOLD_SOLID}
                 />
               </Pressable>
-              <MessageVoiceRecorderButton
-                disabled={dmComposerLocked || attachUploading}
-                onRecordingChange={setVoiceRecording}
-                onRecorded={({ uri, durationSec, size }) => {
-                  const timestamp = Date.now();
-                  setPending((previous) => [
-                    ...previous,
-                    {
-                      id: `voice_${timestamp}_${Math.random().toString(36).slice(2, 8)}`,
-                      kind: "file",
-                      localUri: uri,
-                      name: `Voice message · ${durationSec}s`,
-                      mime: "audio/mp4",
-                      size,
-                      voiceNote: true,
-                      durationSec,
-                    },
-                  ]);
-                }}
-              />
+
             </View>
 
             <View
@@ -14889,6 +14870,29 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 </>
               ) : null}
 
+              {isPersonToPersonDm &&
+              (voiceRecording || (!draft.trim() && pending.length === 0)) ? (
+              <MessageVoiceRecorderButton
+                disabled={dmComposerLocked || attachUploading}
+                onRecordingChange={setVoiceRecording}
+                onRecorded={({ uri, durationSec, size }) => {
+                  const timestamp = Date.now();
+                  setPending((previous) => [
+                    ...previous,
+                    {
+                      id: `voice_${timestamp}_${Math.random().toString(36).slice(2, 8)}`,
+                      kind: "file",
+                      localUri: uri,
+                      name: `Voice message · ${durationSec}s`,
+                      mime: "audio/mp4",
+                      size,
+                      voiceNote: true,
+                      durationSec,
+                    },
+                  ]);
+                }}
+              />
+              ) : (
               <Pressable
                 onPress={onSend}
                 disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading || dmComposerLocked}
@@ -14913,6 +14917,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   }
                 />
               </Pressable>
+              )}
             </View>
           </View>
         )}
