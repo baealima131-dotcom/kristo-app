@@ -104,6 +104,14 @@ function getConversationGlass(item: MessagesInboxConversation) {
   return MESSAGE_GLASS[Math.abs(hash) % MESSAGE_GLASS.length];
 }
 
+function roleRingColors(role: string): readonly [string, string, string] {
+  const value = String(role || "").toLowerCase();
+  if (/admin|system/.test(value)) return ["#FFF0B0", "#D6A83E", "#8C6221"];
+  if (/pastor|bishop|priest|reverend/.test(value)) return ["#FFE08A", "#B875FF", "#7139D2"];
+  if (/leader|minister|deacon/.test(value)) return ["#A5F3FC", "#38BDF8", "#2563EB"];
+  return ["#B9F7DC", "#38D99D", "#168C79"];
+}
+
 function ConversationRow({
   item,
   onPress,
@@ -130,6 +138,7 @@ function ConversationRow({
       : "#F4C95D";
 
   const glass = getConversationGlass(item);
+  const ringColors = roleRingColors(item.peerRole || "Member");
 
   return (
     <Pressable
@@ -150,15 +159,22 @@ function ConversationRow({
         style={s.rowGradient}
       />
 
-      <View style={s.avatarWrap}>
-        {item.avatarUri ? (
-          <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
-        ) : (
-          <View style={s.avatarFallback}>
-            <Text style={s.avatarFallbackText}>{initial}</Text>
-          </View>
-        )}
-      </View>
+      <LinearGradient
+        colors={[...ringColors]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[s.avatarRing, { shadowColor: ringColors[1] }]}
+      >
+        <View style={s.avatarInner}>
+          {item.avatarUri ? (
+            <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
+          ) : (
+            <View style={[s.avatarFallback, { backgroundColor: ringColors[1] + "33" }]}>
+              <Text style={[s.avatarFallbackText, { color: ringColors[0] }]}>{initial}</Text>
+            </View>
+          )}
+        </View>
+      </LinearGradient>
 
       <View style={s.rowBody}>
         <View style={s.rowTop}>
@@ -179,14 +195,27 @@ function ConversationRow({
           ) : null}
         </View>
 
-        <Text style={s.rowSubtitle} numberOfLines={1}>
-          {isRequest ? "Message request" : item.subtitle}
-        </Text>
+        {isRequest && item.subtitle ? (
+          <Text style={s.rowSubtitle} numberOfLines={1}>
+            Message request
+          </Text>
+        ) : null}
 
         <View style={s.rowBottom}>
-          <Text style={[s.rowPreview, { color: previewTone }]} numberOfLines={2}>
-            {preview || (isRequest ? "Message request" : "")}
-          </Text>
+          <View style={s.previewWithStatus}>
+            <Text style={[s.rowPreview, { color: previewTone }]} numberOfLines={2}>
+              {preview || (isRequest ? "Message request" : "")}
+            </Text>
+            {!isRequest && item.lastMessageStatus ? (
+              <Ionicons
+                name={item.lastMessageStatus === "read" ? "checkmark-done" : "checkmark"}
+                size={15}
+                color={item.lastMessageStatus === "read" ? "#42B9FF" : "rgba(225,238,235,0.62)"}
+                style={s.messageReceipt}
+                accessibilityLabel={item.lastMessageStatus === "read" ? "Read" : "Sent"}
+              />
+            ) : null}
+          </View>
           {item.unreadCount > 0 ? (
             <View style={s.unreadBadge}>
               <Text style={s.unreadBadgeText}>
@@ -733,14 +762,25 @@ const s = StyleSheet.create({
     transform: [{ scale: 0.99 }],
   } as ViewStyle,
 
-  avatarWrap: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+  avatarRing: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    padding: 2.5,
+    marginRight: 12,
+    shadowOpacity: 0.32,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 4,
+  } as ViewStyle,
+
+  avatarInner: {
+    flex: 1,
+    borderRadius: 24,
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.72)",
     backgroundColor: "rgba(8,44,38,0.90)",
-    borderWidth: 1.25,
-    borderColor: "rgba(225,190,103,0.64)",
   } as ViewStyle,
 
   avatarImage: {
@@ -823,6 +863,18 @@ const s = StyleSheet.create({
     alignItems: "flex-start",
     gap: 7,
   } as ViewStyle,
+
+  previewWithStatus: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  } as ViewStyle,
+
+  messageReceipt: {
+    marginTop: 1,
+  } as TextStyle,
 
   rowPreview: {
     flex: 1,
