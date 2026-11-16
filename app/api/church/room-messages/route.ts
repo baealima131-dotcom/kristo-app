@@ -456,8 +456,33 @@ export async function GET(req: Request) {
         ...publicMessage
       } = m;
 
+      const nowMs = Date.now();
+      const publicAttachments = Array.isArray(m?.attachments)
+        ? m.attachments.map((attachment: any) => {
+            const expiresAt = Number(
+              attachment?.expiresAt ||
+                (Number(m?.createdAt || 0) + 7 * 24 * 60 * 60 * 1000)
+            );
+            if (
+              attachment?.voiceNote === true &&
+              expiresAt > 0 &&
+              expiresAt <= nowMs
+            ) {
+              return {
+                ...attachment,
+                uri: "",
+                url: "",
+                fileUri: "",
+                expired: true,
+              };
+            }
+            return attachment;
+          })
+        : [];
+
       return {
         ...publicMessage,
+        attachments: publicAttachments,
         text: viewerTextDeleted
           ? ""
           : String(m?.text || ""),
@@ -522,6 +547,20 @@ export async function POST(req: Request) {
   const roomKind = String(body?.roomKind || "ministry").trim();
   const text = String(body?.text || "").trim();
   const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+  if (
+    attachments.some((attachment: any) =>
+      attachment?.voiceNote === true &&
+      !String(attachment?.mime || attachment?.mimeType || "")
+        .trim()
+        .toLowerCase()
+        .startsWith("audio/")
+    )
+  ) {
+    return NextResponse.json(
+      { ok: false, error: "Voice messages must be audio attachments." },
+      { status: 400 }
+    );
+  }
   const kind = String(body?.kind || "text").trim();
   const card = body?.card && typeof body.card === "object" ? body.card : null;
   const clientId = String(body?.clientId || body?.localId || "").trim();
@@ -808,8 +847,18 @@ export async function POST(req: Request) {
   const senderRole = await churchRoleForUser(effectiveChurchId, userId);
   const senderName = String(identity.name || body?.senderName || name || "Member").trim();
 
+  const messageCreatedAt = Date.now();
+  const messageAttachments = attachments.map((attachment: any) => {
+    if (attachment?.voiceNote !== true) return attachment;
+    return {
+      ...attachment,
+      voiceNote: true,
+      expiresAt: messageCreatedAt + 7 * 24 * 60 * 60 * 1000,
+    };
+  });
+
   const msg: RoomMessage = {
-    id: `rm_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    id: `rm_${messageCreatedAt}_${Math.random().toString(16).slice(2)}`,
     ...(clientId ? { clientId } : {}),
     churchId: effectiveChurchId,
     roomId,
@@ -819,11 +868,11 @@ export async function POST(req: Request) {
     senderAvatar: identity.avatar || "",
     senderRole: senderRole || "",
     text,
-    attachments,
+    attachments: messageAttachments,
     kind,
     card,
     ...optionalFields,
-    createdAt: Date.now(),
+    createdAt: messageCreatedAt,
   };
 
   store[key] = [msg, ...(store[key] || [])].slice(0, 500);
