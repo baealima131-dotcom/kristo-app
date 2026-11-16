@@ -1293,15 +1293,11 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const panelFoldMax = Math.max(0, panelHeight - WATCH_PANEL_FOLDED_LINE);
   const panelTranslateY = useMemo(
     () =>
-      Animated.multiply(
-        Animated.diffClamp(
-          // Overscroll at the top (iOS bounce) does not move the panel.
-          upNextScrollY.interpolate({ inputRange: [0, 1], outputRange: [0, 1], extrapolateLeft: "clamp" }),
-          0,
-          Math.max(1, panelFoldMax)
-        ),
-        -1
-      ),
+      upNextScrollY.interpolate({
+        inputRange: [0, Math.max(1, panelFoldMax)],
+        outputRange: [0, -panelFoldMax],
+        extrapolate: "clamp",
+      }),
     [upNextScrollY, panelFoldMax]
   );
   const handlePanelLayout = useCallback((event: any) => {
