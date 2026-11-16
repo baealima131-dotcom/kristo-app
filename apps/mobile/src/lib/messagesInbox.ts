@@ -230,7 +230,6 @@ export async function fetchMessagesInboxConversations(_args: {
             ? callPreview(call, viewerUserId)
             : previewFromApi ||
               (isRequestReceiver ? "Message request" : "No messages yet"),
-        lastMessageStatus: callIsNewest ? undefined : row.lastMessageStatus,
         timestampLabel:
           callIsNewest
             ? formatInboxTimestamp(callMs)
@@ -241,7 +240,13 @@ export async function fetchMessagesInboxConversations(_args: {
             : dmTimestampMs,
         unreadCount: row.unreadCount,
         peerRole: String(row.peerRole || "Member"),
-        lastMessageStatus: row.lastMessageStatus === "read" ? "read" : row.lastMessageStatus === "sent" ? "sent" : undefined,
+        lastMessageStatus: callIsNewest
+          ? undefined
+          : row.lastMessageStatus === "read"
+            ? "read"
+            : row.lastMessageStatus === "sent"
+              ? "sent"
+              : undefined,
         peerUserId: row.peerUserId,
         churchId: row.churchId,
         roomKind: "direct" as const,
