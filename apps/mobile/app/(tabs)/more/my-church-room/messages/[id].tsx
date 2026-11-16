@@ -2328,9 +2328,11 @@ function MessageVoiceAttachment({
 function MessageVoiceRecorderButton({
   disabled,
   onRecorded,
+  onRecordingChange,
 }: {
   disabled?: boolean;
   onRecorded: (voice: { uri: string; durationSec: number; size?: number }) => void;
+  onRecordingChange?: (recording: boolean) => void;
 }) {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 250);
@@ -2347,6 +2349,7 @@ function MessageVoiceRecorderButton({
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       await recorder.prepareToRecordAsync();
       recorder.record();
+      onRecordingChange?.(true);
     } catch (error: any) {
       Alert.alert("Could not record", String(error?.message || error || "Try again."));
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {});
@@ -2381,6 +2384,7 @@ function MessageVoiceRecorderButton({
     } catch (error: any) {
       Alert.alert("Could not save voice message", String(error?.message || error || "Try again."));
     } finally {
+      onRecordingChange?.(false);
       setBusy(false);
     }
   }
@@ -8462,6 +8466,7 @@ export default function MessageThreadScreen() {
     ).catch(() => null);
   }, [draft, isPersonToPersonDm, backendRoomId]);
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
+  const [voiceRecording, setVoiceRecording] = useState(false);
   const [attachUploading, setAttachUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dmConversationSettings, setDmConversationSettings] =
@@ -14504,6 +14509,13 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             </View>
           );
         })() : null}
+        {voiceRecording || pending.some((attachment) => attachment.voiceNote) ? (
+          <Text style={{ color: voiceRecording ? "#FF7B86" : "rgba(217,179,95,0.96)", fontSize: 11, fontWeight: "800", marginHorizontal: 8, marginBottom: 6 }}>
+            {voiceRecording
+              ? "Recording voice message · tap the red button to finish"
+              : "Voice message ready · tap send to send"}
+          </Text>
+        ) : null}
         {pending.length ? (
           <ScrollView
             horizontal
@@ -14518,7 +14530,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   <Image source={{ uri: a.localUri }} style={s.pendingChipThumb as ImageStyle} resizeMode="cover" />
                 ) : (
                   <View style={s.pendingChipIcon}>
-                    <Ionicons name="document-text-outline" size={18} color={GOLD_SOLID} />
+                    <Ionicons name={a.voiceNote ? "mic" : "document-text-outline"} size={18} color={GOLD_SOLID} />
                   </View>
                 )}
                 <Text style={t.pendingChipName} numberOfLines={1} ellipsizeMode="middle">
@@ -14751,6 +14763,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               </Pressable>
               <MessageVoiceRecorderButton
                 disabled={dmComposerLocked || attachUploading}
+                onRecordingChange={setVoiceRecording}
                 onRecorded={({ uri, durationSec, size }) => {
                   const timestamp = Date.now();
                   setPending((previous) => [
@@ -14759,7 +14772,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                       id: `voice_${timestamp}_${Math.random().toString(36).slice(2, 8)}`,
                       kind: "file",
                       localUri: uri,
-                      name: `voice_${timestamp}.m4a`,
+                      name: `Voice message · ${durationSec}s`,
                       mime: "audio/mp4",
                       size,
                       voiceNote: true,
