@@ -194,7 +194,7 @@ function runAfterFirstFrame(task: () => void) {
 
 
 const VIDEO_POST_TITLE_MIN = 5;
-const VIDEO_POST_TITLE_MAX = 30;
+const VIDEO_POST_TITLE_MAX = 75;
 const VIDEO_POST_COVER_COUNT = 10;
 
 function formatVideoPostDurationLabel(durationMs?: number) {
@@ -3873,85 +3873,10 @@ export default function MediaStudioScreen() {
                       </Text>
                     </View>
 
-                    <Text style={[s.videoStudioSectionLabel, { marginTop: 14 }]}>COVER SELECTION</Text>
+                    <Text style={[s.videoStudioSectionLabel, { marginTop: 14 }]}>VIDEO COVER</Text>
                     <Text style={s.videoCoverHint}>
-                      Kristo generated cover options from your video. Pick one or upload your own.
+                      Upload your own cover image, or leave this blank to use the video preview.
                     </Text>
-
-                    <Text style={s.videoCoverSubLabel}>Generated Covers</Text>
-                    {videoPostCoverGenerationFailed &&
-                    !videoPostCoversGenerating &&
-                    !videoPostCoverOptions.length ? (
-                      <View style={s.videoCoverFailureCard}>
-                        <Ionicons name="alert-circle-outline" size={20} color="#F4C95D" />
-                        <Text style={s.videoCoverFailureText}>
-                          Kristo could not generate covers. Upload a custom cover or try again.
-                        </Text>
-                      </View>
-                    ) : null}
-                    <View style={s.videoCoverGrid}>
-                      {Array.from({ length: VIDEO_POST_COVER_COUNT }).map((_, index) => {
-                        const uri = videoPostCoverOptions[index] || "";
-                        const selected =
-                          !videoPostCustomCoverUri && videoPostSelectedCoverIndex === index && !!uri;
-
-                        return (
-                          <Pressable
-                            key={`video-cover-${index}-${uri || "empty"}`}
-                            disabled={!uri && !videoPostCoversGenerating}
-                            onPress={() => {
-                              if (uri) selectGeneratedVideoPostCover(index);
-                            }}
-                            style={({ pressed }) => [
-                              s.videoCoverGridCell,
-                              selected ? s.videoCoverGridCellSelected : null,
-                              pressed && uri ? s.pressed : null,
-                            ]}
-                          >
-                            {uri ? (
-                              <Image source={{ uri }} style={s.videoCoverGridImage} resizeMode="cover" />
-                            ) : (
-                              <View style={s.videoCoverGridSkeleton}>
-                                {videoPostCoversGenerating ? (
-                                  <ActivityIndicator size="small" color="#F4C95D" />
-                                ) : (
-                                  <Ionicons name="image-outline" size={18} color="rgba(255,255,255,0.28)" />
-                                )}
-                              </View>
-                            )}
-                            <View style={s.videoCoverGridIndexBadge}>
-                              <Text style={s.videoCoverGridIndexText}>{index + 1}</Text>
-                            </View>
-                            {selected ? (
-                              <View style={s.videoCoverGridSelectedBadge}>
-                                <Ionicons name="checkmark-circle" size={18} color="#F4C95D" />
-                              </View>
-                            ) : null}
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-
-                    <Pressable
-                      onPress={() => void regenerateVideoPostCovers()}
-                      disabled={videoPostCoversGenerating || !videoPostUri}
-                      style={({ pressed }) => [
-                        s.videoCoverRegenerateBtn,
-                        (videoPostCoversGenerating || !videoPostUri) && { opacity: 0.5 },
-                        pressed ? s.pressed : null,
-                      ]}
-                    >
-                      <Ionicons name="refresh-outline" size={16} color="#F4C95D" />
-                      <Text style={s.videoCoverRegenerateText}>
-                        {videoPostCoversGenerating ? "Generating covers..." : "Regenerate Covers"}
-                      </Text>
-                    </Pressable>
-
-                    <View style={s.videoCoverOrRow}>
-                      <View style={s.videoCoverOrLine} />
-                      <Text style={s.videoCoverOrText}>OR</Text>
-                      <View style={s.videoCoverOrLine} />
-                    </View>
 
                     <Pressable
                       onPress={() => void pickVideoPostCover()}
