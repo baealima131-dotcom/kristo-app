@@ -1238,6 +1238,9 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     unreadMessages: 0,
     missedCalls: 0,
   });
+  const communicationBadge = formatProfileCommunicationBadgeCount(
+    communicationCounts.unreadMessages + communicationCounts.missedCalls
+  );
   useEffect(() => {
     if (!visible) return;
     let active = true;
@@ -1516,26 +1519,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 style={styles.messageButton}
               >
                 <Ionicons name="chatbubble-ellipses-outline" size={21} color="#FFFFFF" />
-                {formatProfileCommunicationBadgeCount(communicationCounts.unreadMessages) ? (
+                {communicationBadge ? (
                   <View style={styles.watchHeaderBadge} pointerEvents="none">
                     <Text style={styles.watchHeaderBadgeText}>
-                      {formatProfileCommunicationBadgeCount(communicationCounts.unreadMessages)}
-                    </Text>
-                  </View>
-                ) : null}
-              </Pressable>
-              <Pressable
-                onPress={openMessages}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                accessibilityRole="button"
-                accessibilityLabel="Calls and call history"
-                style={[styles.messageButton, styles.callButton]}
-              >
-                <Ionicons name="call-outline" size={20} color="#FFFFFF" />
-                {formatProfileCommunicationBadgeCount(communicationCounts.missedCalls) ? (
-                  <View style={styles.watchHeaderBadge} pointerEvents="none">
-                    <Text style={styles.watchHeaderBadgeText}>
-                      {formatProfileCommunicationBadgeCount(communicationCounts.missedCalls)}
+                      {communicationBadge}
                     </Text>
                   </View>
                 ) : null}
@@ -1759,15 +1746,12 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   messageButton: {
-    position: "absolute", right: 62, width: 42, height: 42, borderRadius: 21,
+    position: "absolute", right: 12, width: 42, height: 42, borderRadius: 21,
     alignItems: "center", justifyContent: "center",
     backgroundColor: "rgba(20, 0, 32, 0.55)",
     borderWidth: StyleSheet.hairlineWidth, borderColor: "#F4D06F",
     shadowColor: "#F4D06F", shadowOpacity: 0.28, shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 }, elevation: 6,
-  },
-  callButton: {
-    right: 12,
   },
   watchHeaderBadge: {
     position: "absolute",
