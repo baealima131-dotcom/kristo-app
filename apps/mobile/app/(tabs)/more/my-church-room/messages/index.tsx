@@ -28,6 +28,13 @@ import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { clearLegacyMessageLockPrefs } from "@/src/lib/clearLegacyMessageLockPrefs";
 import SokoSystemMessages from "@/src/components/messages/SokoSystemMessages";
+import { PersonAvatarRing } from "@/src/components/PersonAvatarRing";
+import {
+  MessageReceiptTicks,
+  resolveMessageReceiptStatus,
+  type MessageReceiptStatus,
+} from "@/src/components/messages/MessageReceiptTicks";
+import { useThread } from "@/src/lib/messagesStore";
 
 const BG = "#0A1220";
 const TEXT = "rgba(255,255,255,0.94)";
@@ -102,6 +109,8 @@ function getConversationGlass(item: MessagesInboxConversation) {
   return MESSAGE_GLASS[Math.abs(hash) % MESSAGE_GLASS.length];
 }
 
+const AVATAR_SIZE = 50;
+
 function ConversationRow({
   item,
   onPress,
@@ -111,8 +120,38 @@ function ConversationRow({
 }) {
   const initial = String(item.title || "?").trim().charAt(0).toUpperCase() || "?";
   const isRequest = item.isRequestReceiver === true;
+
+  // A message the viewer is still sending in this chat (local, not yet confirmed by the server).
+  const { messages: localMessages } = useThread(item.id);
+  const sendingMessage = useMemo(() => {
+    const newest = localMessages.reduce<(typeof localMessages)[number] | null>(
+      (best, m) => (!best || Number(m.createdAt || 0) > Number(best.createdAt || 0) ? m : best),
+      null
+    );
+    return newest &&
+      newest.sender === "me" &&
+      newest.pending &&
+      Number(newest.createdAt || 0) > Number(item.lastMessageAt || 0)
+      ? newest
+      : null;
+  }, [localMessages, item.lastMessageAt]);
+
+  // Ticks only for the viewer's own latest message (never for the other person's).
+  const receiptStatus: MessageReceiptStatus | null = sendingMessage
+    ? "Sending"
+    : item.lastMessageFromViewer && Number(item.lastMessageAt || 0) > 0
+      ? resolveMessageReceiptStatus({
+          createdAt: Number(item.lastMessageAt || 0),
+          peerDeliveredAt: item.peerDeliveredAt,
+          peerReadAt: item.peerReadAt,
+          showReadReceipts: item.showReadReceipts,
+        })
+      : null;
+
   const preview = String(
-    item.lastMessagePreview || (isRequest ? "Message request" : "")
+    (sendingMessage ? sendingMessage.text : "") ||
+      item.lastMessagePreview ||
+      (isRequest ? "Message request" : "")
   ).trim();
 
   const previewLower = preview.toLowerCase();
@@ -148,15 +187,17 @@ function ConversationRow({
         style={s.rowGradient}
       />
 
-      <View style={s.avatarWrap}>
-        {item.avatarUri ? (
-          <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
-        ) : (
-          <View style={s.avatarFallback}>
-            <Text style={s.avatarFallbackText}>{initial}</Text>
-          </View>
-        )}
-      </View>
+      <PersonAvatarRing category={item.peerRingCategory || "unknown"} size={AVATAR_SIZE}>
+        <View style={s.avatarWrap}>
+          {item.avatarUri ? (
+            <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
+          ) : (
+            <View style={s.avatarFallback}>
+              <Text style={s.avatarFallbackText}>{initial}</Text>
+            </View>
+          )}
+        </View>
+      </PersonAvatarRing>
 
       <View style={s.rowBody}>
         <View style={s.rowTop}>
@@ -177,11 +218,12 @@ function ConversationRow({
           ) : null}
         </View>
 
-        <Text style={s.rowSubtitle} numberOfLines={1}>
-          {isRequest ? "Message request" : item.subtitle}
-        </Text>
-
         <View style={s.rowBottom}>
+          {receiptStatus ? (
+            <View style={s.previewTicks}>
+              <MessageReceiptTicks status={receiptStatus} size={16} />
+            </View>
+          ) : null}
           <Text style={[s.rowPreview, { color: previewTone }]} numberOfLines={2}>
             {preview || (isRequest ? "Message request" : "")}
           </Text>
@@ -200,12 +242,23 @@ function ConversationRow({
   );
 }
 
+// Last inbox shown to each signed-in user, kept for this app session. Coming back to Messages
+// (e.g. from a conversation, which replaces the route) shows it at once and refreshes quietly.
+const inboxCacheByUserId = new Map<string, MessagesInboxConversation[]>();
+
+function inboxViewerId(): string {
+  return String((getKristoHeaders() as any)?.["x-kristo-user-id"] || "").trim();
+}
+
 export default function MessagesScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [conversations, setConversations] = useState<MessagesInboxConversation[]>([]);
+  const [conversations, setConversations] = useState<MessagesInboxConversation[]>(
+    () => inboxCacheByUserId.get(inboxViewerId()) || []
+  );
+  // Full-screen spinner only until the first inbox is known; refreshes after that are silent.
+  const [loading, setLoading] = useState(() => !inboxCacheByUserId.has(inboxViewerId()));
   const [composeOpen, setComposeOpen] = useState(false);
 
   useEffect(() => {
@@ -243,12 +296,14 @@ export default function MessagesScreen() {
       return;
     }
 
-    setLoading(true);
+    const viewerId = inboxViewerId();
     try {
       const rows = await fetchMessagesInboxConversations({ base });
+      if (viewerId) inboxCacheByUserId.set(viewerId, rows);
       setConversations(rows);
     } catch {
-      setConversations([]);
+      // Keep the last inbox on a failed refresh; an empty list only when nothing is known yet.
+      if (!inboxCacheByUserId.has(viewerId)) setConversations([]);
     } finally {
       setLoading(false);
     }
@@ -815,6 +870,10 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 7,
+  } as ViewStyle,
+  previewTicks: {
+    marginTop: 1,
+    marginRight: -3,
   } as ViewStyle,
 
   rowPreview: {

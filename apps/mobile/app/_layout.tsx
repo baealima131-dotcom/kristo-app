@@ -18,6 +18,7 @@ import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMod
 import { SafetyAccountEnforcementGate } from "@/src/components/SafetyAccountEnforcementGate";
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import { SokoStripeProvider } from "@/src/lib/payments/SokoStripeProvider";
+import { ActiveCallBarFrame } from "@/src/components/calls/ActiveCallBar";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -57,8 +58,10 @@ export default function RootLayout() {
       {!splashFinished ? <JujujuAnimatedSplash onFinished={onSplashFinished} /> : null}
       <KristoSessionProvider>
         <SokoStripeProvider>
-          <Slot />
-          <SafetyAccountEnforcementGate />
+          <ActiveCallBarFrame>
+            <Slot />
+            <SafetyAccountEnforcementGate />
+          </ActiveCallBarFrame>
         </SokoStripeProvider>
       </KristoSessionProvider>
       {/* Hidden primer — inline TikTok-style autoplay only. */}

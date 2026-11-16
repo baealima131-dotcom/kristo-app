@@ -26,6 +26,7 @@ import {
   shouldBlockVisibleLoading,
   shouldSkipFocusRefresh,
 } from "@/src/lib/screenOpenState";
+import { PersonAvatarRing, resolvePersonRingCategory } from "@/src/components/PersonAvatarRing";
 
 const CHURCH_MEMBERS_SCREEN = "ChurchMembers";
 
@@ -604,16 +605,27 @@ export default function ChurchMembersDirectory() {
               const isSelfMember = memberKeys.some((v) => selfKeys.includes(v));
 
               const avatarUri = resolveMemberAvatar(x);
+              // This list is the viewer's own church; ring only with a real role on an active
+              // membership (the status fallback above is not a role).
+              const verifiedRole = String(x?.role || x?.churchRole || "").trim();
+              const membershipStatus = String(x?.status || x?.membershipStatus || "active").toLowerCase();
+              const ringCategory = resolvePersonRingCategory({
+                viewerChurchId: churchId,
+                personChurchId: membershipStatus === "active" && verifiedRole ? churchId : "",
+                personRole: verifiedRole,
+              });
 
               return (
                 <View key={`${id}-${i}`} style={s.memberCard}>
-                  <View style={s.avatar}>
-                    {avatarUri ? (
-                      <Image source={{ uri: avatarUri }} style={s.avatarImage} />
-                    ) : (
-                      <Text style={s.avatarText}>{name.trim().charAt(0).toUpperCase() || "M"}</Text>
-                    )}
-                  </View>
+                  <PersonAvatarRing category={ringCategory} size={44}>
+                    <View style={s.avatar}>
+                      {avatarUri ? (
+                        <Image source={{ uri: avatarUri }} style={s.avatarImage} />
+                      ) : (
+                        <Text style={s.avatarText}>{name.trim().charAt(0).toUpperCase() || "M"}</Text>
+                      )}
+                    </View>
+                  </PersonAvatarRing>
 
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={s.name} numberOfLines={1}>{name}</Text>

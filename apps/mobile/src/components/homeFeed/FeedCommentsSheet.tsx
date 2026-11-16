@@ -48,6 +48,8 @@ import {
 } from "@/src/lib/homeFeedComments";
 import { commentAvatarUrl } from "./homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
+import { PersonAvatarRing } from "@/src/components/PersonAvatarRing";
+import { usePersonRingCategory } from "@/src/lib/personRelations";
 
 const COMMENT_COLLAPSED_LINES = 3;
 const COMMENT_LONG_CHAR_THRESHOLD = 160;
@@ -160,13 +162,17 @@ function CommentAvatar({
   displayName,
   size,
   onPress,
+  userId,
 }: {
   commentId: string;
   avatarUri: string;
   displayName: string;
   size: number;
   onPress?: () => void;
+  /** Comment author: their verified ring (neutral until known). */
+  userId?: string;
 }) {
+  const ringCategory = usePersonRingCategory(userId);
   const [imageFailed, setImageFailed] = useState(false);
   const fallbackLetter = fallbackLetterForName(displayName);
   const resolvedUri = String(avatarUri || "").trim();
@@ -198,29 +204,31 @@ function CommentAvatar({
         },
       ]}
     >
-      {showPhoto ? (
-        <Image
-          source={{ uri: resolvedUri }}
-          style={[
-            styles.avatarImage,
-            { width: size, height: size, borderRadius: size / 2 },
-          ]}
-          resizeMode="cover"
-          onError={() => setImageFailed(true)}
-        />
-      ) : (
-        <View
-          style={[
-            styles.avatarFallback,
-            styles.avatarRing,
-            { width: size, height: size, borderRadius: size / 2 },
-          ]}
-        >
-          <Text style={[styles.avatarInitial, { fontSize: Math.round(size * 0.38) }]}>
-            {fallbackLetter}
-          </Text>
-        </View>
-      )}
+      <PersonAvatarRing category={ringCategory} size={size}>
+        {showPhoto ? (
+          <Image
+            source={{ uri: resolvedUri }}
+            style={[
+              styles.avatarImage,
+              { width: size, height: size, borderRadius: size / 2 },
+            ]}
+            resizeMode="cover"
+            onError={() => setImageFailed(true)}
+          />
+        ) : (
+          <View
+            style={[
+              styles.avatarFallback,
+              styles.avatarRing,
+              { width: size, height: size, borderRadius: size / 2 },
+            ]}
+          >
+            <Text style={[styles.avatarInitial, { fontSize: Math.round(size * 0.38) }]}>
+              {fallbackLetter}
+            </Text>
+          </View>
+        )}
+      </PersonAvatarRing>
     </View>
   );
 
@@ -299,6 +307,7 @@ function ReplyRow({
         avatarUri={avatarUri}
         displayName={display.authorName}
         size={AVATAR_REPLY}
+        userId={resolveCommentAuthorIdentity(reply).userId}
         onPress={() => onOpenAuthorProfile(reply)}
       />
       <View style={styles.commentContent}>
@@ -404,6 +413,7 @@ function CommentRow({
           avatarUri={avatarUri}
           displayName={display.authorName}
           size={AVATAR_MAIN}
+          userId={resolveCommentAuthorIdentity(comment).userId}
           onPress={() => onOpenAuthorProfile(comment)}
         />
         <View style={styles.commentContent}>

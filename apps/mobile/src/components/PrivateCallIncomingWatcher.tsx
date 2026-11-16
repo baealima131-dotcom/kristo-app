@@ -8,55 +8,38 @@ import {
 } from "react-native";
 import {
   useRouter,
-  useSegments,
 } from "expo-router";
 
 import {
   useKristoSession,
 } from "@/src/lib/KristoSessionProvider";
 import {
+  isPrivateCallAudioActive,
+} from "@/src/lib/activeCallStore";
+import {
   fetchIncomingPrivateCalls,
 } from "@/src/lib/privateCallService";
 import {
+  hasLiveCallScreen,
   markIncomingCallScreenOpened,
   wasIncomingCallScreenOpened,
 } from "@/src/lib/push/kristoCallRouting";
 
+/*
+ * A call rings for 30 s, so with the app open an incoming call must show
+ * within a few seconds. Polling stays at this pace while the app is in
+ * front; in the background push (FCM / VoIP) delivers calls instead.
+ */
 const IDLE_POLL_DELAYS_MS = [
   2_000,
-  4_000,
-  8_000,
-  15_000,
+  3_000,
 ] as const;
 
 const RINGING_RECHECK_MS = 700;
-const ACTIVE_CALL_RECHECK_MS = 15_000;
-
-function activePrivateCallIdFromSegments(
-  segments: string[]
-): string | null {
-  const index =
-    segments.findIndex(
-      (segment) =>
-        segment === "private-call"
-    );
-
-  if (index < 0) {
-    return null;
-  }
-
-  const next =
-    String(
-      segments[index + 1] || ""
-    ).trim();
-
-  return next || null;
-}
+const BUSY_RECHECK_MS = 3_000;
 
 export function PrivateCallIncomingWatcher() {
   const router = useRouter();
-  const segments =
-    useSegments() as string[];
 
   const {
     session,
@@ -145,35 +128,33 @@ export function PrivateCallIncomingWatcher() {
       }
 
       if (
-        appStateRef.current !== "active"
+        AppState.currentState !== "active"
       ) {
         return;
       }
 
-      const activeCallId =
-        activePrivateCallIdFromSegments(
-          segments
-        );
-
-      if (activeCallId) {
-        handledCallIdsRef.current.add(
-          activeCallId
-        );
-
+      /*
+       * Already in a call (ringing or connected): do not open another
+       * call over it. A finished call's screen left open does not count,
+       * so a new call still shows there.
+       */
+      if (
+        hasLiveCallScreen() ||
+        isPrivateCallAudioActive()
+      ) {
         resetToFastIdle();
 
         console.log(
           "KRISTO_PRIVATE_CALL_POLL_SCHEDULE",
           {
-            mode: "active_call_screen",
+            mode: "busy_in_call",
             delayMs:
-              ACTIVE_CALL_RECHECK_MS,
-            activeCallId,
+              BUSY_RECHECK_MS,
           }
         );
 
         schedule(
-          ACTIVE_CALL_RECHECK_MS
+          BUSY_RECHECK_MS
         );
 
         return;
@@ -183,7 +164,6 @@ export function PrivateCallIncomingWatcher() {
         "KRISTO_PRIVATE_CALL_INCOMING_POLL",
         {
           receiverUserId: userId,
-          activeCallId,
         }
       );
 
@@ -362,7 +342,6 @@ export function PrivateCallIncomingWatcher() {
     loading,
     userId,
     router,
-    segments,
   ]);
 
   return null;

@@ -28,7 +28,13 @@ export function playPrivateCallWaitTone(callId: string, maxMs = PRIVATE_CALL_WAI
 
   (async () => {
     try {
-      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {});
+      // Keeps playing when the screen locks or the app goes to the background (otherwise
+      // expo-audio pauses it). It is stopped as soon as the call is answered or over.
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+      }).catch(() => {});
       if (done) return;
       player = createAudioPlayer(WAIT_TONE_SOURCE);
       player.loop = false;

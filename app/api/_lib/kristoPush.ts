@@ -147,7 +147,9 @@ export async function notifyKristoCallPush(session: PrivateCallSession, title: s
     data: {
       type: "private_call_incoming",
       callId: session.id,
-      title,
+      // Not "title": expo-notifications posts its own notification for a data message that has
+      // one, so the call would show twice next to the app's call notification.
+      callTitle: title,
       ringExpiresAt: String(session.ringExpiresAt || ""),
     },
     ttlSeconds: (Date.parse(String(session.ringExpiresAt || "")) - Date.now()) / 1000,

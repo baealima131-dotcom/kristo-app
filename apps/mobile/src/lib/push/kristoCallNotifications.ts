@@ -1,4 +1,4 @@
-import { NativeModules, Platform } from "react-native";
+import { NativeModules, PermissionsAndroid, Platform } from "react-native";
 
 /**
  * Android call notifications (Notifee): the full-screen incoming call with Answer / Decline, and
@@ -136,12 +136,37 @@ export function registerCallForegroundService() {
   mod.default.registerForegroundService(() => new Promise<void>(() => {}));
 }
 
+/**
+ * A microphone-type foreground service may only start while RECORD_AUDIO is granted (Android 14+);
+ * otherwise Android throws in the service and the app crashes. Ask first, so the call also gets
+ * its microphone.
+ */
+async function ensureRecordAudioPermission(): Promise<boolean> {
+  if (Platform.OS !== "android") return true;
+  const permission = PermissionsAndroid.PERMISSIONS.RECORD_AUDIO;
+  try {
+    if (await PermissionsAndroid.check(permission)) return true;
+    const result = await PermissionsAndroid.request(permission);
+    return result === PermissionsAndroid.RESULTS.GRANTED;
+  } catch {
+    return false;
+  }
+}
+
 export async function startCallForegroundService(input: { callId: string; peerName: string }) {
   const mod = loadNotifee();
   if (!mod || !input.callId || ongoingCallId === input.callId) return;
   const { default: notifee, AndroidCategory, AndroidForegroundServiceType, AndroidImportance } = mod;
-  await ensureKristoNotificationChannels();
   ongoingCallId = input.callId;
+  if (!(await ensureRecordAudioPermission())) {
+    ongoingCallId = "";
+    console.log("KRISTO_CALL_FOREGROUND_SERVICE_SKIPPED", {
+      callId: input.callId,
+      reason: "record-audio-not-granted",
+    });
+    return;
+  }
+  await ensureKristoNotificationChannels();
   try {
     await notifee.displayNotification({
       id: ongoingCallNotificationId(input.callId),

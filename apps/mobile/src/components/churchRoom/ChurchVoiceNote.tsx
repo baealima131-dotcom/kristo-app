@@ -13,6 +13,7 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
 } from "expo-audio";
+import { isPrivateCallAudioActive } from "@/src/lib/activeCallStore";
 
 /** Church Members room voice notes (server deletes them after 7 days). */
 export const CHURCH_VOICE_NOTE_MAX_MS = 5 * 60 * 1000;
@@ -111,7 +112,8 @@ export function ChurchVoiceNoteButton({
 
   const resetAudioMode = useCallback(async () => {
     try {
-      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      // During a private call keep recording allowed, or the call microphone goes silent.
+      await setAudioModeAsync({ allowsRecording: isPrivateCallAudioActive(), playsInSilentMode: true });
     } catch {}
   }, []);
 
@@ -284,7 +286,8 @@ export function ChurchVoiceNoteBubble({
   const toggle = async () => {
     if (!url) return;
     try {
-      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      // During a private call keep recording allowed, or the call microphone goes silent.
+      await setAudioModeAsync({ allowsRecording: isPrivateCallAudioActive(), playsInSilentMode: true });
     } catch {}
     if (status.playing) player.pause();
     else player.play();

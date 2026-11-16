@@ -25,6 +25,7 @@ import { AndroidAudioTypePresets, AudioSession, LiveKitRoom, useRoomContext } fr
 import { RoomAudioRenderer } from "@/src/lib/liveRoomAudioRenderer";
 import { createLocalAudioTrack, createLocalVideoTrack, RoomEvent, Track } from "livekit-client";
 import { MediaStream, RTCView, registerGlobals } from "@livekit/react-native-webrtc";
+import { isPrivateCallAudioActive } from "@/src/lib/activeCallStore";
 import * as Haptics from "expo-haptics";
 import {
   useLiveRoom,
@@ -1159,6 +1160,8 @@ function forceKristoLiveCleanup(
     } catch {}
   }
 
+  // A private call running in the background shares this audio session: leave it on.
+  if (isPrivateCallAudioActive()) return;
   try {
     AudioSession.stopAudioSession().catch(() => {});
   } catch {}

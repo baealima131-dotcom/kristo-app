@@ -9,7 +9,8 @@ import {
   Text,
   View,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { CommonActions } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -55,9 +56,21 @@ import {
   startCallForegroundService,
   stopCallForegroundService,
 } from "@/src/lib/push/kristoCallNotifications";
-import { consumePendingCallAnswer } from "@/src/lib/push/kristoCallRouting";
+import { consumePendingCallAnswer, setCallScreenLive } from "@/src/lib/push/kristoCallRouting";
+import { useIsFocused } from "@react-navigation/native";
+import {
+  clearActiveCall,
+  getActiveCallConnectedAt,
+  markActiveCallEnding,
+  parkActiveCallRoom,
+  setActiveCallConnected,
+  setActiveCallScreenFocused,
+  takeParkedCallRoom,
+} from "@/src/lib/activeCallStore";
 
 import SokoLiveStore from "@/src/components/homeFeed/SokoLiveStore";
+import { PersonAvatarRing } from "@/src/components/PersonAvatarRing";
+import { usePersonRingCategory } from "@/src/lib/personRelations";
 
 const BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.92)";
@@ -430,11 +443,15 @@ function formatCallDuration(totalSeconds: number): string {
 function PrivateCallAvatar({
   avatarUri,
   animate = true,
+  userId = "",
 }: {
   avatarUri?: string;
   animate?: boolean;
+  /** The other person: their verified ring (neutral until known). */
+  userId?: string;
 }) {
-  const avatar = avatarUri ? (
+  const ringCategory = usePersonRingCategory(userId);
+  const face = avatarUri ? (
     <Image
       source={{ uri: avatarUri }}
       style={{
@@ -456,6 +473,11 @@ function PrivateCallAvatar({
     >
       <Ionicons name="person" size={42} color="rgba(255,255,255,0.82)" />
     </View>
+  );
+  const avatar = (
+    <PersonAvatarRing category={ringCategory} size={AVATAR_SIZE}>
+      {face}
+    </PersonAvatarRing>
   );
 
   if (!animate) return avatar;
@@ -558,6 +580,7 @@ function PrivateCallConnectedRoom({
   callId,
   peerName,
   peerAvatar,
+  peerUserId = "",
   currentUserId,
   isSokoCall,
   onEnd,
@@ -565,6 +588,7 @@ function PrivateCallConnectedRoom({
   callId: string;
   peerName: string;
   peerAvatar?: string;
+  peerUserId?: string;
   currentUserId: string;
   isSokoCall: boolean;
   onEnd: () => void;
@@ -572,9 +596,13 @@ function PrivateCallConnectedRoom({
   const room = useRoomContext();
 
   const [micEnabled, setMicEnabled] = useState(true);
-  const [elapsedSec, setElapsedSec] = useState(0);
+  // Reopened from the call bar: the timer continues from when the call connected.
+  const [elapsedSec, setElapsedSec] = useState(() => {
+    const connectedAt = getActiveCallConnectedAt(callId);
+    return connectedAt ? Math.max(0, Math.floor((Date.now() - connectedAt) / 1000)) : 0;
+  });
   const durationStartedRef = useRef(false);
-  const elapsedSecRef = useRef(0);
+  const elapsedSecRef = useRef(elapsedSec);
 
   const applyMicState = useCallback(
     (enabled: boolean) => {
@@ -647,7 +675,7 @@ function PrivateCallConnectedRoom({
 
   return (
     <View style={styles.centerStage}>
-      <PrivateCallAvatar avatarUri={peerAvatar} animate />
+      <PrivateCallAvatar avatarUri={peerAvatar} animate userId={peerUserId} />
 
       <Text style={styles.title}>Connected</Text>
       {elapsedSec > 0 ? (
@@ -708,6 +736,8 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
   const stableConnectOptions = useMemo(() => buildPrivateCallConnectOptions(), []);
   const [ownedRoom, setOwnedRoom] = useState<Room | null>(null);
   const connectSessionRef = useRef(0);
+  const peerDisplayRef = useRef(peerDisplay);
+  peerDisplayRef.current = peerDisplay;
   const mountLoggedRef = useRef("");
 
   useEffect(() => {
@@ -747,12 +777,22 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
       binding.callId,
       binding.roomName
     );
+    // Reopened while the call kept running in the background (call bar): same Room, no reconnect.
+    const parkedRoom = preconnected
+      ? null
+      : takeParkedCallRoom(binding.callId, binding.roomName);
 
-    const room = preconnected?.room || new Room(liveKitOptions);
+    const room = preconnected?.room || parkedRoom || new Room(liveKitOptions);
 
     void (async () => {
       try {
-        if (preconnected) {
+        if (parkedRoom) {
+          console.log("KRISTO_PRIVATE_CALL_PARKED_ROOM_ADOPTED", {
+            callId: binding.callId,
+            roomName: binding.roomName,
+            ts: Date.now(),
+          });
+        } else if (preconnected) {
           const hadRingingOwner =
             !!preconnected.subscriptionBridgeCleanup;
 
@@ -807,6 +847,12 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
         });
 
         setOwnedRoom(room);
+        setActiveCallConnected({
+          callId: binding.callId,
+          roomName: binding.roomName,
+          peerName: peerDisplayRef.current.peerName,
+          peerAvatar: peerDisplayRef.current.peerAvatar,
+        });
 
         void room.localParticipant
           .setMicrophoneEnabled(true)
@@ -848,6 +894,14 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
         roomState,
         ts: Date.now(),
       });
+
+      // Screen closed while the call is still on (nobody hung up): keep the Room, mic and
+      // remote audio alive for the call bar instead of hanging up.
+      if (parkActiveCallRoom(binding.callId, room)) {
+        setOwnedRoom(null);
+        return;
+      }
+      clearActiveCall(binding.callId, "call-screen-closed");
 
       if (
         roomState !== "disconnected" &&
@@ -957,6 +1011,7 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
         isSokoCall={isSokoCall}
         peerName={peerDisplay.peerName}
         peerAvatar={peerDisplay.peerAvatar}
+        peerUserId={peerUserId}
         currentUserId={currentUserId}
         onEnd={handleEnd}
       />
@@ -966,6 +1021,7 @@ const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
 
 export default function PrivateCallScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{
     callId?: string;
@@ -975,6 +1031,11 @@ export default function PrivateCallScreen() {
 
   const callId = String(params.callId || "").trim();
   const returnTo = String(params.returnTo || "").trim();
+  // Another tab or screen in front while this one stays mounted: the call bar shows the way back.
+  const isCallScreenFocused = useIsFocused();
+  useEffect(() => {
+    if (callId) setActiveCallScreenFocused(callId, isCallScreenFocused);
+  }, [callId, isCallScreenFocused]);
   const currentUserId = String(authSession?.userId || "").trim();
 
   const [session, setSession] = useState<PrivateCallSession | null>(null);
@@ -994,6 +1055,8 @@ export default function PrivateCallScreen() {
   const latencyMarksRef = useRef<Record<string, number>>({});
   const sessionStatusRef = useRef<string>("");
   const unavailableToneStopRef = useRef<(() => void) | null>(null);
+  // While the "unavailable" message plays, the call stays in the foreground service (screen locked).
+  const [unavailableTonePlaying, setUnavailableTonePlaying] = useState(false);
   const waitToneStopRef = useRef<((reason?: string) => void) | null>(null);
   const onEndRef = useRef<() => void>(() => {});
   const onRemoteTerminationRef = useRef<(source: string, status: string) => void>(() => {});
@@ -1016,12 +1079,23 @@ export default function PrivateCallScreen() {
     }
 
     if (router.canGoBack()) {
+      // Opened from another tab, this screen is the first one in the More stack: back() only
+      // switches to the previous tab and leaves it mounted, so a later call that closes would
+      // show this finished call again. Reset the More stack so the screen goes away.
+      const stack = navigation.getState();
+      const isStackRoot = !!stack?.key && stack.index === 0;
       router.back();
+      if (isStackRoot) {
+        navigation.dispatch({
+          ...CommonActions.reset({ index: 0, routes: [{ name: "index" }] }),
+          target: stack.key,
+        });
+      }
       return;
     }
 
     router.replace("/(tabs)/more" as any);
-  }, [returnTo, router]);
+  }, [navigation, returnTo, router]);
 
   const exitCallScreen = useCallback(
     (source: string, meta?: Record<string, unknown>) => {
@@ -1035,6 +1109,8 @@ export default function PrivateCallScreen() {
         return;
       }
       exitHandledRef.current = true;
+      // Leaving because the call ended: the Shell must disconnect, not park the Room.
+      markActiveCallEnding(callId);
 
       // Do not disconnect the Room here.
       // Navigation unmounts PrivateCallLiveKitShell, whose cleanup is the
@@ -1088,7 +1164,9 @@ export default function PrivateCallScreen() {
       if (wasRinging && shouldPlayPrivateCallUnavailableTone(role, status)) {
         const tone = playPrivateCallUnavailableTone(callId, status);
         unavailableToneStopRef.current = tone.stop;
+        setUnavailableTonePlaying(true);
         void tone.finished.then(() => {
+          setUnavailableTonePlaying(false);
           exitCallScreen("remote-end", { source, status, unavailableTone: true });
         });
         return;
@@ -1648,6 +1726,15 @@ export default function PrivateCallScreen() {
   const handleAcceptRef = useRef(handleAccept);
   handleAcceptRef.current = handleAccept;
 
+  // While this call rings or is connected, the incoming-call poller opens no other call over it.
+  const callScreenLive = session?.status === "ringing" || session?.status === "accepted";
+  useEffect(() => {
+    if (!session?.id || !callScreenLive) return;
+    const id = session.id;
+    setCallScreenLive(id, true);
+    return () => setCallScreenLive(id, false);
+  }, [session?.id, callScreenLive]);
+
   // "Answer" pressed on the incoming-call notification: accept as soon as the ringing call loads.
   useEffect(() => {
     if (!session || role !== "pastor" || session.status !== "ringing") return;
@@ -1663,14 +1750,22 @@ export default function PrivateCallScreen() {
   // Keep the microphone and connection alive with the screen off or the app in the background.
   const ongoingPeerName =
     role === "caller" ? session?.pastorName || "Pastor" : session?.callerName || "Caller";
+  // Android: also while the caller is ringing and while the "unavailable" message plays, so with
+  // the screen locked the app keeps checking the call (React Native timers stop otherwise): the
+  // ringback stops on answer / cancel / decline / timeout and the message can start.
+  const callForegroundWanted =
+    Boolean(session?.id) &&
+    (session?.status === "accepted" ||
+      (role === "caller" && session?.status === "ringing") ||
+      unavailableTonePlaying);
   useEffect(() => {
-    if (!session?.id || session.status !== "accepted") return;
+    if (!session?.id || !callForegroundWanted) return;
     const id = session.id;
     void startCallForegroundService({ callId: id, peerName: ongoingPeerName });
     return () => {
       void stopCallForegroundService(id);
     };
-  }, [session?.id, session?.status, ongoingPeerName]);
+  }, [session?.id, callForegroundWanted, ongoingPeerName]);
 
   const handleEnd = handleEndCall;
 
@@ -1721,6 +1816,7 @@ export default function PrivateCallScreen() {
           <PrivateCallAvatar
             avatarUri={connectedPeerDisplay.peerAvatar}
             animate
+            userId={peerUserId}
           />
 
           <Text style={styles.title}>Connected</Text>
@@ -1785,12 +1881,28 @@ export default function PrivateCallScreen() {
     session.status === "ended" ||
     session.status === "failed"
   ) {
+    const terminal = resolveTerminalCallCopy(session.status, role, displayName);
     return (
       <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
-        <Text style={styles.title}>{statusMessage}</Text>
-        <Pressable onPress={closeTerminalScreen} style={styles.secondaryBtn}>
-          <Text style={styles.secondaryBtnText}>Close</Text>
-        </Pressable>
+        <View style={styles.centerStage}>
+          <PrivateCallAvatar avatarUri={displayAvatar} animate={false} userId={peerUserId} />
+          <Text style={styles.title} numberOfLines={2}>
+            {displayName}
+          </Text>
+          <View style={[styles.statusPill, { borderColor: terminal.color }]}>
+            <Ionicons name={terminal.icon} size={16} color={terminal.color} />
+            <Text style={[styles.statusPillText, { color: terminal.color }]}>{terminal.title}</Text>
+          </View>
+          <Text style={styles.terminalDetail}>{terminal.detail}</Text>
+          <Pressable
+            onPress={closeTerminalScreen}
+            style={({ pressed }) => [styles.closeBtn, pressed ? styles.btnPressed : null]}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
+            <Text style={styles.closeBtnText}>Close</Text>
+          </Pressable>
+        </View>
       </View>
     );
   }
@@ -1812,15 +1924,28 @@ export default function PrivateCallScreen() {
       </Pressable>
 
       <View style={styles.centerStage}>
-        <PrivateCallAvatar avatarUri={displayAvatar} animate />
+        <PrivateCallAvatar avatarUri={displayAvatar} animate userId={peerUserId} />
 
         {session.status === "ringing" && role === "caller" ? (
           <>
             <Text style={styles.title}>{displayName}</Text>
             <PrivateCallOutgoingRinging callId={session.id} />
-            <Pressable onPress={handleEnd} style={styles.secondaryBtn}>
-              <Text style={styles.secondaryBtnText}>Cancel Call</Text>
-            </Pressable>
+            <View style={styles.callAction}>
+              <Pressable
+                onPress={handleEnd}
+                disabled={actionBusy}
+                style={({ pressed }) => [
+                  styles.circleBtn,
+                  styles.declineBtn,
+                  pressed || actionBusy ? styles.btnPressed : null,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel call"
+              >
+                <Ionicons name="call" size={28} color="#fff" style={styles.hangUpIcon} />
+              </Pressable>
+              <Text style={styles.callActionLabel}>Cancel</Text>
+            </View>
           </>
         ) : (
           <>
@@ -1829,20 +1954,38 @@ export default function PrivateCallScreen() {
 
             {session.status === "ringing" && role === "pastor" ? (
               <View style={styles.actionRow}>
-                <Pressable
-                  onPress={handleDecline}
-                  disabled={actionBusy}
-                  style={[styles.circleBtn, styles.declineBtn]}
-                >
-                  <Ionicons name="close" size={28} color="#fff" />
-                </Pressable>
-                <Pressable
-                  onPress={handleAccept}
-                  disabled={actionBusy}
-                  style={[styles.circleBtn, styles.acceptBtn]}
-                >
-                  <Ionicons name="call" size={26} color="#fff" />
-                </Pressable>
+                <View style={styles.callAction}>
+                  <Pressable
+                    onPress={handleDecline}
+                    disabled={actionBusy}
+                    style={({ pressed }) => [
+                      styles.circleBtn,
+                      styles.declineBtn,
+                      pressed || actionBusy ? styles.btnPressed : null,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Decline call"
+                  >
+                    <Ionicons name="call" size={28} color="#fff" style={styles.hangUpIcon} />
+                  </Pressable>
+                  <Text style={styles.callActionLabel}>Decline</Text>
+                </View>
+                <View style={styles.callAction}>
+                  <Pressable
+                    onPress={handleAccept}
+                    disabled={actionBusy}
+                    style={({ pressed }) => [
+                      styles.circleBtn,
+                      styles.acceptBtn,
+                      pressed || actionBusy ? styles.btnPressed : null,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Accept call"
+                  >
+                    <Ionicons name="call" size={26} color="#fff" />
+                  </Pressable>
+                  <Text style={styles.callActionLabel}>Accept</Text>
+                </View>
               </View>
             ) : null}
           </>
@@ -1850,6 +1993,29 @@ export default function PrivateCallScreen() {
       </View>
     </View>
   );
+}
+
+/** What the end-of-call screen says, for the caller and for the person who was called. */
+function resolveTerminalCallCopy(
+  status: string,
+  role: string,
+  name: string
+): { title: string; detail: string; icon: React.ComponentProps<typeof Ionicons>["name"]; color: string } {
+  const isCaller = role === "caller";
+  if (status === "declined") {
+    return isCaller
+      ? { title: "Call declined", detail: `${name} can't take your call right now.`, icon: "close-circle", color: "#F87171" }
+      : { title: "You declined", detail: `You declined the call from ${name}.`, icon: "close-circle", color: "#F87171" };
+  }
+  if (status === "timeout") {
+    return isCaller
+      ? { title: "No answer", detail: `${name} didn't answer. Please try again later.`, icon: "time-outline", color: GOLD }
+      : { title: "Missed call", detail: `You missed a call from ${name}.`, icon: "time-outline", color: GOLD };
+  }
+  if (status === "failed") {
+    return { title: "Couldn't connect", detail: "Check your connection and try again.", icon: "warning-outline", color: "#FBBF24" };
+  }
+  return { title: "Call ended", detail: "The call has ended.", icon: "call-outline", color: "rgba(255,255,255,0.78)" };
 }
 
 const styles = StyleSheet.create({
@@ -1976,8 +2142,64 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     flexDirection: "row",
-    gap: 28,
+    gap: 44,
     marginTop: 28,
+  },
+  callAction: {
+    alignItems: "center",
+    gap: 8,
+    marginTop: 20,
+  },
+  callActionLabel: {
+    color: "rgba(255,255,255,0.86)",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  hangUpIcon: {
+    transform: [{ rotate: "135deg" }],
+  },
+  btnPressed: {
+    opacity: 0.72,
+    transform: [{ scale: 0.96 }],
+  },
+  statusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  statusPillText: {
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  terminalDetail: {
+    color: "rgba(255,255,255,0.68)",
+    fontSize: 15,
+    fontWeight: "600",
+    textAlign: "center",
+    lineHeight: 21,
+    maxWidth: 300,
+  },
+  closeBtn: {
+    marginTop: 18,
+    minWidth: 180,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: GOLD,
+    backgroundColor: "rgba(217,179,95,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 22,
+  },
+  closeBtnText: {
+    color: GOLD,
+    fontWeight: "900",
+    fontSize: 15,
   },
   circleBtn: {
     width: 72,

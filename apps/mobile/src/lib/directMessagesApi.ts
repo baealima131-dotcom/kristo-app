@@ -1,5 +1,6 @@
 import { apiGet, apiPatch, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { normalizePersonRingCategory, type PersonRingCategory } from "@/src/components/PersonAvatarRing";
 
 export type DirectMessagePeerPreview = {
   userId: string;
@@ -30,6 +31,14 @@ export type DirectMessageInboxRow = DirectMessageThread & {
   requestInitiatorUserId?: string;
   isRequestInitiator?: boolean;
   isRequestReceiver?: boolean;
+  /** Receipt state of the latest message when the viewer sent it (newer servers). */
+  lastMessageFromViewer?: boolean;
+  lastMessageAt?: number;
+  peerDeliveredAt?: number;
+  peerReadAt?: number;
+  showReadReceipts?: boolean;
+  /** Verified avatar-ring category of the peer (newer servers; "unknown" otherwise). */
+  peerRingCategory?: PersonRingCategory;
 };
 
 function authHeaders() {
@@ -75,6 +84,12 @@ export async function fetchDirectMessageInbox(): Promise<DirectMessageInboxRow[]
       requestInitiatorUserId: String(row?.requestInitiatorUserId || ""),
       isRequestInitiator: row?.isRequestInitiator === true,
       isRequestReceiver,
+      lastMessageFromViewer: row?.lastMessageFromViewer === true,
+      lastMessageAt: Number(row?.lastMessageAt || 0) || 0,
+      peerDeliveredAt: Number(row?.peerDeliveredAt || 0) || 0,
+      peerReadAt: Number(row?.peerReadAt || 0) || 0,
+      showReadReceipts: row?.showReadReceipts === true,
+      peerRingCategory: normalizePersonRingCategory(row?.peerRingCategory),
     };
   });
   console.log("KRISTO_DM_INBOX_RESPONSE", {
@@ -259,6 +274,8 @@ export type DirectMessageConversationSettings = {
   peerChurchName?: string;
   peerChurchRole?: string;
   peerReadAt?: number;
+  /** The viewer's messages with createdAt <= this reached the peer's device (newer servers). */
+  peerDeliveredAt?: number;
   showReadReceipts?: boolean;
 };
 

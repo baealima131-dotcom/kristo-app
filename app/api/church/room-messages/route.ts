@@ -32,6 +32,7 @@ import {
   getDirectMessageConversationSettings,
   isDirectRoomId,
   isParticipantInDirectRoom,
+  markDirectMessagesDelivered,
   parseDirectRoomParticipants,
   releaseDirectMessageRequestOutboundSlot,
   resolveDirectMessageStorageChurchId,
@@ -334,6 +335,7 @@ export async function GET(req: Request) {
 
   let viewerClearedAt = 0;
   let effectiveChurchId = churchId;
+  let dmSettings: Awaited<ReturnType<typeof getDirectMessageConversationSettings>> | null = null;
 
   if (isDirectRoomId(roomId)) {
     if (!isParticipantInDirectRoom(roomId, userId)) {
@@ -365,6 +367,7 @@ export async function GET(req: Request) {
         roomId,
         userId,
       });
+    dmSettings = settings;
 
     viewerClearedAt = Number(settings?.clearedAt || 0);
     effectiveChurchId = String(
@@ -555,10 +558,40 @@ export async function GET(req: Request) {
     cardCount,
   });
 
+  // Direct messages: the peer's messages just returned have reached this viewer's device.
+  let dmReceipts: { peerDeliveredAt: number; peerReadAt: number; showReadReceipts: boolean } | null =
+    null;
+  if (isDirectRoomId(roomId) && dmSettings) {
+    const newestPeerCreatedAt = enriched.reduce((max: number, m: any) => {
+      const senderUserId = String(m?.senderUserId || "").trim();
+      if (!senderUserId || senderUserId === userId) return max;
+      return Math.max(max, Number(m?.createdAt || 0) || 0);
+    }, 0);
+    try {
+      await markDirectMessagesDelivered([
+        { churchId: effectiveChurchId, roomId, userId, upToCreatedAt: newestPeerCreatedAt },
+      ]);
+    } catch (error) {
+      console.error("KRISTO_DM_DELIVERED_MARK_FAILED", {
+        roomId,
+        viewerUserId: userId,
+        source: "room-messages",
+        error: String((error as any)?.message || error),
+      });
+    }
+    // Receipt state for the viewer's own messages (additive field; older apps ignore it).
+    dmReceipts = {
+      peerDeliveredAt: Number(dmSettings.peerDeliveredAt || 0),
+      peerReadAt: Number(dmSettings.peerReadAt || 0),
+      showReadReceipts: dmSettings.showReadReceipts === true,
+    };
+  }
+
   return NextResponse.json({
     ok: true,
     data: enriched,
     ...(isChurchMembersRoom(roomId) ? { serverNowMs, historyCutoffMs } : {}),
+    ...(dmReceipts ? { dmReceipts } : {}),
   });
 }
 
