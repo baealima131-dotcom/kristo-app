@@ -14,6 +14,8 @@ export type MessagesInboxConversation = {
   timestampLabel: string;
   timestampMs: number;
   unreadCount: number;
+  peerRole?: string;
+  lastMessageStatus?: "sent" | "read";
   peerUserId: string;
   churchId: string;
   roomKind: "direct";
@@ -221,15 +223,14 @@ export async function fetchMessagesInboxConversations(_args: {
       return {
         id: row.roomId,
         title: String(row.peerName || row.title || "Member"),
-        subtitle: isRequestReceiver
-          ? "Message request"
-          : String(row.subtitle || "Direct message"),
+        subtitle: isRequestReceiver ? "Message request" : "",
         avatarUri: row.avatarUri,
         lastMessagePreview:
           callIsNewest && call
             ? callPreview(call, viewerUserId)
             : previewFromApi ||
               (isRequestReceiver ? "Message request" : "No messages yet"),
+        lastMessageStatus: callIsNewest ? undefined : row.lastMessageStatus,
         timestampLabel:
           callIsNewest
             ? formatInboxTimestamp(callMs)
@@ -239,6 +240,8 @@ export async function fetchMessagesInboxConversations(_args: {
             ? callMs
             : dmTimestampMs,
         unreadCount: row.unreadCount,
+        peerRole: String(row.peerRole || "Member"),
+        lastMessageStatus: row.lastMessageStatus === "read" ? "read" : row.lastMessageStatus === "sent" ? "sent" : undefined,
         peerUserId: row.peerUserId,
         churchId: row.churchId,
         roomKind: "direct" as const,
