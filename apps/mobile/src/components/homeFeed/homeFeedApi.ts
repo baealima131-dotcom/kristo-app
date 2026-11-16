@@ -41,6 +41,8 @@ import {
   HOME_FEED_YOUTUBE_COLD_START_RANK_POOL_SIZE,
   rankHomeFeedYoutubeStreamRows,
 } from "@/src/lib/homeFeedPersonalOrder";
+import { queueHomeFeedMixPendingRows, startNewHomeFeedMixSession } from "@/src/lib/homeFeedMix";
+import { isManualHomeFeedRefresh } from "@/src/lib/homeFeedRefreshReason";
 import {
   startYoutubeHomeFeedVisiblePosterPrewarm,
   captureHomeFeedPosterWorkToken,
@@ -71,6 +73,7 @@ import {
 import {
   hasHomeFeedYoutubeStreamSession,
   markHomeFeedYoutubeRefreshAvailable,
+  shouldReplaceHomeFeedYoutubeStreamUi,
   peekHomeFeedYoutubeStreamSession,
   peekHomeFeedYoutubeStreamSessionRows,
   saveHomeFeedYoutubeStreamSession,
@@ -91,6 +94,24 @@ import {
   type HomeFeedPagingDecision,
   type HomeFeedRequestDisposition,
 } from "@/src/lib/homeFeedPagingAuthority";
+
+/**
+ * Every Home Feed / Watch page request (first page, next page, silent prefetch, Watch refill)
+ * asks for keyset paging: the server's nextCursor then marks the last row shown (createdAt + id),
+ * so posts added at the top do not shift later pages. All requests share one cursor
+ * (feedNextCursorRef / the stream session), so Home and Watch page through the same list.
+ * A server without keyset support ignores the flag and returns numeric cursors, which this
+ * client still handles; released apps never send the flag and keep numeric cursors.
+ */
+function withHomeFeedKeysetPaging(params: URLSearchParams): URLSearchParams {
+  params.set("paging", "keyset");
+  return params;
+}
+
+/** Numeric (offset) cursor; keyset cursors are opaque strings and are never computed on. */
+function isNumericHomeFeedCursor(cursor: unknown): boolean {
+  return /^\d+$/.test(String(cursor ?? "").trim());
+}
 
 let lastFetchedHomeFeedRows: any[] = [];
 
@@ -261,7 +282,7 @@ async function fetchHomeFeedYoutubeNextPageRowsOnly(
   params.set("cursor", offset || "0");
 
   const res: any = await apiGet(
-    `/api/church/feed?${params.toString()}`,
+    `/api/church/feed?${withHomeFeedKeysetPaging(params).toString()}`,
     {
       headers: getKristoHeaders({
         userId: viewerUserId,
@@ -762,7 +783,7 @@ async function fetchYoutubeMediaApiPage(
   params.set("cursor", String(cursor || "0").trim() || "0");
 
   const res: any = await apiGet(
-    `/api/church/feed?${params.toString()}`,
+    `/api/church/feed?${withHomeFeedKeysetPaging(params).toString()}`,
     {
       headers: getKristoHeaders({
         userId: viewerUserId,
@@ -810,19 +831,29 @@ function finalizeYoutubeCollectedRows(
   collected: any[],
   targetCount: number,
   rankPoolSize: number | undefined,
-  reason: string
+  reason: string,
+  commitMix: boolean
 ): any[] {
   let rows = collected;
   if (rankPoolSize && collected.length > targetCount) {
-    rows = rankHomeFeedYoutubeStreamRows(collected, homeFeedRowKey).slice(0, targetCount);
+    const ranked = rankHomeFeedYoutubeStreamRows(collected, homeFeedRowKey, { remember: commitMix });
+    rows = ranked.slice(0, targetCount);
+    // The cursor is already past these rows: keep them queued so later pages show them — only
+    // when these rows become the visible stream (not for a background probe of a live session).
+    const delayed = ranked.slice(targetCount);
+    if (commitMix) queueHomeFeedMixPendingRows(delayed, homeFeedRowKey);
     console.log("KRISTO_HOME_FEED_YOUTUBE_RANK_POOL", {
       reason,
       poolSize: collected.length,
       targetCount,
+      queued: delayed.length,
       rankedTopIds: rows.map((row) => homeFeedRowKey(row)).filter(Boolean),
     });
   } else if (rankPoolSize && collected.length > 1) {
-    rows = rankHomeFeedYoutubeStreamRows(collected, homeFeedRowKey).slice(0, targetCount);
+    rows = rankHomeFeedYoutubeStreamRows(collected, homeFeedRowKey, { remember: commitMix }).slice(
+      0,
+      targetCount
+    );
   }
   return rows.slice(0, targetCount);
 }
@@ -838,6 +869,12 @@ async function collectYoutubeHomeFeedMediaRows(args: {
   throttleMs: number;
   /** When set, fetch up to this many candidates then rank before slicing to targetCount. */
   rankPoolSize?: number;
+  /**
+   * The result becomes the visible stream (cold start / manual refresh): remember its order and
+   * queue the rows not shown. False for background fetches while a session is live: the current
+   * session's order and queue are left untouched. Default true.
+   */
+  commitMix?: boolean;
   /** Android progressive reveal: minimum playable rows before `onProgressiveReveal` fires. */
   progressiveRevealMinCount?: number;
   /** Android progressive reveal: ranked slice size passed to `onProgressiveReveal`. */
@@ -869,6 +906,7 @@ async function collectYoutubeHomeFeedMediaRows(args: {
     onProgressiveReveal,
     posterWorkToken,
   } = args;
+  const commitMix = args.commitMix !== false;
 
   const collectLimit = Math.max(targetCount, rankPoolSize ?? targetCount);
   const collected: any[] = [];
@@ -896,11 +934,14 @@ async function collectYoutubeHomeFeedMediaRows(args: {
       return;
     }
     progressiveRevealFired = true;
+    // Partial (Android progressive reveal): the final ranking of all collected rows below
+    // remembers the order and queues the rest, so this pass changes neither.
     const partial = finalizeYoutubeCollectedRows(
       collected,
       progressiveRevealCount,
       rankPoolSize,
-      reason
+      reason,
+      false
     );
     if (!partial.length) {
       progressiveRevealFired = false;
@@ -987,7 +1028,9 @@ async function collectYoutubeHomeFeedMediaRows(args: {
       cursor = nextCursor;
       continue;
     }
-    if (hasMore) {
+    // Offset fallback for a server that reported more rows without a cursor. Only valid for a
+    // numeric cursor; a keyset page always carries nextCursor.
+    if (hasMore && isNumericHomeFeedCursor(cursor)) {
       cursor = String(Number(cursor || 0) + rawRows.length);
       continue;
     }
@@ -1017,16 +1060,19 @@ async function collectYoutubeHomeFeedMediaRows(args: {
     paging = pagingApplied ? decision.paging : { ...prior };
   }
 
-  const rows = finalizeYoutubeCollectedRows(collected, targetCount, rankPoolSize, reason);
+  const rows = finalizeYoutubeCollectedRows(collected, targetCount, rankPoolSize, reason, commitMix);
 
-  lastYoutubeMediaCollectMeta = {
-    reason,
-    disposition,
-    pagingApplied,
-    hasMore: paging.hasMore,
-    nextCursor: paging.nextCursor,
-    apiPasses,
-  };
+  // Paging meta of the stream's own page-0 load; a background fetch does not overwrite it.
+  if (commitMix) {
+    lastYoutubeMediaCollectMeta = {
+      reason,
+      disposition,
+      pagingApplied,
+      hasMore: paging.hasMore,
+      nextCursor: paging.nextCursor,
+      apiPasses,
+    };
+  }
 
   return {
     rows,
@@ -1109,6 +1155,11 @@ export async function fetchHomeFeedFromApi(
         reason === "load" ||
         reason === "cold-start-rotate" ||
         hardRefresh;
+      // Only the viewer's own refresh starts a new mix session (new variety order, empty queue).
+      // Background fetches — forced or not — keep the live session, its order and its queue.
+      if (isManualHomeFeedRefresh(reason)) startNewHomeFeedMixSession();
+      const commitMix =
+        !hasHomeFeedYoutubeStreamSession() || shouldReplaceHomeFeedYoutubeStreamUi(reason, force);
       const androidProgressiveColdLoad =
         Platform.OS === "android" &&
         reason === "load" &&
@@ -1117,6 +1168,7 @@ export async function fetchHomeFeedFromApi(
       const collected = await collectYoutubeHomeFeedMediaRows({
         targetCount: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
         rankPoolSize: applyRotation ? HOME_FEED_YOUTUBE_COLD_START_RANK_POOL_SIZE : undefined,
+        commitMix,
         startCursor: "0",
         viewerUserId,
         viewerChurchId,
@@ -1171,6 +1223,24 @@ export async function fetchHomeFeedFromApi(
       });
 
       noteHomeFeedFetchSuccess();
+      if (!commitMix) {
+        // Background fetch (forced or not) while a session is on screen: return the fresh rows
+        // only. The page-0 cache, its paging / cursor, the snapshot ids and the backend row
+        // cache belong to the running stream (load-more reads them), so they are not written;
+        // the running cursor and mix queue stay as they are. A new order starts on the next
+        // cold start.
+        console.log("KRISTO_HOME_FEED_BACKGROUND_PAGE0_ISOLATED", {
+          reason,
+          rowCount: rows.length,
+          nextCursor: collected.paging.nextCursor,
+        });
+        markHomeFeedStartupTiming("FEED_API_RESPONSE_TS", {
+          reason,
+          rowCount: rows.length,
+          source: "youtube-collect-background",
+        });
+        return rows;
+      }
       const snapshotIds = rows.map((row) => homeFeedRowKey(row)).filter(Boolean);
       void saveHomeFeedStreamPage(0, rows, collected.paging, viewerUserId).catch((err) => {
         console.log("KRISTO_HOME_FEED_PAGE_CACHE_SAVE_ERROR", {
@@ -1217,7 +1287,7 @@ export async function fetchHomeFeedFromApi(
     });
 
     const res: any = await apiGet(
-      `/api/church/feed?${params.toString()}`,
+      `/api/church/feed?${withHomeFeedKeysetPaging(params).toString()}`,
       {
         headers: getKristoHeaders({
           userId: viewerUserId,
@@ -1387,7 +1457,7 @@ export async function fetchHomeFeedNextPage(
   if (offset) params.set("cursor", offset);
 
   const res: any = await apiGet(
-    `/api/church/feed?${params.toString()}`,
+    `/api/church/feed?${withHomeFeedKeysetPaging(params).toString()}`,
     {
       headers: getKristoHeaders({
         userId: viewerUserId,
@@ -1550,7 +1620,7 @@ async function fetchHomeFeedYoutubeStreamPage(
   });
 
   const res: any = await apiGet(
-    `/api/church/feed?${params.toString()}`,
+    `/api/church/feed?${withHomeFeedKeysetPaging(params).toString()}`,
     {
       headers: getKristoHeaders({
         userId: viewerUserId,
@@ -1736,7 +1806,7 @@ export async function revalidateHomeFeedYoutubeStaleExhaustion(args?: {
     });
 
     const res: any = await apiGet(
-      `/api/church/feed?${params.toString()}`,
+      `/api/church/feed?${withHomeFeedKeysetPaging(params).toString()}`,
       {
         headers: getKristoHeaders({
           userId: viewerUserId,
@@ -1930,6 +2000,8 @@ export async function refreshHomeFeedYoutubeBackgroundCache(
     const collected = await collectYoutubeHomeFeedMediaRows({
       targetCount: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
       rankPoolSize: HOME_FEED_YOUTUBE_COLD_START_RANK_POOL_SIZE,
+      // Probe only: never change the live session's order or queue.
+      commitMix: false,
       startCursor: "0",
       viewerUserId,
       viewerChurchId,

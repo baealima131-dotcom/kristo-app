@@ -1,4 +1,7 @@
 import { apiPost } from "@/src/lib/kristoApi";
+import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { resolveVideoUri } from "@/src/lib/homeFeedVideoUri";
+import { getSessionSync } from "@/src/lib/kristoSession";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   fileNameFromUri,
@@ -416,17 +419,24 @@ export async function persistMediaVideoPosterToFeed(params: {
     );
 
     if (res?.ok === false) {
+      // Nothing was saved on the post: keep showing the local frame only, do not remember the
+      // uploaded image as this post's cover.
       console.log("KRISTO_MEDIA_VIDEO_POSTER_PERSIST_FAILED", {
         postId,
         videoUrl,
         error: String(res?.error || "unknown"),
       });
+      return null;
     }
+
+    // The server keeps a cover that already exists and returns it ("existing-cover").
+    const savedPosterUri =
+      String(res?.data?.posterUri || res?.posterUri || "").trim() || remotePosterUri;
 
     await rememberMediaPoster({
       postId,
       videoUrl,
-      posterUri: remotePosterUri,
+      posterUri: savedPosterUri,
       source: "remote",
       persistFile: false,
     });
@@ -434,10 +444,11 @@ export async function persistMediaVideoPosterToFeed(params: {
     console.log("KRISTO_MEDIA_VIDEO_POSTER_PERSISTED", {
       postId,
       videoUrl,
-      remotePosterUri,
+      remotePosterUri: savedPosterUri,
+      skipped: res?.data?.skipped || null,
     });
 
-    return remotePosterUri;
+    return savedPosterUri;
   } catch (error) {
     console.log("KRISTO_MEDIA_VIDEO_POSTER_PERSIST_ERROR", {
       postId,
@@ -446,6 +457,120 @@ export async function persistMediaVideoPosterToFeed(params: {
     });
     return null;
   }
+}
+
+/** Every field the app reads a video cover from (same list as the server). */
+const VIDEO_COVER_FIELDS = [
+  "posterUri",
+  "videoPosterUri",
+  "thumbnailUri",
+  "thumbnailUrl",
+  "posterUrl",
+  "mediaPosterUri",
+  "coverUrl",
+  "coverImageUrl",
+  "firstFrameUrl",
+  "previewUrl",
+] as const;
+
+function isYouTubeUrl(raw: unknown): boolean {
+  try {
+    const host = new URL(String(raw || "").trim()).hostname.toLowerCase().replace(/^www\./, "");
+    return host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * An uploaded video post (not a YouTube / Facebook / TikTok link, not a YouTube URL) whose cover
+ * is missing, empty or only the branded placeholder. Posts with any real cover return false.
+ */
+export function isUploadedVideoWithoutCover(item: any): boolean {
+  if (!item || typeof item !== "object") return false;
+  if (String(item?.source || "").trim().toLowerCase() === "system-admin-video-link") return false;
+  const videoUrl = String(resolveVideoUri(item) || "").trim();
+  if (!videoUrl) return false;
+  if (isYouTubeUrl(videoUrl) || isYouTubeUrl(item?.videoUrl) || isYouTubeUrl(item?.url)) return false;
+  const videoPath = videoUrl.split("?")[0];
+  for (const field of VIDEO_COVER_FIELDS) {
+    const value = String(item?.[field] || "").trim();
+    if (!value || isBrandedPosterUri(value)) continue;
+    const path = value.split("?")[0];
+    if (path === videoPath || /\.(mp4|mov|m4v|webm|mkv)$/i.test(path)) continue;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Home Feed only: an uploaded video that has no real cover yet — no saved cover (missing, empty or
+ * the branded placeholder) and no poster cached on this device (e.g. a frame taken here). Such a
+ * card would render empty, so the Home Feed leaves it out until a cover exists. YouTube / link
+ * posts, posts with a cover and non-video posts always return false. Nothing is deleted.
+ */
+export function homeFeedUploadedVideoNeedsCover(item: any): boolean {
+  if (!isUploadedVideoWithoutCover(item)) return false;
+  const postId = String(item?.id || "").trim();
+  const videoUrl = String(resolveVideoUri(item) || "").trim();
+  return !resolveCachedMediaPoster(postId, videoUrl);
+}
+
+/** Same rule as the server: the uploader, a pastor / admin or the media team of that church. */
+function viewerMaySetVideoCover(item: any): boolean {
+  const session = getSessionSync() as any;
+  const userId = String(session?.userId || "").trim();
+  const viewerChurchId = String(session?.churchId || "").trim();
+  if (!userId || !viewerChurchId) return false;
+  if (String(item?.churchId || "").trim() !== viewerChurchId) return false;
+  const authorId = String(item?.createdBy || item?.authorUserId || "").trim();
+  if (authorId && authorId === userId) return true;
+  const role = String(session?.role || "").toLowerCase();
+  return role.includes("pastor") || role.includes("admin") || role.includes("media");
+}
+
+const coverBackfillAttempted = new Set<string>();
+const coverBackfillFailures = new Map<string, { postId: string; videoUrl: string; reason: string }>();
+
+/** Uploaded videos that could not get a cover this session (video unreachable / no frame / not saved). */
+export function getUploadedVideoCoverBackfillFailures() {
+  return [...coverBackfillFailures.values()];
+}
+
+/** Records an uploaded video without a cover whose frame could not be taken (post data untouched). */
+export function noteUploadedVideoCoverUnavailable(item: any, reason: string) {
+  if (!isUploadedVideoWithoutCover(item)) return;
+  const postId = String(item?.id || "").trim();
+  if (!postId) return;
+  const videoUrl = String(resolveVideoUri(item) || "").trim();
+  coverBackfillFailures.set(postId, { postId, videoUrl, reason });
+  console.log("KRISTO_VIDEO_COVER_BACKFILL_UNAVAILABLE", { postId, videoUrl, reason });
+}
+
+/**
+ * Old uploaded videos without a cover: save the frame just taken from the video as the post's
+ * cover (uploaded with the normal poster upload, then persist_video_poster), so it shows again
+ * after reopening the app and on other devices. Runs once per post per session, only for viewers
+ * allowed to set the cover. The server refuses links / YouTube and never replaces a cover.
+ */
+export async function backfillUploadedVideoCover(item: any, localPosterUri: string): Promise<string | null> {
+  const postId = String(item?.id || "").trim();
+  const localUri = String(localPosterUri || "").trim();
+  if (!postId || coverBackfillAttempted.has(postId)) return null;
+  if (!isUploadedVideoWithoutCover(item) || !viewerMaySetVideoCover(item)) return null;
+  if (!localUri.startsWith("file://")) return null;
+  coverBackfillAttempted.add(postId);
+
+  const videoUrl = String(resolveVideoUri(item) || "").trim();
+  const saved = await persistMediaVideoPosterToFeed({ postId, videoUrl, localPosterUri: localUri });
+  if (saved) {
+    coverBackfillFailures.delete(postId);
+    console.log("KRISTO_VIDEO_COVER_BACKFILL_SAVED", { postId, posterUri: saved });
+  } else {
+    coverBackfillFailures.set(postId, { postId, videoUrl, reason: "not-saved" });
+    console.log("KRISTO_VIDEO_COVER_BACKFILL_NOT_SAVED", { postId, videoUrl });
+  }
+  return saved;
 }
 
 export async function ensureMediaVideoPosterFrame(params: {

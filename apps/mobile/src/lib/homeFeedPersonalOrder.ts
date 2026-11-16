@@ -1,5 +1,10 @@
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
+import {
+  buildHomeFeedMixContext,
+  homeFeedMixSeedKey,
+  mixHomeFeedRows,
+} from "@/src/lib/homeFeedMix";
 
 /** Per app launch — rotates order on cold start. */
 const HOME_FEED_SESSION_SEED = (Math.floor(Math.random() * 0xffffffff) >>> 0) as number;
@@ -13,8 +18,11 @@ const HOME_FEED_STALE_POST_DAYS = 30;
 /** Cap freshness penalty so very old posts still appear, just lower. */
 const HOME_FEED_MAX_FRESHNESS_PENALTY_MS = 14 * 24 * 60 * 60 * 1000;
 
-/** YouTube cold-start rank pool: fetch this many candidates, show top pageSize after shuffle. */
-export const HOME_FEED_YOUTUBE_COLD_START_RANK_POOL_SIZE = 18;
+/**
+ * YouTube cold-start candidates: about two pages are fetched and mixed together so the first page
+ * already mixes creators / churches; rows not shown go to the mix queue for later pages.
+ */
+export const HOME_FEED_YOUTUBE_COLD_START_RANK_POOL_SIZE = 40;
 
 /** Recent videos get a composite-rank boost so new posts surface without abandoning quality mix. */
 const HOME_FEED_YOUTUBE_FRESH_BOOST_HOURS = 72;
@@ -173,29 +181,55 @@ export function homeFeedYoutubeCompositeRank(
   return Math.max(0, personal - boost);
 }
 
-/** Session-seeded YouTube stream order: personal rotation + recency boost, stable within a scroll session. */
+/** Order of the last full ranking in this mix session (row key -> position). */
+let lastRankedOrder: { seedKey: string; index: Map<string, number> } = {
+  seedKey: "",
+  index: new Map(),
+};
+
+/**
+ * YouTube stream order for a new session / refresh: bounded signals + variety rules (see
+ * homeFeedMix). Stable for the whole mix session; a refresh or a new app launch changes it.
+ * Replaces the earlier hash rotation whose 72 h "fresh" boost could take up to 35% of the rank.
+ */
 export function rankHomeFeedYoutubeStreamRows<T>(
   rows: T[],
   rowKeyFn: (row: T) => string,
-  nowMs = Date.now()
+  opts?: { remember?: boolean }
 ): T[] {
   if (!Array.isArray(rows) || rows.length <= 1) return rows;
 
-  const ctx = resolveHomeFeedPersonalOrderContext(nowMs);
-  resetHomeFeedPersonalOrderIfNeeded(ctx.seedKey);
-  logHomeFeedPersonalSeed(ctx);
+  // Ranking again rows already ranked in this mix session (restore / reveal / top-up of the same
+  // first page) keeps their earlier order, so the first page never reorders on screen.
+  const seedKey = homeFeedMixSeedKey();
+  if (lastRankedOrder.seedKey === seedKey) {
+    const keys = rows.map((row) => rowKeyFn(row));
+    if (keys.every((key) => key && lastRankedOrder.index.has(key))) {
+      return [...rows].sort(
+        (a, b) =>
+          (lastRankedOrder.index.get(rowKeyFn(a)) ?? 0) -
+          (lastRankedOrder.index.get(rowKeyFn(b)) ?? 0)
+      );
+    }
+  }
 
-  const ranked = [...rows].sort((a, b) => {
-    const aRank = homeFeedYoutubeCompositeRank(rowKeyFn(a), a, ctx, nowMs);
-    const bRank = homeFeedYoutubeCompositeRank(rowKeyFn(b), b, ctx, nowMs);
-    if (aRank !== bRank) return aRank - bRank;
-    return (
-      homeFeedFreshnessSortMs(b, nowMs, true) - homeFeedFreshnessSortMs(a, nowMs, true)
-    );
+  const ranked = mixHomeFeedRows({
+    candidates: rows,
+    recent: [],
+    count: rows.length,
+    rowKey: rowKeyFn,
+    ctx: buildHomeFeedMixContext(rows),
   });
+  // A background probe ranks without replacing the order remembered for the live session.
+  if (opts?.remember !== false) {
+    lastRankedOrder = {
+      seedKey,
+      index: new Map(ranked.map((row, index) => [rowKeyFn(row), index])),
+    };
+  }
 
   console.log("KRISTO_HOME_FEED_YOUTUBE_ROTATE", {
-    sessionSeed: ctx.sessionSeed,
+    seedKey: homeFeedMixSeedKey(),
     inputCount: rows.length,
     firstIds: ranked.slice(0, 8).map((row) => rowKeyFn(row)).filter(Boolean),
   });

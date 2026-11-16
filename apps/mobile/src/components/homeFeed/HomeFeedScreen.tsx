@@ -79,6 +79,10 @@ import {
 } from "@/src/lib/homeFeedYoutubeStreamSession";
 import { runAfterHomeDeferredStartup } from "@/src/lib/homeFeedDeferredStartup";
 import { rankHomeFeedYoutubeStreamRows } from "@/src/lib/homeFeedPersonalOrder";
+import { selectHomeFeedAppendRows } from "@/src/lib/homeFeedMix";
+import { homeFeedUploadedVideoNeedsCover } from "@/src/lib/mediaVideoPoster";
+import { subscribeMediaPosterCache } from "@/src/lib/mediaPosterCache";
+import { resolveVideoUri } from "@/src/lib/homeFeedVideoUri";
 import { shouldRebuildHomeFeedDisplayOrder } from "@/src/lib/homeFeedRefreshReason";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
@@ -836,8 +840,23 @@ export default function HomeFeedScreen() {
     []
   );
 
-  const commitYoutubeStreamAppend = useCallback((incoming: any[]) => {
-    const appended = appendHomeFeedYoutubeStreamRows(incoming);
+  const commitYoutubeStreamAppend = useCallback((incoming: any[], opts?: { flush?: boolean }) => {
+    // Load-more mixing: rows already on screen never move. The rows to add are chosen from the
+    // fetched-but-not-shown rows (this page plus any held back before) with the variety rules,
+    // so one creator / church cannot fill the new page. A few are held back for the next page;
+    // at the end of the feed everything left is added.
+    const shownRows = peekHomeFeedYoutubeStreamSessionRows().length
+      ? peekHomeFeedYoutubeStreamSessionRows()
+      : youtubeStreamRowsRef.current;
+    const mixedRows = selectHomeFeedAppendRows({
+      shown: shownRows,
+      fetched: [...getCachedHomeFeedBackendRows(), ...incoming],
+      incomingCount: incoming.length,
+      flush: opts?.flush ?? !feedHasMoreRef.current,
+      rowKey: homeFeedRowKey,
+      isEligible: (row) => filterHomeFeedYoutubeStreamRows([row]).length > 0,
+    });
+    const appended = appendHomeFeedYoutubeStreamRows(mixedRows);
     if (appended > 0) {
       youtubeStreamRowsRef.current = peekHomeFeedYoutubeStreamSessionRows();
       saveHomeFeedYoutubeStreamSession({
@@ -1315,7 +1334,9 @@ export default function HomeFeedScreen() {
       resetYoutubeStreamPaginationState();
       pageReadyLoggedRef.current = false;
       androidProgressiveRevealDoneRef.current = false;
-      if (force) {
+      // Only a reload that replaces the visible stream (cold start, the viewer's refresh or new
+      // post) clears the session; background reloads are blocked above and never reach this.
+      if (force && shouldReplaceHomeFeedYoutubeStreamUi(reason, forceFetch)) {
         clearHomeFeedYoutubeStreamSession();
       }
     }
@@ -2114,6 +2135,8 @@ export default function HomeFeedScreen() {
           appended: 0,
           contentHeight: youtubeScrollMetricsRef.current.contentHeight,
         });
+        // Last page: show the rows held back for mixing so none is left out.
+        if (!feedHasMoreRef.current) commitYoutubeStreamAppend([], { flush: true });
         setYoutubeFeedPaginationLocked(false);
       }
 
@@ -2403,11 +2426,43 @@ export default function HomeFeedScreen() {
     });
   }, [youtubeStreamRows, blockedUserIdSet, excludedChurchIdSet, resolveRowAuthorUserId]);
 
+  // Home Feed cards only: uploaded videos with no real cover yet are left out so no empty card
+  // shows. The stream, its order, queue and cursor are unchanged (Watch still has them); each
+  // left-out post is shown again in its place as soon as a cover is saved or cached.
+  const [coverRevealTick, bumpCoverRevealTick] = useReducer((value: number) => value + 1, 0);
+  const coverlessHiddenRows = useMemo(
+    () => moderatedYoutubeStreamRows.filter((row) => homeFeedUploadedVideoNeedsCover(row)),
+    // coverRevealTick: re-check when a hidden post's cover arrives.
+    [moderatedYoutubeStreamRows, coverRevealTick]
+  );
+  const coverlessHiddenKey = coverlessHiddenRows.map((row) => homeFeedRowKey(row)).join("|");
+  useEffect(() => {
+    if (!coverlessHiddenRows.length) return;
+    console.log("KRISTO_HOME_FEED_COVERLESS_HIDDEN", {
+      hidden: coverlessHiddenRows.length,
+      postIds: coverlessHiddenRows.slice(0, 20).map((row) => String(row?.id || "")),
+    });
+    const unsubscribers = coverlessHiddenRows.map((row) =>
+      subscribeMediaPosterCache(
+        String(row?.id || "").trim(),
+        String(resolveVideoUri(row) || "").trim(),
+        () => bumpCoverRevealTick()
+      )
+    );
+    return () => {
+      for (const unsubscribe of unsubscribers) unsubscribe();
+    };
+    // Re-subscribe only when the set of hidden posts changes.
+  }, [coverlessHiddenKey]);
+
   const youtubeFeedRows = useMemo(() => {
     if (youtubeShowSkeleton) {
       return buildHomeFeedSkeletonRows();
     }
-    const rows = dedupeHomeFeedRowsByKey(filterHomeFeedYoutubeStreamRows(moderatedYoutubeStreamRows));
+    const hiddenKeys = new Set(coverlessHiddenRows.map((row) => homeFeedRowKey(row)));
+    const rows = dedupeHomeFeedRowsByKey(
+      filterHomeFeedYoutubeStreamRows(moderatedYoutubeStreamRows)
+    ).filter((row) => !hiddenKeys.has(homeFeedRowKey(row)));
     const deficit = HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE - rows.length;
     const showTailSkeletons =
       deficit > 0 &&
@@ -2420,7 +2475,13 @@ export default function HomeFeedScreen() {
       return [...rows, ...buildHomeFeedSkeletonRows(deficit)];
     }
     return rows;
-  }, [youtubeShowSkeleton, moderatedYoutubeStreamRows, feedHasMore, youtubePageVisualReady]);
+  }, [
+    youtubeShowSkeleton,
+    moderatedYoutubeStreamRows,
+    coverlessHiddenRows,
+    feedHasMore,
+    youtubePageVisualReady,
+  ]);
 
   const baseFeedListRows = youtubeLayout ? youtubeFeedRows : filteredVisibleData;
   const feedListRowsRef = useRef<any[]>([]);
@@ -3071,6 +3132,9 @@ export default function HomeFeedScreen() {
     watchUpNextPoolRef.current = [];
     resetWatchUpNextSession();
     setWatchUpNextGeneration(0);
+    // Pages Watch fetched for Up Next were appended to the stream session (same cursor as the
+    // Home Feed) without re-rendering the list; show them now so no post is skipped.
+    bumpYoutubeRows();
   }, []);
 
   const fetchWatchQueueNextPage = useCallback(async (requestId: number) => {
@@ -3147,7 +3211,20 @@ export default function HomeFeedScreen() {
         );
 
         if (youtubeLayout) {
-          const merged = stableMergeHomeFeedRows(youtubeStreamRowsRef.current, page.newRows);
+          // Same load-more mixing as the Home Feed (shared stream and cursor); the list itself is
+          // re-rendered when Watch closes.
+          const shownRows = peekHomeFeedYoutubeStreamSessionRows().length
+            ? peekHomeFeedYoutubeStreamSessionRows()
+            : youtubeStreamRowsRef.current;
+          const mixedRows = selectHomeFeedAppendRows({
+            shown: shownRows,
+            fetched: [...getCachedHomeFeedBackendRows(), ...page.newRows],
+            incomingCount: page.newRows.length,
+            flush: !feedHasMoreRef.current,
+            rowKey: homeFeedRowKey,
+            isEligible: (row) => filterHomeFeedYoutubeStreamRows([row]).length > 0,
+          });
+          const merged = stableMergeHomeFeedRows(shownRows, mixedRows);
           youtubeStreamRowsRef.current = merged.merged;
           saveHomeFeedYoutubeStreamSession({
             rows: youtubeStreamRowsRef.current,

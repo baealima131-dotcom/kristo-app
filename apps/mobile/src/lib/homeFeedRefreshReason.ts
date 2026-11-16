@@ -1,5 +1,15 @@
 /** Shared Home Feed refresh predicates — no imports from feed network/cache/utils. */
 
+/**
+ * A refresh the viewer asked for. Only this starts a new Home Feed / Watch mix session (new
+ * variety order, empty queue). Background refreshes — focus, poll, schedule / claim / live-room
+ * syncs, even when forced — keep the current session, its order and its queue.
+ */
+export function isManualHomeFeedRefresh(reason: string): boolean {
+  const r = String(reason || "").trim();
+  return r.includes("pull-refresh") || r === "user-refresh";
+}
+
 export function shouldHardRefreshHomeFeed(reason: string, force?: boolean): boolean {
   if (force) return true;
   const r = String(reason || "").trim();

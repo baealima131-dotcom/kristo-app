@@ -19,7 +19,9 @@ import {
   resolveCachedMediaPoster,
 } from "@/src/lib/mediaPosterCache";
 import {
+  backfillUploadedVideoCover,
   generateVideoPosterFrame,
+  noteUploadedVideoCoverUnavailable,
   resolveVideoDurationMs,
 } from "@/src/lib/mediaVideoPoster";
 import { probePosterUrlReachability } from "@/src/lib/videoGridThumbnail";
@@ -805,6 +807,9 @@ async function prewarmOneHomeFeedVideoPosterFastPath(item: any): Promise<boolean
   if (cached) {
     prefetchMediaPosterImages([cached]);
     markPosterSatisfied(postId, videoUrl, "fast-path-cache", { posterUri: cached });
+    // A frame taken earlier on this device for an old uploaded video without a saved cover:
+    // save it as the post's cover (no-op for posts that already have one, links and YouTube).
+    if (cached.startsWith("file://")) void backfillUploadedVideoCover(item, cached);
     return true;
   }
 
@@ -927,6 +932,8 @@ async function executeVisibleFrameGen(item: any, runId: number): Promise<boolean
     clearVisiblePosterFailure(postId, videoUrl);
     markPosterSatisfied(postId, videoUrl, "visible-generated", { runId, posterUri: generated });
     markPosterPostIdSessionGenerated(postId, { posterUri: generated, source: "visible-generated" });
+    // Old uploaded video without a cover: keep this frame as its saved cover.
+    void backfillUploadedVideoCover(item, generated);
     console.log("POSTER_VISIBLE_GENERATE_DONE", {
       postId: postId || null,
       videoUrl: videoUrl || null,
@@ -937,6 +944,7 @@ async function executeVisibleFrameGen(item: any, runId: number): Promise<boolean
   }
 
   noteVisiblePosterFailed(postId, videoUrl);
+  noteUploadedVideoCoverUnavailable(item, "frame-unavailable");
   console.log("POSTER_VISIBLE_GENERATE_FAILED", {
     postId: postId || null,
     videoUrl: videoUrl || null,
@@ -991,9 +999,11 @@ async function executeBackgroundFrameGen(item: any, runId: number): Promise<bool
   attemptedKeys.add(key);
   if (generated) {
     markPosterSatisfied(postId, videoUrl, "background-generated", { posterUri: generated });
+    void backfillUploadedVideoCover(item, generated);
     return true;
   }
   failedKeys.add(key);
+  noteUploadedVideoCoverUnavailable(item, "frame-unavailable");
   return false;
 }
 

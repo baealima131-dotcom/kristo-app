@@ -5,7 +5,7 @@ import {
   shouldSkipHomeFeedRowsStateUpdate,
 } from "@/src/components/homeFeed/homeFeedPagination";
 import { HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE } from "@/src/components/homeFeed/homeFeedPageCache";
-import { shouldHardRefreshHomeFeed } from "@/src/lib/homeFeedRefreshReason";
+import { isManualHomeFeedRefresh } from "@/src/lib/homeFeedRefreshReason";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
 
@@ -266,22 +266,24 @@ export function clearHomeFeedYoutubeStreamSession(): void {
 }
 
 /** UI may replace visible stream rows (cold start or explicit user refresh). */
-export function shouldReplaceHomeFeedYoutubeStreamUi(reason: string, force?: boolean): boolean {
+/**
+ * UI may replace visible stream rows: cold start, the viewer's own refresh, or the viewer's own
+ * new post. Background refreshes (focus, poll, schedule / claim / live-room syncs — forced or
+ * not) never replace the rows of a live session: the posts already shown keep their order and
+ * the mix queue is kept (schedule rows are not part of the video stream; a deleted post is
+ * removed in place).
+ */
+export function shouldReplaceHomeFeedYoutubeStreamUi(reason: string, _force?: boolean): boolean {
   if (!hasHomeFeedYoutubeStreamSession()) return true;
-  if (force) return true;
   const r = String(reason || "").trim();
-  if (
-    r.includes("pull-refresh") ||
+  return (
+    isManualHomeFeedRefresh(r) ||
     r.includes("post-create") ||
     r.includes("new-post") ||
     r === "local-post-created" ||
-    r === "user-refresh" ||
     r === "first-install" ||
     r === "cold-start-rotate"
-  ) {
-    return true;
-  }
-  return shouldHardRefreshHomeFeed(reason, force);
+  );
 }
 
 /** Background fetch / tab focus must never touch visible rows while session is alive. */

@@ -8,6 +8,7 @@ import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import { ensureActiveMembershipForSession, getActiveMembership, getMembershipsForUser } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
+import { loadChurchFollowEdges, normalizeChurchId } from "@/app/api/_lib/churchFollows";
 import {
   ensureProfileAvatarUrlForClaim,
   isPersistedProfileAvatarUrl,
@@ -186,11 +187,176 @@ function feedListOk<T>(churchId: string, data: T, init?: ResponseInit) {
   );
 }
 
+/** createdAt as epoch ms (0 when missing / invalid), so mixed date formats order correctly. */
+function feedRowCreatedMs(row: any): number {
+  const raw = row?.createdAt;
+  const text = String(raw ?? "").trim();
+  // Epoch values (seconds or milliseconds), as a number or a digit string.
+  if (typeof raw === "number" || /^\d{10,13}$/.test(text)) {
+    const n = Number(text);
+    if (Number.isFinite(n) && n > 0) return n < 1e12 ? n * 1000 : n;
+  }
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * Home Feed / Watch page order: newest first, and rows with the same createdAt ordered by id.
+ * The offset cursor slices this list on every request, so the order must be identical between
+ * requests; the old comparator never returned 0, which left equal (or missing) createdAt values in
+ * an arbitrary order and could repeat or skip posts across pages.
+ */
+function compareFeedRowsNewestFirst(a: any, b: any): number {
+  const diff = feedRowCreatedMs(b) - feedRowCreatedMs(a);
+  if (diff !== 0) return diff;
+  const aId = String(a?.id || "");
+  const bId = String(b?.id || "");
+  if (aId === bId) return 0;
+  return aId < bId ? 1 : -1;
+}
+
+/*
+ * Feed paging modes.
+ * - "offset" (default; every released app): `cursor` is a row offset and `nextCursor` is
+ *   String(offset + limit). Released apps do Number(nextCursor), so this mode must keep numeric
+ *   cursors and the same response.
+ * - "keyset" (opt-in with `paging=keyset`): `nextCursor` is "k1.<base64url {t, id}>" of the last
+ *   row of the page, and the next page starts right after that row in
+ *   compareFeedRowsNewestFirst order. New posts at the top no longer shift later pages. A numeric
+ *   cursor is still accepted in this mode (first page "0", or a numeric cursor saved before the
+ *   app updated).
+ */
+const FEED_KEYSET_CURSOR_PREFIX = "k1.";
+
+type FeedKeysetCursor = { t: number; id: string };
+
+function encodeFeedKeysetCursor(row: any): string {
+  const payload = JSON.stringify({ t: feedRowCreatedMs(row), id: String(row?.id || "") });
+  return FEED_KEYSET_CURSOR_PREFIX + Buffer.from(payload, "utf8").toString("base64url");
+}
+
+function decodeFeedKeysetCursor(raw: string): FeedKeysetCursor | null {
+  if (!raw.startsWith(FEED_KEYSET_CURSOR_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(raw.slice(FEED_KEYSET_CURSOR_PREFIX.length), "base64url").toString("utf8")
+    );
+    const t = Number(parsed?.t);
+    const id = String(parsed?.id || "");
+    if (!Number.isFinite(t) || !id) return null;
+    return { t, id };
+  } catch {
+    return null;
+  }
+}
+
+/** Index of the first row after the cursor row in compareFeedRowsNewestFirst order. */
+function feedKeysetStartIndex(sortedRows: any[], cursor: FeedKeysetCursor): number {
+  const index = sortedRows.findIndex((row) => {
+    const t = feedRowCreatedMs(row);
+    if (t !== cursor.t) return t < cursor.t;
+    return String(row?.id || "") < cursor.id;
+  });
+  return index < 0 ? sortedRows.length : index;
+}
+
+function normalizeFeedSignalText(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+/**
+ * Viewer-relative ranking hints for Home Feed / Watch, added to each item of a global feed page.
+ * Only booleans are returned (never another person's country or languages):
+ * - viewerChurch: the post's church is the viewer's church (membership).
+ * - followedChurch: the viewer follows the post's church.
+ * - languageMatch: the church's primary language is one of the viewer's profile languages;
+ *   null when either side is not saved (no guessing).
+ * - countryMatch: the viewer's profile country equals the church country or the poster's profile
+ *   country; null when the viewer's country, or both other countries, are not saved.
+ * Server order and cursors are untouched; the app mixes pages using these hints.
+ */
+async function attachHomeFeedViewerSignals(
+  items: any[],
+  viewer: { viewerUserId: string; viewerChurchId: string }
+): Promise<any[]> {
+  if (!items.length) return items;
+
+  let viewerProfile: any = null;
+  try {
+    viewerProfile = await getProfile(viewer.viewerUserId);
+  } catch {
+    viewerProfile = null;
+  }
+  const viewerLanguages = new Set(
+    (Array.isArray(viewerProfile?.languages) ? viewerProfile.languages : [])
+      .map(normalizeFeedSignalText)
+      .filter(Boolean)
+  );
+  const viewerCountry = normalizeFeedSignalText(viewerProfile?.country);
+
+  let followedChurchIds = new Set<string>();
+  try {
+    const edges = await loadChurchFollowEdges();
+    followedChurchIds = new Set(
+      edges.filter((edge) => edge.userId === viewer.viewerUserId).map((edge) => edge.churchId)
+    );
+  } catch {
+    followedChurchIds = new Set();
+  }
+
+  const posterCountry = new Map<string, string>();
+  if (viewerCountry) {
+    const posterIds = [
+      ...new Set(items.map((item) => String(item?.createdBy || "").trim()).filter(Boolean)),
+    ];
+    await Promise.all(
+      posterIds.map(async (userId) => {
+        try {
+          const profile: any = await getProfile(userId);
+          posterCountry.set(userId, normalizeFeedSignalText(profile?.country));
+        } catch {
+          posterCountry.set(userId, "");
+        }
+      })
+    );
+  }
+
+  const viewerChurchId = normalizeChurchId(viewer.viewerChurchId);
+  return items.map((item) => {
+    const itemChurchId = normalizeChurchId(item?.churchId || item?.ownerChurchId);
+    const churchLanguage = normalizeFeedSignalText(item?.churchPrimaryLanguage);
+    const churchCountry = normalizeFeedSignalText(item?.churchNormalizedCountry || item?.churchCountry);
+    const authorCountry = posterCountry.get(String(item?.createdBy || "").trim()) || "";
+    const languageMatch =
+      viewerLanguages.size > 0 && churchLanguage ? viewerLanguages.has(churchLanguage) : null;
+    const countryMatch =
+      viewerCountry && (churchCountry || authorCountry)
+        ? churchCountry === viewerCountry || authorCountry === viewerCountry
+        : null;
+    return {
+      ...item,
+      feedSignals: {
+        viewerChurch: Boolean(viewerChurchId && itemChurchId === viewerChurchId),
+        followedChurch: Boolean(itemChurchId && followedChurchIds.has(itemChurchId)),
+        languageMatch,
+        countryMatch,
+      },
+    };
+  });
+}
+
 /** Paginated feed response: data page + cursor metadata for endless scroll. */
 function feedListPageOk<T>(
   churchId: string,
   data: T,
-  page: { hasMore: boolean; nextCursor: string | null; total: number; offset: number },
+  page: {
+    hasMore: boolean;
+    nextCursor: string | null;
+    total: number;
+    offset: number;
+    /** Only set for keyset requests; offset responses keep their original shape. */
+    paging?: "keyset";
+  },
   init?: ResponseInit
 ) {
   const sync = getMediaScheduleSync(churchId);
@@ -202,6 +368,7 @@ function feedListPageOk<T>(
       nextCursor: page.nextCursor,
       total: page.total,
       offset: page.offset,
+      ...(page.paging ? { paging: page.paging } : {}),
       mediaScheduleVersion: sync.version,
       mediaScheduleUpdatedAt: sync.updatedAt,
     },
@@ -2186,6 +2353,43 @@ async function removePostAndRelated(postId: string) {
   return feedDeleted;
 }
 
+/** Posts saved from a YouTube / Facebook / TikTok link (their cover comes from the platform). */
+function isExternalVideoLinkFeedItem(item: any): boolean {
+  return String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
+}
+
+function isYouTubeVideoUrl(raw: unknown): boolean {
+  try {
+    const host = new URL(String(raw || "").trim()).hostname.toLowerCase().replace(/^www\./, "");
+    return host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com");
+  } catch {
+    return false;
+  }
+}
+
+/** Every field the app reads a video cover from. */
+const VIDEO_COVER_FIELDS = [
+  "posterUri",
+  "videoPosterUri",
+  "thumbnailUri",
+  "thumbnailUrl",
+  "posterUrl",
+  "mediaPosterUri",
+  "coverUrl",
+  "coverImageUrl",
+  "firstFrameUrl",
+  "previewUrl",
+] as const;
+
+/** The post's existing real cover, or "" when it has none (missing, empty or branded placeholder). */
+function existingUploadedVideoCover(item: any, videoUrl: string): string {
+  for (const field of VIDEO_COVER_FIELDS) {
+    const value = String(item?.[field] || "").trim();
+    if (value && isUsableVideoPosterUri(value, videoUrl)) return value;
+  }
+  return "";
+}
+
 function resolveFeedItemVideoUrl(item: any): string {
   const isVideoTyped =
     item?.type === "video" ||
@@ -2879,6 +3083,9 @@ async function handleFeedGet(
         ? Math.min(Math.floor(limitParamRaw), 100)
         : 0;
     const pageOffset = Math.max(0, Math.floor(Number(cursorParamRaw) || 0));
+    // Keyset paging only when the client asks for it (new apps); see FEED_KEYSET_CURSOR_PREFIX.
+    const keysetPaging = String(url.searchParams.get("paging") || "").trim().toLowerCase() === "keyset";
+    const keysetCursor = keysetPaging ? decodeFeedKeysetCursor(cursorParamRaw) : null;
     const searchQueryParse = parseHomeFeedSearchQueryParam(url.searchParams);
 
     if (storageMode === "media" || storageMode === "church") {
@@ -3197,7 +3404,7 @@ async function handleFeedGet(
       .filter((x) => (type ? x.type === type : true))
       .filter((x) => (mediaOnly ? isHomeFeedVideoMediaOnlyItem(x) : true))
       .slice()
-      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+      .sort(compareFeedRowsNewestFirst);
 
     // Optional `q`: filter full eligible list before pagination (empty/rejected → unchanged).
     const searchableRows = searchQueryParse.active
@@ -3219,11 +3426,20 @@ async function handleFeedGet(
     }
 
     const totalListRows = searchableRows.length;
+    // Keyset: start right after the cursor row. Offset (and a numeric cursor in keyset mode):
+    // start at the offset, exactly as before.
+    const pageStart = keysetCursor
+      ? feedKeysetStartIndex(searchableRows, keysetCursor)
+      : pageOffset;
     const pageRows =
-      pageLimit > 0 ? searchableRows.slice(pageOffset, pageOffset + pageLimit) : searchableRows;
-    const nextOffset = pageOffset + (pageLimit > 0 ? pageLimit : pageRows.length);
+      pageLimit > 0 ? searchableRows.slice(pageStart, pageStart + pageLimit) : searchableRows;
+    const nextOffset = pageStart + (pageLimit > 0 ? pageLimit : pageRows.length);
     const pageHasMore = pageLimit > 0 ? nextOffset < totalListRows : false;
-    const pageNextCursor = pageHasMore ? String(nextOffset) : null;
+    const pageNextCursor = !pageHasMore
+      ? null
+      : keysetPaging && pageRows.length > 0
+        ? encodeFeedKeysetCursor(pageRows[pageRows.length - 1])
+        : String(nextOffset);
 
     const listPostIds = pageRows
       .map((x: any) => String(x?.id || "").trim())
@@ -3272,18 +3488,27 @@ async function handleFeedGet(
         normalizedQueryLength: searchQueryParse.active
           ? searchQueryParse.normalizedQuery.length
           : 0,
-        offset: pageOffset,
+        offset: pageStart,
         limit: pageLimit,
         total: totalListRows,
         returned: resolvedItems.length,
         hasMore: pageHasMore,
         nextCursor: pageNextCursor,
+        paging: keysetPaging ? "keyset" : "offset",
+        keysetCursor: Boolean(keysetCursor),
       });
-      return feedListPageOk(churchId, resolvedItems, {
+      const pageItems = isGlobalFeedScope
+        ? await attachHomeFeedViewerSignals(resolvedItems, {
+            viewerUserId,
+            viewerChurchId: churchId,
+          })
+        : resolvedItems;
+      return feedListPageOk(churchId, pageItems, {
         hasMore: pageHasMore,
         nextCursor: pageNextCursor,
         total: totalListRows,
-        offset: pageOffset,
+        offset: pageStart,
+        ...(keysetPaging ? { paging: "keyset" as const } : {}),
       });
     }
 
@@ -4485,9 +4710,37 @@ const postId = cleanText(body?.postId || body?.feedId, 240);
       return err("Feed item not in your church", 403);
     }
 
+    // Covers are only filled in for uploaded videos: link posts (YouTube / Facebook / TikTok)
+    // keep the platform's cover and are never changed here.
+    if (isExternalVideoLinkFeedItem(item)) {
+      return err("Video link posts keep their platform cover", 400);
+    }
     const resolvedVideoUrl = resolveFeedItemVideoUrl(item);
+    if (!resolvedVideoUrl) return err("Feed item is not a video post", 400);
+    if (isYouTubeVideoUrl(resolvedVideoUrl) || isYouTubeVideoUrl(videoUrl)) {
+      return err("YouTube videos keep their own cover", 400);
+    }
+
+    // Never replace a cover that already exists; only a missing cover (or the branded
+    // placeholder that stands in for "no cover") is filled in with a frame of the video.
+    const existingCover = existingUploadedVideoCover(item, resolvedVideoUrl);
+    if (existingCover) {
+      console.log("KRISTO_MEDIA_VIDEO_POSTER_PERSIST_SKIPPED", {
+        postId,
+        reason: "existing-cover",
+      });
+      return ok({ postId, posterUri: existingCover, skipped: "existing-cover", item });
+    }
+
+    // Only the uploader, the pastor / admins or the church media team may set a cover.
+    const viewerRole = ctx?.viewer?.role;
+    const isUploader = String(item?.createdBy || "").trim() === viewerUserId;
+    if (!isUploader && !(await canAccessMediaStorage(itemChurchId, viewerRole, viewerUserId))) {
+      return err("Only the uploader, the pastor or the media team can set a video cover", 403);
+    }
+
     const normalizedVideoUrl = String(videoUrl || resolvedVideoUrl || "").trim();
-    if (!isUsableVideoPosterUri(posterUri, normalizedVideoUrl)) {
+    if (!isUsableVideoPosterUri(posterUri, normalizedVideoUrl) || !/^(https?:\/\/|\/uploads\/)/i.test(posterUri)) {
       return err("posterUri must be a valid image URL for this video", 400);
     }
 

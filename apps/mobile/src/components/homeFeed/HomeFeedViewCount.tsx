@@ -154,10 +154,10 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FFD76E",
+    backgroundColor: "#FF4968",
     borderWidth: 1,
-    borderColor: "#2B1016",
-    shadowColor: "#FFD76E",
+    borderColor: "#FFB2C0",
+    shadowColor: "#FF4968",
     shadowOpacity: 0.95,
     shadowRadius: 5,
     shadowOffset: {
@@ -168,7 +168,7 @@ const styles = StyleSheet.create({
     zIndex: 8,
   },
   count: {
-    color: "#231016",
+    color: "#FFFFFF",
     fontSize: 11,
     lineHeight: 13,
     fontWeight: "900",

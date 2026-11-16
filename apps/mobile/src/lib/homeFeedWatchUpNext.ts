@@ -3,6 +3,19 @@ import {
   isVideoPost,
   resolveFeedPostKind,
 } from "@/src/components/homeFeed/homeFeedUtils";
+import { youtubeVideoIdFromUrl } from "@/src/lib/externalVideoPlayerHtml";
+import {
+  isExternalVideoLinkItem,
+  resolveHomeFeedVideoDisplayTypeHint,
+} from "@/src/lib/homeFeedVideoDisplayType";
+import { resolveVideoUri } from "@/src/lib/homeFeedVideoUri";
+import { homeFeedUploadedVideoNeedsCover } from "@/src/lib/mediaVideoPoster";
+import {
+  homeFeedFreshnessPoints,
+  homeFeedPersonalPoints,
+  homeFeedQualityPoints,
+  homeFeedTrendingPoints,
+} from "@/src/lib/homeFeedMix";
 
 const MAX_WATCH_HISTORY = 40;
 const DEFAULT_LIMIT = 20;
@@ -16,6 +29,10 @@ const WATCH_REFILL_MAX_PAGES = 4;
 
 let watchSessionOrder: string[] = [];
 let upNextGeneration = 0;
+/** New for every Watch session, so Up Next order differs between sessions but not within one. */
+let watchSessionSeed = (Math.floor(Math.random() * 0xffffffff) >>> 0) as number;
+/** Videos up to this age count as "new" when interleaving new and older videos. */
+const WATCH_NEW_VIDEO_DAYS = 30;
 
 function normalizePostId(item: any) {
   return String(item?.id || "").trim();
@@ -31,6 +48,43 @@ function resolveMediaCategory(item: any) {
   )
     .trim()
     .toLowerCase();
+}
+
+/** URL without query / hash (signed or cache-busting params differ between copies of a video). */
+function stableVideoUrl(raw: unknown): string {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    return `${parsed.hostname.toLowerCase().replace(/^www\./, "")}${parsed.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return value.split(/[?#]/)[0].replace(/\/+$/, "");
+  }
+}
+
+/**
+ * The video a post plays, independent of the post id: the same YouTube video linked twice, or the
+ * same uploaded file shared in two posts, has one key. Up Next never lists the same video twice,
+ * nor the video that is playing now.
+ */
+export function homeFeedVideoContentKey(item: any): string {
+  if (!item) return "";
+  if (isExternalVideoLinkItem(item)) {
+    const url = item?.videoUrl || item?.url;
+    const youtubeId = youtubeVideoIdFromUrl(url);
+    if (youtubeId) return `yt:${youtubeId}`;
+    const stable = stableVideoUrl(url);
+    return stable ? `link:${stable}` : "";
+  }
+  const stable = stableVideoUrl(resolveVideoUri(item));
+  return stable ? `video:${stable}` : "";
+}
+
+/** Vertical (full-screen 9:16 and 4:5) vs landscape: the shape the viewer is watching in. */
+function videoFormatFamily(item: any): "vertical" | "landscape" | "" {
+  const type = resolveHomeFeedVideoDisplayTypeHint(item);
+  if (!type) return "";
+  return type === "youtube" ? "landscape" : "vertical";
 }
 
 function resolveVideoMediaBucket(item: any, viewerChurchId: string) {
@@ -49,19 +103,16 @@ function watchedPenalty(postId: string) {
   return 20;
 }
 
-/** Small per-generation jitter so Up Next order refreshes without feeling random. */
+/**
+ * Variety per Watch session and per watched video (generation): the same inputs give the same
+ * order inside a session, a new session gives a different one.
+ */
 function generationJitter(postId: string, generationSeed: number) {
-  let hash = generationSeed * 9973;
+  let hash = (watchSessionSeed ^ Math.imul(generationSeed + 1, 9973)) >>> 0;
   for (let i = 0; i < postId.length; i += 1) {
-    hash = (hash * 33) ^ postId.charCodeAt(i);
+    hash = (Math.imul(hash, 33) ^ postId.charCodeAt(i)) >>> 0;
   }
-  return (hash >>> 0) % 24;
-}
-
-function recencyScoreMs(createdMs: number, newestMs: number, oldestMs: number) {
-  if (!createdMs || newestMs <= oldestMs) return 0;
-  const ratio = (createdMs - oldestMs) / (newestMs - oldestMs);
-  return Math.round(Math.max(0, Math.min(1, ratio)) * 22);
+  return hash % 24;
 }
 
 export type WatchUpNextScoreBreakdown = {
@@ -71,7 +122,16 @@ export type WatchUpNextScoreBreakdown = {
   sameCategory: number;
   samePostKind: number;
   sameMediaBucket: number;
-  recency: number;
+  sameFormat: number;
+  /** Viewer church / followed church / language / country (half weight; the current video's own
+   * church match is in sameChurch). */
+  personal: number;
+  /** Engagement + views (bounded). */
+  quality: number;
+  /** Recent interactions per day (bounded). */
+  trending: number;
+  /** Small new-video bonus, 0 after 7 days. */
+  freshness: number;
   watchedPenalty: number;
   jitter: number;
 };
@@ -81,8 +141,8 @@ export function scoreWatchUpNextCandidate(params: {
   candidate: any;
   viewerChurchId: string;
   generationSeed: number;
-  newestMs: number;
-  oldestMs: number;
+  newestMs?: number;
+  oldestMs?: number;
 }): WatchUpNextScoreBreakdown {
   const postId = normalizePostId(params.candidate);
   const current = params.currentItem;
@@ -107,18 +167,35 @@ export function scoreWatchUpNextCandidate(params: {
   const candidateBucket = resolveVideoMediaBucket(candidate, viewerChurchId);
   const sameMediaBucket = currentBucket === candidateBucket ? 18 : 0;
 
-  const recency = recencyScoreMs(
-    postSortMs(candidate),
-    params.newestMs,
-    params.oldestMs
-  );
+  // Keep the viewer in the same shape of video (vertical after vertical, landscape after
+  // landscape) when other signals are close; it never outweighs church / kind / category.
+  const currentFormat = videoFormatFamily(current);
+  const candidateFormat = videoFormatFamily(candidate);
+  const sameFormat = currentFormat && candidateFormat && currentFormat === candidateFormat ? 16 : 0;
+
+  // Bounded signals: a new or much-viewed video can rank high or low depending on everything
+  // else; it is not put on top every time.
+  const personal = Math.round(homeFeedPersonalPoints(candidate) * 0.5);
+  const quality = Math.round(homeFeedQualityPoints(candidate));
+  const trending = Math.round(homeFeedTrendingPoints(candidate));
+  const freshness = Math.round(homeFeedFreshnessPoints(candidate));
 
   const penalty = watchedPenalty(postId);
   const jitter = generationJitter(postId, params.generationSeed);
 
   const total = Math.max(
     0,
-    sameChurch + sameCategory + samePostKind + sameMediaBucket + recency + jitter - penalty
+    sameChurch +
+      sameCategory +
+      samePostKind +
+      sameMediaBucket +
+      sameFormat +
+      personal +
+      quality +
+      trending +
+      freshness +
+      jitter -
+      penalty
   );
 
   return {
@@ -128,7 +205,11 @@ export function scoreWatchUpNextCandidate(params: {
     sameCategory,
     samePostKind,
     sameMediaBucket,
-    recency,
+    sameFormat,
+    personal,
+    quality,
+    trending,
+    freshness,
     watchedPenalty: penalty,
     jitter,
   };
@@ -138,6 +219,7 @@ export function scoreWatchUpNextCandidate(params: {
 export function resetWatchUpNextSession() {
   watchSessionOrder = [];
   upNextGeneration = 0;
+  watchSessionSeed = (Math.floor(Math.random() * 0xffffffff) >>> 0) as number;
   console.log("KRISTO_WATCH_UP_NEXT_SESSION_RESET", { at: Date.now() });
 }
 
@@ -210,6 +292,39 @@ export function mergeWatchUpNextCandidateRows(...rowGroups: any[][]): any[] {
   return merged;
 }
 
+function isNewWatchVideo(row: any) {
+  const created = postSortMs(row);
+  return created > 0 && Date.now() - created <= WATCH_NEW_VIDEO_DAYS * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Mix new and older videos: never more than two in a row from the same age group when a video
+ * of the other group is close behind (within the next 6). Keeps score order otherwise.
+ */
+function interleaveWatchAgeGroups(ranked: any[]): any[] {
+  const rest = [...ranked];
+  const out: any[] = [];
+  // About one Watch session in three starts with the best older video when one is close behind
+  // (top 6), so the first video is not always a new one. Fixed for the whole session.
+  if (rest.length > 1 && watchSessionSeed % 3 === 0 && isNewWatchVideo(rest[0])) {
+    const older = rest.slice(0, 6).findIndex((row) => !isNewWatchVideo(row));
+    if (older > 0) out.push(rest.splice(older, 1)[0]);
+  }
+  while (rest.length) {
+    let pickAt = 0;
+    const n = out.length;
+    if (n >= 2) {
+      const lastNew = isNewWatchVideo(out[n - 1]);
+      if (isNewWatchVideo(out[n - 2]) === lastNew && isNewWatchVideo(rest[0]) === lastNew) {
+        const other = rest.slice(0, 6).findIndex((row) => isNewWatchVideo(row) !== lastNew);
+        if (other > 0) pickAt = other;
+      }
+    }
+    out.push(rest.splice(pickAt, 1)[0]);
+  }
+  return out;
+}
+
 /**
  * Prefer church diversity in the final Up Next window without discarding score order wholesale.
  * Walks the ranked list and skips a candidate when its church already fills the soft cap,
@@ -271,17 +386,31 @@ export function buildWatchUpNextVideos(params: {
   const generationSeed = params.generationSeed ?? upNextGeneration;
   const excludeIds = buildWatchExcludeIds(currentId, params.excludePostIds);
 
+  // The current video and excluded (watched / already listed) videos are also excluded by
+  // content, so another post of the same video is not offered again.
+  const excludeContentKeys = new Set<string>();
+  const currentContentKey = homeFeedVideoContentKey(params.currentItem);
+  if (currentContentKey) excludeContentKeys.add(currentContentKey);
+  for (const row of params.candidates || []) {
+    const id = normalizePostId(row);
+    if (!id || id === currentId || !excludeIds.has(id)) continue;
+    const key = homeFeedVideoContentKey(row);
+    if (key) excludeContentKeys.add(key);
+  }
+
   const pool = (params.candidates || []).filter((row) => {
     if (!isVideoPost(row)) return false;
+    // Same rule as the Home Feed cards: an uploaded video without a real cover yet is not listed
+    // or played in Watch. It stays in the candidate pool and is listed again once a cover exists
+    // (next Up Next build). YouTube / link posts and videos with a cover are never affected.
+    if (homeFeedUploadedVideoNeedsCover(row)) return false;
     const id = normalizePostId(row);
-    return id && !excludeIds.has(id);
+    if (!id || excludeIds.has(id)) return false;
+    const key = homeFeedVideoContentKey(row);
+    return !key || !excludeContentKeys.has(key);
   });
 
   if (!pool.length) return [];
-
-  const times = pool.map(postSortMs).filter((ms) => ms > 0);
-  const newestMs = times.length ? Math.max(...times) : Date.now();
-  const oldestMs = times.length ? Math.min(...times) : newestMs - 1;
 
   const scored = pool.map((candidate) => ({
     candidate,
@@ -290,8 +419,6 @@ export function buildWatchUpNextVideos(params: {
       candidate,
       viewerChurchId,
       generationSeed,
-      newestMs,
-      oldestMs,
     }),
   }));
 
@@ -299,10 +426,24 @@ export function buildWatchUpNextVideos(params: {
     if (b.breakdown.total !== a.breakdown.total) {
       return b.breakdown.total - a.breakdown.total;
     }
-    return postSortMs(b.candidate) - postSortMs(a.candidate);
+    // Equal scores: keep a stable id order rather than always the newest first.
+    const aId = normalizePostId(a.candidate);
+    const bId = normalizePostId(b.candidate);
+    return aId < bId ? -1 : aId > bId ? 1 : 0;
   });
 
-  const ranked = scored.map(({ candidate }) => candidate);
+  // One row per video: keep the best-ranked post of each video.
+  const seenContentKeys = new Set<string>();
+  const rankedByScore = scored
+    .map(({ candidate }) => candidate)
+    .filter((candidate) => {
+      const key = homeFeedVideoContentKey(candidate);
+      if (!key) return true;
+      if (seenContentKeys.has(key)) return false;
+      seenContentKeys.add(key);
+      return true;
+    });
+  const ranked = interleaveWatchAgeGroups(rankedByScore);
   const result =
     params.diversifyChurches === false
       ? ranked.slice(0, limit)
