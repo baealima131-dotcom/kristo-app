@@ -106,10 +106,19 @@ function getConversationGlass(item: MessagesInboxConversation) {
 
 function roleRingColors(role: string): readonly [string, string, string] {
   const value = String(role || "").toLowerCase();
-  if (/admin|system/.test(value)) return ["#FFF0B0", "#D6A83E", "#8C6221"];
-  if (/pastor|bishop|priest|reverend/.test(value)) return ["#FFE08A", "#B875FF", "#7139D2"];
-  if (/leader|minister|deacon/.test(value)) return ["#A5F3FC", "#38BDF8", "#2563EB"];
-  return ["#B9F7DC", "#38D99D", "#168C79"];
+  if (/admin|system/.test(value)) return ["#FFF2A6", "#FFC928", "#B87500"];
+  if (/pastor|bishop|priest|reverend/.test(value)) return ["#F2D5FF", "#B45CFF", "#7428D8"];
+  if (/leader|minister|deacon/.test(value)) return ["#C7F6FF", "#35C9F5", "#1676D2"];
+  return ["#BFFFF0", "#12D6A0", "#007D70"];
+}
+
+function roleBadgeKind(role: string): "pastor" | "member" | "leader" | "admin" | null {
+  const value = String(role || "").toLowerCase();
+  if (/pastor|bishop|priest|reverend/.test(value)) return "pastor";
+  if (/admin|system/.test(value)) return "admin";
+  if (/leader|minister|deacon/.test(value)) return "leader";
+  if (/member/.test(value)) return "member";
+  return null;
 }
 
 function ConversationRow({
@@ -138,7 +147,9 @@ function ConversationRow({
       : "#F4C95D";
 
   const glass = getConversationGlass(item);
-  const ringColors = roleRingColors(item.peerRole || "Member");
+  const peerRole = item.peerRole || "Member";
+  const ringColors = roleRingColors(peerRole);
+  const badgeKind = roleBadgeKind(peerRole);
 
   return (
     <Pressable
@@ -159,22 +170,48 @@ function ConversationRow({
         style={s.rowGradient}
       />
 
-      <LinearGradient
-        colors={[...ringColors]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={[s.avatarRing, { shadowColor: ringColors[1] }]}
-      >
-        <View style={s.avatarInner}>
-          {item.avatarUri ? (
-            <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
-          ) : (
-            <View style={[s.avatarFallback, { backgroundColor: ringColors[1] + "33" }]}>
-              <Text style={[s.avatarFallbackText, { color: ringColors[0] }]}>{initial}</Text>
-            </View>
-          )}
-        </View>
-      </LinearGradient>
+      <View style={s.avatarDecoration}>
+        <LinearGradient
+          colors={[...ringColors]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={s.avatarRing}
+        >
+          <View style={s.avatarInner}>
+            {item.avatarUri ? (
+              <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
+            ) : (
+              <View style={[s.avatarFallback, { backgroundColor: ringColors[1] + "33" }]}>
+                <Text style={[s.avatarFallbackText, { color: ringColors[0] }]}>{initial}</Text>
+              </View>
+            )}
+          </View>
+        </LinearGradient>
+        {badgeKind ? (
+          <View
+            style={[
+              s.avatarRoleBadge,
+              badgeKind === "pastor"
+                ? s.avatarRoleBadgePastor
+                : badgeKind === "member"
+                  ? s.avatarRoleBadgeMember
+                  : badgeKind === "leader"
+                    ? s.avatarRoleBadgeLeader
+                    : s.avatarRoleBadgeAdmin,
+            ]}
+          >
+            {badgeKind === "pastor" ? (
+              <Text style={s.avatarRoleBadgeCross}>✝</Text>
+            ) : (
+              <Ionicons
+                name={badgeKind === "member" ? "person" : badgeKind === "leader" ? "people" : "shield-checkmark"}
+                size={9}
+                color="#FFFFFF"
+              />
+            )}
+          </View>
+        ) : null}
+      </View>
 
       <View style={s.rowBody}>
         <View style={s.rowTop}>
@@ -762,17 +799,60 @@ const s = StyleSheet.create({
     transform: [{ scale: 0.99 }],
   } as ViewStyle,
 
+  avatarDecoration: {
+    width: 52,
+    height: 52,
+    marginRight: 12,
+    position: "relative",
+  } as ViewStyle,
+
   avatarRing: {
     width: 52,
     height: 52,
     borderRadius: 26,
-    padding: 2.5,
-    marginRight: 12,
-    shadowOpacity: 0.32,
-    shadowRadius: 7,
+    padding: 1.5,
+    shadowOpacity: 0.12,
+    shadowRadius: 3,
     shadowOffset: { width: 0, height: 1 },
-    elevation: 4,
+    elevation: 1,
   } as ViewStyle,
+
+  avatarRoleBadge: {
+    position: "absolute",
+    right: -3,
+    bottom: -2,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "#04110E",
+  } as ViewStyle,
+
+  avatarRoleBadgePastor: {
+    backgroundColor: "#8B3CE4",
+  } as ViewStyle,
+
+  avatarRoleBadgeMember: {
+    backgroundColor: "#078C70",
+  } as ViewStyle,
+
+  avatarRoleBadgeLeader: {
+    backgroundColor: "#1976C9",
+  } as ViewStyle,
+
+  avatarRoleBadgeAdmin: {
+    backgroundColor: "#B98319",
+  } as ViewStyle,
+
+  avatarRoleBadgeCross: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "900",
+    lineHeight: 14,
+    textAlign: "center",
+  } as TextStyle,
 
   avatarInner: {
     flex: 1,
