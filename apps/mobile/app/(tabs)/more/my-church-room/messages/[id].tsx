@@ -6793,7 +6793,7 @@ function Bubble({
 
             {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} />
+            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} avatarUri={senderAvatar.uri} />
 
             <Text
               style={[
