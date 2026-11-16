@@ -79,11 +79,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "file is required" }, { status: 400 });
     }
 
+    const voiceNote = String(form.get("voiceNote") || "").trim() === "1";
     const bytes = Buffer.from(await file.arrayBuffer());
     const size = bytes.byteLength;
     const mime =
       String(file.type || "application/octet-stream").trim() || "application/octet-stream";
     const filename = safeFilename(file.name || (isImageMime(mime) ? "image.jpg" : "attachment"));
+
+    if (voiceNote && !mime.toLowerCase().startsWith("audio/")) {
+      return NextResponse.json(
+        { ok: false, error: "Voice messages must be audio files." },
+        { status: 400 }
+      );
+    }
 
     const maxBytes = isImageMime(mime) ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
     if (size > maxBytes) {
@@ -158,6 +166,9 @@ export async function POST(req: Request) {
         mime,
         mimeType: mime,
         size,
+        ...(voiceNote
+          ? { voiceNote: true, expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 }
+          : {}),
       },
     });
   } catch (e: any) {
