@@ -414,7 +414,13 @@ function PrivateCallOutgoingRinging({ callId }: { callId: string }) {
 }
 
 
-function PrivateCallRingingAudio({ callId }: { callId: string }) {
+function PrivateCallRingingAudio({
+  callId,
+  onPromptFinished,
+}: {
+  callId: string;
+  onPromptFinished: () => void;
+}) {
   const [audioUris, setAudioUris] = useState<PrivateCallRingingAudioUris | null>(null);
   const waittonePlayer = useAudioPlayer(
     audioUris?.waittone ? { uri: audioUris.waittone } : null
@@ -423,7 +429,9 @@ function PrivateCallRingingAudio({ callId }: { callId: string }) {
     audioUris?.unavailable ? { uri: audioUris.unavailable } : null
   );
   const waittoneStatus = useAudioPlayerStatus(waittonePlayer);
+  const unavailableStatus = useAudioPlayerStatus(unavailablePlayer);
   const startedCallRef = useRef("");
+  const promptFinishedRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -500,6 +508,12 @@ function PrivateCallRingingAudio({ callId }: { callId: string }) {
     waittonePlayer,
     waittoneStatus.isLoaded,
   ]);
+
+  useEffect(() => {
+    if (!unavailableStatus.didJustFinish || promptFinishedRef.current) return;
+    promptFinishedRef.current = true;
+    onPromptFinished();
+  }, [onPromptFinished, unavailableStatus.didJustFinish]);
 
   return null;
 }
@@ -1154,6 +1168,14 @@ export default function PrivateCallScreen() {
         source,
         status,
       });
+      if (status === "timeout" && role === "caller" && sessionStatusRef.current === "ringing") {
+        console.log("KRISTO_PRIVATE_CALL_TIMEOUT_PROMPT_DEFERRED", {
+          callId,
+          source,
+          status,
+        });
+        return;
+      }
       exitCallScreen("remote-end", { source, status });
     },
     [callId, currentUserId, exitCallScreen]
@@ -1781,6 +1803,9 @@ export default function PrivateCallScreen() {
   if (session.status === "declined" || session.status === "timeout" || session.status === "ended") {
     return (
       <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
+        {session.status === "timeout" && role === "caller" ? (
+          <PrivateCallRingingAudio callId={session.id} onPromptFinished={handleEndCall} />
+        ) : null}
         <Text style={styles.title}>{statusMessage}</Text>
         <Pressable onPress={leaveCallRoute} style={styles.secondaryBtn}>
           <Text style={styles.secondaryBtnText}>Close</Text>
@@ -1791,6 +1816,9 @@ export default function PrivateCallScreen() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
+      {session.status === "ringing" && role === "caller" ? (
+        <PrivateCallRingingAudio callId={session.id} onPromptFinished={handleEndCall} />
+      ) : null}
       <Pressable
         onPress={() => {
           if (session.status === "ringing") {
@@ -1812,7 +1840,6 @@ export default function PrivateCallScreen() {
           <>
             <Text style={styles.title}>{displayName}</Text>
             <PrivateCallOutgoingRinging callId={session.id} />
-            <PrivateCallRingingAudio callId={session.id} />
             <Pressable onPress={handleEnd} style={styles.secondaryBtn}>
               <Text style={styles.secondaryBtnText}>Cancel Call</Text>
             </Pressable>
