@@ -5,8 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActionsInline } from "./PostActionsInline";
-import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
-import { Image as ExpoImage } from "expo-image";
+import { FeedVideoCover, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import {
   formatFeedMetaLine,
   formatFeedTimestamp,
@@ -28,9 +27,8 @@ import {
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
 import {
-  homeFeedVideoThumbnailHeight,
+  youtubeThumbnailHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
-import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { markHomeFeedPosterPipelineStage } from "@/src/lib/homeFeedPosterPipelineTrace";
 import { markHomeFeedStartupTiming } from "@/src/lib/homeFeedStartupTiming";
 import { HOME_FEED_GOLD, HOME_FEED_THUMB_RADIUS } from "./theme";
@@ -39,9 +37,11 @@ import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
 import { useHomeFeedPostViewCount } from "@/src/lib/homeFeedPostViews";
 import {
-  facebookAdminCoverUri,
+  facebookCoverWithFallback,
   formatFacebookOlderYearDate,
   externalCountLabel,
+  externalCountDisplay,
+  externalPlatformCount,
   externalPlatformHiddenCounts,
   resolveExternalPlatformStats,
 } from "@/src/lib/facebookVideoLink";
@@ -91,9 +91,18 @@ export const FeedYouTubeCard = memo(
   const commentCount = engagement.commentCount + youtubeComments;
   // YouTube hid likes or turned comments off: say so instead of showing 0.
   const hiddenCounts = isExternalVideo ? externalPlatformHiddenCounts(item) : { likes: false, comments: false };
+  // Video links: the platform's real counts plus Kristo's own; "—" when the platform gave none.
+  const externalLabels = isExternalVideo
+    ? {
+        likes: externalCountDisplay(engagement.likeCount, externalPlatformCount(item, "likes"), hiddenCounts.likes, formatActionCount),
+        comments: externalCountDisplay(engagement.commentCount, externalPlatformCount(item, "comments"), hiddenCounts.comments, formatActionCount),
+        views: externalCountDisplay(appViewCount, externalPlatformCount(item, "views"), false, formatActionCount),
+      }
+    : null;
   const { width: windowWidth } = useWindowDimensions();
-  const displayType = resolveHomeFeedVideoDisplayType(item);
-  const thumbHeight = homeFeedVideoThumbnailHeight(windowWidth, displayType);
+  // Every feed cover (upload, YouTube, TikTok, Facebook, vertical or wide) uses YouTube's 16:9
+  // thumbnail frame and fills it; Watch still plays the video in its own shape.
+  const thumbHeight = youtubeThumbnailHeight(windowWidth);
 
   const postId = String(item?.id || "").trim();
   const posterFieldsKey = posterMetadataFingerprint(item);
@@ -163,13 +172,11 @@ export const FeedYouTubeCard = memo(
         style={[
           premium.thumbFrame,
           { height: thumbHeight },
-          displayType === "tiktok" ? styles.thumbWrapTikTok : null,
         ]}
       >
         {video && videoUri ? (
           <Pressable
-            // The video cover uses the whole frame (also for vertical videos): the cover is shown
-            // whole in the middle over a blurred copy of itself that fills the sides.
+            // The cover fills the whole 16:9 frame; vertical covers are trimmed top/bottom.
             style={styles.thumbPress}
             onPress={handleVideoPress}
             accessibilityLabel="Play video"
@@ -243,16 +250,17 @@ export const FeedYouTubeCard = memo(
           </View>
         </View>
 
-        <HomeFeedViewCount count={viewCount} />
+        <HomeFeedViewCount count={viewCount} label={externalLabels?.views} />
       </View>
 
       <PostActionsInline
         liked={engagement.likedByMe || engagement.liked}
         likeCount={likeCount}
         commentCount={commentCount}
-        likeLabel={hiddenCounts.likes ? externalCountLabel(likeCount, true, formatActionCount) : undefined}
-        commentLabel={hiddenCounts.comments ? externalCountLabel(commentCount, true, formatActionCount) : undefined}
+        likeLabel={externalLabels?.likes ?? (hiddenCounts.likes ? externalCountLabel(likeCount, true, formatActionCount) : undefined)}
+        commentLabel={externalLabels?.comments ?? (hiddenCounts.comments ? externalCountLabel(commentCount, true, formatActionCount) : undefined)}
         shareCount={Number(item?.shareCount || 0)}
+        hideShareCount={isExternalVideo}
         saved={engagement.saved}
         reported={engagement.reported}
         onLike={onLike}
@@ -310,8 +318,9 @@ function VideoThumbnail({
   durationLabel?: string;
 }) {
   const [coverReady, setCoverReady] = useState(false);
-  // Facebook links: the admin-uploaded cover, shown whole in the middle over a blurred copy of itself.
-  const facebookCover = facebookAdminCoverUri(item);
+  // Facebook links: the admin-uploaded cover, else a saved thumbnail, else the Page's own picture
+  // (shown whole), over a blurred copy of itself — never an empty frame when any picture exists.
+  const { uri: facebookCover, isPagePicture: facebookCoverIsPagePicture } = facebookCoverWithFallback(item);
   const [facebookCoverFailed, setFacebookCoverFailed] = useState(false);
   const showFacebookCover = Boolean(facebookCover) && !facebookCoverFailed && shouldLoadImages;
 
@@ -324,20 +333,9 @@ function VideoThumbnail({
     <>
       {showFacebookCover ? (
         <View style={StyleSheet.absoluteFillObject}>
-          <ExpoImage
-            source={{ uri: facebookCover }}
-            style={StyleSheet.absoluteFillObject}
-            contentFit="cover"
-            blurRadius={24}
-            cachePolicy="memory-disk"
-            transition={0}
-            accessible={false}
-          />
-          <View style={styles.facebookCoverDim} />
-          <Image
-            source={{ uri: facebookCover }}
-            style={StyleSheet.absoluteFillObject}
-            resizeMode="contain"
+          <FeedVideoCover
+            uri={facebookCover}
+            foregroundResizeMode={facebookCoverIsPagePicture ? "contain" : "cover"}
             onLoad={() => setCoverReady(true)}
             onError={() => setFacebookCoverFailed(true)}
           />
@@ -353,9 +351,6 @@ function VideoThumbnail({
         posterMetadata={posterMetadata}
         videoDurationMs={videoDurationMs}
         youtubeMode
-        // Every video cover (uploaded, YouTube, Facebook) fills the frame with a blurred copy of
-        // itself and is shown whole on top.
-        blurFill
         allowImageLoad={shouldLoadImages}
         onPosterCoverReady={setCoverReady}
         // Uploaded videos only (not YouTube/TikTok/Facebook links): the saved cover fills the
@@ -420,12 +415,6 @@ function TextCardPreview({
 }
 
 const styles = StyleSheet.create({
-  thumbWrapTikTok: {
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#1a1a1a",
-  },
-  facebookCoverDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(18,3,31,0.28)" },
   thumbPress: {
     flex: 1,
     alignSelf: "stretch",

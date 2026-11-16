@@ -14,6 +14,7 @@ const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/;
 /** YT.PlayerState values sent by onStateChange. */
 const YOUTUBE_ENDED = 0;
 const YOUTUBE_PLAYING = 1;
+const YOUTUBE_PAUSED = 2;
 
 export type ExternalPlayerMessage = { type: "playing" | "ended" | "error"; code?: number };
 
@@ -48,34 +49,67 @@ const PAGE_HEAD =
 
 /**
  * YouTube IFrame Player API page: starts playing on load, reports playing/ended/error.
- * Controls are YouTube's own (they hide while playing and come back on a tap); related videos
- * are limited to the same channel (rel=0) and Watch covers the end screen with the post cover.
+ * YouTube's control bar, fullscreen button, keyboard controls and annotations are turned off
+ * (controls=0, fs=0, disablekb=1, iv_load_policy=3); related videos are limited to the same
+ * channel (rel=0). The post cover is the page background behind the player while it loads;
+ * when the video ends Watch replaces the player with the cover (never covering the player).
  */
-export function buildYouTubePlayerHtml(videoId: string): string | null {
+export function buildYouTubePlayerHtml(videoId: string, coverUri?: string): string | null {
   if (!YOUTUBE_ID.test(videoId)) return null;
+  const cover = pageBackgroundCover(coverUri);
   const options = {
     host: "https://www.youtube-nocookie.com",
     width: "100%",
     height: "100%",
     videoId,
-    playerVars: { playsinline: 1, autoplay: 1, controls: 1, rel: 0, fs: 1, origin: YOUTUBE_CLIENT_ORIGIN },
+    playerVars: {
+      playsinline: 1,
+      autoplay: 1,
+      controls: 0,
+      disablekb: 1,
+      fs: 0,
+      iv_load_policy: 3,
+      rel: 0,
+      origin: YOUTUBE_CLIENT_ORIGIN,
+    },
   };
   return (
     PAGE_HEAD +
-    '<body><div id="player"></div><script>' +
+    // With a cover, the player fades in once it plays (the cover behind it shows until then); it
+    // also shows when paused/ended, on an error, or 4 s after it is ready if autoplay is blocked.
+    (cover ? "<style>#player{opacity:0;transition:opacity .25s}</style>" : "") +
+    "<body" + (cover ? ' style="' + cover + '"' : "") + '><div id="player"></div><script>' +
     POST_MESSAGE_JS +
     "var player;" +
+    "function show(){var p=document.getElementById('player');if(p)p.style.opacity='1'}" +
     "function onYouTubeIframeAPIReady(){var o=" + JSON.stringify(options) + ";" +
     "o.events={" +
-    "onReady:function(e){e.target.playVideo()}," +
+    "onReady:function(e){setTimeout(show,4000);e.target.playVideo()}," +
     "onStateChange:function(e){" +
+    "if(e.data===" + YOUTUBE_PLAYING + "||e.data===" + YOUTUBE_PAUSED + "||e.data===" + YOUTUBE_ENDED + ")show();" +
     "if(e.data===" + YOUTUBE_PLAYING + ")post({type:'playing'});" +
     "if(e.data===" + YOUTUBE_ENDED + ")post({type:'ended'})}," +
-    "onError:function(e){post({type:'error',code:e.data})}};" +
+    "onError:function(e){show();post({type:'error',code:e.data})}};" +
     "player=new YT.Player('player',o)}" +
     "window.kristoReplay=function(){if(player){player.seekTo(0,true);player.playVideo()}};" +
     '</script><script src="https://www.youtube.com/iframe_api"></script></body></html>'
   );
+}
+
+/**
+ * The video's cover as the page's own background, behind YouTube's player: it shows while the
+ * player loads (instead of a black frame) and never sits on top of the player. https only.
+ */
+function pageBackgroundCover(raw: unknown): string {
+  let url: URL;
+  try {
+    url = new URL(String(raw || "").trim());
+  } catch {
+    return "";
+  }
+  if (url.protocol !== "https:") return "";
+  const safe = encodeURI(decodeURI(url.toString())).replace(/[()'"\\]/g, (c) => "%" + c.charCodeAt(0).toString(16));
+  return "background:#000 url(&quot;" + safe + "&quot;) center/cover no-repeat";
 }
 
 function escapeAttribute(value: string): string {

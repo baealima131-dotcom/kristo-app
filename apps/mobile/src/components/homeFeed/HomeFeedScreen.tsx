@@ -1467,7 +1467,9 @@ export default function HomeFeedScreen() {
                     progressiveRevealDone: androidProgressiveRevealDoneRef.current,
                     reason,
                   });
-                  if (youtubePageRevealCompleteRef.current || visibleCount === 0) {
+                  // Fewer rows than the progressive-reveal minimum means nothing was revealed yet:
+                  // reveal page 0 (clears the skeleton) instead of topping up an empty page.
+                  if (youtubePageRevealCompleteRef.current && visibleCount > 0) {
                     await topUpAndroidYoutubePage0(rows);
                   } else {
                     void revealYoutubePage0(rows);

@@ -74,6 +74,7 @@ import {
 } from "@/src/components/homeFeed/homeFeedDisplayOrderCache";
 import { shouldRebuildHomeFeedDisplayOrder } from "@/src/lib/homeFeedRefreshReason";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import { facebookPagePictureUri } from "@/src/lib/facebookVideoLink";
 
 export {
   homeFeedMediaUrl,
@@ -1888,10 +1889,12 @@ export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
         item?.actorAvatarUri,
         item?.avatarUri,
         item?.authorAvatarUri,
-        // Facebook links have no official page picture without Graph access: the video's cover
-        // (the one the admin uploaded, else its saved thumbnail) stands in until one exists.
-        // Never an invented picture; with no cover at all the initial of the real name shows.
-        ...(isFacebookLinkRow(item) ? [item?.facebookCoverUrl, item?.thumbnailUrl, item?.posterUrl] : []),
+        // Facebook links: the Page's own public picture when the link names the Page; otherwise
+        // the video's cover (admin upload, else saved thumbnail) stands in. Never an invented
+        // picture; with none of these the initial of the real name shows.
+        ...(isFacebookLinkRow(item)
+          ? [facebookPagePictureUri(item), item?.facebookCoverUrl, item?.thumbnailUrl, item?.posterUrl]
+          : []),
       ]
     : homeFeedAvatarSourceFields(item, churchMediaFirst);
 

@@ -2,11 +2,9 @@ import {
   isHomeFeedLivestreamRow,
   isHomeFeedScheduleCardRow,
   isMediaLiveSlotsHomeFeedRow,
-  isVideoPost,
   resolvePostBody,
 } from "@/src/components/homeFeed/homeFeedUtils";
 import type { HomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
-import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import {
   estimateSokoHomeFeedCardHeight,
   isSokoHomeFeedRow,
@@ -99,10 +97,8 @@ export function estimateYouTubeFeedCardHeightForItem(
   if (isSokoHomeFeedRow(item)) {
     return estimateSokoHomeFeedCardHeight(windowWidth, item);
   }
-  const displayType = resolveHomeFeedVideoDisplayType(item);
-  const thumb = isVideoPost(item)
-    ? homeFeedVideoThumbnailHeight(windowWidth, displayType)
-    : youtubeThumbnailHeight(windowWidth);
+  // Feed cards use the 16:9 frame for every video cover (matches FeedYouTubeCard).
+  const thumb = youtubeThumbnailHeight(windowWidth);
   const caption = String(resolvePostBody(item) || "").trim();
   const meta = caption ? YOUTUBE_META_BLOCK_HEIGHT + 20 : YOUTUBE_META_BLOCK_HEIGHT;
   return thumb + meta + YOUTUBE_ACTIONS_HEIGHT + 20 + YOUTUBE_FEED_CARD_MARGIN_BOTTOM;

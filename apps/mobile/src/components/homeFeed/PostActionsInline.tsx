@@ -13,6 +13,8 @@ type Props = {
   /** Text shown instead of the like/comment number (e.g. when YouTube hides that count). */
   likeLabel?: string;
   commentLabel?: string;
+  /** Video links: the Share button shows its icon only, with no number. */
+  hideShareCount?: boolean;
   saved: boolean;
   reported: boolean;
   onLike: () => void;
@@ -29,6 +31,7 @@ export const PostActionsInline = memo(function PostActionsInline({
   shareCount,
   likeLabel,
   commentLabel,
+  hideShareCount = false,
   saved,
   reported,
   onLike,
@@ -56,7 +59,7 @@ export const PostActionsInline = memo(function PostActionsInline({
         />
         <InlineAction
           icon="arrow-redo-outline"
-          label={formatActionCount(shareCount)}
+          label={hideShareCount ? "" : formatActionCount(shareCount)}
           onPress={onShare}
         />
         <InlineAction

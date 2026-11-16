@@ -191,6 +191,36 @@ export function externalCountLabel(count: number, hidden: boolean, format: (valu
   return hidden && count <= 0 ? PLATFORM_COUNT_HIDDEN_LABEL : format(count);
 }
 
+/** Shown for a platform count that is not available (no API access, lookup failed, never saved). */
+export const PLATFORM_COUNT_UNAVAILABLE_LABEL = "—";
+
+/**
+ * The platform's real count for an external video link (views, likes or comments), or null when the
+ * platform did not provide one. Never a made-up number.
+ */
+export function externalPlatformCount(item: any, field: "views" | "likes" | "comments"): number | null {
+  const stats = resolveExternalPlatformStats(item) as Record<string, unknown>;
+  const legacy = field === "views" ? stats.viewCount : field === "likes" ? stats.likeCount : stats.commentCount;
+  return facebookCount(stats[field] ?? legacy);
+}
+
+/**
+ * Label for a video link's count: the platform's real count plus Kristo's own; "Imefichwa" when the
+ * platform hides it on purpose (Kristo's own count still shows when there is one); "—" when the
+ * platform's count is not available, so a missing count never looks like a real 0.
+ */
+export function externalCountDisplay(
+  kristoCount: number,
+  platformCount: number | null,
+  hidden: boolean,
+  format: (value: number) => string
+): string {
+  const kristo = Number.isFinite(kristoCount) && kristoCount > 0 ? kristoCount : 0;
+  if (hidden) return externalCountLabel(kristo + (platformCount ?? 0), true, format);
+  if (platformCount === null) return PLATFORM_COUNT_UNAVAILABLE_LABEL;
+  return format(kristo + platformCount);
+}
+
 /**
  * Facebook posts can be years old: when the post date is from an earlier calendar year, show the
  * year too ("Dec 5, 2014"). Returns "" for this year's posts (the usual feed label applies) and for
@@ -214,4 +244,53 @@ export function facebookAdminCoverUri(item: any): string {
   if (/^https:\/\//i.test(value)) return value;
   if (typeof __DEV__ !== "undefined" && __DEV__ && /^http:\/\//i.test(value)) return value;
   return "";
+}
+
+/** Path segments that are Facebook sections, never a Page's username. */
+const NON_PAGE_SEGMENTS = new Set([
+  "watch", "reel", "reels", "share", "video.php", "profile.php", "people", "groups", "pages",
+  "plugins", "events", "stories", "photo.php", "permalink.php", "story.php", "login", "home.php",
+]);
+
+/**
+ * The Facebook Page's public profile picture for a Facebook link, or "". Built from the Page
+ * username in the saved profile link (creatorProfileUrl) or in a /{page}/videos/{id} link; Graph's
+ * public /{page}/picture endpoint redirects to the Page's real picture without any token.
+ * Links that name no Page (/watch, /reel, /share, fb.watch) give "" so the app keeps its fallback.
+ */
+export function facebookPagePictureUri(item: any): string {
+  if (!isFacebookVideoLinkItem(item)) return "";
+  for (const raw of [item?.creatorProfileUrl, item?.originalUrl, item?.videoUrl, item?.url]) {
+    let url: URL;
+    try {
+      url = new URL(String(raw || "").trim());
+    } catch {
+      continue;
+    }
+    if (url.protocol !== "https:" || !FACEBOOK_HOSTS.has(url.hostname.toLowerCase())) continue;
+    const parts = url.pathname.split("/").filter(Boolean);
+    const page = parts[0] || "";
+    const pageLink = parts.length === 1 || (parts.length >= 3 && parts[1] === "videos");
+    if (!pageLink || !PAGE_SEGMENT.test(page) || NON_PAGE_SEGMENTS.has(page.toLowerCase())) continue;
+    return `https://graph.facebook.com/${encodeURIComponent(page)}/picture?type=large`;
+  }
+  return "";
+}
+
+/**
+ * The picture shown as a Facebook link's cover (feed card, Up Next, Watch start/end): the admin
+ * cover, else a saved thumbnail, else the Page's own public picture (shown whole, not cropped).
+ * "" only when none exists. Facebook gives no public video thumbnail without a token.
+ */
+export function facebookCoverWithFallback(item: any): { uri: string; isPagePicture: boolean } {
+  if (!isFacebookVideoLinkItem(item)) return { uri: "", isPagePicture: false };
+  const admin = facebookAdminCoverUri(item);
+  if (admin) return { uri: admin, isPagePicture: false };
+  for (const raw of [item?.thumbnailUrl, item?.thumbnailUri, item?.posterUri, item?.videoPosterUri]) {
+    const value = String(raw || "").trim();
+    if (/^https:\/\//i.test(value)) return { uri: value, isPagePicture: false };
+  }
+  // A sharper copy of the same Page picture for the large cover frame.
+  const page = facebookPagePictureUri(item).replace("?type=large", "?width=720&height=720");
+  return { uri: page, isPagePicture: Boolean(page) };
 }

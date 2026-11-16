@@ -297,12 +297,6 @@ type FeedVideoPosterImageProps = {
    * fit (whole for vertical videos), and a fallback that turns out taller than wide is shown whole.
    */
   uploadedVideoCover?: boolean;
-  /**
-   * Home Feed cards: the cover fills the whole frame with a blurred, enlarged copy of itself, and
-   * the whole cover is shown on top (never cropped or stretched). Used for uploaded, YouTube and
-   * Facebook video covers.
-   */
-  blurFill?: boolean;
 };
 
 /**
@@ -325,32 +319,46 @@ function BlurredCoverFill({ uri }: { uri: string }) {
 }
 
 /**
- * A cover drawn whole over a blurred, enlarged copy of itself that fills the frame. The front
- * image carries the load/error handlers so callers keep their loading logic.
+ * The one way video covers are drawn in feed cards (uploaded videos, saved/admin covers, Facebook
+ * and YouTube links) and in Watch's end cover: the cover fills the whole frame ("cover": scaled
+ * without stretching, so a vertical cover in the 16:9 frame is trimmed at the top/bottom). A blurred
+ * copy sits behind it and shows while the cover loads. The front image carries the load/error handlers.
  */
-function BlurFilledCover({
+export function FeedVideoCover({
   uri,
   onLoadStart,
   onLoad,
   onError,
+  showForeground = true,
+  dim = true,
+  dimColor = "rgba(18,3,31,0.28)",
+  foregroundResizeMode = "cover",
 }: {
   uri: string;
   onLoadStart?: () => void;
   onLoad?: (event: any) => void;
   onError?: () => void;
+  /** False when the cover is only a blurred backdrop behind a playing video. */
+  showForeground?: boolean;
+  dim?: boolean;
+  dimColor?: string;
+  /** "contain" shows a square picture (e.g. a Facebook Page picture) whole over its blurred copy. */
+  foregroundResizeMode?: "cover" | "contain";
 }) {
   return (
     <>
       <BlurredCoverFill uri={uri} />
-      <View style={styles.blurFillDim} />
-      <Image
-        source={{ uri }}
-        style={StyleSheet.absoluteFillObject}
-        resizeMode="contain"
-        onLoadStart={onLoadStart}
-        onLoad={onLoad}
-        onError={onError}
-      />
+      {dim ? <View style={[styles.blurFillDim, { backgroundColor: dimColor }]} /> : null}
+      {showForeground ? (
+        <Image
+          source={{ uri }}
+          style={StyleSheet.absoluteFillObject}
+          resizeMode={foregroundResizeMode}
+          onLoadStart={onLoadStart}
+          onLoad={onLoad}
+          onError={onError}
+        />
+      ) : null}
     </>
   );
 }
@@ -445,7 +453,6 @@ function YouTubeFeedVideoPoster({
   allowImageLoad = true,
   onPosterCoverReady,
   uploadedVideoCover = false,
-  blurFill = false,
 }: FeedVideoPosterImageProps) {
   const resolvedVideoUrl = String(videoUrl || "").trim();
   // Known from the post data on the first render; no image is loaded or measured to decide it.
@@ -454,7 +461,6 @@ function YouTubeFeedVideoPoster({
     [item, uploadedVideoCover]
   );
   // Fallback picture (no saved cover) that loaded taller than wide; never delays the paint.
-  const [tallPosterUri, setTallPosterUri] = React.useState("");
   const status = String(mediaStatus || "").trim().toLowerCase();
   const isProcessing = status === "processing" || status === "uploading";
 
@@ -882,18 +888,13 @@ function YouTubeFeedVideoPoster({
   ]);
 
   const showPosterImage = Boolean(displayUri);
-  const posterResizeMode: ImageResizeMode = hasSavedCover
-    ? "cover"
-    : uploadedVideoCover && displayUri && tallPosterUri === displayUri
-      ? "contain"
-      : resizeMode;
 
   return (
     <View style={style}>
       {!posterFadedIn ? <HomeFeedPosterGradientPlaceholder /> : null}
-      {showPosterImage && blurFill ? (
+      {showPosterImage ? (
         <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}>
-          <BlurFilledCover
+          <FeedVideoCover
             uri={displayUri}
             onLoadStart={() => {
               markHomeFeedPosterPipelineStage(postId, "image_request_started", {
@@ -906,30 +907,6 @@ function YouTubeFeedVideoPoster({
             onError={handleImageError}
           />
         </Animated.View>
-      ) : null}
-      {showPosterImage && !blurFill ? (
-        <Animated.Image
-          source={{ uri: displayUri }}
-          style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}
-          resizeMode={posterResizeMode}
-          onLoadStart={() => {
-            markHomeFeedPosterPipelineStage(postId, "image_request_started", {
-              posterUri: displayUri,
-              videoUrl: resolvedVideoUrl,
-              source: `${loadSource}:native`,
-            });
-          }}
-          onLoad={(event) => {
-            if (uploadedVideoCover && !hasSavedCover) {
-              const source = (event?.nativeEvent as any)?.source;
-              const width = Number(source?.width || 0);
-              const height = Number(source?.height || 0);
-              setTallPosterUri(width > 0 && height > width * 1.02 ? displayUri : "");
-            }
-            handleImageLoad();
-          }}
-          onError={handleImageError}
-        />
       ) : null}
     </View>
   );
@@ -950,7 +927,6 @@ function LegacyFeedVideoPosterImage({
   previewLoadTimeoutMs = getHomeFeedPosterLoadTimeoutMs(),
   posterMetadata,
   videoDurationMs,
-  blurFill = false,
 }: FeedVideoPosterImageProps) {
   const resolvedVideoUrl = String(videoUrl || "").trim();
   const status = String(mediaStatus || "").trim().toLowerCase();
@@ -1328,16 +1304,8 @@ function LegacyFeedVideoPosterImage({
 
   return (
     <View style={style}>
-      {blurFill ? (
-        <>
-          <BlurredCoverFill uri={activeDisplayUri} />
-          <View style={styles.blurFillDim} />
-        </>
-      ) : null}
-      <Image
-        source={{ uri: activeDisplayUri }}
-        style={StyleSheet.absoluteFillObject}
-        resizeMode={blurFill ? "contain" : resizeMode}
+      <FeedVideoCover
+        uri={activeDisplayUri}
         onLoad={() => {
           if (activeDisplayUri === clientThumbUri) {
             setClientThumbState("loaded");
