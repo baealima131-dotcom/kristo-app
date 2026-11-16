@@ -2253,26 +2253,17 @@ function MessageVoiceAttachment({
   const timeLabel = duration
     ? formatAppointmentVoiceDuration(duration)
     : "Voice message";
+  const playbackDuration = Math.max(0, Number(status.duration || duration));
+  const progress = playbackDuration > 0
+    ? Math.min(1, Math.max(0, Number(status.currentTime || 0) / playbackDuration))
+    : 0;
+  const waveform = [8, 13, 10, 17, 11, 20, 14, 9, 16, 12, 21, 14, 10, 18, 12, 8, 15, 20, 11, 16, 9, 14, 18, 10];
 
   if (expired || !source) {
     return (
-      <View
-        style={{
-          minHeight: 52,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 10,
-          paddingHorizontal: 14,
-          paddingVertical: 10,
-          borderRadius: 16,
-          backgroundColor: "rgba(255,255,255,0.06)",
-          borderWidth: 1,
-          borderColor: "rgba(255,255,255,0.12)",
-          opacity: 0.72,
-        }}
-      >
-        <Ionicons name="time-outline" size={20} color="rgba(255,255,255,0.58)" />
-        <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 14 }}>
+      <View style={{ minHeight: 38, flexDirection: "row", alignItems: "center", gap: 8, opacity: 0.68 }}>
+        <Ionicons name="time-outline" size={17} color="rgba(255,255,255,0.62)" />
+        <Text style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, fontWeight: "700" }}>
           Voice message expired
         </Text>
       </View>
@@ -2280,51 +2271,73 @@ function MessageVoiceAttachment({
   }
 
   return (
-    <Pressable
-      onPress={() => {
-        if (status.playing) {
-          player.pause();
-          return;
-        }
-        if (status.currentTime >= status.duration && status.duration > 0) {
-          void player.seekTo(0);
-        }
-        player.play();
-      }}
-      accessibilityLabel={status.playing ? "Pause voice message" : "Play voice message"}
-      style={({ pressed }) => ({
-        minHeight: 52,
+    <View
+      style={{
+        width: 224,
+        maxWidth: "100%",
+        minHeight: 48,
         flexDirection: "row",
         alignItems: "center",
         gap: 10,
-        paddingHorizontal: 14,
-        paddingVertical: 10,
-        borderRadius: 16,
-        backgroundColor: "rgba(244,208,111,0.12)",
-        borderWidth: 1,
-        borderColor: "rgba(244,208,111,0.28)",
-        opacity: pressed ? 0.88 : 1,
-      })}
+        paddingVertical: 3,
+      }}
     >
-      <Ionicons
-        name={status.playing ? "pause-circle" : "play-circle"}
-        size={28}
-        color="#F4D06F"
-      />
-      <View style={{ flex: 1 }}>
-        <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>
-          Voice message
-        </Text>
-        <Text style={{ color: "rgba(255,255,255,0.58)", fontSize: 12 }}>
-          {status.playing && status.duration > 0
-            ? `${formatAppointmentVoiceDuration(status.currentTime)} / ${formatAppointmentVoiceDuration(status.duration)}`
+      <Pressable
+        onPress={() => {
+          if (status.playing) {
+            player.pause();
+            return;
+          }
+          if (status.currentTime >= status.duration && status.duration > 0) {
+            void player.seekTo(0);
+          }
+          player.play();
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={status.playing ? "Pause voice message" : "Play voice message"}
+        hitSlop={8}
+        style={({ pressed }) => ({
+          width: 38,
+          height: 38,
+          borderRadius: 19,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "rgba(244,208,111,0.20)",
+          opacity: pressed ? 0.78 : 1,
+        })}
+      >
+        <Ionicons
+          name={status.playing ? "pause" : "play"}
+          size={19}
+          color="#F4D06F"
+          style={!status.playing ? { marginLeft: 2 } : undefined}
+        />
+      </Pressable>
+      <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
+        <View style={{ height: 23, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
+          {waveform.map((height, index) => (
+            <View
+              key={index}
+              style={{
+                width: 3,
+                height,
+                borderRadius: 2,
+                backgroundColor: index / waveform.length <= progress
+                  ? "#F4D06F"
+                  : "rgba(255,255,255,0.52)",
+              }}
+            />
+          ))}
+        </View>
+        <Text style={{ marginTop: 3, color: "rgba(255,255,255,0.70)", fontSize: 10, fontWeight: "700" }}>
+          {status.playing && playbackDuration > 0
+            ? `${formatAppointmentVoiceDuration(status.currentTime)} / ${formatAppointmentVoiceDuration(playbackDuration)}`
             : timeLabel}
         </Text>
       </View>
-    </Pressable>
+    </View>
   );
 }
-
 function MessageVoiceRecorderButton({
   disabled,
   onRecorded,
