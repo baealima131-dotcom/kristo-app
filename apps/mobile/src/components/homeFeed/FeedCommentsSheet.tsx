@@ -1357,6 +1357,35 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
                 showsVerticalScrollIndicator={false}
               >
                 {cleanYoutubeVideoId ? (
+                  <Text style={styles.kristoCommentsTitle}>Kristo App comments</Text>
+                ) : null}
+                {loading || !initialLoadDone ? (
+                  <View style={styles.loadingRow}>
+                    <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
+                    <Text style={styles.loadingText}>Loading comments...</Text>
+                  </View>
+                ) : comments.length ? (
+                  comments.map((comment) => (
+                    <CommentRow
+                      key={comment.id}
+                      comment={comment}
+                      onReply={handleReply}
+                      onToggleLike={handleToggleLike}
+                      onReport={handleReportComment}
+                      onOpenAuthorProfile={
+                        openCommentAuthorProfile
+                      }
+                    />
+                  ))
+                ) : railDiscussionCount > 0 ? (
+                  <View style={styles.loadingRow}>
+                    <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
+                    <Text style={styles.loadingText}>Loading comments...</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.emptyText}>No comments yet. Start the conversation.</Text>
+                )}
+                {cleanYoutubeVideoId ? (
                   <View style={styles.youtubeCommentsSection}>
                     <Text style={styles.youtubeCommentsTitle}>Comments</Text>
                     {youtubeCommentsLoading ? (
@@ -1412,35 +1441,6 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
                     ) : null}
                   </View>
                 ) : null}
-                {cleanYoutubeVideoId ? (
-                  <Text style={styles.youtubeCommentsTitle}>Kristo App comments</Text>
-                ) : null}
-                {loading || !initialLoadDone ? (
-                  <View style={styles.loadingRow}>
-                    <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
-                    <Text style={styles.loadingText}>Loading comments...</Text>
-                  </View>
-                ) : comments.length ? (
-                  comments.map((comment) => (
-                    <CommentRow
-                      key={comment.id}
-                      comment={comment}
-                      onReply={handleReply}
-                      onToggleLike={handleToggleLike}
-                      onReport={handleReportComment}
-                      onOpenAuthorProfile={
-                        openCommentAuthorProfile
-                      }
-                    />
-                  ))
-                ) : railDiscussionCount > 0 ? (
-                  <View style={styles.loadingRow}>
-                    <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
-                    <Text style={styles.loadingText}>Loading comments...</Text>
-                  </View>
-                ) : (
-                  <Text style={styles.emptyText}>No comments yet. Start the conversation.</Text>
-                )}
               </ScrollView>
 
               <View style={[styles.footer, { paddingBottom: footerBottomPadding }]}>
@@ -1785,6 +1785,12 @@ const styles = StyleSheet.create({
     borderBottomColor: "rgba(217,179,95,0.26)",
   },
   youtubeCommentsTitle: {
+    color: "#9BBEFF",
+    fontSize: 15,
+    fontWeight: "900",
+    marginBottom: 10,
+  },
+  kristoCommentsTitle: {
     color: HOME_FEED_GOLD_SOFT,
     fontSize: 15,
     fontWeight: "900",
@@ -1805,13 +1811,15 @@ const styles = StyleSheet.create({
   youtubeCommentRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    marginTop: 10,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(255,255,255,0.1)",
   },
   youtubeCommentAvatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    marginRight: 10,
+    width: AVATAR_MAIN,
+    height: AVATAR_MAIN,
+    borderRadius: AVATAR_MAIN / 2,
+    marginRight: AVATAR_GAP,
     backgroundColor: "rgba(255,255,255,0.08)",
   },
   youtubeCommentAvatarFallback: {
@@ -1819,8 +1827,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   youtubeCommentInitial: {
-    color: HOME_FEED_GOLD_SOFT,
-    fontSize: 13,
+    color: "#9BBEFF",
+    fontSize: 17,
     fontWeight: "900",
   },
   youtubeCommentContent: {
@@ -1829,30 +1837,33 @@ const styles = StyleSheet.create({
   },
   youtubeCommentMeta: {
     flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 4,
+    alignItems: "baseline",
+    marginBottom: 6,
+    gap: 8,
   },
   youtubeCommentAuthor: {
-    color: "rgba(255,255,255,0.9)",
-    fontSize: 13,
+    color: "#9BBEFF",
+    fontSize: 16,
     fontWeight: "800",
     flexShrink: 1,
-    marginRight: 8,
   },
   youtubeCommentTime: {
     color: HOME_FEED_MUTED,
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "400",
+    flexShrink: 0,
   },
   youtubeCommentText: {
     color: "rgba(255,255,255,0.82)",
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 15,
+    fontWeight: "400",
+    lineHeight: 21,
   },
   youtubeCommentCounts: {
     color: HOME_FEED_MUTED,
-    fontSize: 11,
-    marginTop: 5,
+    fontSize: 13,
+    fontWeight: "800",
+    marginTop: 12,
   },
   youtubeCommentsMore: {
     alignSelf: "flex-start",
