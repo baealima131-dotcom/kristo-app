@@ -417,9 +417,11 @@ function PrivateCallOutgoingRinging({ callId }: { callId: string }) {
 function PrivateCallRingingAudio({
   callId,
   onPromptFinished,
+  onRingingStarted,
 }: {
   callId: string;
   onPromptFinished: () => void;
+  onRingingStarted?: () => void;
 }) {
   const [audioUris, setAudioUris] = useState<PrivateCallRingingAudioUris | null>(null);
   const waittonePlayer = useAudioPlayer(
@@ -432,9 +434,15 @@ function PrivateCallRingingAudio({
   const unavailableStatus = useAudioPlayerStatus(unavailablePlayer);
   const startedCallRef = useRef("");
   const promptFinishedRef = useRef(false);
+  const onRingingStartedRef = useRef(onRingingStarted);
+
+  useEffect(() => {
+    onRingingStartedRef.current = onRingingStarted;
+  }, [onRingingStarted]);
 
   useEffect(() => {
     let active = true;
+    onRingingStartedRef.current?.();
     void ensurePrivateCallRingingAudioFiles()
       .then((uris) => {
         if (active) setAudioUris(uris);
@@ -1086,6 +1094,7 @@ export default function PrivateCallScreen() {
   const sessionStatusRef = useRef<string>("");
   const onEndRef = useRef<() => void>(() => {});
   const onRemoteTerminationRef = useRef<(source: string, status: string) => void>(() => {});
+  const outgoingRingingAudioStartedRef = useRef("");
 
   const role = useMemo(() => {
     if (!session || !currentUserId) return "unknown";
@@ -1168,7 +1177,11 @@ export default function PrivateCallScreen() {
         source,
         status,
       });
-      if (status === "timeout" && role === "caller" && sessionStatusRef.current === "ringing") {
+      if (
+        status === "timeout" &&
+        role === "caller" &&
+        outgoingRingingAudioStartedRef.current === callId
+      ) {
         console.log("KRISTO_PRIVATE_CALL_TIMEOUT_PROMPT_DEFERRED", {
           callId,
           source,
@@ -1178,7 +1191,7 @@ export default function PrivateCallScreen() {
       }
       exitCallScreen("remote-end", { source, status });
     },
-    [callId, currentUserId, exitCallScreen]
+    [callId, currentUserId, exitCallScreen, role]
   );
 
   const handleEndCall = useCallback(async () => {
@@ -1817,7 +1830,13 @@ export default function PrivateCallScreen() {
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
       {session.status === "ringing" && role === "caller" ? (
-        <PrivateCallRingingAudio callId={session.id} onPromptFinished={handleEndCall} />
+        <PrivateCallRingingAudio
+          callId={session.id}
+          onPromptFinished={handleEndCall}
+          onRingingStarted={() => {
+            outgoingRingingAudioStartedRef.current = session.id;
+          }}
+        />
       ) : null}
       <Pressable
         onPress={() => {
