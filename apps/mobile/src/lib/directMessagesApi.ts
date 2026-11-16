@@ -23,6 +23,8 @@ export type DirectMessageInboxRow = DirectMessageThread & {
   peerName?: string;
   lastMessagePreview: string;
   lastMessageText?: string;
+  lastMessageStatus?: "sent" | "read";
+  peerRole?: string;
   timestampLabel: string;
   timestampMs: number;
   unreadCount: number;
@@ -68,6 +70,11 @@ export async function fetchDirectMessageInbox(): Promise<DirectMessageInboxRow[]
       avatarUri: String(row?.avatarUri || row?.avatarUrl || ""),
       lastMessagePreview: preview,
       lastMessageText: preview,
+      lastMessageStatus:
+        row?.lastMessageStatus === "read" || row?.lastMessageStatus === "sent"
+          ? row.lastMessageStatus
+          : undefined,
+      peerRole: String(row?.peerRole || "Member"),
       timestampLabel: String(row?.timestampLabel || ""),
       timestampMs: Number(row?.timestampMs || 0),
       unreadCount: Math.max(0, Number(row?.unreadCount || 0)),
