@@ -6824,21 +6824,23 @@ function Bubble({
             <View style={[s.msgMetaRow, voiceOnlyMessage ? { marginTop: 1 } : null]}>
               <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
               {receiptLabel ? (
-                <View style={s.deliveredRow}>
+                <View
+                  accessible
+                  accessibilityRole="image"
+                  accessibilityLabel={`Message ${receiptLabel.toLowerCase()}`}
+                  style={s.deliveredRow}
+                >
                   <Ionicons
-                    name={
-                      receiptLabel === "Read"
-                        ? "checkmark-done"
-                        : "checkmark"
-                    }
-                    size={11}
+                    name={receiptLabel === "Sent" ? "checkmark" : "checkmark-done"}
+                    size={16}
                     color={
                       receiptLabel === "Read"
-                        ? "rgba(217,179,95,0.95)"
-                        : "rgba(196,181,253,0.88)"
+                        ? "#35B8FF"
+                        : receiptLabel === "Delivered"
+                          ? "rgba(225,239,246,0.82)"
+                          : "rgba(225,239,246,0.68)"
                     }
                   />
-                  <Text style={t.deliveredText}>{receiptLabel}</Text>
                 </View>
               ) : null}
             </View>
@@ -14548,16 +14550,16 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 profileAvatarUri={liveScheduleProfileAvatarUri}
                 onEnterLiveFromScheduleCard={handleEnterLiveFromChurchScheduleCard}
                 receiptLabel={
-                  isPersonToPersonDm && item.sender === "me"
-                    ? dmConversationSettings?.showReadReceipts === true
-                      ? Number(item.createdAt || 0) <=
-                        Number(dmConversationSettings?.peerReadAt || 0)
-                        ? "Read"
-                        : "Delivered"
-                      : undefined
-                    : item.sender === "me"
-                      ? "Delivered"
-                      : undefined
+                  item.sender !== "me"
+                    ? undefined
+                    : isPersonToPersonDm
+                      ? dmConversationSettings?.showReadReceipts === true
+                        ? Number(item.createdAt || 0) <=
+                          Number(dmConversationSettings?.peerReadAt || 0)
+                          ? "Read"
+                          : "Delivered"
+                        : "Sent"
+                      : "Delivered"
                 }
               />
             );
