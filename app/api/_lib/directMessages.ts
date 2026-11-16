@@ -146,6 +146,8 @@ export type DirectMessageInboxItem = {
   timestampLabel: string;
   timestampMs: number;
   unreadCount: number;
+  peerRole?: string;
+  lastMessageStatus?: "sent" | "read";
   relationshipStatus?: DmRelationshipStatus;
   requestInitiatorUserId?: string;
   isRequestInitiator?: boolean;
@@ -1725,6 +1727,7 @@ async function lastMessageForThread(
       String(latest?.text || "").trim() ||
       (Array.isArray(latest?.attachments) && latest.attachments.length ? "Attachment" : ""),
     timestampMs: Number(latest?.createdAt || 0),
+    senderUserId: normUserId(latest?.senderUserId || ""),
   };
 }
 
@@ -1979,14 +1982,17 @@ export async function listDirectMessageInbox(args: {
         viewerUserId
       );
 
-      const profile = await getProfile(peerUserId).catch((error) => {
+      const [profile, peerMembership] = await Promise.all([
+        getProfile(peerUserId).catch((error) => {
         console.warn("KRISTO_DM_INBOX_PROFILE_LOOKUP_FAILED", {
           roomId: thread.roomId,
           peerUserId,
           error: String((error as any)?.message || error),
         });
         return null;
-      });
+        }),
+        getActiveMembership(peerUserId).catch(() => null),
+      ]);
 
       const clearedAt = Number(
         thread.clearedAtByUserId?.[viewerUserId] || 0
@@ -2123,6 +2129,17 @@ export async function listDirectMessageInbox(args: {
           thread.createdAt ||
           0
       );
+      const showReadReceipts = lastMessage?.senderUserId === viewerUserId
+        ? await getPairReadReceiptVisibility({ viewerUserId, peerUserId }).catch(() => false)
+        : false;
+      const peerReadAt = showReadReceipts
+        ? Number(thread.readAtByUserId?.[peerUserId] || 0)
+        : 0;
+      const lastMessageStatus = lastMessage?.senderUserId === viewerUserId
+        ? peerReadAt >= Number(lastMessage.timestampMs || 0) && Number(lastMessage.timestampMs || 0) > 0
+          ? "read" as const
+          : "sent" as const
+        : undefined;
 
       const storageChurch = storageChurchId
         ? await getChurchById(storageChurchId).catch(() => null)
@@ -2153,6 +2170,8 @@ export async function listDirectMessageInbox(args: {
         timestampLabel: formatTimestampLabel(timestampMs),
         timestampMs,
         unreadCount,
+        peerRole: String(peerMembership?.churchRole || profile?.churchRole || profile?.role || "Member").trim(),
+        ...(lastMessageStatus ? { lastMessageStatus } : {}),
         relationshipStatus,
         requestInitiatorUserId,
         isRequestInitiator,
