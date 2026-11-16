@@ -146,6 +146,7 @@ export function looksLikeUserId(value: string) {
   if (!v) return true;
   if (v === "Member" || v === "u-unknown") return true;
   if (/^u[-_]?/i.test(v)) return true;
+  if (/^KR\d+-[A-Z0-9]{7,10}$/i.test(v)) return true;
   if (/^[a-f0-9-]{18,}$/i.test(v)) return true;
   if (v.length >= 20 && !v.includes(" ")) return true;
   return false;
