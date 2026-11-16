@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as FileSystem from "expo-file-system/legacy";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, { useAnimatedStyle, useSharedValue } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { apiGet, apiPatch } from "@/src/lib/kristoApi";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -24,6 +27,231 @@ import { emitChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 
 const GOLD = "rgba(217,179,95,0.96)";
 const BG = "#070B14";
+const CHURCH_PICTURE_ASPECT = 5 / 8;
+
+function ChurchPictureCropModal({
+  visible,
+  uri,
+  onCancel,
+  onUse,
+}: {
+  visible: boolean;
+  uri: string;
+  onCancel: () => void;
+  onUse: (uri: string) => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
+  const [rotation, setRotation] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const zoom = useSharedValue(1);
+  const zoomStart = useSharedValue(1);
+  const panX = useSharedValue(0);
+  const panY = useSharedValue(0);
+  const panStartX = useSharedValue(0);
+  const panStartY = useSharedValue(0);
+
+  const frameWidth = Math.min(screenWidth * 0.59, screenHeight * 0.265, 300);
+  const frameHeight = frameWidth / CHURCH_PICTURE_ASPECT;
+  const thumbWidth = Math.min(frameWidth * 0.66, 126);
+  const thumbHeight = thumbWidth / CHURCH_PICTURE_ASPECT;
+  const orientedWidth = rotation % 180 === 0 ? imageSize.width : imageSize.height;
+  const orientedHeight = rotation % 180 === 0 ? imageSize.height : imageSize.width;
+  const coverScale = imageSize.width && imageSize.height
+    ? Math.max(frameWidth / orientedWidth, frameHeight / orientedHeight)
+    : 1;
+  const renderedWidth = imageSize.width * coverScale;
+  const renderedHeight = imageSize.height * coverScale;
+
+  useEffect(() => {
+    if (!visible || !uri) return;
+    setImageSize({ width: 0, height: 0 });
+    setRotation(0);
+    setSaving(false);
+    zoom.value = 1;
+    zoomStart.value = 1;
+    panX.value = 0;
+    panY.value = 0;
+    Image.getSize(uri, (width, height) => setImageSize({ width, height }), () => {});
+  }, [visible, uri, zoom, zoomStart, panX, panY]);
+
+  const pinch = Gesture.Pinch()
+    .onBegin(() => { zoomStart.value = zoom.value; })
+    .onUpdate((event) => {
+      zoom.value = Math.max(1, Math.min(4, zoomStart.value * event.scale));
+      const maxX = Math.max(0, (orientedWidth * coverScale * zoom.value - frameWidth) / 2);
+      const maxY = Math.max(0, (orientedHeight * coverScale * zoom.value - frameHeight) / 2);
+      panX.value = Math.max(-maxX, Math.min(maxX, panX.value));
+      panY.value = Math.max(-maxY, Math.min(maxY, panY.value));
+    });
+
+  const pan = Gesture.Pan()
+    .maxPointers(1)
+    .onBegin(() => {
+      panStartX.value = panX.value;
+      panStartY.value = panY.value;
+    })
+    .onUpdate((event) => {
+      const maxX = Math.max(0, (orientedWidth * coverScale * zoom.value - frameWidth) / 2);
+      const maxY = Math.max(0, (orientedHeight * coverScale * zoom.value - frameHeight) / 2);
+      panX.value = Math.max(-maxX, Math.min(maxX, panStartX.value + event.translationX));
+      panY.value = Math.max(-maxY, Math.min(maxY, panStartY.value + event.translationY));
+    });
+
+  const imageMotion = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: panX.value },
+      { translateY: panY.value },
+      { rotate: `${rotation}deg` },
+      { scale: zoom.value },
+    ],
+  }));
+  const thumbMotion = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: panX.value * thumbWidth / frameWidth },
+      { translateY: panY.value * thumbHeight / frameHeight },
+      { rotate: `${rotation}deg` },
+      { scale: zoom.value },
+    ],
+  }));
+
+  function changeZoom(amount: number) {
+    const nextZoom = Math.max(1, Math.min(4, zoom.value + amount));
+    zoom.value = nextZoom;
+    zoomStart.value = zoom.value;
+    const maxX = Math.max(0, (orientedWidth * coverScale * nextZoom - frameWidth) / 2);
+    const maxY = Math.max(0, (orientedHeight * coverScale * nextZoom - frameHeight) / 2);
+    panX.value = Math.max(-maxX, Math.min(maxX, panX.value));
+    panY.value = Math.max(-maxY, Math.min(maxY, panY.value));
+  }
+
+  function rotateImage() {
+    setRotation((value) => (value + 90) % 360);
+    zoom.value = 1;
+    zoomStart.value = 1;
+    panX.value = 0;
+    panY.value = 0;
+  }
+
+  async function usePicture() {
+    if (!uri || !imageSize.width || saving) return;
+    setSaving(true);
+    try {
+      let sourceUri = uri;
+      let sourceSize = imageSize;
+      if (rotation) {
+        const rotated = await ImageManipulator.manipulateAsync(
+          sourceUri,
+          [{ rotate: rotation }],
+          { compress: 1, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        sourceUri = rotated.uri;
+        sourceSize = await new Promise<{ width: number; height: number }>((resolve, reject) =>
+          Image.getSize(sourceUri, (width, height) => resolve({ width, height }), reject)
+        );
+      }
+      const scale = Math.max(frameWidth / sourceSize.width, frameHeight / sourceSize.height);
+      const cropWidth = Math.min(sourceSize.width, frameWidth / (scale * zoom.value));
+      const cropHeight = Math.min(sourceSize.height, frameHeight / (scale * zoom.value));
+      const centerX = sourceSize.width / 2 - panX.value / (scale * zoom.value);
+      const centerY = sourceSize.height / 2 - panY.value / (scale * zoom.value);
+      const originX = Math.max(0, Math.min(sourceSize.width - cropWidth, centerX - cropWidth / 2));
+      const originY = Math.max(0, Math.min(sourceSize.height - cropHeight, centerY - cropHeight / 2));
+      const cropped = await ImageManipulator.manipulateAsync(
+        sourceUri,
+        [
+          { crop: { originX, originY, width: cropWidth, height: cropHeight } },
+          { resize: { width: 750, height: 1200 } },
+        ],
+        { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      onUse(cropped.uri);
+    } catch (error: any) {
+      Alert.alert("Picture could not be prepared", String(error?.message || "Please choose the picture again."));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onCancel}>
+      <View style={[s.cropScreen, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 12 }]}>
+        <View style={s.cropHeader}>
+          <Pressable onPress={onCancel} hitSlop={10} style={s.cropCancel}>
+            <Text style={s.cropCancelText}>Cancel</Text>
+          </Pressable>
+          <Text style={s.cropTitle}>Church picture</Text>
+          <View style={s.cropHeaderSpacer} />
+        </View>
+
+        <Text style={s.cropHint}>Kuza au punguza kwa vidole viwili, kisha sogeza picha mpaka ipende.</Text>
+
+        <View style={s.cropMainArea}>
+          {imageSize.width > 0 ? (
+            <GestureDetector gesture={Gesture.Simultaneous(pan, pinch)}>
+              <View style={[s.cropFrame, { width: frameWidth, height: frameHeight }]}>
+                <Animated.Image
+                  source={{ uri }}
+                  resizeMode="cover"
+                  style={[
+                    s.cropImage,
+                    {
+                      width: renderedWidth,
+                      height: renderedHeight,
+                      left: (frameWidth - renderedWidth) / 2,
+                      top: (frameHeight - renderedHeight) / 2,
+                    },
+                    imageMotion,
+                  ]}
+                />
+              </View>
+            </GestureDetector>
+          ) : <ActivityIndicator color={GOLD} size="large" />}
+        </View>
+
+        <View style={s.cropPreviewRow}>
+          <View style={[s.cropThumbFrame, { width: thumbWidth, height: thumbHeight }]}>
+            {imageSize.width > 0 ? (
+              <Animated.Image
+                source={{ uri }}
+                resizeMode="cover"
+                style={[
+                  s.cropImage,
+                  {
+                    width: imageSize.width * coverScale * thumbWidth / frameWidth,
+                    height: imageSize.height * coverScale * thumbHeight / frameHeight,
+                    left: (thumbWidth - imageSize.width * coverScale * thumbWidth / frameWidth) / 2,
+                    top: (thumbHeight - imageSize.height * coverScale * thumbHeight / frameHeight) / 2,
+                  },
+                  thumbMotion,
+                ]}
+              />
+            ) : null}
+          </View>
+          <View style={s.cropPreviewDetails}>
+            <Text style={s.cropPreviewEyebrow}>CHURCH OVERVIEW</Text>
+            <Text style={s.cropPreviewText}>Picha itaonekana hivi baada ya kuhifadhi.</Text>
+            <View style={s.cropControls}>
+              <Pressable onPress={() => changeZoom(-0.25)} style={s.cropControl} accessibilityLabel="Zoom out">
+                <Ionicons name="remove" size={25} color={GOLD} />
+              </Pressable>
+              <Pressable onPress={rotateImage} style={s.cropControl} accessibilityLabel="Rotate picture">
+                <Ionicons name="refresh" size={23} color={GOLD} />
+              </Pressable>
+              <Pressable onPress={() => changeZoom(0.25)} style={s.cropControl} accessibilityLabel="Zoom in">
+                <Ionicons name="add" size={25} color={GOLD} />
+              </Pressable>
+            </View>
+          </View>
+        </View>
+
+        <Pressable disabled={!imageSize.width || saving} onPress={usePicture} style={[s.cropUseButton, saving && { opacity: 0.7 }]}>
+          {saving ? <ActivityIndicator color="#070B14" /> : <Text style={s.cropUseText}>Use picture</Text>}
+        </Pressable>
+      </View>
+    </Modal>
+  );
+}
 
 function mediaUrl(u: any) {
   const s = String(u || "").trim();
@@ -92,6 +320,7 @@ export default function EditChurchProfile() {
   const [address, setAddress] = useState("");
   const [avatarUri, setAvatarUri] = useState("");
   const [avatarDirty, setAvatarDirty] = useState(false);
+  const [cropUri, setCropUri] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -152,27 +381,30 @@ export default function EditChurchProfile() {
   async function pickAvatar() {
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.85,
-      allowsEditing: true,
-      aspect: [1, 1],
+      quality: 1,
+      allowsEditing: false,
     });
 
     if (res.canceled) return;
     const picked = String(res.assets?.[0]?.uri || "").trim();
     if (!picked) return;
+    setCropUri(picked);
+  }
 
+  async function acceptChurchPicture(uri: string) {
     try {
       const auth = getKristoAuth();
       const churchId = String(session?.churchId || auth.churchId || "").trim();
       const dir = `${FileSystem.documentDirectory}church-avatar/`;
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
       const nextUri = `${dir}${churchId || "church"}-${Date.now()}.jpg`;
-      const compressedUri = await compressAvatarFile(picked, nextUri);
+      const compressedUri = await compressAvatarFile(uri, nextUri);
       setAvatarUri(compressedUri);
     } catch {
-      setAvatarUri(picked);
+      setAvatarUri(uri);
     }
     setAvatarDirty(true);
+    setCropUri("");
   }
 
   async function save() {
@@ -455,6 +687,12 @@ export default function EditChurchProfile() {
           <Text style={s.saveText}>Save Church Profile</Text>
         </Pressable>
       </ScrollView>
+      <ChurchPictureCropModal
+        visible={Boolean(cropUri)}
+        uri={cropUri}
+        onCancel={() => setCropUri("")}
+        onUse={acceptChurchPicture}
+      />
     </View>
   );
 }
@@ -469,7 +707,7 @@ const s = StyleSheet.create({
   avatarBox: { alignSelf: "center", alignItems: "center", marginBottom: 30 },
   avatarFrame: {
     width: 128,
-    height: 128,
+    height: 205,
     borderRadius: 34,
     alignItems: "center",
     justifyContent: "center",
@@ -480,13 +718,13 @@ const s = StyleSheet.create({
   },
   avatarPlaceholder: {
     width: 118,
-    height: 118,
+    height: 195,
     borderRadius: 30,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-  avatar: { width: 118, height: 118, borderRadius: 30 },
+  avatar: { width: 118, height: 195, borderRadius: 30 },
   avatarEditBadge: {
     position: "absolute",
     right: -8,
@@ -506,4 +744,23 @@ const s = StyleSheet.create({
   input: { color: "white", backgroundColor: "rgba(255,255,255,0.07)", borderWidth: 1, borderColor: "rgba(217,179,95,0.20)", borderRadius: 16, paddingHorizontal: 14, paddingVertical: 13, fontWeight: "800" },
   saveBtn: { marginTop: 26, height: 54, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: GOLD },
   saveText: { color: "#070B14", fontWeight: "900", fontSize: 16 },
+  cropScreen: { flex: 1, backgroundColor: BG, paddingHorizontal: 18 },
+  cropHeader: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  cropCancel: { minWidth: 70, minHeight: 44, justifyContent: "center" },
+  cropCancelText: { color: "rgba(255,255,255,0.78)", fontSize: 16, fontWeight: "700" },
+  cropTitle: { color: "white", fontSize: 19, fontWeight: "900", textAlign: "center" },
+  cropHeaderSpacer: { width: 70 },
+  cropHint: { color: "rgba(255,255,255,0.62)", fontSize: 14, lineHeight: 20, textAlign: "center", marginTop: 5, marginBottom: 10, paddingHorizontal: 10 },
+  cropMainArea: { flex: 1, minHeight: 180, alignItems: "center", justifyContent: "center" },
+  cropFrame: { overflow: "hidden", borderRadius: 24, borderWidth: 2, borderColor: GOLD, backgroundColor: "#121722" },
+  cropImage: { position: "absolute" },
+  cropPreviewRow: { flexDirection: "row", alignItems: "center", gap: 14, minHeight: 154, marginTop: 10, marginBottom: 14 },
+  cropThumbFrame: { overflow: "hidden", borderRadius: 20, borderWidth: 2, borderColor: GOLD, backgroundColor: "#121722" },
+  cropPreviewDetails: { flex: 1, minWidth: 0, justifyContent: "center" },
+  cropPreviewEyebrow: { color: GOLD, fontSize: 13, fontWeight: "900", letterSpacing: 1 },
+  cropPreviewText: { color: "rgba(255,255,255,0.68)", fontSize: 13, lineHeight: 18, marginTop: 6 },
+  cropControls: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 12 },
+  cropControl: { width: 43, height: 43, borderRadius: 22, borderWidth: 1.5, borderColor: "rgba(217,179,95,0.62)", backgroundColor: "rgba(217,179,95,0.08)", alignItems: "center", justifyContent: "center" },
+  cropUseButton: { height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", backgroundColor: GOLD },
+  cropUseText: { color: "#070B14", fontWeight: "900", fontSize: 17 },
 });

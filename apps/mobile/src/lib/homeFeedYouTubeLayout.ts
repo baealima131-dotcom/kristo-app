@@ -53,9 +53,8 @@ export function resolveWatchPlayerHeight(params: {
   );
 
   if (params.isPortraitLayout) {
-    const byAspect = Math.round(width / (4 / 5));
-    const cap = Math.round(windowHeight * (tablet ? 0.68 : 0.72));
-    return Math.min(byAspect, cap, viewportBudget);
+    // Fill the phone width with a true 4:5 portrait video frame.
+    return Math.round(width / (4 / 5) * 0.94);
   }
 
   return Math.min(Math.round(width / YOUTUBE_THUMB_ASPECT), viewportBudget);

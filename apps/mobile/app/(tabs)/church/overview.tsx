@@ -1351,83 +1351,86 @@ setMediaTargets(
               style={StyleSheet.absoluteFillObject}
             />
 
-            <View style={s.profileTop}>
-              <View style={s.profileAvatarRing}>
-                <View style={s.profileAvatarHalo} pointerEvents="none" />
-                {profile.avatarUri ? (
-                  <Image
-                    source={{ uri: avatarCacheBust(profile.avatarUri, profile.avatarUpdatedAt) }}
-                    style={s.profileAvatar}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View style={s.profileIcon}>
-                    <Ionicons name="business-outline" size={28} color={GOLD} />
+            <View style={s.profileHero}>
+  <View style={s.profileAvatarRing}>
+                  <View style={s.profileAvatarHalo} pointerEvents="none" />
+                  {profile.avatarUri ? (
+                    <Image
+                      source={{ uri: avatarCacheBust(profile.avatarUri, profile.avatarUpdatedAt) }}
+                      style={s.profileAvatar}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={s.profileIcon}>
+                      <Ionicons name="business-outline" size={28} color={GOLD} />
+                    </View>
+                  )}
+                </View>
+              <View style={s.profileDetails}>
+                <View style={s.profileTop}>
+    <View style={{ flex: 1 }}>
+                    <Text style={s.profileEyebrow}>Church Profile</Text>
+                    <Text style={s.profileChurch} numberOfLines={2}>
+                      {displayChurchName}
+                    </Text>
+                    {churchVerified ? (
+                      <View style={s.profileVerifiedRow}>
+                        <Ionicons name="shield-checkmark" size={12} color={GOLD_SOFT} />
+                        <Text style={s.profileVerifiedText}>Verified church identity</Text>
+                      </View>
+                    ) : null}
                   </View>
-                )}
-              </View>
+    
+                  {canEditProfile ? (
+                    <LuxuryPressable
+                      onPress={() =>
+                        router.push({
+                          pathname: "/(tabs)/church/edit" as any,
+                          params: {
+                            name: profile.name || "",
+                            pastorName: profile.pastorName || "",
+                            address: profile.address || "",
+                            phone: profile.phone || "",
+                          },
+                        })
+                      }
+                      style={s.profileEditBtn}
+                    >
+                      <Ionicons name="create-outline" size={16} color={GOLD} />
+                    </LuxuryPressable>
+                  ) : null}
+                </View>
 
-              <View style={{ flex: 1 }}>
-                <Text style={s.profileEyebrow}>Church Profile</Text>
-                <Text style={s.profileChurch} numberOfLines={2}>
-                  {displayChurchName}
-                </Text>
-                {churchVerified ? (
-                  <View style={s.profileVerifiedRow}>
-                    <Ionicons name="shield-checkmark" size={12} color={GOLD_SOFT} />
-                    <Text style={s.profileVerifiedText}>Verified church identity</Text>
+    <View style={s.profileInfoList}>
+                  <View style={s.profileInfoRow}>
+                    <View style={s.pastorAvatar}>
+                      <Text style={s.pastorAvatarText}>{pastorInitial(profile.pastorName)}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.profileInfoLabel}>Pastor</Text>
+                      <Text style={s.profileInfoValue}>{pastorDisplay}</Text>
+                    </View>
                   </View>
-                ) : null}
-              </View>
-
-              {canEditProfile ? (
-                <LuxuryPressable
-                  onPress={() =>
-                    router.push({
-                      pathname: "/(tabs)/church/edit" as any,
-                      params: {
-                        name: profile.name || "",
-                        pastorName: profile.pastorName || "",
-                        address: profile.address || "",
-                        phone: profile.phone || "",
-                      },
-                    })
-                  }
-                  style={s.profileEditBtn}
-                >
-                  <Ionicons name="create-outline" size={16} color={GOLD} />
-                </LuxuryPressable>
-              ) : null}
-            </View>
-
-            <View style={s.profileInfoList}>
-              <View style={s.profileInfoRow}>
-                <View style={s.pastorAvatar}>
-                  <Text style={s.pastorAvatarText}>{pastorInitial(profile.pastorName)}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.profileInfoLabel}>Pastor</Text>
-                  <Text style={s.profileInfoValue}>{pastorDisplay}</Text>
-                </View>
-              </View>
-
-              <View style={s.profileInfoRow}>
-                <View style={s.profileInfoIconWrap}>
-                  <Ionicons name="location-outline" size={15} color={GOLD} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.profileInfoLabel}>Address</Text>
-                  <Text style={s.profileInfoValue}>{profile.address || "—"}</Text>
-                </View>
-              </View>
-
-              <View style={s.profileInfoRow}>
-                <View style={s.profileInfoIconWrap}>
-                  <Ionicons name="call-outline" size={15} color={GOLD} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.profileInfoLabel}>Phone</Text>
-                  <Text style={s.profileInfoValue}>{profile.phone || "—"}</Text>
+    
+                  <View style={s.profileInfoRow}>
+                    <View style={s.profileInfoIconWrap}>
+                      <Ionicons name="location-outline" size={15} color={GOLD} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.profileInfoLabel}>Address</Text>
+                      <Text style={s.profileInfoValue}>{profile.address || "—"}</Text>
+                    </View>
+                  </View>
+    
+                  <View style={s.profileInfoRow}>
+                    <View style={s.profileInfoIconWrap}>
+                      <Ionicons name="call-outline" size={15} color={GOLD} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.profileInfoLabel}>Phone</Text>
+                      <Text style={s.profileInfoValue}>{profile.phone || "—"}</Text>
+                    </View>
+                  </View>
                 </View>
               </View>
             </View>
@@ -1854,12 +1857,19 @@ const s = StyleSheet.create<any>({
   wrap: { flex: 1, paddingHorizontal: 16, alignItems: "stretch" },
 
   heroHeader: {
-    marginBottom: 6,
-    borderRadius: 20,
-    overflow: "hidden",
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 0,
+    marginBottom: 10,
+    borderRadius: 22,
+    overflow: "visible",
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.24)",
+    backgroundColor: "rgba(217,179,95,0.035)",
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
   },
   heroGradient: {
     ...StyleSheet.absoluteFillObject,
@@ -1867,12 +1877,12 @@ const s = StyleSheet.create<any>({
   },
   heroTitleGlow: {
     position: "absolute",
-    top: 4,
+    top: 2,
     left: 8,
-    width: 140,
-    height: 44,
+    width: "82%",
+    height: 52,
     borderRadius: 999,
-    backgroundColor: "rgba(217,179,95,0.04)",
+    backgroundColor: "rgba(217,179,95,0.10)",
   },
 
   topRow: {
@@ -1897,11 +1907,16 @@ const s = StyleSheet.create<any>({
   },
 
   h1: {
-    color: TEXT_PRIMARY,
-    fontSize: 28,
-    fontWeight: "800",
-    letterSpacing: 0.12,
+    color: GOLD,
+    fontFamily: "serif",
+    fontSize: 25,
+    fontWeight: "700",
+    letterSpacing: 2,
     lineHeight: 32,
+    textTransform: "uppercase",
+    textShadowColor: "rgba(217,179,95,0.62)",
+    textShadowRadius: 13,
+    textShadowOffset: { width: 0, height: 0 },
   },
   heroIdentityRow: {
     flexDirection: "row",
@@ -1988,17 +2003,19 @@ const s = StyleSheet.create<any>({
     height: 64,
   },
 
+  profileHero: { flexDirection: "row", alignItems: "stretch", gap: 12 },
+  profileDetails: { flex: 1, minWidth: 0, justifyContent: "center" },
   profileTop: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 10,
+    alignItems: "flex-start",
+    gap: 6,
+    marginBottom: 8,
   },
 
   profileAvatarRing: {
-    width: 70,
-    height: 70,
-    borderRadius: 22,
+    width: "40%",
+    height: 220,
+    borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
@@ -2007,23 +2024,23 @@ const s = StyleSheet.create<any>({
   },
   profileAvatarHalo: {
     position: "absolute",
-    width: 82,
-    height: 82,
-    borderRadius: 26,
+    width: 148,
+    height: 236,
+    borderRadius: 30,
     backgroundColor: "rgba(217,179,95,0.10)",
   },
 
   profileAvatar: {
-    width: 60,
-    height: 60,
+    width: "100%",
+    height: "100%",
     borderRadius: 20,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
   },
 
   profileIcon: {
-    width: 60,
-    height: 60,
+    width: "100%",
+    height: "100%",
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
@@ -2174,10 +2191,10 @@ const s = StyleSheet.create<any>({
   statCardBase: {
     width: STAT_CARD_WIDTH,
     height: STAT_CARD_HEIGHT,
-    borderRadius: 24,
+    borderRadius: 26,
     padding: 16,
     overflow: "hidden",
-    borderWidth: 1,
+    borderWidth: 1.5,
     justifyContent: "space-between",
   },
   statCardSheen: {
@@ -2191,28 +2208,28 @@ const s = StyleSheet.create<any>({
     position: "absolute",
     bottom: -20,
     right: -10,
-    width: 90,
-    height: 90,
+    width: 104,
+    height: 104,
     borderRadius: 999,
-    backgroundColor: "rgba(72,140,255,0.16)",
+    backgroundColor: "rgba(72,140,255,0.24)",
   },
   statGlowGold: {
     position: "absolute",
     bottom: -18,
     right: -8,
-    width: 88,
-    height: 88,
+    width: 102,
+    height: 102,
     borderRadius: 999,
-    backgroundColor: "rgba(217,179,95,0.14)",
+    backgroundColor: "rgba(217,179,95,0.22)",
   },
   statGlowPurple: {
     position: "absolute",
     bottom: -18,
     right: -8,
-    width: 88,
-    height: 88,
+    width: 102,
+    height: 102,
     borderRadius: 999,
-    backgroundColor: "rgba(168,120,255,0.16)",
+    backgroundColor: "rgba(168,120,255,0.24)",
   },
   statGlowAction: {
     position: "absolute",
@@ -2225,40 +2242,40 @@ const s = StyleSheet.create<any>({
   },
 
   statCardBlue: {
-    backgroundColor: "rgba(8,16,32,0.94)",
-    borderColor: "rgba(72,140,255,0.28)",
+    backgroundColor: "rgba(8,16,32,0.96)",
+    borderColor: "rgba(72,140,255,0.52)",
     shadowColor: "#4A90FF",
-    shadowOpacity: 0.22,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
+    shadowOpacity: 0.40,
+    shadowRadius: 19,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 10,
   },
   statCardGoldGlow: {
-    backgroundColor: "rgba(14,12,8,0.94)",
-    borderColor: "rgba(217,179,95,0.30)",
+    backgroundColor: "rgba(14,12,8,0.96)",
+    borderColor: "rgba(217,179,95,0.54)",
     shadowColor: GOLD,
-    shadowOpacity: 0.2,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
+    shadowOpacity: 0.38,
+    shadowRadius: 19,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 10,
   },
   statCardPurple: {
-    backgroundColor: "rgba(12,10,22,0.94)",
-    borderColor: "rgba(168,120,255,0.30)",
+    backgroundColor: "rgba(12,10,22,0.96)",
+    borderColor: "rgba(168,120,255,0.54)",
     shadowColor: "#A878FF",
-    shadowOpacity: 0.22,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
+    shadowOpacity: 0.40,
+    shadowRadius: 19,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 10,
   },
   statCardAction: {
-    backgroundColor: "rgba(16,14,8,0.95)",
-    borderColor: "rgba(217,179,95,0.38)",
+    backgroundColor: "rgba(16,14,8,0.96)",
+    borderColor: "rgba(217,179,95,0.56)",
     shadowColor: GOLD,
-    shadowOpacity: 0.28,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
+    shadowOpacity: 0.42,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 10,
   },
   statCardPremiumLocked: {
     backgroundColor: "rgba(10,12,18,0.96)",

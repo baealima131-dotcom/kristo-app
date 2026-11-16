@@ -5,6 +5,7 @@ import {
   Image,
   Linking,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StatusBar,
@@ -412,6 +413,7 @@ function WatchVideoSurface({
     });
   }, [postId, isTikTokLayout, playbackUri, item]);
 
+
   const player = useVideoPlayer(
     playbackUri ? buildWatchVideoPlayerSource(playbackUri) : null,
     (p) => {
@@ -525,24 +527,6 @@ function WatchVideoSurface({
           return;
         }
 
-        if (isTikTokLayout && activeBackdrop) {
-          const backdropCurrentUri = String((activeBackdrop as any)?.source?.uri || "").trim();
-          const backdropNeedsReplace = !backdropCurrentUri || backdropCurrentUri !== playbackUri;
-          if (backdropNeedsReplace) {
-            if (typeof activeBackdrop.replaceAsync === "function") {
-              await activeBackdrop.replaceAsync(source);
-            } else {
-              activeBackdrop.replace(source);
-            }
-          }
-          activeBackdrop.muted = true;
-          activeBackdrop.loop = true;
-          tryWatchAutoPlay(activeBackdrop, {
-            source: "home-feed-watch-backdrop",
-            uri: playbackUri,
-          });
-        }
-
         tryWatchAutoPlay(activePlayer, { source: "home-feed-watch", uri: playbackUri });
         if (isWatchAutoPlayBlocked()) return;
 
@@ -559,7 +543,7 @@ function WatchVideoSurface({
       });
       safePauseVideoPlayer(playerRef.current, { source: "home-feed-watch", uri: playbackUri });
     };
-  }, [playbackUri, postId, isTikTokLayout, tryWatchAutoPlay, isWatchAutoPlayBlocked]);
+  }, [playbackUri, postId, displayType, tryWatchAutoPlay, isWatchAutoPlayBlocked]);
 
   useEffect(() => {
     let lastPlaying: boolean | null = null;
@@ -694,24 +678,36 @@ function WatchVideoSurface({
 
   return (
     <View style={styles.playerSurface}>
-      {!ended && isTikTokLayout ? (
+      {!ended && displayType !== "youtube" ? (
         <>
-          <VideoView
-            player={backdropPlayer}
-            style={styles.tikTokVideoBackdrop}
-            contentFit="cover"
-            pointerEvents="none"
-          />
+          <View style={styles.tikTokVideoBackdrop} pointerEvents="none">
+            {item ? (
+              <FeedVideoPosterImage
+                item={item}
+                style={StyleSheet.absoluteFillObject}
+                resizeMode="cover"
+                postId={postId}
+                title={title}
+                churchName={churchName}
+                videoUrl={videoUri}
+                mediaStatus={mediaStatus}
+                videoDurationMs={videoDurationMs}
+                enableVideoFrameFallback={false}
+              />
+            ) : null}
+          </View>
           <View style={styles.tikTokBackdropOverlay} pointerEvents="none" />
         </>
       ) : null}
       {!ended ? (
+        <>
         <VideoView
           player={player}
           style={displayType === "youtube" ? styles.video : styles.videoPortrait}
-          contentFit={displayType === "tiktok" ? "cover" : "contain"}
+          contentFit={displayType === "youtube" ? "contain" : "cover"}
           nativeControls
         />
+        </>
       ) : null}
       {ended ? (
         <Pressable style={styles.replayOverlay} onPress={handleReplay} accessibilityLabel="Replay video">
@@ -1237,6 +1233,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     [width, windowHeight, insets.top, isPortraitLayout]
   );
   const scrollRef = useRef<ScrollView | null>(null);
+  const upNextScrollOffsetRef = useRef(0);
+  const upNextContentHeightRef = useRef(0);
+  const upNextViewportHeightRef = useRef(0);
+  const upNextPanStartOffsetRef = useRef(0);
   const [playbackStarted, setPlaybackStarted] = useState(false);
   const [communicationCounts, setCommunicationCounts] = useState({
     unreadMessages: 0,
@@ -1316,6 +1316,9 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const handleUpNextScroll = useCallback((event: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = event?.nativeEvent || {};
     if (!contentSize || !layoutMeasurement) return;
+    upNextScrollOffsetRef.current = Math.max(0, Number(contentOffset?.y || 0));
+    upNextContentHeightRef.current = Number(contentSize.height || 0);
+    upNextViewportHeightRef.current = Number(layoutMeasurement.height || 0);
     const remaining = contentSize.height - (contentOffset.y + layoutMeasurement.height);
     const length = upNextLengthRef.current;
     if (remaining > 1400 || !length || upNextRequestedForLengthRef.current === length) return;
@@ -1329,6 +1332,30 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         listener: handleUpNextScroll,
       }),
     [upNextScrollY, handleUpNextScroll]
+  );
+  const upNextScrollPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponderCapture: () => false,
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+          Math.abs(gesture.dy) > 8 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
+        onPanResponderGrant: () => {
+          upNextPanStartOffsetRef.current = upNextScrollOffsetRef.current;
+        },
+        onPanResponderMove: (_event, gesture) => {
+          const maxOffset = Math.max(
+            0,
+            upNextContentHeightRef.current - upNextViewportHeightRef.current
+          );
+          const y = Math.max(
+            0,
+            Math.min(maxOffset, upNextPanStartOffsetRef.current - gesture.dy)
+          );
+          scrollRef.current?.scrollTo({ y, animated: false });
+        },
+        onPanResponderTerminationRequest: () => false,
+      }),
+    []
   );
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
   const handleDisplayTypeDetected = useCallback(
@@ -1537,6 +1564,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             { height: playerHeight },
             isTikTokLayout ? styles.playerWrapTikTok : null,
           ]}
+          {...upNextScrollPanResponder.panHandlers}
         >
           {String(payload.item?.source || "").trim().toLowerCase() === "system-admin-video-link" ? (
             <WatchExternalVideoSurface item={payload.item} />
@@ -1558,6 +1586,12 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             showsVerticalScrollIndicator={false}
             onScroll={upNextScrollEvent}
             scrollEventThrottle={16}
+            onContentSizeChange={(_width, height) => {
+              upNextContentHeightRef.current = height;
+            }}
+            onLayout={(event) => {
+              upNextViewportHeightRef.current = event.nativeEvent.layout.height;
+            }}
           >
             <Text style={styles.upNextLabel}>Up next</Text>
             {watchUpNextRows.map((row) => {
@@ -1589,6 +1623,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             })}
           </Animated.ScrollView>
           <Animated.View
+            {...upNextScrollPanResponder.panHandlers}
             style={[styles.currentVideoPanel, styles.currentVideoPanelFloating, { transform: [{ translateY: panelTranslateY }] }]}
             onLayout={handlePanelLayout}
           >
@@ -1823,7 +1858,7 @@ const styles = StyleSheet.create({
   },
   tikTokBackdropOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(18,3,31,0.24)",
+    backgroundColor: "rgba(0,0,0,0.12)",
     zIndex: 1,
   },
   replayOverlay: {

@@ -607,12 +607,14 @@ export default function ChurchMembersDirectory() {
 
               return (
                 <View key={`${id}-${i}`} style={s.memberCard}>
-                  <View style={s.avatar}>
-                    {avatarUri ? (
-                      <Image source={{ uri: avatarUri }} style={s.avatarImage} />
-                    ) : (
-                      <Text style={s.avatarText}>{name.trim().charAt(0).toUpperCase() || "M"}</Text>
-                    )}
+                  <View style={s.avatarRing}>
+                    <View style={s.avatar}>
+                      {avatarUri ? (
+                        <Image source={{ uri: avatarUri }} style={s.avatarImage} />
+                      ) : (
+                        <Text style={s.avatarText}>{name.trim().charAt(0).toUpperCase() || "M"}</Text>
+                      )}
+                    </View>
                   </View>
 
                   <View style={{ flex: 1, minWidth: 0 }}>
@@ -775,9 +777,51 @@ const s = StyleSheet.create({
   emptyCard: { marginTop: 18, borderRadius: 28, padding: 22, alignItems: "center", backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: "rgba(255,255,255,0.10)" },
   emptyTitle: { color: "white", fontSize: 18, fontWeight: "900", marginTop: 10 },
   emptyText: { color: MUTED, textAlign: "center", marginTop: 6, lineHeight: 19 },
-  memberCard: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 21, padding: 11, marginBottom: 10, backgroundColor: "rgba(255,255,255,0.055)", borderWidth: 1, borderColor: "rgba(255,255,255,0.10)" },
-  avatar: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(217,179,95,0.14)", borderWidth: 1, borderColor: "rgba(217,179,95,0.34)", overflow: "hidden" },
-  avatarImage: { width: "100%", height: "100%", borderRadius: 22 },
+  memberCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+    borderRadius: 24,
+    padding: 13,
+    marginBottom: 12,
+    backgroundColor: "rgba(23,27,38,0.96)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.22)",
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.16,
+    shadowRadius: 13,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 4,
+  },
+  avatarRing: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    borderWidth: 2,
+    borderColor: "rgba(217,179,95,0.86)",
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.50,
+    shadowRadius: 9,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
+  },
+  avatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.16)",
+    overflow: "hidden",
+  },
+  avatarImage: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 24,
+  },
   avatarText: { color: GOLD, fontSize: 21, fontWeight: "900" },
   name: { color: "white", fontSize: 15, fontWeight: "900" },
   meta: { color: "rgba(255,255,255,0.42)", fontSize: 11, marginTop: 3, fontWeight: "700" },

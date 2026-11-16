@@ -1767,9 +1767,8 @@ export function formatFeedViewLabel(item: any): string {
   return `${formatActionCount(count)} views`;
 }
 
-export function formatFeedMetaLine(item: any, whenLabel: string): string {
-  const views = formatFeedViewLabel(item);
-  return [whenLabel, views].filter(Boolean).join(" • ");
+export function formatFeedMetaLine(_item: any, whenLabel: string): string {
+  return whenLabel;
 }
 
 export function resolveFeedChurchVerified(item: any): boolean {

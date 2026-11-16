@@ -31,7 +31,7 @@ export function resolveHomeFeedVideoDisplayTypeFromDimensions(
   }
   const aspect = width / height;
   if (aspect < 0.7) return "tiktok";
-  if (aspect < 0.92) return "portrait45";
+  if (aspect < 1) return "portrait45";
   return "youtube";
 }
 
