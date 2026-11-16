@@ -853,7 +853,9 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   const [youtubeCommentsError, setYoutubeCommentsError] = useState("");
   const [youtubeCommentsPageToken, setYoutubeCommentsPageToken] = useState<string | null>(null);
   const youtubeCommentsRequestRef = useRef(0);
-  const cleanYoutubeVideoId = String(youtubeVideoId || "").trim();
+  const canonicalYoutubeVideoId =
+    String(postId || "").trim().match(/^system-admin-video-youtube-([A-Za-z0-9_-]{11})$/)?.[1] || "";
+  const cleanYoutubeVideoId = canonicalYoutubeVideoId || String(youtubeVideoId || "").trim();
 
   useEffect(() => {
     const requestId = ++youtubeCommentsRequestRef.current;
