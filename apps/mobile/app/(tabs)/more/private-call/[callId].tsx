@@ -418,10 +418,12 @@ function PrivateCallRingingAudio({
   callId,
   onPromptFinished,
   onRingingStarted,
+  onUnavailableStarted,
 }: {
   callId: string;
   onPromptFinished: () => void;
   onRingingStarted?: () => void;
+  onUnavailableStarted?: () => void;
 }) {
   const [audioUris, setAudioUris] = useState<PrivateCallRingingAudioUris | null>(null);
   const waittonePlayer = useAudioPlayer(
@@ -490,6 +492,7 @@ function PrivateCallRingingAudio({
 
     const unavailableTimer = setTimeout(() => {
       if (!active) return;
+      onUnavailableStarted?.();
       waittonePlayer.pause();
       void unavailablePlayer.seekTo(0)
         .then(() => {
@@ -502,7 +505,7 @@ function PrivateCallRingingAudio({
           });
           onPromptFinished();
         });
-    }, 30_000);
+    }, 29_000);
 
     return () => {
       active = false;
@@ -1085,6 +1088,7 @@ export default function PrivateCallScreen() {
     null
   );
   const [actionBusy, setActionBusy] = useState(false);
+  const [unavailablePromptStarted, setUnavailablePromptStarted] = useState(false);
   const exitHandledRef = useRef(false);
   const endRequestedRef = useRef(false);
   const roomDisconnectRef = useRef<(() => void) | null>(null);
@@ -1814,16 +1818,75 @@ export default function PrivateCallScreen() {
     );
   }
 
+  if (session.status === "timeout" && role === "caller") {
+    return (
+      <View style={[styles.screen, styles.terminalCallScreen, { paddingTop: insets.top + 24 }]}>
+        <PrivateCallRingingAudio
+          callId={session.id}
+          onPromptFinished={handleEndCall}
+          onUnavailableStarted={() => setUnavailablePromptStarted(true)}
+          onRingingStarted={() => {
+            outgoingRingingAudioStartedRef.current = session.id;
+          }}
+        />
+        <View style={styles.terminalCallCard}>
+          <PrivateCallAvatar avatarUri={displayAvatar} animate={false} />
+          <Text style={styles.terminalEyebrow}>
+            {unavailablePromptStarted ? "UJUMBE WA SAUTI" : "SIMU INAPIGA"}
+          </Text>
+          <Text style={styles.title}>
+            {unavailablePromptStarted ? "Hapatikani kwa sasa" : "Hakupokea simu"}
+          </Text>
+          <Text style={styles.subtitle}>{displayName}</Text>
+          <View style={styles.terminalStatusPill}>
+            <View style={styles.terminalStatusDot} />
+            <Text style={styles.terminalStatusText}>
+              {unavailablePromptStarted
+                ? "Tunasikiliza ujumbe wa sauti"
+                : "Ujumbe utaanza baada ya muda mfupi"}
+            </Text>
+          </View>
+          <Pressable
+            onPress={leaveCallRoute}
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.terminalCloseBtn,
+              pressed && styles.terminalCloseBtnPressed,
+            ]}
+          >
+            <Ionicons name="arrow-back" size={19} color="#10131B" />
+            <Text style={styles.terminalCloseBtnText}>Rudi nyuma</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   if (session.status === "declined" || session.status === "timeout" || session.status === "ended") {
     return (
-      <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
-        {session.status === "timeout" && role === "caller" ? (
-          <PrivateCallRingingAudio callId={session.id} onPromptFinished={handleEndCall} />
-        ) : null}
-        <Text style={styles.title}>{statusMessage}</Text>
-        <Pressable onPress={leaveCallRoute} style={styles.secondaryBtn}>
-          <Text style={styles.secondaryBtnText}>Close</Text>
-        </Pressable>
+      <View style={[styles.screen, styles.terminalCallScreen, { paddingTop: insets.top + 24 }]}>
+        <View style={styles.terminalCallCard}>
+          <View style={styles.terminalIconCircle}>
+            <Ionicons
+              name={session.status === "declined" ? "call" : "call-outline"}
+              size={25}
+              color={GOLD}
+            />
+          </View>
+          <Text style={styles.terminalEyebrow}>SIMU IMEISHIA</Text>
+          <Text style={styles.title}>{statusMessage}</Text>
+          <Pressable
+            onPress={leaveCallRoute}
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.terminalCloseBtn,
+              pressed && styles.terminalCloseBtnPressed,
+            ]}
+          >
+            <Ionicons name="arrow-back" size={19} color="#10131B" />
+            <Text style={styles.terminalCloseBtnText}>Rudi nyuma</Text>
+          </Pressable>
+        </View>
       </View>
     );
   }
@@ -1860,8 +1923,20 @@ export default function PrivateCallScreen() {
           <>
             <Text style={styles.title}>{displayName}</Text>
             <PrivateCallOutgoingRinging callId={session.id} />
-            <Pressable onPress={handleEnd} style={styles.secondaryBtn}>
-              <Text style={styles.secondaryBtnText}>Cancel Call</Text>
+            <Pressable
+              onPress={handleEnd}
+              disabled={actionBusy}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel call"
+              style={({ pressed }) => [
+                styles.cancelCallBtn,
+                (pressed || actionBusy) && styles.cancelCallBtnPressed,
+              ]}
+            >
+              <Ionicons name="call" size={19} color="#FFF" style={styles.cancelCallIcon} />
+              <Text style={styles.cancelCallBtnText}>
+                {actionBusy ? "Ending call…" : "Cancel call"}
+              </Text>
             </Pressable>
           </>
         ) : (
@@ -2015,6 +2090,127 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.6,
     textAlign: "center",
+  },
+  cancelCallBtn: {
+    marginTop: 22,
+    width: 280,
+    maxWidth: "100%",
+    minHeight: 58,
+    borderRadius: 29,
+    borderWidth: 1,
+    borderColor: "rgba(255,112,112,0.42)",
+    backgroundColor: "rgba(176,48,58,0.2)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 11,
+    shadowColor: "#F04452",
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 4,
+  },
+  cancelCallBtnPressed: {
+    opacity: 0.72,
+    transform: [{ scale: 0.98 }],
+  },
+  cancelCallIcon: {
+    transform: [{ rotate: "135deg" }],
+  },
+  cancelCallBtnText: {
+    color: "#FFF",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+  terminalCallScreen: {
+    justifyContent: "center",
+    paddingHorizontal: 22,
+  },
+  terminalCallCard: {
+    width: "100%",
+    maxWidth: 440,
+    alignSelf: "center",
+    alignItems: "center",
+    paddingHorizontal: 24,
+    paddingVertical: 34,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.3)",
+    backgroundColor: "rgba(20,25,35,0.96)",
+    shadowColor: "#000",
+    shadowOpacity: 0.32,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
+    gap: 14,
+  },
+  terminalEyebrow: {
+    color: GOLD,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 2,
+    textAlign: "center",
+    marginTop: 6,
+  },
+  terminalStatusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "rgba(217,179,95,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.2)",
+    marginTop: 4,
+  },
+  terminalStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: GOLD,
+  },
+  terminalStatusText: {
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  terminalIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.32)",
+  },
+  terminalCloseBtn: {
+    marginTop: 12,
+    minWidth: 230,
+    minHeight: 54,
+    borderRadius: 27,
+    paddingHorizontal: 22,
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GOLD,
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  terminalCloseBtnPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.98 }],
+  },
+  terminalCloseBtnText: {
+    color: "#10131B",
+    fontSize: 15,
+    fontWeight: "900",
   },
   actionRow: {
     flexDirection: "row",
