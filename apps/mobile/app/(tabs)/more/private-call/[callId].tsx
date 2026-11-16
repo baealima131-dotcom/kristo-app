@@ -469,7 +469,7 @@ function PrivateCallRingingAudio({
 
     void setAudioModeAsync({
       playsInSilentMode: true,
-      allowsRecording: false,
+      allowsRecording: true,
     }).catch((error: any) => {
       console.warn("KRISTO_PRIVATE_CALL_PROMPT_AUDIO_MODE_FAILED", {
         callId,
@@ -500,6 +500,7 @@ function PrivateCallRingingAudio({
             callId,
             error: String(error?.message || error),
           });
+          onPromptFinished();
         });
     }, 30_000);
 
