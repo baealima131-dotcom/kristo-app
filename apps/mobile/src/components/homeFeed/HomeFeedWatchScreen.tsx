@@ -42,6 +42,7 @@ import {
   safeSeekVideoPlayer,
 } from "@/src/lib/expoVideoPlayerSafe";
 import { useEventListener } from "expo";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
@@ -109,7 +110,7 @@ import {
 } from "./theme";
 
 const AVATAR_SIZE = 46;
-const WATCH_ACTION_ICON_SIZE = 20;
+const WATCH_ACTION_ICON_SIZE = 26;
 const WATCH_PANEL_BORDER_TOP = "rgba(244, 208, 111, 0.30)";
 const WATCH_PANEL_BORDER_BOTTOM = "rgba(168, 85, 247, 0.38)";
 const WATCH_DATE_COLOR = "rgba(255,255,255,0.45)";
@@ -1197,6 +1198,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   onCloseShareToChat,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { width, height: windowHeight } = useWindowDimensions();
   const activePostId = String(payload?.postId || "").trim();
   const displayTypeHint = resolveHomeFeedVideoDisplayTypeHint(payload?.item || payload);
@@ -1209,6 +1211,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const displayType = detectedType || displayTypeHint;
   const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
+  const openMessages = useCallback(() => {
+    onClose();
+    requestAnimationFrame(() => router.push("/(tabs)/profile/messages" as any));
+  }, [onClose, router]);
   const facebookReel = isFacebookVerticalItem(payload?.item);
   const playerHeight = useMemo(
     () =>
@@ -1256,6 +1262,11 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     const next = Math.round(Number(event?.nativeEvent?.layout?.height || 0));
     if (next > 0) setPanelHeight((prev) => (Math.abs(prev - next) > 1 ? next : prev));
   }, []);
+  useEffect(() => {
+    if (!visible || !activePostId) return;
+    upNextScrollY.setValue(0);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [visible, activePostId, upNextScrollY]);
   const handleUpNextScroll = useCallback((event: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = event?.nativeEvent || {};
     if (!contentSize || !layoutMeasurement) return;
@@ -1453,6 +1464,15 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 style={styles.backButton}
               >
                 <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
+              </Pressable>
+              <Pressable
+                onPress={openMessages}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="Open messages"
+                style={styles.messageButton}
+              >
+                <Ionicons name="chatbubble-ellipses-outline" size={21} color="#FFFFFF" />
               </Pressable>
             </View>
           </View>
@@ -1671,6 +1691,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 6,
   },
+  messageButton: {
+    position: "absolute", right: 12, width: 42, height: 42, borderRadius: 21,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(20, 0, 32, 0.55)",
+    borderWidth: StyleSheet.hairlineWidth, borderColor: "#F4D06F",
+    shadowColor: "#F4D06F", shadowOpacity: 0.28, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 }, elevation: 6,
+  },
   playerWrap: {
     width: "100%",
     backgroundColor: "#000000",
@@ -1881,16 +1909,17 @@ const styles = StyleSheet.create({
   },
   watchAction: {
     flex: 1,
+    minHeight: 58,
     alignItems: "center",
     justifyContent: "center",
-    gap: 3,
-    paddingVertical: 4,
+    gap: 5,
+    paddingVertical: 7,
   },
   watchActionLabel: {
     color: "rgba(255,255,255,0.72)",
-    fontSize: 11,
-    lineHeight: 13,
-    fontWeight: "600",
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "700",
   },
   // Bigger like/comment digits; lineHeight stays 13 (from watchActionLabel) so the row keeps its height.
   watchActionCountLabel: {
