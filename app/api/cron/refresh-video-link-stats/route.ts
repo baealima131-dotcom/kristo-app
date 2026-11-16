@@ -3,11 +3,16 @@ import { timingSafeEqual } from "crypto";
 
 import { listFeedItems, upsertFeedItem } from "@/app/api/_lib/store/feedDb";
 import { facebookGraphCredentialsFromEnv, fetchFacebookGraphVideoStats } from "@/lib/facebookGraphVideoStats";
+import { fetchYouTubePublicComments } from "@/lib/youtubePublicComments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;
+const REFRESH_AFTER_MS = 3 * 60 * 60 * 1000;
+const FACEBOOK_REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;
+const YOUTUBE_MAX_VIDEOS_PER_RUN = 200;
+const YOUTUBE_COMMENT_FETCH_CONCURRENCY = 10;
+const YOUTUBE_COMMENT_TIME_BUDGET_MS = 120_000;
 const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 const FACEBOOK_ITEM_PREFIX = "system-admin-video-facebook-";
 const FACEBOOK_VIDEO_ID = /^\d{5,25}$/;
@@ -82,9 +87,24 @@ async function loadStats(videoIds: string[], key: string) {
   return stats;
 }
 
-function isDue(item: any, nowMs: number) {
+function isDue(item: any, nowMs: number, intervalMs = REFRESH_AFTER_MS) {
   const updated = Date.parse(String(item?.platformStatsUpdatedAt || ""));
+  return !Number.isFinite(updated) || nowMs - updated >= intervalMs;
+}
+
+function isCommentsDue(item: any, nowMs: number) {
+  const updated = Date.parse(String(item?.platformCommentsUpdatedAt || ""));
   return !Number.isFinite(updated) || nowMs - updated >= REFRESH_AFTER_MS;
+}
+
+function lastDueUpdate(item: any) {
+  const statsAt = Date.parse(String(item?.platformStatsUpdatedAt || ""));
+  const commentsAt = Date.parse(String(item?.platformCommentsUpdatedAt || ""));
+  const dueTimes = [
+    Number.isFinite(statsAt) ? statsAt : 0,
+    Number.isFinite(commentsAt) ? commentsAt : 0,
+  ];
+  return Math.min(...dueTimes);
 }
 
 function previousStatsOf(item: any): Record<string, unknown> {
@@ -93,9 +113,12 @@ function previousStatsOf(item: any): Record<string, unknown> {
 }
 
 async function refreshYouTube(items: any[], key: string, nowMs: number) {
-  const refreshItems = items.filter((item) => isDue(item, nowMs));
+  const allDueItems = items
+    .filter((item) => isDue(item, nowMs) || isCommentsDue(item, nowMs))
+    .sort((a, b) => lastDueUpdate(a) - lastDueUpdate(b));
+  const dueItems = allDueItems.slice(0, YOUTUBE_MAX_VIDEOS_PER_RUN);
   const byVideo = new Map<string, any[]>();
-  for (const item of refreshItems) {
+  for (const item of dueItems) {
     const videoId = parseYouTubeId(item?.videoUrl || item?.url);
     if (!videoId) continue;
     const rows = byVideo.get(videoId) || [];
@@ -105,44 +128,105 @@ async function refreshYouTube(items: any[], key: string, nowMs: number) {
 
   let refreshed = 0;
   let failed = 0;
+  let commentsRefreshed = 0;
+  let commentsDisabled = 0;
+  let commentsFailed = 0;
   const videoIds = [...byVideo.keys()];
+  const commentStartedAt = Date.now();
+
   for (let offset = 0; offset < videoIds.length; offset += 50) {
     const batch = videoIds.slice(offset, offset + 50);
-    let statsById: Awaited<ReturnType<typeof loadStats>>;
-    try {
-      statsById = await loadStats(batch, key);
-    } catch {
-      failed += batch.length;
-      continue;
+    const statsVideoIds = batch.filter((videoId) =>
+      (byVideo.get(videoId) || []).some((item) => isDue(item, nowMs))
+    );
+    const commentsVideoIds = batch.filter((videoId) =>
+      (byVideo.get(videoId) || []).some((item) => isCommentsDue(item, nowMs))
+    );
+
+    const statsById = new Map<string, { views: number | null; likes: number | null; comments: number | null }>();
+    if (statsVideoIds.length) {
+      try {
+        const result = await loadStats(statsVideoIds, key);
+        for (const [id, stats] of result) statsById.set(id, stats);
+      } catch {
+        failed += statsVideoIds.length;
+      }
+    }
+
+    const commentsById = new Map<string, { comments: Awaited<ReturnType<typeof fetchYouTubePublicComments>>["comments"]; commentsDisabled: boolean }>();
+    for (let commentOffset = 0; commentOffset < commentsVideoIds.length; commentOffset += YOUTUBE_COMMENT_FETCH_CONCURRENCY) {
+      if (Date.now() - commentStartedAt >= YOUTUBE_COMMENT_TIME_BUDGET_MS) break;
+      const commentBatch = commentsVideoIds.slice(
+        commentOffset,
+        commentOffset + YOUTUBE_COMMENT_FETCH_CONCURRENCY
+      );
+      const results = await Promise.all(commentBatch.map(async (videoId) => {
+        try {
+          return [videoId, await fetchYouTubePublicComments(videoId, key)] as const;
+        } catch {
+          return [videoId, null] as const;
+        }
+      }));
+      for (const [videoId, result] of results) {
+        if (result) commentsById.set(videoId, result);
+        else commentsFailed += 1;
+      }
     }
 
     for (const videoId of batch) {
       const stats = statsById.get(videoId);
+      const commentResult = commentsById.get(videoId);
       const rows = byVideo.get(videoId) || [];
-      if (!stats) {
-        failed += rows.length;
-        continue;
-      }
-      // YouTube answered without a count: the owner hid likes or turned comments off, so the
-      // old number is no longer shown.
-      const hiddenFields = (["likes", "comments"] as const).filter((field) => stats[field] === null);
-      for (const item of rows) {
-        const previous = previousStatsOf(item);
-        await upsertFeedItem({
-          ...item,
-          platformStats: {
-            views: stats.views ?? safeCount(previous.views),
-            likes: stats.likes,
-            comments: stats.comments,
-          },
-          platformHiddenFields: hiddenFields,
-          platformStatsUpdatedAt: new Date(nowMs).toISOString(),
-        } as any);
-        refreshed += 1;
+      if (stats) {
+        const hiddenFields = (["likes", "comments"] as const).filter((field) => stats[field] === null);
+        for (const item of rows) {
+          const previous = previousStatsOf(item);
+          const update: any = {
+            ...item,
+            platformStats: {
+              views: stats.views ?? safeCount(previous.views),
+              likes: stats.likes,
+              comments: stats.comments,
+            },
+            platformHiddenFields: hiddenFields,
+            platformStatsUpdatedAt: new Date(nowMs).toISOString(),
+          };
+          if (commentResult && isCommentsDue(item, nowMs)) {
+            update.platformComments = commentResult.comments;
+            update.platformCommentsDisabled = commentResult.commentsDisabled;
+            update.platformCommentsUpdatedAt = new Date(nowMs).toISOString();
+            commentsRefreshed += 1;
+            if (commentResult.commentsDisabled) commentsDisabled += 1;
+          }
+          await upsertFeedItem(update);
+          refreshed += 1;
+        }
+      } else if (commentResult) {
+        for (const item of rows) {
+          if (!isCommentsDue(item, nowMs)) continue;
+          await upsertFeedItem({
+            ...item,
+            platformComments: commentResult.comments,
+            platformCommentsDisabled: commentResult.commentsDisabled,
+            platformCommentsUpdatedAt: new Date(nowMs).toISOString(),
+          } as any);
+          commentsRefreshed += 1;
+          if (commentResult.commentsDisabled) commentsDisabled += 1;
+        }
       }
     }
   }
-  return { checked: items.length, due: refreshItems.length, refreshed, failed };
+  return {
+    checked: items.length,
+    due: allDueItems.length,
+    processed: dueItems.length,
+    refreshed,
+    failed,
+    commentsRefreshed,
+    commentsDisabled,
+    commentsFailed,
+    commentsDeferred: Math.max(0, allDueItems.length - dueItems.length),
+  };
 }
 
 /**
@@ -157,7 +241,7 @@ async function refreshFacebook(items: any[], nowMs: number) {
     const videoId = id.startsWith(FACEBOOK_ITEM_PREFIX) ? id.slice(FACEBOOK_ITEM_PREFIX.length) : "";
     return FACEBOOK_VIDEO_ID.test(videoId) ? videoId : "";
   };
-  const due = items.filter((item) => isDue(item, nowMs) && videoIdOf(item));
+  const due = items.filter((item) => isDue(item, nowMs, FACEBOOK_REFRESH_AFTER_MS) && videoIdOf(item));
   if (!credentials) return { configured: false, checked: items.length, due: due.length, refreshed: 0, unavailable: 0 };
 
   const startedMs = Date.now();
@@ -218,6 +302,10 @@ export async function GET(req: Request) {
       due: youtube?.due ?? 0,
       refreshed: youtube?.refreshed ?? 0,
       failed: youtube?.failed ?? 0,
+      commentsRefreshed: youtube?.commentsRefreshed ?? 0,
+      commentsDisabled: youtube?.commentsDisabled ?? 0,
+      commentsFailed: youtube?.commentsFailed ?? 0,
+      commentsDeferred: youtube?.commentsDeferred ?? 0,
       skipped: youtube ? Math.max(0, youtube.checked - youtube.due) : 0,
       youtubeConfigured: Boolean(key),
       facebook,
