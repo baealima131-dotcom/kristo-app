@@ -28,8 +28,13 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
+  AudioModule,
+  RecordingPresets,
+  setAudioModeAsync,
   useAudioPlayer,
   useAudioPlayerStatus,
+  useAudioRecorder,
+  useAudioRecorderState,
 } from "expo-audio";
 import { BlurView } from "expo-blur";
 import Slider from "@react-native-community/slider";
@@ -2070,6 +2075,8 @@ function pendingAttachmentsToOptimistic(items: PendingMessageAttachment[]): MsgA
     imageUri: p.kind === "image" ? p.localUri : undefined,
     fileUri: p.kind === "file" ? p.localUri : undefined,
     fileName: p.name,
+    voiceNote: p.voiceNote,
+    durationSec: p.durationSec,
   }));
 }
 
@@ -2224,6 +2231,184 @@ function MessageActionsSheet({
   );
 }
 
+function MessageVoiceAttachment({
+  attachment,
+}: {
+  attachment: MsgAttachment;
+}) {
+  const expiresAt = Number(attachment.expiresAt || 0);
+  const expired =
+    attachment.expired === true ||
+    (expiresAt > 0 && expiresAt <= Date.now());
+  const source = expired
+    ? ""
+    : resolveMessageAttachmentUrl(
+        attachment.fileUri || attachment.uri || attachment.url || ""
+      );
+  const player = useAudioPlayer(source ? { uri: source } : null, {
+    updateInterval: 150,
+  });
+  const status = useAudioPlayerStatus(player);
+  const duration = Math.max(0, Number(attachment.durationSec || 0));
+  const timeLabel = duration
+    ? formatAppointmentVoiceDuration(duration)
+    : "Voice message";
+
+  if (expired || !source) {
+    return (
+      <View
+        style={{
+          minHeight: 52,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 10,
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          borderRadius: 16,
+          backgroundColor: "rgba(255,255,255,0.06)",
+          borderWidth: 1,
+          borderColor: "rgba(255,255,255,0.12)",
+          opacity: 0.72,
+        }}
+      >
+        <Ionicons name="time-outline" size={20} color="rgba(255,255,255,0.58)" />
+        <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 14 }}>
+          Voice message expired
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={() => {
+        if (status.playing) {
+          player.pause();
+          return;
+        }
+        if (status.currentTime >= status.duration && status.duration > 0) {
+          void player.seekTo(0);
+        }
+        player.play();
+      }}
+      accessibilityLabel={status.playing ? "Pause voice message" : "Play voice message"}
+      style={({ pressed }) => ({
+        minHeight: 52,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderRadius: 16,
+        backgroundColor: "rgba(244,208,111,0.12)",
+        borderWidth: 1,
+        borderColor: "rgba(244,208,111,0.28)",
+        opacity: pressed ? 0.88 : 1,
+      })}
+    >
+      <Ionicons
+        name={status.playing ? "pause-circle" : "play-circle"}
+        size={28}
+        color="#F4D06F"
+      />
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>
+          Voice message
+        </Text>
+        <Text style={{ color: "rgba(255,255,255,0.58)", fontSize: 12 }}>
+          {status.playing && status.duration > 0
+            ? `${formatAppointmentVoiceDuration(status.currentTime)} / ${formatAppointmentVoiceDuration(status.duration)}`
+            : timeLabel}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function MessageVoiceRecorderButton({
+  disabled,
+  onRecorded,
+}: {
+  disabled?: boolean;
+  onRecorded: (voice: { uri: string; durationSec: number; size?: number }) => void;
+}) {
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(recorder, 250);
+  const [busy, setBusy] = useState(false);
+
+  async function startRecording() {
+    setBusy(true);
+    try {
+      const permission = await AudioModule.requestRecordingPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Microphone access", "Allow microphone access to record a voice message.");
+        return;
+      }
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+    } catch (error: any) {
+      Alert.alert("Could not record", String(error?.message || error || "Try again."));
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {});
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stopRecording() {
+    setBusy(true);
+    try {
+      const statusBeforeStop: any = recorder.getStatus();
+      await recorder.stop();
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {});
+      const statusAfterStop: any = recorder.getStatus();
+      const uri = String(
+        (recorder as any).uri || statusAfterStop?.url || statusBeforeStop?.url || ""
+      ).trim();
+      if (!uri) throw new Error("The recording file could not be found.");
+      const info: any = await FileSystem.getInfoAsync(uri).catch(() => null);
+      const durationSec = Math.max(
+        1,
+        Math.round(
+          Number(statusBeforeStop?.durationMillis || statusAfterStop?.durationMillis || recorderState.durationMillis || 0) / 1000
+        )
+      );
+      onRecorded({
+        uri,
+        durationSec,
+        ...(Number(info?.size || 0) > 0 ? { size: Number(info.size) } : {}),
+      });
+    } catch (error: any) {
+      Alert.alert("Could not save voice message", String(error?.message || error || "Try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isRecording = recorderState.isRecording === true;
+  return (
+    <Pressable
+      onPress={() => void (isRecording ? stopRecording() : startRecording())}
+      disabled={disabled || busy}
+      accessibilityLabel={isRecording ? "Stop voice recording" : "Record voice message"}
+      style={({ pressed }) => [
+        s.cBtn,
+        pressed ? s.cBtnPressed : null,
+        isRecording
+          ? { backgroundColor: "rgba(255,75,92,0.18)", borderColor: "rgba(255,75,92,0.8)" }
+          : null,
+        (disabled || busy) ? { opacity: 0.4 } : null,
+      ]}
+    >
+      <Ionicons
+        name={isRecording ? "stop-circle" : "mic"}
+        size={18}
+        color={isRecording ? "#FF4B5C" : GOLD_SOLID}
+      />
+    </Pressable>
+  );
+}
+
 function MessageAttachmentsBlock({
   attachments,
   onPreviewImage,
@@ -2262,6 +2447,10 @@ function MessageAttachmentsBlock({
           const fileName = String(a.fileName || a.name || "attachment");
           const metaParts = [formatAttachmentMimeLabel(a.mimeType || a.mime), formatAttachmentSize(a.size)].filter(Boolean);
           const metaLabel = metaParts.join(" • ");
+
+          if (a.voiceNote === true) {
+            return <MessageVoiceAttachment key={a.id} attachment={a} />;
+          }
 
           if (a.kind === "image" && imageUri) {
             return (
@@ -14560,6 +14749,25 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   color={GOLD_SOLID}
                 />
               </Pressable>
+              <MessageVoiceRecorderButton
+                disabled={dmComposerLocked || attachUploading}
+                onRecorded={({ uri, durationSec, size }) => {
+                  const timestamp = Date.now();
+                  setPending((previous) => [
+                    ...previous,
+                    {
+                      id: `voice_${timestamp}_${Math.random().toString(36).slice(2, 8)}`,
+                      kind: "file",
+                      localUri: uri,
+                      name: `voice_${timestamp}.m4a`,
+                      mime: "audio/mp4",
+                      size,
+                      voiceNote: true,
+                      durationSec,
+                    },
+                  ]);
+                }}
+              />
             </View>
 
             <View
