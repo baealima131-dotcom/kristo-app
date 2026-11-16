@@ -69,6 +69,10 @@ import {
 } from "@/src/lib/homeFeedVideoProgressStore";
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import {
+  fetchProfileCommunicationInboxSnapshot,
+  formatProfileCommunicationBadgeCount,
+} from "@/src/lib/profileCommunicationInbox";
+import {
   YOUTUBE_CARD_H_PADDING,
   resolveWatchPlayerHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
@@ -1230,6 +1234,45 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   );
   const scrollRef = useRef<ScrollView | null>(null);
   const [playbackStarted, setPlaybackStarted] = useState(false);
+  const [communicationCounts, setCommunicationCounts] = useState({
+    unreadMessages: 0,
+    missedCalls: 0,
+  });
+  useEffect(() => {
+    if (!visible) return;
+    let active = true;
+    let refreshing = false;
+    const refreshCounts = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      let base = String(process.env.EXPO_PUBLIC_API_BASE || "");
+      while (base.endsWith("/")) base = base.slice(0, -1);
+      if (!base) {
+        refreshing = false;
+        return;
+      }
+      try {
+        const snapshot = await fetchProfileCommunicationInboxSnapshot({ base });
+        if (active) {
+          setCommunicationCounts({
+            unreadMessages: snapshot.unreadMessages,
+            missedCalls: snapshot.missedCalls,
+          });
+        }
+      } catch {
+        // Keep the last successful values if a refresh fails.
+      } finally {
+        refreshing = false;
+      }
+    };
+
+    void refreshCounts();
+    const timer = setInterval(refreshCounts, 20_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [visible]);
   // Near the end of Up Next (about two cards left), ask once per list length for more videos.
   const upNextEndReachedRef = useRef(onUpNextEndReached);
   upNextEndReachedRef.current = onUpNextEndReached;
@@ -1473,6 +1516,29 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                 style={styles.messageButton}
               >
                 <Ionicons name="chatbubble-ellipses-outline" size={21} color="#FFFFFF" />
+                {formatProfileCommunicationBadgeCount(communicationCounts.unreadMessages) ? (
+                  <View style={styles.watchHeaderBadge} pointerEvents="none">
+                    <Text style={styles.watchHeaderBadgeText}>
+                      {formatProfileCommunicationBadgeCount(communicationCounts.unreadMessages)}
+                    </Text>
+                  </View>
+                ) : null}
+              </Pressable>
+              <Pressable
+                onPress={openMessages}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="Calls and call history"
+                style={[styles.messageButton, styles.callButton]}
+              >
+                <Ionicons name="call-outline" size={20} color="#FFFFFF" />
+                {formatProfileCommunicationBadgeCount(communicationCounts.missedCalls) ? (
+                  <View style={styles.watchHeaderBadge} pointerEvents="none">
+                    <Text style={styles.watchHeaderBadgeText}>
+                      {formatProfileCommunicationBadgeCount(communicationCounts.missedCalls)}
+                    </Text>
+                  </View>
+                ) : null}
               </Pressable>
             </View>
           </View>
@@ -1693,12 +1759,35 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   messageButton: {
-    position: "absolute", right: 12, width: 42, height: 42, borderRadius: 21,
+    position: "absolute", right: 62, width: 42, height: 42, borderRadius: 21,
     alignItems: "center", justifyContent: "center",
     backgroundColor: "rgba(20, 0, 32, 0.55)",
     borderWidth: StyleSheet.hairlineWidth, borderColor: "#F4D06F",
     shadowColor: "#F4D06F", shadowOpacity: 0.28, shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 }, elevation: 6,
+  },
+  callButton: {
+    right: 12,
+  },
+  watchHeaderBadge: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    minWidth: 17,
+    height: 17,
+    paddingHorizontal: 3,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "#5A007A",
+    backgroundColor: "#F54164",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  watchHeaderBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 9,
+    fontWeight: "900",
+    lineHeight: 11,
   },
   playerWrap: {
     width: "100%",
