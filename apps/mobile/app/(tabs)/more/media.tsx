@@ -1309,8 +1309,6 @@ export default function MediaStudioScreen() {
   const [videoPostCoversGenerating, setVideoPostCoversGenerating] = useState(false);
   const [videoPostCoverGenerationFailed, setVideoPostCoverGenerationFailed] = useState(false);
   const [videoPostDurationMs, setVideoPostDurationMs] = useState(0);
-  /** Display size of the picked video (rotation applied); stored with the post. */
-  const [videoPostDimensions, setVideoPostDimensions] = useState<{ width: number; height: number } | null>(null);
   const [videoPostTitle, setVideoPostTitle] = useState("");
   const [videoPostCustomCoverUri, setVideoPostCustomCoverUri] = useState("");
   videoPostCustomCoverUriRef.current = videoPostCustomCoverUri;
@@ -2174,7 +2172,6 @@ export default function MediaStudioScreen() {
     setVideoPostTitle("");
     setVideoPostDisplayType("youtube");
     setVideoPostDurationMs(0);
-    setVideoPostDimensions(null);
     setIsCreatingVideoPost(false);
   }
 
@@ -2264,11 +2261,7 @@ export default function MediaStudioScreen() {
     if (uri) setVideoPostPosterUri(uri);
   }
 
-  function beginSmartVideoPrepare(
-    uri: string,
-    durationMs?: number,
-    dimensions?: { width: number; height: number } | null
-  ) {
+  function beginSmartVideoPrepare(uri: string, durationMs?: number) {
     releaseStoredVideoPostCovers();
     videoPostCoverManuallySelectedRef.current = false;
     videoPostCoverGenerationIdRef.current += 1;
@@ -2288,7 +2281,6 @@ export default function MediaStudioScreen() {
         ? Math.round(Number(durationMs))
         : 0;
     setVideoPostDurationMs(resolvedDurationMs);
-    setVideoPostDimensions(dimensions ?? null);
     setVideoPreparing(true);
     setVideoPreparePercent(8);
 
@@ -2347,13 +2339,9 @@ export default function MediaStudioScreen() {
 
     const asset = picked.assets[0];
     const pickerDurationMs = Number(asset?.duration || 0);
-    // The picker reports display dimensions (rotation applied on iOS and Android).
-    const pickedWidth = Math.round(Math.abs(Number(asset?.width || 0)));
-    const pickedHeight = Math.round(Math.abs(Number(asset?.height || 0)));
     beginSmartVideoPrepare(
       asset.uri,
-      pickerDurationMs > 0 ? pickerDurationMs : undefined,
-      pickedWidth > 0 && pickedHeight > 0 ? { width: pickedWidth, height: pickedHeight } : null
+      pickerDurationMs > 0 ? pickerDurationMs : undefined
     );
   }
 
@@ -2448,9 +2436,6 @@ export default function MediaStudioScreen() {
         userId: String(session?.userId || "").trim(),
         role: String(session?.role || "Member"),
         ...(videoPostDurationMs > 0 ? { durationMs: videoPostDurationMs } : {}),
-        ...(videoPostDimensions
-          ? { videoWidth: videoPostDimensions.width, videoHeight: videoPostDimensions.height }
-          : {}),
       },
       {
         onProgress: (uploadProgress, uploadStatus, meta) => {

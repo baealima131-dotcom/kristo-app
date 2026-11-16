@@ -207,11 +207,6 @@ export const homeFeedPremiumStyles = StyleSheet.create({
     letterSpacing: 0.08,
     textAlign: "center",
   },
-  /** Like/comment numbers: bigger digits, line height kept at the label's own so rows do not grow. */
-  inlineCountLabel: {
-    fontSize: 12.5,
-    lineHeight: 12,
-  },
   inlineLabelActive: {
     color: "#F5D76E",
     textShadowColor: "rgba(245,215,120,0.35)",
@@ -259,11 +254,6 @@ export const homeFeedPremiumStyles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     textAlign: "center",
-  },
-  /** Like/comment numbers on the vertical rail: bigger digits in the same line height. */
-  verticalPrimaryCountLabel: {
-    fontSize: 13,
-    lineHeight: 13,
   },
   verticalTextLabel: {
     color: HOME_FEED_MUTED,

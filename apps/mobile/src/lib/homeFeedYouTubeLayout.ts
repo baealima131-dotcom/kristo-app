@@ -2,9 +2,11 @@ import {
   isHomeFeedLivestreamRow,
   isHomeFeedScheduleCardRow,
   isMediaLiveSlotsHomeFeedRow,
+  isVideoPost,
   resolvePostBody,
 } from "@/src/components/homeFeed/homeFeedUtils";
 import type { HomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import {
   estimateSokoHomeFeedCardHeight,
   isSokoHomeFeedRow,
@@ -35,16 +37,17 @@ function isTabletLayout(windowWidth: number, windowHeight: number): boolean {
   return Math.min(windowWidth, windowHeight) >= 600;
 }
 
-/** Watch keeps landscape media at 16:9 and both portrait formats in a 4:5 frame. */
+/** Immersive Watch player height — tablets use more vertical space than phone 16:9 alone. */
 export function resolveWatchPlayerHeight(params: {
   windowWidth: number;
   windowHeight: number;
   topInset?: number;
-  isPortraitLayout?: boolean;
+  isTikTokLayout?: boolean;
 }): number {
   const width = Math.max(280, params.windowWidth);
   const windowHeight = Math.max(480, params.windowHeight);
   const topInset = Math.max(0, params.topInset ?? 0);
+  const isTikTokLayout = params.isTikTokLayout === true;
   const tablet = isTabletLayout(width, windowHeight);
   const upNextPeek = tablet ? WATCH_TABLET_UP_NEXT_PEEK : WATCH_UP_NEXT_PEEK;
   const viewportBudget = Math.max(
@@ -52,13 +55,19 @@ export function resolveWatchPlayerHeight(params: {
     windowHeight - topInset - WATCH_TOP_BAR_HEIGHT - WATCH_PANEL_ESTIMATE_HEIGHT - upNextPeek
   );
 
-  if (params.isPortraitLayout) {
-    const byAspect = Math.round(width / (4 / 5));
+  if (isTikTokLayout) {
+    const byAspect = Math.round(width / TIKTOK_THUMB_ASPECT);
     const cap = Math.round(windowHeight * (tablet ? 0.68 : 0.72));
     return Math.min(byAspect, cap, viewportBudget);
   }
 
-  return Math.min(Math.round(width / YOUTUBE_THUMB_ASPECT), viewportBudget);
+  const byWidthAspect = Math.round(width / YOUTUBE_THUMB_ASPECT);
+  if (!tablet) {
+    return Math.min(byWidthAspect, viewportBudget);
+  }
+
+  const tabletImmersive = Math.round(windowHeight * 0.5);
+  return Math.min(viewportBudget, Math.max(byWidthAspect, tabletImmersive));
 }
 
 export function tiktokThumbnailWidth(windowWidth: number): number {
@@ -97,8 +106,10 @@ export function estimateYouTubeFeedCardHeightForItem(
   if (isSokoHomeFeedRow(item)) {
     return estimateSokoHomeFeedCardHeight(windowWidth, item);
   }
-  // Feed cards use the 16:9 frame for every video cover (matches FeedYouTubeCard).
-  const thumb = youtubeThumbnailHeight(windowWidth);
+  const displayType = resolveHomeFeedVideoDisplayType(item);
+  const thumb = isVideoPost(item)
+    ? homeFeedVideoThumbnailHeight(windowWidth, displayType)
+    : youtubeThumbnailHeight(windowWidth);
   const caption = String(resolvePostBody(item) || "").trim();
   const meta = caption ? YOUTUBE_META_BLOCK_HEIGHT + 20 : YOUTUBE_META_BLOCK_HEIGHT;
   return thumb + meta + YOUTUBE_ACTIONS_HEIGHT + 20 + YOUTUBE_FEED_CARD_MARGIN_BOTTOM;

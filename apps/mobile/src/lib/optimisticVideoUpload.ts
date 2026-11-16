@@ -79,9 +79,6 @@ export type MediaVideoUploadJob = {
   userId: string;
   role: string;
   durationMs?: number;
-  /** Display width/height of the picked video (rotation applied), sent with the post. */
-  videoWidth?: number;
-  videoHeight?: number;
 };
 
 export type MediaVideoUploadResult = {
@@ -341,8 +338,6 @@ async function tryPublishUploadedVideo(
     faststartPending: params.faststartPending === true,
     faststartReason: params.faststartReason || null,
     videoDisplayType: job.videoDisplayType,
-    videoWidth: job.videoWidth,
-    videoHeight: job.videoHeight,
   });
   return parsePublishedFeedResponse(feedRes);
 }
@@ -440,8 +435,6 @@ function storedJobToUploadJob(stored: PersistedMediaUploadJob): MediaVideoUpload
     title: stored.title,
     caption: stored.caption,
     videoDisplayType: stored.videoDisplayType,
-    videoWidth: stored.videoWidth,
-    videoHeight: stored.videoHeight,
     churchId: stored.churchId,
     userId: stored.userId,
     role: stored.role,
@@ -988,8 +981,6 @@ export function enqueueMediaVideoUpload(job: MediaVideoUploadJob, callbacks: Med
       role: job.role,
       durationMs: job.durationMs,
       videoDisplayType: job.videoDisplayType,
-      videoWidth: job.videoWidth,
-      videoHeight: job.videoHeight,
       resumableMode: "chunk",
       chunkSessionId: jobId,
     });

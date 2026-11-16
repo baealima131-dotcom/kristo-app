@@ -204,7 +204,6 @@ import {
   ensureWatchQueueDepth,
   getWatchUpNextGeneration,
   mergeWatchUpNextCandidateRows,
-  nextWatchUpNextBatch,
   recordWatchSessionVideo,
   resetWatchUpNextSession,
   reshuffleHomeFeedRowsAfterWatchSelection,
@@ -359,9 +358,6 @@ export default function HomeFeedScreen() {
   const [relatedVideoItems, setRelatedVideoItems] = useState<any[]>([]);
   const watchUpNextPoolRef = useRef<any[]>([]);
   const watchQueueRefillInflightRef = useRef(false);
-  const watchUpNextMoreInflightRef = useRef(false);
-  const relatedVideoItemsRef = useRef<any[]>([]);
-  relatedVideoItemsRef.current = relatedVideoItems;
   /** Bumped on each Up Next rebuild and on full Watch close to ignore stale refill work. */
   const watchQueueRequestIdRef = useRef(0);
   /**
@@ -1467,9 +1463,7 @@ export default function HomeFeedScreen() {
                     progressiveRevealDone: androidProgressiveRevealDoneRef.current,
                     reason,
                   });
-                  // Fewer rows than the progressive-reveal minimum means nothing was revealed yet:
-                  // reveal page 0 (clears the skeleton) instead of topping up an empty page.
-                  if (youtubePageRevealCompleteRef.current && visibleCount > 0) {
+                  if (youtubePageRevealCompleteRef.current || visibleCount === 0) {
                     await topUpAndroidYoutubePage0(rows);
                   } else {
                     void revealYoutubePage0(rows);
@@ -3276,55 +3270,6 @@ export default function HomeFeedScreen() {
     fetchWatchQueueNextPage,
   ]);
 
-  /**
-   * The viewer reached the end of Up Next: add the next real videos (already loaded ones first,
-   * then the next Home Feed page). Nothing is invented; when every video is listed, nothing is added.
-   */
-  const handleWatchUpNextEndReached = useCallback(async () => {
-    const payload = videoModalPayload;
-    if (!payload?.item || watchUpNextMoreInflightRef.current) return;
-    watchUpNextMoreInflightRef.current = true;
-    const requestId = watchQueueRequestIdRef.current;
-    try {
-      watchUpNextPoolRef.current = mergeWatchUpNextCandidateRows(
-        watchUpNextPoolRef.current,
-        feedListRowsRef.current,
-        youtubeStreamRowsRef.current,
-        stableDisplayRowsRef.current,
-        displayFeedRowsRef.current
-      );
-      const nextBatch = () =>
-        nextWatchUpNextBatch({
-          currentItem: payload.item,
-          shownItems: relatedVideoItemsRef.current,
-          candidates: watchUpNextPoolRef.current,
-          viewerChurchId,
-          generationSeed: watchUpNextGeneration,
-        });
-      let batch = nextBatch();
-      let fetched = 0;
-      // A feed page can hold no new videos (only posts or products): try a few pages.
-      for (let pages = 0; !batch.length && feedHasMoreRef.current && pages < 3; pages += 1) {
-        const page = await fetchWatchQueueNextPage(requestId);
-        if (!page || watchQueueRequestIdRef.current !== requestId) break;
-        fetched += page.rows?.length || 0;
-        batch = nextBatch();
-      }
-      if (watchQueueRequestIdRef.current !== requestId) return;
-      console.log("KRISTO_WATCH_UP_NEXT_MORE", {
-        postId: String(payload.postId || ""),
-        shown: relatedVideoItemsRef.current.length,
-        added: batch.length,
-        fetched,
-        hasMore: feedHasMoreRef.current,
-      });
-      if (!batch.length || watchQueueRequestIdRef.current !== requestId) return;
-      setRelatedVideoItems((prev) => mergeWatchUpNextCandidateRows(prev, batch));
-    } finally {
-      watchUpNextMoreInflightRef.current = false;
-    }
-  }, [videoModalPayload, viewerChurchId, watchUpNextGeneration, fetchWatchQueueNextPage]);
-
   const watchEngagementItem = videoModalPayload?.item ?? null;
 
   const scrollFeedToRow = useCallback((row: any) => {
@@ -3853,7 +3798,6 @@ export default function HomeFeedScreen() {
         visible={Boolean(videoModalPayload)}
         payload={videoModalPayload}
         relatedItems={relatedVideoItems}
-        onUpNextEndReached={handleWatchUpNextEndReached}
         sokoProducts={sokoProducts}
         onClose={handleCloseVideo}
         onSelectRelated={handleVideoPress}

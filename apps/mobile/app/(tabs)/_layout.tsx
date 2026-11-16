@@ -66,8 +66,7 @@ import {
   emitLiveRingRefresh,
 } from "@/src/lib/liveScheduleRing";
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
-import { Animated, InteractionManager, Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Animated, InteractionManager, Pressable, StyleSheet, Text, View } from "react-native";
 import { ensureChurchAccessOrSetup } from "@/src/lib/churchLockedRecovery";
 import { fetchLightLiveState, resolveChurchLiveStateUpdate, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
 import {
@@ -273,10 +272,6 @@ function ProfileAvatarIcon({
 }
 
 export default function TabLayout() {
-  // Android draws the app under the system navigation bar (edge-to-edge): lift the tab bar above
-  // it so the labels are not cut off or covered.
-  const { bottom: safeBottom } = useSafeAreaInsets();
-  const androidNavInset = Platform.OS === "android" ? safeBottom : 0;
 
   const externalProfileTabActive =
     useSyncExternalStore(
@@ -1125,12 +1120,7 @@ export default function TabLayout() {
         headerShown: false,
         tabBarStyle: hideTabBar
           ? { display: "none" }
-          : androidNavInset > 0
-            ? [
-                homeFeedPremium.tabBarSolid,
-                { height: 70 + androidNavInset, paddingBottom: 12 + androidNavInset },
-              ]
-            : homeFeedPremium.tabBarSolid,
+          : homeFeedPremium.tabBarSolid,
         tabBarActiveTintColor: GOLD,
         tabBarInactiveTintColor: MUTED,
         tabBarLabelStyle: { fontWeight: "800", fontSize: 11, paddingBottom: 0 },

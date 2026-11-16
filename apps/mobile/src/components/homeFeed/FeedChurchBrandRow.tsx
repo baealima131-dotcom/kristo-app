@@ -2,7 +2,6 @@ import React, { memo, useCallback, useMemo } from "react";
 import {
   Pressable,
   Platform,
-  Linking,
   StyleSheet,
   Text,
   View,
@@ -56,24 +55,12 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
     () => resolveHomeFeedAvatarCacheContext(item),
     [item]
   );
-  // Video links belong to an external YouTube/TikTok/Facebook account, not a Kristo church.
-  const externalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
-  const externalProfileUrl = String(item?.creatorProfileUrl || "").trim();
-  const canOpen = externalVideoAccount ? Boolean(externalProfileUrl) : Boolean(churchId);
-  const openExternalProfile = useCallback(() => {
-    try {
-      const parsed = new URL(externalProfileUrl);
-      const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
-      if (parsed.protocol !== "https:" || parsed.username || parsed.password || !["youtube.com", "m.youtube.com", "tiktok.com", "vm.tiktok.com", "facebook.com", "m.facebook.com"].includes(host)) return;
-      void Linking.openURL(parsed.toString());
-    } catch {}
-  }, [externalProfileUrl]);
+  const canOpen = Boolean(churchId);
 
   const openProfile = useCallback(() => {
     if (!canOpen) return;
-    if (externalVideoAccount) openExternalProfile();
-    else openChurchProfileFromFeedItem(item, { source });
-  }, [canOpen, externalVideoAccount, item, openExternalProfile, source]);
+    openChurchProfileFromFeedItem(item, { source });
+  }, [canOpen, item, source]);
 
   const isWatch = variant === "watch";
   const postId = String(item?.id || "").trim();

@@ -325,36 +325,6 @@ export function buildWatchUpNextVideos(params: {
   return result;
 }
 
-/** How many more videos Up Next adds each time the viewer reaches the end of the list. */
-export const WATCH_UP_NEXT_PAGE_SIZE = 10;
-
-/**
- * Next Up Next batch for a viewer who scrolled to the end of the list: real feed videos that are
- * not the current video, not already listed and not watched this session, ranked like the first
- * batch. Returns only the new rows (empty when the loaded videos are used up).
- */
-export function nextWatchUpNextBatch(params: {
-  currentItem: any;
-  shownItems: any[];
-  candidates: any[];
-  viewerChurchId?: string;
-  batchSize?: number;
-  generationSeed?: number;
-}): any[] {
-  const exclude = [
-    ...watchSessionOrder,
-    ...(params.shownItems || []).map((row) => normalizePostId(row)).filter(Boolean),
-  ];
-  return buildWatchUpNextVideos({
-    currentItem: params.currentItem,
-    candidates: params.candidates,
-    viewerChurchId: params.viewerChurchId,
-    limit: Math.max(1, params.batchSize ?? WATCH_UP_NEXT_PAGE_SIZE),
-    generationSeed: params.generationSeed,
-    excludePostIds: exclude,
-  });
-}
-
 export type WatchQueueRefillPage = {
   rows: any[];
   hasMore: boolean;
