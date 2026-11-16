@@ -14897,8 +14897,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 </>
               ) : null}
 
-              {isPersonToPersonDm &&
-              (voiceRecording || (!draft.trim() && pending.length === 0)) ? (
+              {voiceRecording || (!draft.trim() && pending.length === 0) ? (
               <MessageVoiceRecorderButton
                 disabled={dmComposerLocked || attachUploading}
                 onRecordingChange={setVoiceRecording}
