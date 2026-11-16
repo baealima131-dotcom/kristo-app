@@ -36,10 +36,16 @@ export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Pr
 
   useEffect(() => {
     let active = true;
+    let refreshing = false;
     const refreshCounts = async () => {
+      if (refreshing) return;
+      refreshing = true;
       let base = String(process.env.EXPO_PUBLIC_API_BASE || "");
       while (base.endsWith("/")) base = base.slice(0, -1);
-      if (!base) return;
+      if (!base) {
+        refreshing = false;
+        return;
+      }
       try {
         const snapshot = await fetchProfileCommunicationInboxSnapshot({ base });
         if (active) {
@@ -50,11 +56,13 @@ export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Pr
         }
       } catch {
         // Keep the last successful counts if a background refresh fails.
+      } finally {
+        refreshing = false;
       }
     };
 
     void refreshCounts();
-    const timer = setInterval(refreshCounts, 60_000);
+    const timer = setInterval(refreshCounts, 20_000);
     return () => {
       active = false;
       clearInterval(timer);
