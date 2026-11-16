@@ -81,6 +81,34 @@ const SLIM_NUMBER_FIELDS = [
 
 const TEXT_TRIM_FIELDS = new Set(["body", "text", "title"]);
 
+/** Extra fields kept only for Facebook video link rows (see slimHomeFeedPageCacheRow). */
+const FACEBOOK_LINK_STRING_FIELDS = [
+  "provider",
+  "publishedAt",
+  "originalUrl",
+  "videoOrientation",
+  "creatorName",
+  "creatorProfileUrl",
+  "facebookCoverUrl",
+] as const;
+const FACEBOOK_LINK_COUNT_FIELDS = ["platformStats", "facebookManualStats"] as const;
+
+/** Small {likes, comments, views, checkedAt} objects; anything else is dropped. */
+function slimCountObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ["views", "likes", "comments"]) {
+    const raw = input[key];
+    if (raw === null || raw === undefined || raw === "") continue;
+    const count = Number(raw);
+    if (Number.isFinite(count) && count >= 0) out[key] = count;
+  }
+  const checkedAt = trimCacheString(input.checkedAt, "checkedAt");
+  if (checkedAt) out.checkedAt = checkedAt;
+  return Object.keys(out).length ? out : null;
+}
+
 export const HOME_FEED_PAGE_CACHE_MAX_ROW_BYTES = 12_000;
 
 function trimCacheString(value: unknown, key: string): string {
@@ -122,6 +150,41 @@ export function slimHomeFeedPageCacheRow(row: unknown): Record<string, unknown> 
   if (input.homeFeedSlotExpanded === true) out.homeFeedSlotExpanded = true;
   if (input.deleted === true) out.deleted = true;
   if (input.isLiveNow === true) out.isLiveNow = true;
+
+  // Facebook video links only: keep the Facebook post date, the original link and the
+  // Facebook counts (Graph API or admin-entered) so cached cards show the same as fresh ones.
+  if (
+    String(input.source || "").trim().toLowerCase() === "system-admin-video-link" &&
+    String(input.videoDisplayType || input.provider || "").trim().toLowerCase() === "facebook"
+  ) {
+    for (const key of FACEBOOK_LINK_STRING_FIELDS) {
+      const value = trimCacheString(input[key], key);
+      if (value) out[key] = value;
+    }
+    for (const key of FACEBOOK_LINK_COUNT_FIELDS) {
+      const counts = slimCountObject(input[key]);
+      if (counts) out[key] = counts;
+    }
+  }
+
+  // Every external video link (YouTube, TikTok, Facebook): keep the platform post date, the
+  // channel picture and the platform counts, so cached cards match fresh ones.
+  if (String(input.source || "").trim().toLowerCase() === "system-admin-video-link") {
+    // videoDisplayType says which platform (youtube/facebook/tiktok) plays the link in Watch.
+    for (const key of ["videoDisplayType", "publishedAt", "creatorAvatarUrl", "creatorName", "creatorProfileUrl"] as const) {
+      const value = trimCacheString(input[key], key);
+      if (value) out[key] = value;
+    }
+    const counts = slimCountObject(input.platformStats);
+    if (counts) out.platformStats = counts;
+    // Counts the platform withholds on purpose ("likes", "comments") so cached cards say "hidden".
+    if (Array.isArray(input.platformHiddenFields)) {
+      const hidden = input.platformHiddenFields
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter((value) => value === "likes" || value === "comments");
+      if (hidden.length) out.platformHiddenFields = hidden;
+    }
+  }
 
   if (!String(out.id || "").trim()) return null;
   return out;

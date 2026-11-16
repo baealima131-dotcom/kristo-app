@@ -122,7 +122,24 @@ export function homeFeedRowCardFingerprint(row: any): string {
     String(row?.commentCount || ""),
     String(row?.shareCount || ""),
     String(row?.homeFeedRecycleKey || ""),
+    // Which platform plays a video link (a cached row without it must be replaced).
+    String(row?.videoDisplayType || ""),
+    // External video links: a new admin cover, channel picture, post date or platform counts must
+    // also replace the cached row (otherwise the card keeps the old cover/avatar/counts).
+    String(row?.facebookCoverUrl || ""),
+    String(row?.creatorAvatarUrl || ""),
+    String(row?.publishedAt || ""),
+    externalCountsFingerprint(row?.platformStats),
+    externalCountsFingerprint(row?.facebookManualStats),
+    Array.isArray(row?.platformHiddenFields) ? row.platformHiddenFields.join(",") : "",
   ].join("|");
+}
+
+/** views/likes/comments of a platform-count object, or "" when there is none. */
+function externalCountsFingerprint(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const counts = value as Record<string, unknown>;
+  return ["views", "likes", "comments"].map((key) => String(counts[key] ?? "")).join(",");
 }
 
 function mergeHomeFeedRowPreservingReference(existing: any, fresh: any) {

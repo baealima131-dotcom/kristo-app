@@ -5,15 +5,18 @@ import { formatActionCount } from "./homeFeedUtils";
 
 type Props = {
   count: number;
+  /** Text shown instead of the number (video links: "—" when the platform's views are not available). */
+  label?: string;
 };
 
 export const HomeFeedViewCount = memo(
-  function HomeFeedViewCount({ count }: Props) {
+  function HomeFeedViewCount({ count, label }: Props) {
+    const text = label ?? formatActionCount(count);
     return (
       <View
         pointerEvents="none"
         style={styles.wrap}
-        accessibilityLabel={`${formatActionCount(count)} views`}
+        accessibilityLabel={`${text} views`}
       >
         <View style={styles.planetWrap}>
           <View style={styles.outerGlow} />
@@ -36,7 +39,7 @@ export const HomeFeedViewCount = memo(
 
           <View style={styles.countBadge}>
             <Text style={styles.count}>
-              {formatActionCount(count)}
+              {text}
             </Text>
           </View>
         </View>
