@@ -48,7 +48,15 @@ let persistDirty = false;
 let deferredHydrateRequested = false;
 
 function normalizeVideoUrl(videoUrl: string) {
-  return String(videoUrl || "").trim().split("?")[0];
+  const raw = String(videoUrl || "").trim();
+  const [base, query = ""] = raw.split("?");
+  // Watch-page links (youtube.com/watch?v=ID, facebook.com/watch/?v=ID, video.php?v=ID) name the
+  // video only in "v"; keep it so different videos never share one poster cache entry.
+  if (/\/(?:watch|video\.php)\/?$/i.test(base)) {
+    const id = new URLSearchParams(query.split("#")[0]).get("v");
+    if (id) return `${base}?v=${id}`;
+  }
+  return base;
 }
 
 const appContainerRoot = (() => {

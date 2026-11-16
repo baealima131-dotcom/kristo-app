@@ -1,7 +1,9 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Animated,
   AppState,
   Image,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -12,6 +14,28 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
+import { WebView } from "react-native-webview";
+import {
+  buildFacebookSdkPlayerHtml,
+  buildYouTubePlayerHtml,
+  parseExternalPlayerMessage,
+  YOUTUBE_CLIENT_ORIGIN,
+  youtubeVideoIdFromUrl,
+} from "@/src/lib/externalVideoPlayerHtml";
+import {
+  facebookOpenUrl,
+  isFacebookPlayerHost,
+  parseFacebookVideoUrl,
+  isFacebookVideoLinkItem,
+  isVerticalFacebookVideoItem,
+  externalCountLabel,
+  externalPlatformHiddenCounts,
+  resolveExternalPlatformStats,
+  facebookCoverWithFallback,
+  externalCountDisplay,
+  externalPlatformCount,
+} from "@/src/lib/facebookVideoLink";
+import { recordQualifiedHomeFeedPostView, useHomeFeedPostViewCount } from "@/src/lib/homeFeedPostViews";
 import {
   safePauseVideoPlayer,
   safePlayVideoPlayer,
@@ -28,7 +52,8 @@ import {
   resolveHomeFeedPlaybackUri,
   scheduleWatchNextVideoDiskCache,
 } from "@/src/lib/homeFeedVideoDiskCache";
-import { hydrateMediaPosterCacheForPlayback } from "@/src/lib/mediaPosterCache";
+import { hydrateMediaPosterCacheForPlayback, resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
+import { resolveSavedFeedVideoPosterUri } from "@/src/lib/homeFeedPosterSavedUri";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import {
   notifyWatchPlaybackActive,
@@ -46,7 +71,12 @@ import {
   YOUTUBE_CARD_H_PADDING,
   resolveWatchPlayerHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
-import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import {
+  resolveHomeFeedVideoDisplayType,
+  resolveHomeFeedVideoDisplayTypeFromDimensions,
+  resolveHomeFeedVideoDisplayTypeHint,
+  type HomeFeedVideoDisplayType,
+} from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import {
   formatFeedTimestamp,
@@ -68,7 +98,7 @@ import { HomeFeedShareSheet } from "./HomeFeedShareSheet";
 import { ShareToChatSheet } from "./ShareToChatSheet";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
 import type { HomeFeedSharePayload } from "@/src/lib/homeFeedShare";
-import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
+import { FeedVideoCover, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import { formatActionCount } from "./homeFeedUtils";
 import {
   HOME_FEED_BG,
@@ -90,6 +120,8 @@ type Props = {
   visible: boolean;
   payload: HomeFeedVideoOpenPayload | null;
   relatedItems: any[];
+  /** Called when the viewer scrolls near the end of Up Next, to add more videos. */
+  onUpNextEndReached?: () => void;
   sokoProducts: SokoHomeProduct[];
   onClose: () => void;
   onSelectRelated: (payload: HomeFeedVideoOpenPayload) => void;
@@ -139,24 +171,51 @@ function WatchPanelActions({
   onReport: () => void;
 }) {
   const engagement = useHomeFeedRowEngagement(item);
+  const externalVideo = String(item?.source || "").trim() === "system-admin-video-link";
+  // Facebook: Graph counts first, then counts a System Admin entered; others unchanged.
+  const platformStats = externalVideo ? resolveExternalPlatformStats(item) : {};
+  const platformCount = (value: unknown) => {
+    const count = Number(value);
+    return Number.isFinite(count) && count >= 0 ? count : 0;
+  };
+  const likeCount = engagement.likeCount + platformCount((platformStats as any).likes ?? (platformStats as any).likeCount);
+  const commentCount = engagement.commentCount + platformCount((platformStats as any).comments ?? (platformStats as any).commentCount);
+  // YouTube hid likes or turned comments off: say so instead of showing 0.
+  const hiddenCounts = externalVideo ? externalPlatformHiddenCounts(item) : { likes: false, comments: false };
+  // Video links: platform views (e.g. YouTube) plus Kristo views, in this bar with likes/comments.
+  const kristoViewCount = useHomeFeedPostViewCount(String(item?.id || "").trim(), Number(item?.viewCount || 0));
+  // Video links: real platform counts plus Kristo's own; "—" when the platform gave none.
+  const likeLabel = externalVideo
+    ? externalCountDisplay(engagement.likeCount, externalPlatformCount(item, "likes"), hiddenCounts.likes, formatActionCount)
+    : externalCountLabel(likeCount, hiddenCounts.likes, formatActionCount);
+  const commentLabel = externalVideo
+    ? externalCountDisplay(engagement.commentCount, externalPlatformCount(item, "comments"), hiddenCounts.comments, formatActionCount)
+    : externalCountLabel(commentCount, hiddenCounts.comments, formatActionCount);
+  const viewLabel = externalCountDisplay(kristoViewCount, externalPlatformCount(item, "views"), false, formatActionCount);
 
   return (
     <View style={styles.watchActionsRow}>
       <WatchPanelAction
         icon={engagement.likedByMe || engagement.liked ? "heart" : "heart-outline"}
-        label={formatActionCount(engagement.likeCount)}
+        label={likeLabel}
+        countLabel
         active={engagement.likedByMe || engagement.liked}
         activeColor="#FF6B8A"
         onPress={onLike}
       />
       <WatchPanelAction
         icon="chatbubble-ellipses-outline"
-        label={formatActionCount(engagement.commentCount)}
+        label={commentLabel}
+        countLabel
         onPress={onComment}
       />
+      {externalVideo ? (
+        <WatchPanelStat icon="eye-outline" label={viewLabel} accessibilityLabel="Views" />
+      ) : null}
       <WatchPanelAction
         icon="arrow-redo-outline"
-        label={formatActionCount(Number(item?.shareCount || 0))}
+        // Video links: Share shows its icon only, with no number.
+        label={externalVideo ? "" : formatActionCount(Number(item?.shareCount || 0))}
         onPress={onShare}
       />
       <WatchPanelAction
@@ -181,12 +240,15 @@ function WatchPanelAction({
   onPress,
   active,
   activeColor = HOME_FEED_GOLD_SOFT,
+  countLabel,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   active?: boolean;
   activeColor?: string;
+  /** Like and comment numbers: larger digits in the same line height. */
+  countLabel?: boolean;
 }) {
   return (
     <Pressable style={styles.watchAction} onPress={onPress} hitSlop={8}>
@@ -196,12 +258,36 @@ function WatchPanelAction({
         color={active ? activeColor : "rgba(255,255,255,0.68)"}
       />
       <Text
-        style={[styles.watchActionLabel, active ? styles.watchActionLabelActive : null]}
+        style={[
+          styles.watchActionLabel,
+          countLabel ? styles.watchActionCountLabel : null,
+          active ? styles.watchActionLabelActive : null,
+        ]}
         numberOfLines={1}
       >
         {label}
       </Text>
     </Pressable>
+  );
+}
+
+/** A count shown in the Watch bar that is not a button (video links: views). */
+function WatchPanelStat({
+  icon,
+  label,
+  accessibilityLabel,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  accessibilityLabel: string;
+}) {
+  return (
+    <View style={styles.watchAction} accessible accessibilityLabel={`${accessibilityLabel}: ${label}`}>
+      <Ionicons name={icon} size={WATCH_ACTION_ICON_SIZE} color="rgba(255,255,255,0.68)" />
+      <Text style={[styles.watchActionLabel, styles.watchActionCountLabel]} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
   );
 }
 
@@ -249,14 +335,19 @@ function buildWatchVideoPlayerSource(uri: string) {
   };
 }
 
+/** Height (px) of the purple line left under the video when the panel is folded. */
+const WATCH_PANEL_FOLDED_LINE = 4;
+
 function WatchVideoSurface({
   payload,
-  isTikTokLayout = false,
+  displayType,
   onPlaybackStarted,
+  onDisplayTypeDetected,
 }: {
   payload: HomeFeedVideoOpenPayload;
-  isTikTokLayout?: boolean;
+  displayType?: HomeFeedVideoDisplayType | null;
   onPlaybackStarted?: () => void;
+  onDisplayTypeDetected?: (displayType: HomeFeedVideoDisplayType) => void;
 }) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
@@ -274,6 +365,17 @@ function WatchVideoSurface({
   const backgroundPausedRef = useRef(false);
   const onPlaybackStartedRef = useRef(onPlaybackStarted);
   onPlaybackStartedRef.current = onPlaybackStarted;
+  const onDisplayTypeDetectedRef = useRef(onDisplayTypeDetected);
+  onDisplayTypeDetectedRef.current = onDisplayTypeDetected;
+
+  const reportTrackDisplayType = useCallback((track: any) => {
+    const width = Number(track?.size?.width || 0);
+    const height = Number(track?.size?.height || 0);
+    const detected = resolveHomeFeedVideoDisplayTypeFromDimensions(width, height);
+    if (detected) onDisplayTypeDetectedRef.current?.(detected);
+  }, []);
+
+  const isTikTokLayout = displayType === "tiktok";
 
   const isWatchAutoPlayBlocked = useCallback(
     () => userPausedRef.current || backgroundPausedRef.current,
@@ -321,6 +423,17 @@ function WatchVideoSurface({
   const backdropPlayerRef = useRef(backdropPlayer);
   playerRef.current = player;
   backdropPlayerRef.current = backdropPlayer;
+
+  useEventListener(player, "videoTrackChange", (event: any) => {
+    reportTrackDisplayType(event?.videoTrack);
+  });
+  useEventListener(player, "statusChange", () => {
+    reportTrackDisplayType((player as any)?.videoTrack);
+  });
+
+  useEffect(() => {
+    reportTrackDisplayType((player as any)?.videoTrack);
+  }, [player, reportTrackDisplayType]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -558,6 +671,15 @@ function WatchVideoSurface({
   const videoUri = item ? resolveVideoUri(item) || payload.videoUri : payload.videoUri;
   const videoDurationMs = payload.videoDurationMs ?? (item ? resolveVideoDurationMs(item) : undefined);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
+  // Cover shown over the player when the video ends: the saved cover, else the picture the feed
+  // card already showed for this video.
+  const endCoverUri = ended
+    ? String(
+        (item ? resolveSavedFeedVideoPosterUri(item, videoUri) : "") ||
+          resolveCachedMediaPoster(postId, videoUri || "") ||
+          ""
+      ).trim()
+    : "";
 
   if (!playbackUri) return null;
 
@@ -577,14 +699,16 @@ function WatchVideoSurface({
       {!ended ? (
         <VideoView
           player={player}
-          style={isTikTokLayout ? styles.videoOverBackdrop : styles.video}
-          contentFit="contain"
+          style={displayType === "youtube" ? styles.video : styles.videoPortrait}
+          contentFit={displayType === "tiktok" ? "cover" : "contain"}
           nativeControls
         />
       ) : null}
       {ended ? (
         <Pressable style={styles.replayOverlay} onPress={handleReplay} accessibilityLabel="Replay video">
-          {item ? (
+          {endCoverUri ? (
+            <FeedVideoCover uri={endCoverUri} dimColor="rgba(18,3,31,0.24)" />
+          ) : item ? (
             <FeedVideoPosterImage
               item={item}
               style={StyleSheet.absoluteFillObject}
@@ -611,11 +735,405 @@ function WatchVideoSurface({
 }
 
 /** Current-video metadata — avatar, church, title, date. */
+function buildExternalVideoEmbedUrl(item: any): string | null {
+  const raw = String(item?.videoUrl || item?.url || "").trim();
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port) return null;
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(host)) {
+      const videoId = host === "youtu.be"
+        ? parsed.pathname.split("/").filter(Boolean)[0] || ""
+        : parsed.pathname === "/watch"
+          ? parsed.searchParams.get("v") || ""
+          : parsed.pathname.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})(?:\/|$)/)?.[1] || "";
+      if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return null;
+      return `https://www.youtube-nocookie.com/embed/${videoId}?playsinline=1&controls=1&rel=0&autoplay=1`;
+    }
+    if (["tiktok.com", "m.tiktok.com"].includes(host)) {
+      const videoId = parsed.pathname.match(/^\/@[A-Za-z0-9._-]+\/video\/(\d+)(?:\/|$)/)?.[1] || "";
+      if (!/^\d{8,24}$/.test(videoId)) return null;
+      return `https://www.tiktok.com/player/v1/${videoId}?controls=1&description=1&music_info=1&autoplay=1&loop=0`;
+    }
+  } catch {}
+  return null;
+}
+
+function allowExternalPlayerNavigation(request: { url: string; isTopFrame?: boolean }) {
+  if (request.isTopFrame === false) return true;
+  try {
+    const next = new URL(request.url);
+    if (next.protocol !== "https:") return false;
+    const host = next.hostname.toLowerCase().replace(/^www\./, "");
+    return ["youtube.com", "youtube-nocookie.com", "youtu.be", "tiktok.com", "m.tiktok.com"].includes(host);
+  } catch {
+    return false;
+  }
+}
+
+const FACEBOOK_EMBED_BASE_URL = "https://kristo-app.vercel.app/watch/facebook-embed";
+/** Facebook Reels are vertical (9:16) videos: they get the same Watch frame as uploaded vertical videos. */
+const FACEBOOK_REEL_VIDEO_ASPECT = 9 / 16;
+
+/** True for a Facebook Reel / vertical Facebook video link. */
+function isFacebookVerticalItem(item: any): boolean {
+  return isFacebookVideoLinkItem(item) && isVerticalFacebookVideoItem(item);
+}
+
+/** The Reel's cover set by a System Admin, else another picture saved on the post. */
+function facebookBackdropImageUri(item: any): string {
+  for (const raw of [item?.facebookCoverUrl, item?.thumbnailUrl, item?.thumbnailUri, item?.posterUri, item?.videoPosterUri]) {
+    const value = String(raw || "").trim();
+    // Local test servers in development builds may serve http; release builds accept https only.
+    if (/^https:\/\//i.test(value) || (__DEV__ && /^http:\/\//i.test(value))) return value;
+  }
+  return "";
+}
+
+function openFacebookLink(item: any) {
+  const target = facebookOpenUrl(item);
+  if (target) void Linking.openURL(target).catch(() => {});
+}
+
+/** A picture usable as the video's cover in Watch (https; a local http test server in dev only). */
+function usableCoverUri(raw: unknown): string {
+  const value = String(raw || "").trim();
+  return /^https:\/\//i.test(value) || (__DEV__ && /^http:\/\//i.test(value)) ? value : "";
+}
+
+type ExternalCover = { uri: string; contain: boolean };
+
+/**
+ * Cover shown over an external player while it opens and after it ends: the admin cover
+ * (Facebook) or the video thumbnail; a Facebook link with neither uses its Page's picture, whole.
+ */
+function externalVideoCover(item: any): ExternalCover {
+  for (const raw of [item?.facebookCoverUrl, item?.thumbnailUrl, item?.thumbnailUri, item?.posterUri, item?.videoPosterUri]) {
+    const uri = usableCoverUri(raw);
+    if (uri) return { uri, contain: false };
+  }
+  const facebook = facebookCoverWithFallback(item);
+  return { uri: facebook.uri, contain: facebook.isPagePicture };
+}
+
+/** Longest wait for the player to report "playing" before the opening cover steps aside. */
+const EXTERNAL_START_COVER_MAX_MS = 8000;
+
+/**
+ * Covers the player while it loads (instead of a black frame) until the video is playing.
+ * Touches pass through to the player underneath.
+ */
+function ExternalVideoStartCover({ cover }: { cover: ExternalCover }) {
+  if (!cover.uri) return null;
+  return (
+    <View style={[StyleSheet.absoluteFillObject, styles.externalEndCover]} pointerEvents="none">
+      <FeedVideoCover uri={cover.uri} dimColor="rgba(18,3,31,0.18)" foregroundResizeMode={cover.contain ? "contain" : "cover"} />
+    </View>
+  );
+}
+
+/**
+ * Covers the player when the video has ended (instead of the platform's end screen or
+ * suggestions). A tap plays the same video again; the next video never starts by itself.
+ */
+function ExternalVideoEndCover({ cover, onReplay }: { cover: ExternalCover; onReplay: () => void }) {
+  return (
+    <Pressable
+      style={[StyleSheet.absoluteFillObject, styles.externalEndCover]}
+      onPress={onReplay}
+      accessibilityRole="button"
+      accessibilityLabel="Cheza video tena"
+    >
+      {cover.uri ? (
+        <FeedVideoCover
+          uri={cover.uri}
+          dimColor="rgba(18,3,31,0.24)"
+          foregroundResizeMode={cover.contain ? "contain" : "cover"}
+        />
+      ) : null}
+      <View style={styles.externalEndReplayButton}>
+        <Ionicons name="play" size={30} color="#FFFFFF" />
+      </View>
+    </Pressable>
+  );
+}
+
+/** Messages from the player page: playing / ended / error. */
+function useExternalPlayerState(resetKey: string) {
+  const webViewRef = useRef<WebView>(null);
+  const [ended, setEnded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  // False until the player reports "playing": the opening cover stays over the black player.
+  const [started, setStarted] = useState(false);
+  useEffect(() => {
+    setEnded(false);
+    setFailed(false);
+    setStarted(false);
+    const timer = setTimeout(() => setStarted(true), EXTERNAL_START_COVER_MAX_MS);
+    return () => clearTimeout(timer);
+  }, [resetKey]);
+  const onMessage = useCallback((event: { nativeEvent: { data: string } }) => {
+    const message = parseExternalPlayerMessage(event?.nativeEvent?.data);
+    if (!message) return;
+    if (message.type === "ended") setEnded(true);
+    if (message.type === "playing") {
+      setEnded(false);
+      setStarted(true);
+    }
+    if (message.type === "error") setFailed(true);
+  }, []);
+  const replay = useCallback(() => {
+    setEnded(false);
+    webViewRef.current?.injectJavaScript("window.kristoReplay && window.kristoReplay(); true;");
+  }, []);
+  return { webViewRef, ended, started, failed, setFailed, onMessage, replay };
+}
+
+/**
+ * Plays a confirmed public Facebook video or Reel with Facebook's official Embedded Video Player
+ * (JS SDK): it starts by itself in Watch, Facebook's controls hide while it plays and return on a
+ * tap, and when it ends the post's cover covers the player (tap to play again). Reels keep 9:16,
+ * centred over the cover blurred at the sides. If the embed cannot load, "Fungua Facebook" opens
+ * the original link. Only oEmbed-confirmed public posts reach here.
+ */
+function WatchFacebookVideoSurface({ item }: { item: any }) {
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  const vertical = isFacebookVerticalItem(item);
+  const playerSize = size && vertical
+    ? { width: Math.min(size.width, Math.round(size.height * FACEBOOK_REEL_VIDEO_ASPECT)), height: size.height }
+    : size;
+  const href = parseFacebookVideoUrl(item?.videoUrl || item?.url)?.url || "";
+  const html = playerSize && href ? buildFacebookSdkPlayerHtml(href, playerSize.width) : null;
+  const backdropUri = vertical ? facebookBackdropImageUri(item) : "";
+  const cover = externalVideoCover(item);
+  const canOpen = Boolean(facebookOpenUrl(item));
+  const { webViewRef, ended, started, failed, setFailed, onMessage, replay } = useExternalPlayerState(String(item?.id || ""));
+
+  const allowNavigation = useCallback((request: { url: string; isTopFrame?: boolean }) => {
+    if (request.url === "about:blank" || request.url.startsWith(FACEBOOK_EMBED_BASE_URL)) return true;
+    try {
+      const next = new URL(request.url);
+      if (next.protocol !== "https:" || !isFacebookPlayerHost(next.hostname)) return false;
+      // The player runs in its own frame; a link that would replace the page (title, page name,
+      // "Watch on Facebook") opens in Facebook instead.
+      if (request.isTopFrame === false) return true;
+      void Linking.openURL(next.toString()).catch(() => {});
+    } catch {}
+    return false;
+  }, []);
+
+  const showPlayer = Boolean(html) && !failed;
+  return (
+    <View
+      style={[styles.externalVideoSurface, vertical ? styles.facebookReelSurface : null]}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        if (width > 0 && height > 0 && (!size || Math.abs(size.width - width) > 2 || Math.abs(size.height - height) > 2)) {
+          setSize({ width, height });
+        }
+      }}
+    >
+      {vertical && showPlayer ? (
+        <>
+          {backdropUri ? (
+            <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+              <FeedVideoCover uri={backdropUri} showForeground={false} dim={false} />
+            </View>
+          ) : null}
+          <View style={styles.tikTokBackdropOverlay} pointerEvents="none" />
+        </>
+      ) : null}
+      {showPlayer ? (
+        <View
+          style={
+            vertical && playerSize
+              ? [styles.facebookReelPlayer, { width: playerSize.width, height: playerSize.height }]
+              : styles.facebookPlayerColumn
+          }
+        >
+          <WebView
+            ref={webViewRef}
+            key={html!}
+            source={{ html: html!, baseUrl: FACEBOOK_EMBED_BASE_URL }}
+            style={styles.externalVideoWebView}
+            containerStyle={styles.externalVideoWebViewContainer}
+            originWhitelist={["https://*", "about:blank"]}
+            javaScriptEnabled
+            domStorageEnabled
+            allowsInlineMediaPlayback
+            mediaPlaybackRequiresUserAction={false}
+            allowsFullscreenVideo
+            scrollEnabled={false}
+            bounces={false}
+            setSupportMultipleWindows={false}
+            onShouldStartLoadWithRequest={allowNavigation}
+            onMessage={onMessage}
+            onError={() => setFailed(true)}
+            onHttpError={() => setFailed(true)}
+            accessibilityLabel="Facebook video player"
+          />
+        </View>
+      ) : size && (failed || !html) ? (
+        <View style={styles.externalVideoUnavailable}>
+          <Ionicons name="logo-facebook" size={28} color="#FFFFFF" />
+          <Text style={styles.externalVideoUnavailableText}>Video hii ya Facebook haiwezi kuchezwa hapa.</Text>
+          {canOpen ? (
+            <Pressable
+              onPress={() => openFacebookLink(item)}
+              style={styles.facebookOpenButton}
+              accessibilityRole="button"
+              accessibilityLabel="Fungua Facebook"
+            >
+              <Ionicons name="open-outline" size={16} color="#FFFFFF" />
+              <Text style={styles.facebookOpenButtonText}>Fungua Facebook</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+      {showPlayer && !started && !ended ? <ExternalVideoStartCover cover={cover} /> : null}
+      {showPlayer && ended ? <ExternalVideoEndCover cover={cover} onReplay={replay} /> : null}
+    </View>
+  );
+}
+
+/** Top-frame navigation away from YouTube's player page opens in YouTube instead of Watch. */
+function allowYouTubePlayerNavigation(request: { url: string; isTopFrame?: boolean }) {
+  if (request.url === "about:blank" || request.url.startsWith(YOUTUBE_CLIENT_ORIGIN)) return true;
+  if (request.isTopFrame === false) return true;
+  try {
+    const next = new URL(request.url);
+    const host = next.hostname.toLowerCase().replace(/^www\./, "");
+    if (next.protocol === "https:" && ["youtube.com", "m.youtube.com", "youtu.be", "youtube-nocookie.com"].includes(host)) {
+      void Linking.openURL(next.toString()).catch(() => {});
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * Public YouTube links play through YouTube's official IFrame Player API: the video starts by
+ * itself in Watch without YouTube's control bar or fullscreen button; nothing is drawn over the
+ * player (its cover sits behind it while loading and replaces it after the end), and when it ends
+ * the cover replaces the player (tap to play again; nothing else starts by itself).
+ */
+function WatchYouTubeVideoSurface({ item, videoId }: { item: any; videoId: string }) {
+  const cover = externalVideoCover(item);
+  // The cover is the player page's own background (behind YouTube's player), never on top of it.
+  const html = buildYouTubePlayerHtml(videoId, cover.uri);
+  const { webViewRef, ended, failed, onMessage, replay } = useExternalPlayerState(`${item?.id || ""}:${videoId}`);
+  // After the video ends the player is removed and the cover takes its place; replay loads a new player.
+  const [playRound, setPlayRound] = useState(0);
+  const replayFromCover = useCallback(() => {
+    replay();
+    setPlayRound((round) => round + 1);
+  }, [replay]);
+  return (
+    <View style={styles.externalVideoSurface}>
+      {html && !failed && !ended && cover.uri ? (
+        // The cover sits behind the transparent WebView until the page and player draw.
+        <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+          <FeedVideoCover uri={cover.uri} dim={false} foregroundResizeMode={cover.contain ? "contain" : "cover"} />
+        </View>
+      ) : null}
+      {html && !failed && !ended ? (
+        <WebView
+          ref={webViewRef}
+          key={`${videoId}:${playRound}`}
+          source={{ html, baseUrl: YOUTUBE_CLIENT_ORIGIN }}
+          style={cover.uri ? styles.externalVideoWebViewClear : styles.externalVideoWebView}
+          containerStyle={cover.uri ? styles.externalVideoWebViewClear : styles.externalVideoWebViewContainer}
+          originWhitelist={["https://*", "about:blank"]}
+          javaScriptEnabled
+          domStorageEnabled
+          allowsInlineMediaPlayback
+          mediaPlaybackRequiresUserAction={false}
+          allowsFullscreenVideo
+          scrollEnabled={false}
+          bounces={false}
+          setSupportMultipleWindows={false}
+          onShouldStartLoadWithRequest={allowYouTubePlayerNavigation}
+          onMessage={onMessage}
+          accessibilityLabel="YouTube video player"
+        />
+      ) : html && !failed && ended ? (
+        <ExternalVideoEndCover cover={cover} onReplay={replayFromCover} />
+      ) : (
+        <View style={styles.externalVideoUnavailable}>
+          <Ionicons name="alert-circle-outline" size={26} color={HOME_FEED_GOLD} />
+          <Text style={styles.externalVideoUnavailableText}>Video hii ya YouTube haiwezi kuchezwa hapa.</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+/** Plays public YouTube/TikTok/Facebook links in Kristo's Watch view using the platforms' players. */
+function WatchExternalVideoSurface({ item }: { item: any }) {
+  if (isFacebookVideoLinkItem(item)) {
+    return <WatchFacebookVideoSurface item={item} />;
+  }
+  const youtubeId = youtubeVideoIdFromUrl(item?.videoUrl || item?.url);
+  if (youtubeId) {
+    return <WatchYouTubeVideoSurface item={item} videoId={youtubeId} />;
+  }
+  // TikTok: its embed player (no public end-of-video event to place a cover).
+  const embedUrl = buildExternalVideoEmbedUrl(item);
+  return (
+    <View style={styles.externalVideoSurface}>
+      {embedUrl ? (
+        <WebView
+          key={embedUrl}
+          source={{ uri: embedUrl }}
+          style={styles.externalVideoWebView}
+          containerStyle={styles.externalVideoWebViewContainer}
+          originWhitelist={["https://*"]}
+          javaScriptEnabled
+          domStorageEnabled
+          allowsInlineMediaPlayback
+          mediaPlaybackRequiresUserAction={false}
+          allowsFullscreenVideo
+          scrollEnabled={false}
+          bounces={false}
+          setSupportMultipleWindows={false}
+          onShouldStartLoadWithRequest={allowExternalPlayerNavigation}
+          accessibilityLabel="TikTok video player"
+        />
+      ) : (
+        <View style={styles.externalVideoUnavailable}>
+          <Ionicons name="alert-circle-outline" size={26} color={HOME_FEED_GOLD} />
+          <Text style={styles.externalVideoUnavailableText}>Link ya video haiwezi kuchezwa hapa.</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
 function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle?: string }) {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const postTitle = resolveHomeFeedVideoTitle(item);
   const titleLine = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle || fallbackTitle;
-  const whenLabel = formatFeedTimestamp(item?.createdAt);
+  // Video links show the platform's publish date; the embed player reports no playback, so a
+  // Kristo view is counted after 3 seconds on screen.
+  const externalVideo = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
+  const whenLabel = externalVideo && item?.publishedAt
+    ? new Date(String(item.publishedAt)).toLocaleDateString()
+    : formatFeedTimestamp(item?.createdAt);
+  const postId = String(item?.id || "").trim();
+  const serverViewCount = Number(item?.viewCount || 0);
+  // Video links: views show in the Watch bar with likes/comments, not on this date line.
+
+  useEffect(() => {
+    if (!externalVideo || !postId) return;
+    const timer = setTimeout(() => {
+      void recordQualifiedHomeFeedPostView({
+        postId,
+        serverCount: serverViewCount,
+        dwellMs: 3000,
+        mediaKind: "video",
+      });
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [externalVideo, postId, serverViewCount]);
 
   return (
     <View style={styles.metaRow}>
@@ -645,6 +1163,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   visible,
   payload,
   relatedItems,
+  onUpNextEndReached,
   sokoProducts,
   onClose,
   onSelectRelated,
@@ -679,21 +1198,95 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 }: Props) {
   const insets = useSafeAreaInsets();
   const { width, height: windowHeight } = useWindowDimensions();
-  const displayType = resolveHomeFeedVideoDisplayType(payload?.item);
+  const activePostId = String(payload?.postId || "").trim();
+  const displayTypeHint = resolveHomeFeedVideoDisplayTypeHint(payload?.item || payload);
+  const [detectedDisplayType, setDetectedDisplayType] = useState<{
+    postId: string;
+    type: HomeFeedVideoDisplayType;
+  } | null>(null);
+  const displayType =
+    displayTypeHint ||
+    (detectedDisplayType?.postId === activePostId ? detectedDisplayType.type : null);
+  const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
+  const facebookReel = isFacebookVerticalItem(payload?.item);
   const playerHeight = useMemo(
     () =>
+      // A Reel uses the same short vertical frame as an uploaded vertical video (e.g. 320x568).
+      // Facebook's player may show narrow bars beside the video; the frame is not made taller for that.
       resolveWatchPlayerHeight({
         windowWidth: width,
         windowHeight,
         topInset: insets.top,
-        isTikTokLayout,
+        isPortraitLayout,
       }),
-    [width, windowHeight, insets.top, isTikTokLayout]
+    [width, windowHeight, insets.top, isPortraitLayout]
   );
   const scrollRef = useRef<ScrollView | null>(null);
   const [playbackStarted, setPlaybackStarted] = useState(false);
+  // Near the end of Up Next (about two cards left), ask once per list length for more videos.
+  const upNextEndReachedRef = useRef(onUpNextEndReached);
+  upNextEndReachedRef.current = onUpNextEndReached;
+  const upNextLengthRef = useRef(relatedItems.length);
+  upNextLengthRef.current = relatedItems.length;
+  const upNextRequestedForLengthRef = useRef(-1);
+  /*
+   * Purple panel under the video: it follows the finger as Up Next scrolls. Scrolling down slides
+   * it up under the video's edge until only a thin purple line is left; scrolling back up brings
+   * it down again to its place. It moves with a transform on the native driver, so nothing is
+   * laid out again while scrolling and the video stays still.
+   */
+  const [panelHeight, setPanelHeight] = useState(0);
+  const upNextScrollY = useRef(new Animated.Value(0)).current;
+  const panelFoldMax = Math.max(0, panelHeight - WATCH_PANEL_FOLDED_LINE);
+  const panelTranslateY = useMemo(
+    () =>
+      Animated.multiply(
+        Animated.diffClamp(
+          // Overscroll at the top (iOS bounce) does not move the panel.
+          upNextScrollY.interpolate({ inputRange: [0, 1], outputRange: [0, 1], extrapolateLeft: "clamp" }),
+          0,
+          Math.max(1, panelFoldMax)
+        ),
+        -1
+      ),
+    [upNextScrollY, panelFoldMax]
+  );
+  const handlePanelLayout = useCallback((event: any) => {
+    const next = Math.round(Number(event?.nativeEvent?.layout?.height || 0));
+    if (next > 0) setPanelHeight((prev) => (Math.abs(prev - next) > 1 ? next : prev));
+  }, []);
+  const handleUpNextScroll = useCallback((event: any) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event?.nativeEvent || {};
+    if (!contentSize || !layoutMeasurement) return;
+    const remaining = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    const length = upNextLengthRef.current;
+    if (remaining > 1400 || !length || upNextRequestedForLengthRef.current === length) return;
+    upNextRequestedForLengthRef.current = length;
+    upNextEndReachedRef.current?.();
+  }, []);
+  const upNextScrollEvent = useMemo(
+    () =>
+      Animated.event([{ nativeEvent: { contentOffset: { y: upNextScrollY } } }], {
+        useNativeDriver: true,
+        listener: handleUpNextScroll,
+      }),
+    [upNextScrollY, handleUpNextScroll]
+  );
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
+  const handleDisplayTypeDetected = useCallback(
+    (next: HomeFeedVideoDisplayType) => {
+      setDetectedDisplayType((current) => {
+        const currentType = current?.postId === activePostId ? current.type : null;
+        if (next === "youtube" && currentType != null && currentType !== "youtube") {
+          return current;
+        }
+        if (current?.postId === activePostId && currentType === next) return current;
+        return { postId: activePostId, type: next };
+      });
+    },
+    [activePostId]
+  );
 
   const item = payload?.item;
 
@@ -768,6 +1361,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     return rows;
   }, [relatedItems, sokoProducts]);
 
+  // A new video starts a new Up Next list: allow asking for more again.
+  useEffect(() => {
+    upNextRequestedForLengthRef.current = -1;
+  }, [activePostId]);
   const handleRelatedVideoPress = useCallback(
     (next: HomeFeedVideoOpenPayload) => {
       scrollRef.current?.scrollTo({ y: 0, animated: false });
@@ -868,78 +1465,89 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             isTikTokLayout ? styles.playerWrapTikTok : null,
           ]}
         >
-          <WatchVideoSurface
-            payload={payload}
-            isTikTokLayout={isTikTokLayout}
-            onPlaybackStarted={handlePlaybackStarted}
-          />
+          {String(payload.item?.source || "").trim().toLowerCase() === "system-admin-video-link" ? (
+            <WatchExternalVideoSurface item={payload.item} />
+          ) : (
+            <WatchVideoSurface
+              payload={payload}
+              displayType={displayType}
+              onPlaybackStarted={handlePlaybackStarted}
+              onDisplayTypeDetected={handleDisplayTypeDetected}
+            />
+          )}
         </View>
 
-        <View style={styles.currentVideoPanel}>
-          <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
-          <LinearGradient
-            colors={[
-              "rgba(52, 4, 82, 0.76)",
-              "rgba(46, 3, 73, 0.72)",
-              "rgba(38, 2, 62, 0.74)",
-            ]}
-            locations={[0, 0.5, 1]}
-            style={StyleSheet.absoluteFillObject}
-            pointerEvents="none"
-          />
-          <View style={styles.panelContent}>
-            {item ? <WatchVideoMeta item={item} fallbackTitle={payload.title} /> : null}
-            {item ? <View style={styles.actionsDivider} /> : null}
-            <View style={styles.actionsWrap}>
-              {item ? (
-                <WatchVideoEngagementActions
-                  item={item}
-                  onLike={onLike}
-                  onComment={onComment}
-                  onShare={onShare}
-                  onSave={onSave}
-                  onReport={onReport}
-                />
-              ) : null}
-            </View>
-          </View>
-        </View>
+        <View style={styles.upNextArea}>
+          <Animated.ScrollView
+            ref={scrollRef as any}
+            style={styles.scroll}
+            contentContainerStyle={{ paddingTop: panelHeight, paddingBottom: insets.bottom + 24 }}
+            showsVerticalScrollIndicator={false}
+            onScroll={upNextScrollEvent}
+            scrollEventThrottle={16}
+          >
+            <Text style={styles.upNextLabel}>Up next</Text>
+            {watchUpNextRows.map((row) => {
+              if (row.kind === "soko") {
+                return (
+                  <View
+                    key={row.key}
+                    style={styles.watchSokoPost}
+                  >
+                    <SokoHomeProductCard product={row.item}/>
+                  </View>
+                );
+              }
 
-        <ScrollView
-          ref={scrollRef}
-          style={styles.scroll}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-          showsVerticalScrollIndicator={false}
-        >
-          <Text style={styles.upNextLabel}>Up next</Text>
-          {watchUpNextRows.map((row) => {
-            if (row.kind === "soko") {
+              const related = row.item;
+
               return (
-                <View
+                <FeedYouTubeCard
                   key={row.key}
-                  style={styles.watchSokoPost}
-                >
-                  <SokoHomeProductCard product={row.item}/>
-                </View>
+                  item={related}
+                  onLike={() => onItemLike(related)}
+                  onComment={() => onItemComment(related)}
+                  onShare={() => onItemShare(related)}
+                  onSave={() => onItemSave(related)}
+                  onReport={() => onItemReport(related)}
+                  onVideoPress={handleRelatedVideoPress}
+                />
               );
-            }
-
-            const related = row.item;
-
-            return (
-              <FeedYouTubeCard
-                key={row.key}
-                item={related}
-                onLike={() => onItemLike(related)}
-                onComment={() => onItemComment(related)}
-                onShare={() => onItemShare(related)}
-                onSave={() => onItemSave(related)}
-                onReport={() => onItemReport(related)}
-                onVideoPress={handleRelatedVideoPress}
-              />
-            );
-          })}
-        </ScrollView>
+            })}
+          </Animated.ScrollView>
+          <Animated.View
+            style={[styles.currentVideoPanel, styles.currentVideoPanelFloating, { transform: [{ translateY: panelTranslateY }] }]}
+            onLayout={handlePanelLayout}
+          >
+            <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
+            <LinearGradient
+              colors={[
+                "rgba(52, 4, 82, 0.76)",
+                "rgba(46, 3, 73, 0.72)",
+                "rgba(38, 2, 62, 0.74)",
+              ]}
+              locations={[0, 0.5, 1]}
+              style={StyleSheet.absoluteFillObject}
+              pointerEvents="none"
+            />
+            <View style={styles.panelContent}>
+              {item ? <WatchVideoMeta item={item} fallbackTitle={payload.title} /> : null}
+              {item ? <View style={styles.actionsDivider} /> : null}
+              <View style={styles.actionsWrap}>
+                {item ? (
+                  <WatchVideoEngagementActions
+                    item={item}
+                    onLike={onLike}
+                    onComment={onComment}
+                    onShare={onShare}
+                    onSave={onSave}
+                    onReport={onReport}
+                  />
+                ) : null}
+              </View>
+            </View>
+          </Animated.View>
+        </View>
 
         <FeedCommentsSheet
           visible={commentsSheetOpen}
@@ -985,6 +1593,29 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 });
 
 const styles = StyleSheet.create({
+  externalVideoSurface: {
+    flex: 1,
+    width: "100%",
+    backgroundColor: "#000000",
+    overflow: "hidden",
+  },
+  externalVideoWebView: { flex: 1, backgroundColor: "#000000" },
+  externalVideoWebViewContainer: { flex: 1, backgroundColor: "#000000" },
+  externalVideoWebViewClear: { flex: 1, backgroundColor: "transparent" },
+  externalVideoUnavailable: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 24 },
+  externalVideoUnavailableText: { color: "#FFFFFF", textAlign: "center", fontSize: 14, fontWeight: "700" },
+  facebookOpenButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginTop: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "#1877F2",
+  },
+  facebookOpenButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
+  facebookPlayerColumn: { flex: 1 },
   screen: {
     flex: 1,
     backgroundColor: HOME_FEED_BG,
@@ -1048,6 +1679,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  // Cover over an external player whose video has ended: tap to play it again.
+  externalEndCover: { zIndex: 5, backgroundColor: "#12031F", alignItems: "center", justifyContent: "center" },
+  externalEndReplayButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.9)",
+    paddingLeft: 4,
+  },
+  // Reel frame: Watch's dark purple (not black) shows beside the player when no picture is saved.
+  facebookReelSurface: { alignItems: "center", justifyContent: "center", backgroundColor: "#12031F" },
+  facebookReelPlayer: { zIndex: 2, backgroundColor: "#000000" },
   playerSurface: {
     flex: 1,
     width: "100%",
@@ -1061,9 +1708,9 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
   },
-  videoOverBackdrop: {
+  videoPortrait: {
     height: "100%",
-    aspectRatio: 9 / 16,
+    aspectRatio: 4 / 5,
     alignSelf: "center",
     zIndex: 2,
     backgroundColor: "transparent",
@@ -1079,7 +1726,8 @@ const styles = StyleSheet.create({
   },
   replayOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#000000",
+    // Watch's dark purple, not black, while the cover loads.
+    backgroundColor: "#12031F",
   },
   replayBadgeWrap: {
     ...StyleSheet.absoluteFillObject,
@@ -1102,6 +1750,9 @@ const styles = StyleSheet.create({
   scroll: {
     flex: 1,
   },
+  // Clips the panel as it slides up, so it disappears under the video's bottom edge.
+  upNextArea: { flex: 1, overflow: "hidden" },
+  currentVideoPanelFloating: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 2 },
   currentVideoPanel: {
     borderTopWidth: 1,
     borderTopColor: "rgba(244,208,111,0.28)",
@@ -1240,6 +1891,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 13,
     fontWeight: "600",
+  },
+  // Bigger like/comment digits; lineHeight stays 13 (from watchActionLabel) so the row keeps its height.
+  watchActionCountLabel: {
+    fontSize: 13.5,
   },
   watchActionLabelActive: {
     color: HOME_FEED_GOLD_SOFT,

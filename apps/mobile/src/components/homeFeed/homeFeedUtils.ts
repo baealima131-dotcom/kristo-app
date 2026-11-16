@@ -74,6 +74,7 @@ import {
 } from "@/src/components/homeFeed/homeFeedDisplayOrderCache";
 import { shouldRebuildHomeFeedDisplayOrder } from "@/src/lib/homeFeedRefreshReason";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import { facebookPagePictureUri } from "@/src/lib/facebookVideoLink";
 
 export {
   homeFeedMediaUrl,
@@ -177,6 +178,16 @@ export function resolvePlayableHomeFeedMediaUrl(item: any): string {
 /** YouTube Home Feed: playable media only — excludes testimony, announcement, prayer, text-only posts. */
 export function isHomeFeedYoutubeVideoMediaRow(item: any): boolean {
   if (!item) return false;
+  // System admin video links: public YouTube, TikTok or Facebook pages played with official embeds.
+  if (String(item?.source || "").trim().toLowerCase() === "system-admin-video-link") {
+    try {
+      const url = new URL(String(item?.videoUrl || item?.url || ""));
+      return url.protocol === "https:" &&
+        ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "tiktok.com", "www.tiktok.com", "m.tiktok.com", "www.facebook.com"].includes(url.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
   if (isExplicitHomeFeedMediaScheduleRow(item)) return true;
   if (isMediaLiveSlotsHomeFeedRow(item)) return true;
 
@@ -1858,13 +1869,34 @@ function pickHomeFeedAvatarUri(raw: unknown, cacheBustAt?: number) {
   return bust > 0 ? avatarCacheBust(base, bust) : base;
 }
 
+function isFacebookLinkRow(item: any) {
+  return (
+    String(item?.videoDisplayType || item?.provider || "").trim().toLowerCase() === "facebook" ||
+    String(item?.id || "").startsWith("system-admin-video-facebook-")
+  );
+}
+
 /** Church/media posts: church logo first; Church Room posts always use church avatar. */
 export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const initial = String(resolveChurchName(item) || "K").trim().charAt(0).toUpperCase() || "K";
   const churchMediaFirst = churchRoomPost || isHomeFeedChurchMediaPost(item);
   const cacheBustAt = homeFeedAvatarCacheBustAt(item);
-  const sources = homeFeedAvatarSourceFields(item, churchMediaFirst);
+  const isExternalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
+  const sources = isExternalVideoAccount
+    ? [
+        item?.creatorAvatarUrl,
+        item?.actorAvatarUri,
+        item?.avatarUri,
+        item?.authorAvatarUri,
+        // Facebook links: the Page's own public picture when the link names the Page; otherwise
+        // the video's cover (admin upload, else saved thumbnail) stands in. Never an invented
+        // picture; with none of these the initial of the real name shows.
+        ...(isFacebookLinkRow(item)
+          ? [facebookPagePictureUri(item), item?.facebookCoverUrl, item?.thumbnailUrl, item?.posterUrl]
+          : []),
+      ]
+    : homeFeedAvatarSourceFields(item, churchMediaFirst);
 
   const uris: string[] = [];
   for (const raw of sources) {
@@ -1883,6 +1915,10 @@ export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
 export function resolveHomeFeedAvatarCacheKey(item: any): string {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const authorUserId = String(item?.createdBy || item?.authorUserId || "").trim();
+  if (String(item?.source || "").trim().toLowerCase() === "system-admin-video-link") {
+    const creatorKey = String(item?.creatorId || item?.creatorProfileUrl || item?.creatorName || "").trim();
+    if (creatorKey) return `external-video-account:${creatorKey.toLowerCase()}`;
+  }
 
   if (churchRoomPost && authorUserId) {
     return `user:${authorUserId}`;
@@ -1907,6 +1943,11 @@ export type HomeFeedAvatarCacheContext = HomeFeedDisplayAvatar & {
 export function resolveHomeFeedAvatarCacheContext(item: any): HomeFeedAvatarCacheContext {
   const display = resolveHomeFeedDisplayAvatar(item);
   const remoteUris = [display.uri, display.backupUri].filter(Boolean);
+  // External video accounts (YouTube/TikTok/Facebook links) all share the system admin church id.
+  // Without the creator's own picture, show the initial instead of any cached picture.
+  if (remoteUris.length === 0 && String(item?.source || "").trim().toLowerCase() === "system-admin-video-link") {
+    return { ...display, cacheKey: "", remoteUris, avatarUpdatedAt: homeFeedAvatarCacheBustAt(item) };
+  }
   const cacheKey =
     resolveHomeFeedAvatarCacheKey(item) ||
     (display.uri ? homeFeedAvatarUrlCacheKey(display.uri) : "") ||
@@ -2233,6 +2274,37 @@ export function collectFeedVideoPosterCandidates(item: any, postId = ""): string
   push(inferPosterUriFromVideoUrl(video));
 
   return out;
+}
+
+/**
+ * True when the post itself carries a saved cover (the cover chosen or uploaded with the video).
+ * Decided from the post data alone, so it is known on the first render without loading or
+ * measuring any image. Frames pulled from the video, inferred URLs and branded placeholders
+ * do not count.
+ */
+export function itemHasStoredFeedVideoCover(item: any): boolean {
+  if (!item || typeof item !== "object") return false;
+  const video = resolveVideoUri(item);
+  for (const raw of [
+    item?.posterUri,
+    item?.videoPosterUri,
+    item?.thumbnailUri,
+    item?.thumbnailUrl,
+    item?.mediaPosterUri,
+    item?.posterUrl,
+    item?.coverUrl,
+    item?.coverImage,
+    item?.coverImageUrl,
+    item?.previewUrl,
+    item?.thumbnail,
+    item?.poster,
+  ]) {
+    const resolved = homeFeedMediaUrl(raw);
+    if (!resolved || isBrandedPosterUri(resolved)) continue;
+    if (video && isInferredPosterUriForVideo(resolved, video)) continue;
+    return true;
+  }
+  return false;
 }
 
 export function resolveBestFeedPosterUri(item: any, postId = ""): string {

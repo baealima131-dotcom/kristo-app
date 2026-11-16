@@ -1,4 +1,10 @@
 {
+  "crons": [
+    {
+      "path": "/api/cron/refresh-video-link-stats",
+      "schedule": "0 12 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/.well-known/apple-app-site-association",

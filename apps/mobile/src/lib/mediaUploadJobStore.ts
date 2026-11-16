@@ -36,6 +36,9 @@ export type PersistedMediaUploadJob = {
   resumableMode: MediaUploadResumableMode;
   chunkSessionId?: string;
   videoDisplayType?: "youtube" | "tiktok";
+  /** Display width/height of the picked video (rotation applied). */
+  videoWidth?: number;
+  videoHeight?: number;
   uploadedChunkIndexes?: number[];
   totalChunks?: number;
   createdAt: string;
@@ -172,6 +175,8 @@ export async function createMediaUploadJob(
     role: input.role,
     durationMs: input.durationMs,
     videoDisplayType: input.videoDisplayType,
+    videoWidth: input.videoWidth,
+    videoHeight: input.videoHeight,
     phase: "preparing",
     uploadProgress: 1,
     resumableMode: input.resumableMode || "chunk",

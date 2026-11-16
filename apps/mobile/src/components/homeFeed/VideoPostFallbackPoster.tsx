@@ -11,8 +11,10 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { Image as ExpoImage } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { isFacebookVideoHost } from "@/src/lib/facebookVideoLink";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   logMediaPosterCacheHit,
@@ -40,6 +42,7 @@ import { logActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 import {
   collectFeedVideoPosterCandidates,
   describePosterResolution,
+  itemHasStoredFeedVideoCover,
   type PosterMetadataSnapshot,
   snapshotPosterMetadata,
   resolveYouTubeFeedMetadataPosterUri,
@@ -287,7 +290,78 @@ type FeedVideoPosterImageProps = {
   allowImageLoad?: boolean;
   /** Fires when a cover is ready for play overlay (poster faded in or settled placeholder). */
   onPosterCoverReady?: (ready: boolean) => void;
+  /**
+   * Uploaded videos: when the post has a saved cover (chosen or uploaded with the video), that
+   * cover fills the frame ("cover") from the first paint, whether it comes from the network or a
+   * local cached copy. Without a saved cover, the fallback picture from the video keeps the card's
+   * fit (whole for vertical videos), and a fallback that turns out taller than wide is shown whole.
+   */
+  uploadedVideoCover?: boolean;
 };
+
+/**
+ * Blurred, enlarged copy of a cover that fills the frame. Drawn with expo-image: React Native's
+ * Image blur cannot process wide-colour 16-bit PNG covers (common for covers saved from an iPhone)
+ * on Android and leaves the layer empty; expo-image decodes and blurs them correctly.
+ */
+function BlurredCoverFill({ uri }: { uri: string }) {
+  return (
+    <ExpoImage
+      source={{ uri }}
+      style={StyleSheet.absoluteFillObject}
+      contentFit="cover"
+      blurRadius={24}
+      cachePolicy="memory-disk"
+      transition={0}
+      accessible={false}
+    />
+  );
+}
+
+/**
+ * The one way video covers are drawn in feed cards (uploaded videos, saved/admin covers, Facebook
+ * and YouTube links) and in Watch's end cover: the cover fills the whole frame ("cover": scaled
+ * without stretching, so a vertical cover in the 16:9 frame is trimmed at the top/bottom). A blurred
+ * copy sits behind it and shows while the cover loads. The front image carries the load/error handlers.
+ */
+export function FeedVideoCover({
+  uri,
+  onLoadStart,
+  onLoad,
+  onError,
+  showForeground = true,
+  dim = true,
+  dimColor = "rgba(18,3,31,0.28)",
+  foregroundResizeMode = "cover",
+}: {
+  uri: string;
+  onLoadStart?: () => void;
+  onLoad?: (event: any) => void;
+  onError?: () => void;
+  /** False when the cover is only a blurred backdrop behind a playing video. */
+  showForeground?: boolean;
+  dim?: boolean;
+  dimColor?: string;
+  /** "contain" shows a square picture (e.g. a Facebook Page picture) whole over its blurred copy. */
+  foregroundResizeMode?: "cover" | "contain";
+}) {
+  return (
+    <>
+      <BlurredCoverFill uri={uri} />
+      {dim ? <View style={[styles.blurFillDim, { backgroundColor: dimColor }]} /> : null}
+      {showForeground ? (
+        <Image
+          source={{ uri }}
+          style={StyleSheet.absoluteFillObject}
+          resizeMode={foregroundResizeMode}
+          onLoadStart={onLoadStart}
+          onLoad={onLoad}
+          onError={onError}
+        />
+      ) : null}
+    </>
+  );
+}
 
 type PosterLoadState = "idle" | "probing" | "loading" | "loaded" | "failed" | "generating";
 
@@ -353,6 +427,14 @@ function logPosterPipelineDiag(params: {
   });
 }
 
+function isFacebookVideoHostUrl(value: string): boolean {
+  try {
+    return isFacebookVideoHost(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function FeedVideoPosterImage(props: FeedVideoPosterImageProps) {
   if (props.youtubeMode) {
     return <YouTubeFeedVideoPoster {...props} />;
@@ -370,8 +452,15 @@ function YouTubeFeedVideoPoster({
   videoDurationMs,
   allowImageLoad = true,
   onPosterCoverReady,
+  uploadedVideoCover = false,
 }: FeedVideoPosterImageProps) {
   const resolvedVideoUrl = String(videoUrl || "").trim();
+  // Known from the post data on the first render; no image is loaded or measured to decide it.
+  const hasSavedCover = React.useMemo(
+    () => uploadedVideoCover && itemHasStoredFeedVideoCover(item),
+    [item, uploadedVideoCover]
+  );
+  // Fallback picture (no saved cover) that loaded taller than wide; never delays the paint.
   const status = String(mediaStatus || "").trim().toLowerCase();
   const isProcessing = status === "processing" || status === "uploading";
 
@@ -476,6 +565,11 @@ function YouTubeFeedVideoPoster({
         restoreLoadedPoster();
         return;
       }
+      // A saved cover already on screen stays there: its local cached copy finishing later must
+      // not hide it and fade it in again.
+      if (hasSavedCover && nextSource === "cache" && coverReadyRef.current && loadedUriRef.current) {
+        return;
+      }
       if (!loadStartLoggedRef.current) {
         loadStartLoggedRef.current = true;
         logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, nextSource);
@@ -496,12 +590,18 @@ function YouTubeFeedVideoPoster({
       setPosterFadedIn(false);
       fadeOpacity.setValue(0);
     },
-    [fadeOpacity, postId, resolvedVideoUrl, restoreLoadedPoster]
+    [fadeOpacity, hasSavedCover, postId, resolvedVideoUrl, restoreLoadedPoster]
   );
 
   const tryGenerateFrame = React.useCallback(async () => {
     if (!resolvedVideoUrl || isProcessing || frameGenAttemptedRef.current) return;
     frameGenAttemptedRef.current = true;
+    // A Facebook link is a web page, not a video file, and Facebook provides no thumbnail:
+    // keep Kristo's branded cover instead of trying to read frames from it.
+    if (isFacebookVideoHostUrl(resolvedVideoUrl)) {
+      settleOnPlaceholder("facebook-link-no-thumbnail");
+      return;
+    }
     if (!loadStartLoggedRef.current) {
       loadStartLoggedRef.current = true;
       logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, "generated-frame");
@@ -793,20 +893,20 @@ function YouTubeFeedVideoPoster({
     <View style={style}>
       {!posterFadedIn ? <HomeFeedPosterGradientPlaceholder /> : null}
       {showPosterImage ? (
-        <Animated.Image
-          source={{ uri: displayUri }}
-          style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}
-          resizeMode={resizeMode}
-          onLoadStart={() => {
-            markHomeFeedPosterPipelineStage(postId, "image_request_started", {
-              posterUri: displayUri,
-              videoUrl: resolvedVideoUrl,
-              source: `${loadSource}:native`,
-            });
-          }}
-          onLoad={handleImageLoad}
-          onError={handleImageError}
-        />
+        <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}>
+          <FeedVideoCover
+            uri={displayUri}
+            onLoadStart={() => {
+              markHomeFeedPosterPipelineStage(postId, "image_request_started", {
+                posterUri: displayUri,
+                videoUrl: resolvedVideoUrl,
+                source: `${loadSource}:native`,
+              });
+            }}
+            onLoad={() => handleImageLoad()}
+            onError={handleImageError}
+          />
+        </Animated.View>
       ) : null}
     </View>
   );
@@ -1204,10 +1304,8 @@ function LegacyFeedVideoPosterImage({
 
   return (
     <View style={style}>
-      <Image
-        source={{ uri: activeDisplayUri }}
-        style={StyleSheet.absoluteFillObject}
-        resizeMode={resizeMode}
+      <FeedVideoCover
+        uri={activeDisplayUri}
         onLoad={() => {
           if (activeDisplayUri === clientThumbUri) {
             setClientThumbState("loaded");
@@ -1252,6 +1350,8 @@ function LegacyFeedVideoPosterImage({
 }
 
 const styles = StyleSheet.create({
+  // Dims the blurred copy behind a whole cover so the cover stands out (Home Feed cards).
+  blurFillDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(18,3,31,0.28)" },
   content: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
