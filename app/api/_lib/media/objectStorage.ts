@@ -490,6 +490,7 @@ export async function uploadBufferToStorage(params: {
   key: string;
   body: Buffer;
   contentType: string;
+  cacheControl?: string;
 }): Promise<{ key: string; publicUrl: string }> {
   const config = getVideoStorageConfig();
   if (!config) {
@@ -509,9 +510,10 @@ export async function uploadBufferToStorage(params: {
       ContentType: contentType,
       ContentLength: params.body.byteLength,
       CacheControl:
-        contentType.startsWith("image/")
+        params.cacheControl ||
+        (contentType.startsWith("image/")
           ? POSTER_OBJECT_CACHE_CONTROL
-          : VIDEO_OBJECT_CACHE_CONTROL,
+          : VIDEO_OBJECT_CACHE_CONTROL),
     })
   );
 
