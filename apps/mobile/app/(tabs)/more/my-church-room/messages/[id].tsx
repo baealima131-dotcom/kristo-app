@@ -2259,7 +2259,7 @@ function MessageVoiceAttachment({
   const progress = playbackDuration > 0
     ? Math.min(1, Math.max(0, Number(status.currentTime || 0) / playbackDuration))
     : 0;
-  const waveform = [8, 12, 16, 10, 19, 13, 8, 15, 20, 11, 17, 9, 14, 19, 12, 7, 15, 21, 11, 17, 9, 14, 18, 10];
+  const waveform = [6, 10, 13, 8, 16, 11, 6, 12, 17, 9, 14, 7, 11, 16, 9, 5, 12, 18, 8, 14, 6, 11, 15, 8];
 
   if (expired || !source) {
     return (
@@ -2277,7 +2277,7 @@ function MessageVoiceAttachment({
       style={{
         width: 268,
         maxWidth: "100%",
-        minHeight: 62,
+        minHeight: 48,
         flexDirection: "row",
         alignItems: "center",
         gap: 9,
@@ -2442,10 +2442,12 @@ function MessageAttachmentsBlock({
   attachments,
   onPreviewImage,
   avatarUri,
+  compactVoice,
 }: {
   attachments: MsgAttachment[];
   onPreviewImage?: (uri: string) => void;
   avatarUri?: string;
+  compactVoice?: boolean;
 }) {
   if (!attachments?.length) return null;
 
@@ -2470,7 +2472,7 @@ function MessageAttachmentsBlock({
 
   return (
     <>
-      <View style={s.attachBlock}>
+      <View style={[s.attachBlock, compactVoice ? { marginTop: 0, gap: 0 } : null]}>
         {attachments.map((raw) => {
           const a = normalizeMsgAttachment(raw);
           const imageUri = resolveMessageAttachmentUrl(a.imageUri || (a.kind === "image" ? a.uri || a.url : ""));
@@ -5349,6 +5351,11 @@ function Bubble({
   receiptLabel?: string;
 }) {
   const mine = m.sender === "me";
+  const voiceOnlyMessage =
+    !String(m.text || "").trim() &&
+    Array.isArray(m.attachments) &&
+    m.attachments.length === 1 &&
+    normalizeMsgAttachment(m.attachments[0]).voiceNote === true;
   const pastorMessage = isPastorMessage(m, { churchPastorUserId });
   const senderAvatar = resolveMessageSenderAvatar(m);
   const appointmentRouter = useRouter();
@@ -6711,6 +6718,7 @@ function Bubble({
               s.bubble,
               s.bubbleMineInline,
               pastorMessage ? s.bubblePastor : s.bubbleMine,
+              voiceOnlyMessage ? { paddingVertical: 5, paddingHorizontal: 10 } : null,
               selected || actionHighlighted ? s.bubbleSelectedGlow : null,
             ]}
           >
@@ -6725,9 +6733,9 @@ function Bubble({
             ) : null}
             {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} avatarUri={senderAvatar.uri} />
+            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} avatarUri={senderAvatar.uri} compactVoice={voiceOnlyMessage} />
 
-            <View style={s.msgMetaRow}>
+            <View style={[s.msgMetaRow, voiceOnlyMessage ? { marginTop: 1 } : null]}>
               <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
               {receiptLabel ? (
                 <View style={s.deliveredRow}>
@@ -6772,6 +6780,7 @@ function Bubble({
               s.bubbleOther,
               s.bubbleOtherInline,
               pastorMessage ? s.bubblePastor : null,
+              voiceOnlyMessage ? { paddingVertical: 5, paddingHorizontal: 10 } : null,
               selected || actionHighlighted ? s.bubbleSelectedGlow : null,
             ]}
           >
@@ -6793,11 +6802,12 @@ function Bubble({
 
             {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} avatarUri={senderAvatar.uri} />
+            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} avatarUri={senderAvatar.uri} compactVoice={voiceOnlyMessage} />
 
             <Text
               style={[
                 t.msgTimeOther,
+                voiceOnlyMessage ? { marginTop: 1 } : null,
                 pastorMessage ? { color: "rgba(244,208,111,0.86)" } : null,
               ]}
             >
