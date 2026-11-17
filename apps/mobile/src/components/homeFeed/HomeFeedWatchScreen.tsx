@@ -72,6 +72,7 @@ import {
 import { hydrateMediaPosterCacheForPlayback, resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
 import { resolveSavedFeedVideoPosterUri } from "@/src/lib/homeFeedPosterSavedUri";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
+import { peekVideoAspect, rememberVideoAspect } from "@/src/lib/videoAspectMemory";
 import {
   notifyWatchPlaybackActive,
   notifyWatchPlaybackPaused,
@@ -1480,15 +1481,26 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     type: HomeFeedVideoDisplayType;
     aspect: number;
   } | null>(null);
+  // Older uploads saved before dimensions were stored: the shape this device saw the last time the
+  // video played, so the frame is right from the start (metadata still wins; links have their own
+  // players). Keyed by the post's video URL, not a local cached copy.
+  const memoryVideoUrl =
+    String(payload?.item?.source || "").trim().toLowerCase() === "system-admin-video-link"
+      ? ""
+      : (payload?.item ? resolveHomeFeedVideoUri(payload.item) : "") || String(payload?.videoUri || "").trim();
+  const rememberedAspect = metadataAspect == null ? peekVideoAspect(memoryVideoUrl) : undefined;
   const detectedForPost =
     metadataAspect == null && detectedDisplayType?.postId === activePostId ? detectedDisplayType : null;
-  const detectedType = detectedForPost?.type ?? null;
+  const detectedType =
+    detectedForPost?.type ??
+    (rememberedAspect ? resolveHomeFeedVideoDisplayTypeFromDimensions(rememberedAspect, 1) : null);
   const displayType = detectedType || displayTypeHint;
   const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
   const videoAspect =
     metadataAspect ??
     detectedForPost?.aspect ??
+    rememberedAspect ??
     defaultHomeFeedVideoAspectRatio(displayType ?? "portrait45");
   const openMessages = useCallback(() => {
     onClose();
@@ -1635,6 +1647,8 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
   const handleDisplayTypeDetected = useCallback(
     (next: HomeFeedVideoDisplayType, aspect: number) => {
+      // No saved dimensions: remember the shape the player reported for the next time.
+      if (metadataAspect == null) rememberVideoAspect(memoryVideoUrl, aspect);
       setDetectedDisplayType((current) => {
         const currentType = current?.postId === activePostId ? current.type : null;
         if (next === "youtube" && currentType != null && currentType !== "youtube") {
@@ -1650,7 +1664,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         return { postId: activePostId, type: next, aspect };
       });
     },
-    [activePostId]
+    [activePostId, metadataAspect, memoryVideoUrl]
   );
 
   const item = payload?.item;
