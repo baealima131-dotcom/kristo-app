@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   DEFAULT_TERMS_LOCALE,
+  getTermsSummary,
   getTermsTranslation,
   TERMS_LANGUAGE_OPTIONS,
   type TermsLocale,
@@ -47,8 +48,12 @@ export default function TermsScreen() {
   const [accepted, setAccepted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [languagePickerOpen, setLanguagePickerOpen] = useState(false);
+  const [fullTermsOpen, setFullTermsOpen] = useState(false);
+  const [summaryViewportH, setSummaryViewportH] = useState(0);
+  const [summaryContentH, setSummaryContentH] = useState(0);
 
   const copy = useMemo(() => getTermsTranslation(locale), [locale]);
+  const summary = useMemo(() => getTermsSummary(locale), [locale]);
   const isRtl = Boolean(copy.isRtl);
 
   useEffect(() => {
@@ -87,6 +92,12 @@ export default function TermsScreen() {
     resetAgreementState();
     setLanguagePickerOpen(false);
   };
+
+  // The summary usually fits on screen: then there is nothing to scroll and agreement is enabled.
+  useEffect(() => {
+    if (scrolledToEnd || !summaryViewportH || !summaryContentH) return;
+    if (summaryContentH <= summaryViewportH + 24) setScrolledToEnd(true);
+  }, [scrolledToEnd, summaryViewportH, summaryContentH]);
 
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     if (scrolledToEnd) return;
@@ -170,35 +181,91 @@ export default function TermsScreen() {
         </View>
       </Modal>
 
+      {/* Short summary before acceptance; the full terms (and Support) open from "Read full terms". */}
       <ScrollView
         ref={scrollRef}
         key={locale}
         style={s.bodyWrap}
-        contentContainerStyle={[s.bodyContent, isRtl ? s.bodyContentRtl : null]}
+        contentContainerStyle={s.summaryContent}
         onScroll={onScroll}
         scrollEventThrottle={16}
+        onLayout={(e) => setSummaryViewportH(e.nativeEvent.layout.height)}
+        onContentSizeChange={(_w, h) => setSummaryContentH(h)}
       >
-        {copy.sections.map((section) => (
-          <View key={`${locale}-${section.id}`} style={s.section}>
-            <Text style={[s.sectionTitle, rtlSectionTitle]}>{section.title}</Text>
-            {section.paragraphs.map((paragraph, index) => (
-              <Text key={`${locale}-${section.id}-${index}`} style={[s.body, rtlBody]}>
-                {paragraph}
-              </Text>
-            ))}
-            {section.id === CONTACT_SECTION_ID ? (
-              <Pressable
-                style={[s.supportBtn, isRtl ? s.supportBtnRtl : null]}
-                onPress={() => {
-                  void Linking.openURL(KRISTO_SUPPORT_URL);
-                }}
-              >
-                <Text style={s.supportBtnText}>{copy.contactSupportLabel}</Text>
-              </Pressable>
-            ) : null}
+        <Text style={[s.summaryIntro, rtlBody]}>{summary.intro}</Text>
+        {summary.points.map((point, index) => (
+          <View key={`${locale}-point-${index}`} style={[s.summaryPoint, isRtl ? s.summaryPointRtl : null]}>
+            <View style={s.summaryDot} />
+            <View style={{ flex: 1 }}>
+              <Text style={[s.summaryPointTitle, rtlSectionTitle]}>{point.title}</Text>
+              <Text style={[s.summaryPointText, rtlBody]}>{point.text}</Text>
+            </View>
           </View>
         ))}
+        <Pressable
+          style={[s.readFullBtn, isRtl ? s.supportBtnRtl : null]}
+          onPress={() => setFullTermsOpen(true)}
+          accessibilityRole="button"
+        >
+          <Ionicons name="document-text-outline" size={15} color={GOLD} />
+          <Text style={s.readFullBtnText}>{summary.readFullTermsLabel}</Text>
+        </Pressable>
       </ScrollView>
+
+      <Modal
+        visible={fullTermsOpen}
+        animationType="slide"
+        onRequestClose={() => setFullTermsOpen(false)}
+      >
+        <View
+          style={[
+            s.fullWrap,
+            { paddingTop: insets.top + 14, paddingBottom: Math.max(insets.bottom, androidBottomInset) + 12 },
+          ]}
+        >
+          <View style={[s.fullHeader, isRtl ? s.metaRowRtl : null]}>
+            <Text style={[s.fullTitle, rtlText]} numberOfLines={2}>
+              {copy.title}
+            </Text>
+            <Pressable
+              style={s.fullCloseBtn}
+              onPress={() => setFullTermsOpen(false)}
+              accessibilityRole="button"
+              accessibilityLabel={summary.closeLabel}
+            >
+              <Ionicons name="close" size={20} color="#FFFFFF" />
+            </Pressable>
+          </View>
+          <ScrollView
+            style={s.bodyWrap}
+            contentContainerStyle={[s.bodyContent, s.fullBodyContent, isRtl ? s.bodyContentRtl : null]}
+          >
+            {copy.sections.map((section) => (
+              <View key={`${locale}-${section.id}`} style={s.section}>
+                <Text style={[s.sectionTitle, rtlSectionTitle]}>{section.title}</Text>
+                {section.paragraphs.map((paragraph, index) => (
+                  <Text key={`${locale}-${section.id}-${index}`} style={[s.body, rtlBody]}>
+                    {paragraph}
+                  </Text>
+                ))}
+                {section.id === CONTACT_SECTION_ID ? (
+                  <Pressable
+                    style={[s.supportBtn, isRtl ? s.supportBtnRtl : null]}
+                    onPress={() => {
+                      void Linking.openURL(KRISTO_SUPPORT_URL);
+                    }}
+                  >
+                    <Text style={s.supportBtnText}>{copy.contactSupportLabel}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ))}
+          </ScrollView>
+          <Pressable style={s.fullCloseWide} onPress={() => setFullTermsOpen(false)}>
+            <Text style={s.fullCloseWideText}>{summary.closeLabel}</Text>
+          </Pressable>
+        </View>
+      </Modal>
 
       <View style={s.footerControls}>
         <Pressable
@@ -332,6 +399,59 @@ const s = StyleSheet.create({
   },
   bodyContent: { padding: 14, paddingBottom: 180 },
   bodyContentRtl: { direction: "rtl" },
+  summaryContent: { padding: 16, paddingBottom: 24 },
+  summaryIntro: {
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: "700",
+    marginBottom: 14,
+  },
+  summaryPoint: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 13 },
+  // RTL without `direction` (it would flip textAlign): reverse the row explicitly.
+  summaryPointRtl: { flexDirection: "row-reverse" },
+  summaryDot: { width: 7, height: 7, borderRadius: 4, marginTop: 7, backgroundColor: GOLD },
+  summaryPointTitle: { color: GOLD, fontSize: 14, lineHeight: 20, fontWeight: "900", marginBottom: 2 },
+  summaryPointText: { color: "rgba(255,255,255,0.88)", fontSize: 13.5, lineHeight: 20, fontWeight: "600" },
+  readFullBtn: {
+    marginTop: 6,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.5)",
+    backgroundColor: "rgba(217,179,95,0.1)",
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+  },
+  readFullBtnText: { color: GOLD, fontWeight: "900", fontSize: 13 },
+  fullWrap: { flex: 1, backgroundColor: BG, paddingHorizontal: 16 },
+  fullHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  fullTitle: { flex: 1, color: "#FFFFFF", fontSize: 20, fontWeight: "900" },
+  fullCloseBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  fullBodyContent: { paddingBottom: 32 },
+  fullCloseWide: {
+    marginTop: 12,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 13,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.55)",
+    backgroundColor: "rgba(217,179,95,0.1)",
+  },
+  fullCloseWideText: { color: GOLD, fontSize: 15, fontWeight: "900" },
   section: { marginBottom: 16 },
   sectionTitle: {
     color: GOLD,

@@ -17,6 +17,7 @@ import {
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { allowWatchRotation, restoreAppPortrait } from "@/src/lib/watchOrientation";
+import { getOngoingPrivateCallState } from "@/src/lib/privateCallOngoingStore";
 import { WebView } from "react-native-webview";
 import {
   buildFacebookSdkPlayerHtml,
@@ -527,7 +528,12 @@ function WatchVideoSurface({
   const closeIosFullscreenRef = useRef<() => void>(() => {});
 
   const isWatchAutoPlayBlocked = useCallback(
-    () => userPausedRef.current || backgroundPausedRef.current,
+    // During a private call the video does not start by itself (its audio would take the
+    // call's audio session); the viewer can still press play (from Android 1.0.4 (114)).
+    () =>
+      userPausedRef.current ||
+      backgroundPausedRef.current ||
+      Boolean(getOngoingPrivateCallState().call),
     []
   );
 
@@ -913,6 +919,10 @@ function WatchVideoSurface({
         <VideoView
           ref={videoViewRef}
           player={player}
+          // Android: render in the normal view tree. The default SurfaceView sits behind the
+          // window and does not follow the floating stack's scroll transform, so the picture
+          // lagged/jumped while scrolling or stayed hidden behind the poster. iOS ignores it.
+          surfaceType="textureView"
           style={displayType === "youtube" ? styles.video : [styles.videoPortrait, containedVideoSize]}
           contentFit="contain"
           nativeControls

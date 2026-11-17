@@ -88,7 +88,7 @@ export async function handleKristoPushData(data: Record<string, string> | null, 
     }
     await showIncomingCallNotification({
       callId: data.callId,
-      title: data.title || "Incoming Kristo call",
+      title: data.callTitle || data.title || "Incoming Kristo call",
       ringExpiresAt: data.ringExpiresAt,
     });
     return;
