@@ -2,7 +2,7 @@
   "expo": {
     "name": "Kristo App",
     "slug": "mobile",
-    "version": "1.0.5",
+    "version": "1.0.8",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "mobile",
@@ -24,7 +24,7 @@
         "NSMicrophoneUsageDescription": "Kristo App needs microphone access for live streaming and audio in live rooms.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "14"
+      "buildNumber": "18"
     },
     "android": {
       "adaptiveIcon": {
@@ -40,7 +40,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "versionCode": 114
+      "versionCode": 116
     },
     "web": {
       "bundler": "metro",
