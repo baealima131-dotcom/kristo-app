@@ -205,9 +205,11 @@ export function externalPlatformCount(item: any, field: "views" | "likes" | "com
 }
 
 /**
- * Label for a video link's count: the platform's real count plus Kristo's own; "Imefichwa" when the
- * platform hides it on purpose (Kristo's own count still shows when there is one); "—" when the
- * platform's count is not available, so a missing count never looks like a real 0.
+ * Label for a video link's count:
+ * - the platform hides it on purpose: "Imefichwa", or Kristo's own count when there is one;
+ * - the platform gave a count: the platform's count plus Kristo's own;
+ * - the platform gave none (no API access, lookup failed, never saved): Kristo's own count, and "—"
+ *   only when Kristo has none either, so a missing count never looks like a real 0.
  */
 export function externalCountDisplay(
   kristoCount: number,
@@ -217,7 +219,7 @@ export function externalCountDisplay(
 ): string {
   const kristo = Number.isFinite(kristoCount) && kristoCount > 0 ? kristoCount : 0;
   if (hidden) return externalCountLabel(kristo + (platformCount ?? 0), true, format);
-  if (platformCount === null) return PLATFORM_COUNT_UNAVAILABLE_LABEL;
+  if (platformCount === null) return kristo > 0 ? format(kristo) : PLATFORM_COUNT_UNAVAILABLE_LABEL;
   return format(kristo + platformCount);
 }
 
