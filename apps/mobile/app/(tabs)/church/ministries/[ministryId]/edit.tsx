@@ -19,7 +19,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { getKristoAuth } from "@/src/lib/kristoHeaders";
+import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiPatch } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { fetchMinistryById, uploadMinistryAvatar } from "@/src/lib/ministriesApi";
@@ -204,9 +204,7 @@ const [name, setName] = useState("");
         ministryId,
         headers: {
           accept: "application/json",
-          "x-kristo-user-id": effectiveAuthUserId,
-          "x-kristo-role": effectiveAuthRole,
-          "x-kristo-church-id": churchId,
+          ...(getKristoHeaders({ userId: effectiveAuthUserId, role: effectiveAuthRole as any, churchId }) as Record<string, string>),
         },
       });
 
@@ -230,12 +228,11 @@ const [name, setName] = useState("");
   }
 
   function headers() {
+    // Includes the signed session token; the backend no longer accepts x-kristo-user-id alone.
     return {
       accept: "application/json",
       "content-type": "application/json",
-      "x-kristo-user-id": effectiveAuthUserId,
-      "x-kristo-role": effectiveAuthRole,
-      "x-kristo-church-id": churchId,
+      ...(getKristoHeaders({ userId: effectiveAuthUserId, role: effectiveAuthRole as any, churchId }) as Record<string, string>),
     };
   }
 

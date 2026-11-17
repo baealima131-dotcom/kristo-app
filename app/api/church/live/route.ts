@@ -10,15 +10,22 @@ import {
 } from "@/app/api/_lib/churchPastor";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { endChurchLiveSessionsForSchedule } from "@/app/api/_lib/churchLiveControl";
+import { resolveVerifiedChurchActor } from "@/app/api/_lib/verifiedChurchActor";
+import { resolvePublicDisplayName } from "@/app/api/_lib/publicDisplayName";
 import {
-  assertSafetyEnforcementAllows,
-} from "@/app/api/_lib/rbac";
+  LIVE_SCHEDULE_MANAGER_ROLES,
+  canDriveLiveSchedule,
+  canModerateLive,
+  isServerActiveSlotOwner,
+  readChurchSchedule,
+} from "@/app/api/_lib/liveScheduleAuthority";
 
 import { evaluateLiveMediaAuthority } from "@/lib/liveMediaAuthority";
 import {
   applySlotTransitionProgress,
   beginSlotTransitionFromClient,
   isSlotTransitionActive,
+  normalizeSlotScheduleEntries,
   readSlotClock,
   readSlotTransition,
   reconcileLiveSlotTransition,
@@ -26,48 +33,50 @@ import {
   slotTransitionLitePayload,
   upsertSlotScheduleSnapshot,
 } from "@/lib/liveSlotTransition";
+import {
+  denyIfLiveControlSuspended,
+  isChurchLiveControlLiveId,
+  isSuspendedForChurchLive,
+  liveControlSuspendedResponse,
+} from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const runtime = "nodejs";
 
 const STORE_FILE = "church-live.json";
 const LIVE_STALE_MS = 20000;
 
-function auth(req: Request) {
-  return {
-    userId: String(req.headers.get("x-kristo-user-id") || "").trim(),
-    role: String(req.headers.get("x-kristo-role") || "").trim(),
-    churchId: String(req.headers.get("x-kristo-church-id") || "").trim(),
-  };
+/**
+ * Caller identity: user from the verified session token, church and role from the active
+ * membership. x-kristo-user-id / x-kristo-church-id / x-kristo-role are not trusted.
+ */
+async function auth(req: Request): Promise<{ userId: string; role: string; churchId: string } | NextResponse> {
+  const actor = await resolveVerifiedChurchActor(req, "church-live");
+  if (actor instanceof NextResponse) return actor;
+  return { userId: actor.userId, role: actor.churchRole, churchId: actor.churchId };
 }
+
+/** PATCH actions the app sends; anything else is refused before the store is touched. */
+const KNOWN_PATCH_ACTIONS = new Set([
+  "end-live",
+  "clear-schedule-live",
+  "set-policy",
+  "claim-schedule-request",
+  "clear-claim-request",
+  "request-join",
+  "approve-request",
+  "move-upper",
+  "reject-request",
+  "drop-guest",
+  "comment",
+  "sync-slot-schedule",
+  "slot-transition-tick",
+  "slot-transition-begin",
+  "slot-transition-progress",
+  "presence",
+]);
 
 function isPastor(role: string) {
   return String(role || "").toLowerCase().includes("pastor");
-}
-
-function isCoHostRole(role: string) {
-  const r = String(role || "").toLowerCase();
-  return r.includes("co-host") || r.includes("cohost");
-}
-
-function canModerateLive(
-  auth: { userId: string; role: string },
-  live: {
-    pastorUserId?: string;
-    actualChurchPastorUserId?: string;
-    scheduleCreatedByUserId?: string;
-    mediaHostIds?: string | string[];
-  }
-) {
-  if (isCoHostRole(auth.role)) return false;
-
-  const authority = evaluateLiveMediaAuthority({
-    currentUserId: auth.userId,
-    actualChurchPastorUserId: live.actualChurchPastorUserId,
-    scheduleCreatedByUserId: live.scheduleCreatedByUserId,
-    mediaHostIds: live.mediaHostIds,
-  });
-
-  return authority.isMediaOwnerHost;
 }
 
 function liveStoreKey(churchId: string, liveId: string) {
@@ -367,19 +376,8 @@ function upsertWaitingRequest(
 }
 
 export async function GET(req: Request) {
-  const a = auth(req);
-  if (!a.userId || !a.churchId) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      a.userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
+  const a = await auth(req);
+  if (a instanceof NextResponse) return a;
 
   const url = new URL(req.url);
   const lite = url.searchParams.get("lite") === "1";
@@ -458,19 +456,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const a = auth(req);
-  if (!a.userId || !a.churchId) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      a.userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
+  const a = await auth(req);
+  if (a instanceof NextResponse) return a;
 
   if (!isPastor(a.role)) {
     return NextResponse.json({ ok: false, error: "Pastor only" }, { status: 403 });
@@ -480,6 +467,10 @@ const body = await req.json().catch(() => ({}));
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
   const liveId = String(body.liveId || `church-live-${now}`).trim();
+  if (await isSuspendedForChurchLive(a.churchId, a.userId, liveId)) {
+    console.log("KRISTO_LIVE_CONTROL_SUSPENDED_BLOCKED", { source: "church.live.POST", churchId: a.churchId, userId: a.userId });
+    return liveControlSuspendedResponse();
+  }
   const storeKey = liveStoreKey(a.churchId, liveId);
   const previousLive = store[storeKey] || store[a.churchId] || null;
 
@@ -556,23 +547,29 @@ const body = await req.json().catch(() => ({}));
 }
 
 export async function PATCH(req: Request) {
-  const a = auth(req);
-  if (!a.userId || !a.churchId) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      a.userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
+  const a = await auth(req);
+  if (a instanceof NextResponse) return a;
 
   const body = await req.json().catch(() => ({}));
   const action = String(body.action || "").trim();
   const liveId = String(body.liveId || "").trim();
+
+  if (!KNOWN_PATCH_ACTIONS.has(action)) {
+    return NextResponse.json({ ok: false, error: "Unknown action" }, { status: 400 });
+  }
+
+  // Church Live Control suspension beats every live role (media host, schedule creator, slot
+  // holder, leader): a suspended member may only watch (viewer presence) and comment.
+  const liveControlSuspended = await isSuspendedForChurchLive(
+    a.churchId,
+    a.userId,
+    liveId || `church-live-${Date.now()}`
+  );
+  if (liveControlSuspended && action !== "presence" && action !== "comment") {
+    console.log("KRISTO_LIVE_CONTROL_SUSPENDED_BLOCKED", { source: `church.live.PATCH.${action}`, churchId: a.churchId, userId: a.userId });
+    return liveControlSuspendedResponse();
+  }
+  const canModerate = (target: any) => !liveControlSuspended && canModerateLive(a, target);
 
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
@@ -588,11 +585,27 @@ export async function PATCH(req: Request) {
     "slot-transition-progress",
     "slot-transition-tick",
   ]);
-  const isMemberJoinAction =
-    memberJoinActions.has(action) || (action === "presence" && !isPastor(a.role));
+  const isMemberJoinAction = memberJoinActions.has(action) || action === "presence";
 
-  if (!existingSession.live && !isMemberJoinAction) {
-}
+  // Only join/schedule actions may open a session; moderation needs an existing live.
+  if (!existingSession.live && !isMemberJoinAction && action !== "clear-schedule-live") {
+    return NextResponse.json({ ok: false, error: "Live not found" }, { status: 404 });
+  }
+
+  const canDrive = await canDriveLiveSchedule(a, existingSession.live, resolvedLiveId);
+  let scheduleRecord: Awaited<ReturnType<typeof readChurchSchedule>> | null = null;
+  const churchSchedule = async () => (scheduleRecord ||= await readChurchSchedule(a.churchId, resolvedLiveId));
+
+  // A member may join a live only for a real schedule of their church; they cannot invent one.
+  if (!existingSession.live && action !== "clear-schedule-live" && !canDrive && !(await churchSchedule()).known) {
+    return NextResponse.json({ ok: false, error: "Live not found" }, { status: 404 });
+  }
+  const holdsClaimInSchedule = async () =>
+    (await churchSchedule()).cards.some((card: any) => String(card?.claimedByUserId || "").trim() === a.userId);
+
+  // Requests are made for the caller; only a live moderator may act on another user's request.
+  const bodyUserId = String(body.userId || "").trim();
+  const actsForOtherUser = !!bodyUserId && bodyUserId !== a.userId;
 
   const session = ensureLiveSession(store, a.churchId, resolvedLiveId, now);
   const live = session.live;
@@ -603,7 +616,7 @@ export async function PATCH(req: Request) {
   live.requestPolicy = String(live.requestPolicy || "locked");
 
   if (action === "end-live") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
 
@@ -617,6 +630,9 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "clear-schedule-live") {
+    if (!LIVE_SCHEDULE_MANAGER_ROLES.has(a.role) && !canModerate(live)) {
+      return NextResponse.json({ ok: false, error: "Schedule manager only" }, { status: 403 });
+    }
     const targetLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     const ended = await endChurchLiveSessionsForSchedule({
       churchId: a.churchId,
@@ -638,7 +654,7 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "set-policy") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
 
@@ -653,16 +669,28 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "claim-schedule-request") {
+    if (actsForOtherUser && !canModerate(live)) {
+      return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
+    }
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     if (!requestLiveId) {
       return NextResponse.json({ ok: false, error: "liveId is required" }, { status: 400 });
     }
 
+    const requestUserId = String(body.userId || a.userId || "").trim();
+    // A suspended member cannot request a Church Live Control slot (nor be put in one).
+    if (isChurchLiveControlLiveId(requestLiveId)) {
+      const suspended = await denyIfLiveControlSuspended(a.churchId, requestUserId, {
+        self: requestUserId === a.userId,
+        source: "church.live.claim-schedule-request",
+      });
+      if (suspended) return suspended;
+    }
+
     live.liveId = requestLiveId;
 
-    const requestUserId = String(body.userId || a.userId || "").trim();
     const slotId = String(body.slotId || "").trim();
-    const name = String(body.name || "Member").trim() || "Member";
+    const name = await resolvePublicDisplayName(requestUserId, "Member");
     const avatar = String(body.avatar || body.avatarUri || "M").trim() || "M";
 
     const { slot, request } = upsertWaitingRequest(live, {
@@ -676,7 +704,8 @@ export async function PATCH(req: Request) {
       now,
     });
 
-    if (isMinistryScheduledLiveId(requestLiveId)) {
+    // Reviving a ministry live: schedule drivers, or a member holding a slot in that schedule.
+    if (isMinistryScheduledLiveId(requestLiveId) && (canDrive || (await holdsClaimInSchedule()))) {
       reactivateMinistryScheduledLiveBridge(live, now);
     }
 
@@ -693,6 +722,9 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "clear-claim-request") {
+    if (actsForOtherUser && !canModerate(live)) {
+      return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
+    }
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     if (requestLiveId) live.liveId = requestLiveId;
 
@@ -721,6 +753,9 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "request-join") {
+    if (actsForOtherUser && !canModerate(live)) {
+      return NextResponse.json({ ok: false, error: "Can only act for yourself" }, { status: 403 });
+    }
     const requestUserId = String(body.userId || a.userId || "").trim();
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     if (requestLiveId) live.liveId = requestLiveId;
@@ -730,7 +765,7 @@ export async function PATCH(req: Request) {
       slotId: String(body.slotId || "").trim(),
       slot: Number(body.slot || 0),
       userId: requestUserId,
-      name: String(body.name || "Guest"),
+      name: await resolvePublicDisplayName(requestUserId, "Guest"),
       avatar: String(body.avatar || body.avatarUri || "G"),
       status: "waiting",
       now,
@@ -757,12 +792,16 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "approve-request") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
     const rawSlot = Number(body.slot || 0);
     const slot = rawSlot > 0 ? rawSlot : 1;
     const existingRequest = live.requests[slot] || live.requests[0] || {};
+    const approvedUserId = String(body.userId || existingRequest.userId || "").trim();
+    if (approvedUserId && (await isSuspendedForChurchLive(a.churchId, approvedUserId, resolvedLiveId))) {
+      return liveControlSuspendedResponse(false);
+    }
 
     if (live.requests[0] && slot !== 0) {
       delete live.requests[0];
@@ -784,13 +823,17 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "move-upper") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
 
     const rawSlot = Number(body.slot || 0);
     const slot = rawSlot > 0 ? rawSlot : 1;
     const existingRequest = live.requests[slot] || live.requests[0] || null;
+    const movedUserId = String(existingRequest?.userId || "").trim();
+    if (movedUserId && (await isSuspendedForChurchLive(a.churchId, movedUserId, resolvedLiveId))) {
+      return liveControlSuspendedResponse(false);
+    }
 
     if (existingRequest) {
       if (live.requests[0]) delete live.requests[0];
@@ -808,7 +851,7 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "reject-request" || action === "drop-guest") {
-    if (!canModerateLive(a, live)) {
+    if (!canModerate(live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
     }
 
@@ -833,7 +876,7 @@ export async function PATCH(req: Request) {
     if (text) {
       live.comments.unshift({
         id: `c_${now}_${Math.random().toString(16).slice(2)}`,
-        name: String(body.name || "Viewer"),
+        name: await resolvePublicDisplayName(a.userId, "Viewer"),
         text,
         userId: a.userId,
         createdAt: now,
@@ -842,17 +885,21 @@ export async function PATCH(req: Request) {
     }
   }
 
+  // Members' clients keep the server clock ticking, but only schedule drivers may change the
+  // schedule itself; a member's slots/version are ignored.
   if (action === "sync-slot-schedule") {
-    upsertSlotScheduleSnapshot(live, {
-      scheduleVersion: String(body.scheduleVersion || ""),
-      slots: body.slots,
-      nowMs: now,
-    });
+    if (canDrive) {
+      upsertSlotScheduleSnapshot(live, {
+        scheduleVersion: String(body.scheduleVersion || ""),
+        slots: body.slots,
+        nowMs: now,
+      });
+    }
     applyReconcileAndLog(live, now, "sync-slot-schedule");
   }
 
   if (action === "slot-transition-tick") {
-    if (body.scheduleVersion || body.slots) {
+    if (canDrive && (body.scheduleVersion || body.slots)) {
       upsertSlotScheduleSnapshot(live, {
         scheduleVersion: String(body.scheduleVersion || live?.slotSchedule?.scheduleVersion || ""),
         slots: body.slots ?? live?.slotSchedule?.slots,
@@ -863,7 +910,16 @@ export async function PATCH(req: Request) {
   }
 
   if (action === "slot-transition-begin") {
-    const begin = beginSlotTransitionFromClient(live, body, now);
+    // Non-drivers cannot send a schedule or name an outgoing slot the server does not know.
+    const knownSlotIds = new Set(normalizeSlotScheduleEntries(live?.slotSchedule?.slots).map((slot) => slot.slotId));
+    const beginBody = canDrive
+      ? body
+      : {
+          incomingSlotId: String(body.incomingSlotId || ""),
+          outgoingSlotId: knownSlotIds.has(String(body.outgoingSlotId || "")) ? String(body.outgoingSlotId) : "",
+          boundaryTimestamp: Number(body.boundaryTimestamp || 0) || undefined,
+        };
+    const begin = beginSlotTransitionFromClient(live, beginBody, now);
     if (begin.created) {
       logSlotTransitionServer("KRISTO_SLOT_TRANSITION_START", live, {
         source: "slot-transition-begin",
@@ -892,7 +948,8 @@ export async function PATCH(req: Request) {
         phase: body.phase,
         videoReady: body.videoReady === true,
         avatarFallback: body.avatarFallback === true,
-        role: body.role,
+        // incoming/outgoing/remote is derived from the transition, not taken from the body.
+        role: undefined,
       },
       now
     );
@@ -929,15 +986,29 @@ export async function PATCH(req: Request) {
   if (action === "presence") {
     live.viewerPresence = live.viewerPresence || {};
 
-    const isLiveOwner = evaluateLiveMediaAuthority({
-      currentUserId: a.userId,
-      actualChurchPastorUserId: live.actualChurchPastorUserId,
-      scheduleCreatedByUserId: live.scheduleCreatedByUserId,
-      mediaHostIds: live.mediaHostIds,
-    }).isMediaOwnerHost;
-    const role = String(body.role || "").toLowerCase();
+    const isLiveOwner =
+      !liveControlSuspended &&
+      evaluateLiveMediaAuthority({
+        currentUserId: a.userId,
+        actualChurchPastorUserId: live.actualChurchPastorUserId,
+        scheduleCreatedByUserId: live.scheduleCreatedByUserId,
+        mediaHostIds: live.mediaHostIds,
+      }).isMediaOwnerHost;
+    const requestedRole = String(body.role || "").toLowerCase();
+    const explicitlyEnded = !!live.endedAt && String(live.endedReason || "") !== "heartbeat-timeout";
+    const stageAllowed =
+      requestedRole === "stage" &&
+      !liveControlSuspended &&
+      (canDrive ||
+        // A live ended on purpose stays ended for everyone but schedule drivers.
+        (!explicitlyEnded &&
+          (isServerActiveSlotOwner(live, a.userId, now) || (await holdsClaimInSchedule()))));
+    if (requestedRole === "stage" && !stageAllowed) {
+      console.log("KRISTO_LIVE_STAGE_PRESENCE_REFUSED", { churchId: a.churchId, liveId: resolvedLiveId, userId: a.userId });
+    }
+    const role = requestedRole === "stage" && !stageAllowed ? "viewer" : requestedRole;
 
-    if (isLiveOwner || isPastor(a.role) || role === "stage") {
+    if (isLiveOwner || (isPastor(a.role) && !liveControlSuspended) || stageAllowed) {
       live.isLive = true;
       delete live.endedAt;
       delete live.endedReason;
@@ -970,7 +1041,7 @@ export async function PATCH(req: Request) {
       live.lastPresenceAt = now;
     }
 
-    if (body.scheduleVersion || body.slots) {
+    if (canDrive && (body.scheduleVersion || body.slots)) {
       upsertSlotScheduleSnapshot(live, {
         scheduleVersion: String(body.scheduleVersion || live?.slotSchedule?.scheduleVersion || ""),
         slots: body.slots ?? live?.slotSchedule?.slots,

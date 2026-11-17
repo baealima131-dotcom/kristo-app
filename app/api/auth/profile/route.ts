@@ -180,41 +180,11 @@ async function resolveAuthedUser(req: Request) {
       hasToken: false,
       tokenVerified: false,
       reason: "missing_token",
-      via: "header-uid",
+      via: "header-uid-rejected",
     });
   }
 
-  if (!headerUserId) return null;
-
-  const u = await getUserById(headerUserId);
-  if (u) return { user: u, sessionId: null as string | null };
-
-  // Mobile signup bootstrap on serverless: trust verified client user id header.
-  if (headerUserId.startsWith("u_")) {
-    return {
-      user: {
-        id: headerUserId,
-        password: "",
-      } as any,
-      sessionId: null as string | null,
-    };
-  }
-
-  if (isKristoUserCode(headerUserId)) {
-    const profile = await getProfileByUserCode(headerUserId);
-    const realUserId = String((profile as any)?.userId || (profile as any)?.id || headerUserId).trim();
-
-    return {
-      user: {
-        id: realUserId,
-        email: (profile as any)?.email,
-        phone: (profile as any)?.phone,
-        password: "",
-      } as any,
-      sessionId: null as string | null,
-    };
-  }
-
+  // Stage-1 closed: an unverified x-kristo-user-id (user id or Kristo ID) is not an identity.
   return null;
 }
 

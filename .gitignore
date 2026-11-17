@@ -49,6 +49,8 @@ data/
 cookies.txt
 *.tmp
 *.patch
+# patch-package patches are applied on every install (postinstall); they must ship.
+!apps/mobile/patches/*.patch
 *.bak
 *.bak_*
 *.BROKEN

@@ -1,13 +1,10 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { makeChurchId } from "@/src/lib/kristoSession";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { saveChurchDraft } from "@/src/lib/churchStore";
-import { publishChurchDirectory } from "@/src/lib/churchDirectoryStore";
-import { fetchMyActiveChurchMembership } from "@/src/lib/churchMembersApi";
+import { fetchMyChurchApplication, submitChurchApplication } from "@/src/lib/churchApplicationsApi";
 
 const GOLD = "rgba(217,179,95,0.96)";
 const BG = "#070B14";
@@ -119,7 +116,12 @@ function isValidIntlPhone(v: string) {
 export default function CreateChurch() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { session, setSession } = useKristoSession();
+  const { session } = useKristoSession();
+  // Agents may submit for a church leader with an agent code assigned to them (server-enforced).
+  const isAgent = String((session as any)?.platformRole || "") === "Agent";
+  const [agentMode, setAgentMode] = useState(isAgent);
+  const [leaderKristoId, setLeaderKristoId] = useState("");
+  const [agentCode, setAgentCode] = useState("");
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -141,9 +143,24 @@ export default function CreateChurch() {
       Boolean(country.trim()) &&
       Boolean(province.trim()) &&
       Boolean(city.trim()) &&
+      (!agentMode || (leaderKristoId.trim().length >= 4 && agentCode.trim().length >= 4)) &&
       !saving,
-    [name, phone, country, province, city, saving]
+    [name, phone, country, province, city, saving, agentMode, leaderKristoId, agentCode]
   );
+
+  // Churches are created only after Kristo App approves an application: someone who already
+  // applied sees their application instead of a second form.
+  useEffect(() => {
+    let alive = true;
+    void fetchMyChurchApplication().then((res) => {
+      if (!alive || !res.ok) return;
+      const app = res.data.application;
+      if (app && app.status !== "rejected") router.replace("/(tabs)/church/application" as any);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [router]);
 
   async function onSave() {
     if (!canSave) {
@@ -151,95 +168,45 @@ export default function CreateChurch() {
       return;
     }
 
-    const userId = session?.userId;
-    if (!userId) {
+    if (!session?.userId) {
       Alert.alert("Session missing", "Please log in again.");
       return;
     }
 
     setSaving(true);
-
     try {
-      const churchId = makeChurchId();
-
-      const churchProfile = {
+      const res = await submitChurchApplication({
         name: name.trim(),
         phone: cleanPhone(phone).trim(),
         country: country.trim(),
         province: province.trim(),
         city: city.trim(),
-        createdAt: new Date().toISOString(),
-      };
+        ...(agentMode
+          ? { source: "agent" as const, leaderKristoId: leaderKristoId.trim().toUpperCase(), agentCode: agentCode.trim().toUpperCase() }
+          : {}),
+      });
 
-      const pastorName = String(session?.displayName || session?.name || "Pastor").trim();
-
-      const draft = {
-        churchId,
-        userId,
-        createdBy: userId,
-        role: "Pastor",
-        pastorName,
-        churchProfile,
-        churchName: churchProfile.name,
-        churchPhone: churchProfile.phone,
-        churchCountry: churchProfile.country,
-        churchProvince: churchProfile.province,
-        churchCity: churchProfile.city,
-      };
-
-      await saveChurchDraft(draft, userId);
-
-      const published = await publishChurchDirectory(draft as any);
-      if (!published.ok) {
-        Alert.alert(
-          "Server registration failed",
-          published.error || "Church was saved locally but could not be registered on the server. Try again."
-        );
+      if (!res.ok) {
+        if (res.error === "duplicate_application" && !agentMode) {
+          router.replace("/(tabs)/church/application" as any);
+          return;
+        }
+        Alert.alert("Application not sent", res.message);
         return;
       }
 
-      const nextSession = {
-        ...session,
-        ...draft,
-        churchId,
-        activeChurchId: churchId,
-        role: "Pastor" as const,
-        churchRole: "Pastor" as const,
-      };
-
-      await setSession(nextSession as any);
-
-      try {
-        const mine = await fetchMyActiveChurchMembership();
-        const syncedChurchId = String(mine.churchId || churchId);
-        await setSession({
-          ...nextSession,
-          churchId: syncedChurchId,
-          activeChurchId: syncedChurchId,
-          role: (mine.role || "Pastor") as any,
-          churchRole: (mine.role || "Pastor") as any,
-        } as any);
-
-        if (__DEV__) {
-          console.log("[CreateChurch] session synced", {
-            userId,
-            churchId: syncedChurchId,
-            role: mine.role || "Pastor",
-            membership: mine.membership?.id || null,
-          });
-        }
-      } catch (refreshErr) {
-        if (__DEV__) {
-          console.warn("[CreateChurch] membership refresh failed; using local session", refreshErr);
-        }
+      if (agentMode) {
+        Alert.alert(
+          "Application submitted",
+          `Kristo App will review ${name.trim()}. The church leader can follow the application in their Church tab.`
+        );
+        router.back();
+        return;
       }
 
-      router.replace({
-        pathname: "/(tabs)/church/overview",
-        params: { churchId, refreshAt: String(Date.now()) },
-      } as any);
+      router.replace("/(tabs)/church/application" as any);
     } catch {
-      Alert.alert("Create failed", "Please try again.");
+      Alert.alert("Application not sent", "Please try again.");
     } finally {
       setSaving(false);
     }
@@ -255,8 +222,8 @@ export default function CreateChurch() {
         </Pressable>
 
         <View style={s.titleWrap}>
-          <Text style={s.title}>Create Church</Text>
-          <Text style={s.sub}>Create a trusted church profile</Text>
+          <Text style={s.title}>Apply for a Church</Text>
+          <Text style={s.sub}>Kristo App reviews every church before it opens</Text>
         </View>
       </View>
 
@@ -331,9 +298,50 @@ export default function CreateChurch() {
             )}
           </Pressable>
 
+          {isAgent ? (
+            <>
+              <Pressable
+                onPress={() => setAgentMode((v) => !v)}
+                style={s.agentToggle}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: agentMode }}
+              >
+                <View style={[s.agentCheck, agentMode && s.agentCheckOn]}>
+                  {agentMode ? <Ionicons name="checkmark" size={14} color="#080B12" /> : null}
+                </View>
+                <Text style={s.agentToggleText}>I am an agent applying for a church leader</Text>
+              </Pressable>
+              {agentMode ? (
+                <>
+                  <Text style={s.label}>Church leader's Kristo ID</Text>
+                  <TextInput
+                    value={leaderKristoId}
+                    onChangeText={setLeaderKristoId}
+                    autoCapitalize="characters"
+                    placeholder="KR7-..."
+                    placeholderTextColor="rgba(255,255,255,0.35)"
+                    style={s.input}
+                  />
+                  <Text style={s.label}>Your agent code</Text>
+                  <TextInput
+                    value={agentCode}
+                    onChangeText={setAgentCode}
+                    autoCapitalize="characters"
+                    placeholder="Code assigned to you"
+                    placeholderTextColor="rgba(255,255,255,0.35)"
+                    style={s.input}
+                  />
+                </>
+              ) : null}
+            </>
+          ) : null}
+
           <View style={s.notice}>
-            <Ionicons name="sparkles-outline" size={17} color={GOLD} />
-            <Text style={s.noticeText}>Your Church ID will be generated after saving.</Text>
+            <Ionicons name="shield-checkmark-outline" size={17} color={GOLD} />
+            <Text style={s.noticeText}>
+              Kristo App reviews your application. The Church ID is created when it is approved, and the church opens
+              when its requirements are complete.
+            </Text>
           </View>
 
           <Pressable
@@ -342,7 +350,7 @@ export default function CreateChurch() {
             style={({ pressed }) => [s.saveBtn, !canSave && { opacity: 0.45 }, pressed && canSave && { transform: [{ scale: 0.99 }] }]}
           >
             <Ionicons name="checkmark-circle-outline" size={20} color="#080B12" />
-            <Text style={s.saveText}>{saving ? "Creating..." : "Create Church"}</Text>
+            <Text style={s.saveText}>{saving ? "Submitting..." : "Submit application"}</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -639,6 +647,18 @@ const s = StyleSheet.create<any>({
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.24)",
   },
+  agentToggle: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingVertical: 6 },
+  agentCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  agentCheckOn: { backgroundColor: GOLD, borderColor: GOLD },
+  agentToggleText: { flex: 1, color: "rgba(255,255,255,0.86)", fontWeight: "800", fontSize: 14 },
   noticeText: { flex: 1, color: "rgba(255,255,255,0.72)", fontWeight: "700", lineHeight: 18 },
   saveBtn: {
     marginTop: 10,

@@ -619,6 +619,21 @@ export default function AgentScreen() {
 
             {!error ? (
               <>
+                {/* New churches: an application for the leader, with one of this agent's codes. */}
+                <Pressable
+                  onPress={() => router.push("/more/church/create" as any)}
+                  style={({ pressed }) => [styles.applyChurchCard, pressed && { opacity: 0.88 }]}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="add-circle-outline" size={22} color="#F4D06F" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.applyChurchTitle}>Apply for a new church</Text>
+                    <Text style={styles.applyChurchSub}>
+                      Submit a church application for a leader with one of your codes. Kristo App reviews it.
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.55)" />
+                </Pressable>
                 <ActivateChurchPanel
                   availableCodes={availableCodes}
                   churchId={churchIdInput}
@@ -644,6 +659,19 @@ export default function AgentScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG },
   activateCard: { padding: 14, gap: 2 },
+  applyChurchCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    marginBottom: 14,
+    borderRadius: 20,
+    borderWidth: 1.3,
+    borderColor: "rgba(244,208,111,0.45)",
+    backgroundColor: "rgba(244,208,111,0.07)",
+  },
+  applyChurchTitle: { color: "#F4D06F", fontSize: 15, fontWeight: "900" },
+  applyChurchSub: { color: "rgba(255,255,255,0.62)", fontSize: 12, marginTop: 2, lineHeight: 16, fontWeight: "700" },
   fieldLabel: { color: MUTED, fontSize: 11, fontWeight: "700", marginTop: 8 },
   input: {
     borderWidth: StyleSheet.hairlineWidth,

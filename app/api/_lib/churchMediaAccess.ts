@@ -3,6 +3,7 @@ import { getChurchMediaByChurchId, upsertChurchMedia, type ChurchMediaProfile } 
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getChurchById } from "@/app/api/_lib/churches";
 import { canManageTrustedHosts } from "@/app/api/_lib/mediaHostAuthority";
+import { isChurchLiveControlSuspended } from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const MAX_CHURCH_MEDIA_HOSTS = 3;
 
@@ -129,9 +130,14 @@ export async function evaluateChurchMediaAccess(args: {
   const canManageMediaHosts = canManageTrustedHosts(userId, actualPastorUserId, requesterMembership?.churchRole);
   const canManageChurchMedia = isActualChurchPastor;
 
-  const isMediaHost =
+  const isListedMediaHost =
     !!userId &&
     mediaHostUserIds.some((id) => userIdsMatch(id, userId));
+  // Church Live Control suspension overrides the media-host role (the host record is kept);
+  // a read failure gives no host rights.
+  const liveControlSuspended =
+    isListedMediaHost && (await isChurchLiveControlSuspended(churchId, userId).catch(() => true));
+  const isMediaHost = isListedMediaHost && !liveControlSuspended;
 
   // Kristo App is FREE on every platform.
   // Church Media access is role/authority based.
@@ -149,6 +155,7 @@ export async function evaluateChurchMediaAccess(args: {
     isActualChurchPastor,
     hasPastorRole,
     isMediaHost,
+    liveControlSuspended,
 
     canOpenMediaScreen,
     canUseMediaTools,

@@ -10,6 +10,7 @@ import {
   getMembershipsForUser,
 } from "@/app/api/_lib/memberships";
 import { getChurchById } from "@/app/api/_lib/churches";
+import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,19 +68,10 @@ export async function GET(
       | Promise<{ userId: string }>;
   }
 ) {
-  const viewerUserId = text(
-    req.headers.get("x-kristo-user-id")
-  );
-
-  if (!viewerUserId) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Unauthorized",
-      },
-      { status: 401 }
-    );
-  }
+  // Signed-in viewers only, identified by the verified session (not x-kristo-user-id).
+  const viewerOrRes = await resolveVerifiedUserId(req);
+  if (viewerOrRes instanceof NextResponse) return viewerOrRes;
+  const viewerUserId = viewerOrRes;
 
   const params = await Promise.resolve(
     context.params

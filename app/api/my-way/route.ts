@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { getViewer } from "@/app/api/_lib/auth";
+import { resolveVerifiedUserId } from "@/app/api/_lib/verifiedChurchActor";
+import { withAppUpdateRequired } from "@/app/api/_lib/appUpdateRequired";
 import {
   MY_WAY_SETTINGS_STORE_KEY,
   readCoreJsonFile,
@@ -80,13 +81,18 @@ async function readSettings(): Promise<MyWaySettingsRecord> {
 }
 
 export async function GET(req: NextRequest) {
-  await getViewer(req);
+  // Settings include the agent command codes: signed-in (verified) users only.
+  const userIdOrRes = await resolveVerifiedUserId(req);
+  if (userIdOrRes instanceof NextResponse) return withAppUpdateRequired(userIdOrRes, req);
   const data = await readSettings();
   return json({ ok: true, data });
 }
 
 export async function PATCH(req: NextRequest) {
-  const viewer = await getViewer(req);
+  const userIdOrRes = await resolveVerifiedUserId(req);
+  if (userIdOrRes instanceof NextResponse) return withAppUpdateRequired(userIdOrRes, req);
+  // Saving needs a verified session; who may save and how the owner is recorded are unchanged.
+  const viewer = { userId: userIdOrRes };
   const body = await req.json().catch(() => ({} as Partial<MyWaySettingsRecord>));
 
   const data = await updateCoreJsonFile<Partial<MyWaySettingsRecord>>(

@@ -55,14 +55,20 @@ export type ChurchPublicProfile = {
   country: string;
   province: string;
   city: string;
+  pastorName?: string;
+  verified?: boolean;
   avatarUri: string;
   avatarUrl: string;
   logoUrl: string;
-  memberCount: number;
-  ministriesCount: number;
+  avatarUpdatedAt?: number;
+  /** null when the viewer may not see it (not a member of this church / not staff). */
+  memberCount: number | null;
+  ministriesCount: number | null;
   followerCount?: number;
   viewerFollowing?: boolean;
   viewerMembershipStatus?: ChurchJoinStatus;
+  /** Server decision: "member" (member of this church or staff) or "visitor". */
+  viewerAccess?: "member" | "visitor";
   recentPosts: ChurchPublicPost[];
 };
 
@@ -107,7 +113,8 @@ async function publicApiGet(path: string) {
 }
 
 function mapPublicProfilePayload(profile: any): ChurchPublicProfile {
-  const ministryCount = Number(profile.ministryCount ?? profile.ministriesCount ?? 0);
+  const rawMinistries = profile.ministryCount ?? profile.ministriesCount;
+  const ministryCount = rawMinistries == null ? null : Number(rawMinistries || 0);
   const viewerMembershipStatus = String(profile.viewerMembershipStatus || "").trim() as ChurchJoinStatus;
 
   return {
@@ -119,11 +126,15 @@ function mapPublicProfilePayload(profile: any): ChurchPublicProfile {
     country: String(profile.country || "").trim(),
     province: String(profile.province || "").trim(),
     city: String(profile.city || "").trim(),
+    pastorName: String(profile.pastorName || "").trim(),
+    verified: Boolean(profile.verified),
     avatarUri: String(profile.avatarUri || profile.avatarUrl || profile.logoUrl || "").trim(),
     avatarUrl: String(profile.avatarUrl || profile.avatarUri || profile.logoUrl || "").trim(),
     logoUrl: String(profile.logoUrl || profile.avatarUrl || profile.avatarUri || "").trim(),
-    memberCount: Number(profile.memberCount || 0),
+    avatarUpdatedAt: Number(profile.avatarUpdatedAt || 0) || undefined,
+    memberCount: profile.memberCount == null ? null : Number(profile.memberCount || 0),
     ministriesCount: ministryCount,
+    viewerAccess: profile.viewerAccess === "member" ? "member" : "visitor",
     followerCount: Number(profile.followerCount ?? profile.followersCount ?? 0),
     viewerFollowing: Boolean(profile.viewerFollowing),
     viewerMembershipStatus:

@@ -70,22 +70,30 @@ export async function ensurePlatformRoleSchema() {
   if (!schemaReady) {
     schemaReady = (async () => {
       const sql = getSql();
-      await sql`
-        CREATE TABLE IF NOT EXISTS kristo_platform_roles (
-          user_id TEXT PRIMARY KEY,
-          platform_role TEXT NOT NULL,
-          note TEXT,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          CONSTRAINT kristo_platform_roles_role_check
-            CHECK (platform_role IN ('System_Admin', 'Supervisor', 'Agent'))
-        )
-      `;
-      await sql`
-        CREATE INDEX IF NOT EXISTS kristo_platform_roles_role_idx
-        ON kristo_platform_roles (platform_role)
-      `;
-    })();
+      // One transaction behind an advisory lock: instances starting together wait for each
+      // other instead of failing on CREATE (pg_type duplicate key).
+      await sql.transaction([
+        sql`SELECT pg_advisory_xact_lock(hashtext('kristo_platform_roles_schema'))`,
+        sql`
+          CREATE TABLE IF NOT EXISTS kristo_platform_roles (
+            user_id TEXT PRIMARY KEY,
+            platform_role TEXT NOT NULL,
+            note TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT kristo_platform_roles_role_check
+              CHECK (platform_role IN ('System_Admin', 'Supervisor', 'Agent'))
+          )
+        `,
+        sql`
+          CREATE INDEX IF NOT EXISTS kristo_platform_roles_role_idx
+          ON kristo_platform_roles (platform_role)
+        `,
+      ]);
+    })().catch((error) => {
+      schemaReady = null;
+      throw error;
+    });
   }
   await schemaReady;
 }

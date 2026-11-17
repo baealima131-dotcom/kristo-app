@@ -1,3 +1,4 @@
+import { ChurchActivationGate } from "@/src/components/church/ChurchActivationGate";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -60,7 +61,7 @@ function ministriesSignature(rows: Ministry[]) {
     .join("\n");
 }
 
-export default function MoreMinistriesList() {
+function MoreMinistriesList() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { session } = useKristoSession();
@@ -518,3 +519,12 @@ const s = StyleSheet.create<any>({
   },
   countBadgeText: { color: "rgba(255,255,255,0.78)", fontWeight: "850", fontSize: 11 },
 });
+
+/** Closed while the church (from a church application) is not active; the server refuses it too. */
+export default function MoreMinistriesListRoute() {
+  return (
+    <ChurchActivationGate feature="Ministries">
+      <MoreMinistriesList />
+    </ChurchActivationGate>
+  );
+}

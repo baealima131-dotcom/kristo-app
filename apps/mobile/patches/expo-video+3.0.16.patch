@@ -1,0 +1,152 @@
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/FullscreenPlayerActivity.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/FullscreenPlayerActivity.kt
+index ffd4ab4..76eb665 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/FullscreenPlayerActivity.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/FullscreenPlayerActivity.kt
+@@ -34,6 +34,7 @@ class FullscreenPlayerActivity : Activity() {
+   private var wasAutoPaused = false
+   private lateinit var options: FullscreenOptions
+   private lateinit var orientationHelper: FullscreenActivityOrientationHelper
++  private var autoExited = false
+   private var captioningChangeListener: CaptioningManager.CaptioningChangeListener? = null
+ 
+   override fun onCreate(savedInstanceState: Bundle?) {
+@@ -57,7 +58,9 @@ class FullscreenPlayerActivity : Activity() {
+       orientationHelper = FullscreenActivityOrientationHelper(
+         this,
+         options,
++        launchedFromLandscape = intent.getBooleanExtra(INTENT_LAUNCHED_FROM_LANDSCAPE_KEY, false),
+         onShouldAutoExit = {
++          autoExited = true
+           finish()
+         },
+         onShouldReleaseOrientation = {
+@@ -152,7 +155,7 @@ class FullscreenPlayerActivity : Activity() {
+       captioningChangeListener = null
+     }
+ 
+-    videoView.exitFullscreen()
++    videoView.exitFullscreen(autoExited)
+     VideoManager.unregisterFullscreenPlayerActivity(hashCode().toString())
+     orientationHelper.stopOrientationEventListener()
+   }
+@@ -213,5 +216,6 @@ class FullscreenPlayerActivity : Activity() {
+ 
+   companion object {
+     const val INTENT_FULLSCREEN_OPTIONS_KEY = "fullscreen_options"
++    const val INTENT_LAUNCHED_FROM_LANDSCAPE_KEY = "launched_from_landscape"
+   }
+ }
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoModule.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoModule.kt
+index 59f4cfc..c6ce975 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoModule.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoModule.kt
+@@ -409,7 +409,8 @@ private inline fun <reified T : VideoView> ViewDefinitionBuilder<T>.VideoViewCom
+     view.useExoShutter = useExoShutter
+   }
+   AsyncFunction("enterFullscreen") { view: T ->
+-    view.enterFullscreen()
++    // [kristo-review] JS-requested fullscreen is the Watch auto-rotate path; see VideoView.enterFullscreen.
++    view.enterFullscreen(enteredByRotation = true)
+   }.runOnQueue(Queues.MAIN)
+   AsyncFunction("exitFullscreen") {
+     throw MethodUnsupportedException("exitFullscreen")
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoView.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoView.kt
+index 20a603d..03cc69f 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoView.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoView.kt
+@@ -4,6 +4,7 @@ import android.app.Activity
+ import android.app.PictureInPictureParams
+ import android.content.Context
+ import android.content.Intent
++import android.content.res.Configuration
+ import android.graphics.Color
+ import android.os.Build
+ import android.util.Rational
+@@ -52,7 +53,7 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+   val onPictureInPictureStart by EventDispatcher<Unit>()
+   val onPictureInPictureStop by EventDispatcher<Unit>()
+   val onFullscreenEnter by EventDispatcher<Unit>()
+-  val onFullscreenExit by EventDispatcher<Unit>()
++  val onFullscreenExit by EventDispatcher<Map<String, Any>>()
+   val onFirstFrameRender by EventDispatcher<Unit>()
+ 
+   var willEnterPiP: Boolean = false
+@@ -199,10 +200,22 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+     }
+   }
+ 
+-  fun enterFullscreen() {
++  // [kristo-review] enteredByRotation: fullscreen was requested because the device was rotated
++  // (Kristo Watch calls enterFullscreen() from JS only for auto-rotate). The fullscreen button keeps
++  // the stock behaviour unless the screen is already landscape when it is pressed.
++  fun enterFullscreen(enteredByRotation: Boolean = false) {
+     val intent = Intent(context, FullscreenPlayerActivity::class.java)
+     intent.putExtra(VideoManager.INTENT_PLAYER_KEY, videoViewId)
+     intent.putExtra(FullscreenPlayerActivity.INTENT_FULLSCREEN_OPTIONS_KEY, fullscreenOptions)
++    // [kristo-review] Lets the fullscreen activity arm auto-exit immediately when fullscreen was
++    // entered by rotating to landscape, so a rotation back to portrait during launch still exits.
++    // The JS call can run hundreds of ms after the rotation, so the host orientation at this
++    // moment is not enough on its own.
++    intent.putExtra(
++      FullscreenPlayerActivity.INTENT_LAUNCHED_FROM_LANDSCAPE_KEY,
++      enteredByRotation ||
++        currentActivity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
++    )
+     // Set before starting the activity to avoid entering PiP unintentionally
+     isInFullscreen = true
+     currentActivity.startActivity(intent)
+@@ -222,12 +235,13 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+     videoPlayer?.changePlayerView(playerView)
+   }
+ 
+-  fun exitFullscreen() {
++  // [kristo-review] autoExited = fullscreen closed itself because the device was rotated back.
++  fun exitFullscreen(autoExited: Boolean = false) {
+     // Fullscreen uses a different PlayerView instance, because of that we need to manually update the non-fullscreen player icon after exiting
+     val fullScreenButton: ImageButton = playerView.findViewById(androidx.media3.ui.R.id.exo_fullscreen)
+     fullScreenButton.setImageResource(androidx.media3.ui.R.drawable.exo_icon_fullscreen_enter)
+     attachPlayer()
+-    onFullscreenExit(Unit)
++    onFullscreenExit(mapOf("autoExited" to autoExited))
+     isInFullscreen = false
+     applyPiPParams(currentActivity, autoEnterPiP, calculateCurrentPipAspectRatio())
+   }
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/utils/FullscreenActivityOrientationHelper.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/utils/FullscreenActivityOrientationHelper.kt
+index 699e125..4f2bbac 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/utils/FullscreenActivityOrientationHelper.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/utils/FullscreenActivityOrientationHelper.kt
+@@ -11,12 +11,16 @@ import expo.modules.video.records.FullscreenOptions
+ /**
+  * Helper for the auto-exit fullscreen functionality. Once the user has rotated the phone to the desired orientation, the orientation lock should be released, so that once rotation to a perpendicular orientation is detected, the fullscreen can be exited.
+  */
+-class FullscreenActivityOrientationHelper(val context: Context, val options: FullscreenOptions, val onShouldAutoExit: (() -> Unit), val onShouldReleaseOrientation: (() -> Unit)) {
+-  private var userHasRotatedToVideoOrientation = false
++class FullscreenActivityOrientationHelper(val context: Context, val options: FullscreenOptions, val launchedFromLandscape: Boolean = false, val onShouldAutoExit: (() -> Unit), val onShouldReleaseOrientation: (() -> Unit)) {
+   private val isLockedToLandscape = options.orientation == FullscreenOrientation.LANDSCAPE ||
+     options.orientation == FullscreenOrientation.LANDSCAPE_LEFT ||
+     options.orientation == FullscreenOrientation.LANDSCAPE_RIGHT
+ 
++  // [kristo-review] When the host screen was already landscape, the user has reached the video
++  // orientation before this activity existed. Without this, a rotation back to portrait that
++  // lands before the first landscape sensor sample leaves fullscreen locked in landscape.
++  private var userHasRotatedToVideoOrientation = launchedFromLandscape && isLockedToLandscape
++
+   private val isLockedToPortrait = options.orientation == FullscreenOrientation.PORTRAIT ||
+     options.orientation == FullscreenOrientation.PORTRAIT_UP ||
+     options.orientation == FullscreenOrientation.PORTRAIT_DOWN
+@@ -83,6 +87,15 @@ class FullscreenActivityOrientationHelper(val context: Context, val options: Ful
+           }
+           onShouldReleaseOrientation()
+           this@FullscreenActivityOrientationHelper.stopOrientationEventListener()
++          // [kristo-review] If the screen never rotated to the video orientation (the device was
++          // turned back while fullscreen was opening), releasing the lock causes no configuration
++          // change, so onConfigurationChanged would never fire. Exit based on the current state.
++          val currentOrientation = context.resources.configuration.orientation
++          if ((canReleaseFromLandscape && currentOrientation == Configuration.ORIENTATION_PORTRAIT) ||
++            (canReleaseFromPortrait && currentOrientation == Configuration.ORIENTATION_LANDSCAPE)
++          ) {
++            onShouldAutoExit()
++          }
+         }
+ 
+         val hasRotatedToVideoOrientationPortrait = newPhysicalOrientation == Configuration.ORIENTATION_PORTRAIT && isLockedToPortrait && !userHasRotatedToVideoOrientation

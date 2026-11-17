@@ -1,3 +1,4 @@
+import { churchNotActiveResponse, isChurchOpenById } from "@/app/api/_lib/churchActivationGate";
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeVideoDimensions, probeRemoteVideoDimensions } from "@/lib/videoDimensions";
 import fs from "node:fs";
@@ -125,6 +126,12 @@ import {
   filterHomeFeedRowsBySearchQuery,
   parseHomeFeedSearchQueryParam,
 } from "@/app/api/_lib/homeFeedSearch";
+import {
+  CHURCH_LIVE_CONTROL_ROOM_ID,
+  denyIfLiveControlSuspended,
+  isChurchLiveControlSuspended,
+  LIVE_CONTROL_SUSPENDED_ERROR,
+} from "@/app/api/_lib/churchLiveControlSuspension";
 
 export const runtime = "nodejs";
 
@@ -2245,11 +2252,19 @@ function isPastorOrAdminRole(role: unknown) {
 async function isMediaHostForChurch(churchId: string, userId: string) {
   const mediaProfile: any = await churchMediaFor(churchId);
   const mediaHosts = Array.isArray(mediaProfile?.hosts) ? mediaProfile.hosts : [];
-  return mediaHosts.some((h: any) => String(h?.userId || h?.id || "") === String(userId || ""));
+  if (!mediaHosts.some((h: any) => String(h?.userId || h?.id || "") === String(userId || ""))) return false;
+  // Church Live Control suspension overrides the media-host role (read failure: no host rights).
+  return !(await isChurchLiveControlSuspended(churchId, userId).catch(() => true));
 }
 
 async function canAccessMediaStorage(churchId: string, role: unknown, userId: string) {
   return isPastorOrAdminRole(role) || (await isMediaHostForChurch(churchId, userId));
+}
+
+/** A feed schedule of Church Live Control (church-media-room), not of a ministry room. */
+function isChurchLiveControlSchedule(item: any, body: any) {
+  const ministryId = resolveScheduleMinistryId(item, body);
+  return !ministryId || ministryId === CHURCH_LIVE_CONTROL_ROOM_ID;
 }
 
 function resolveScheduleMinistryId(item: any, body: any) {
@@ -2280,6 +2295,14 @@ async function assertScheduleEditPermission(args: {
   const itemChurchId = String(args.item?.churchId || args.churchId || "");
   if (itemChurchId && itemChurchId !== String(args.churchId || "")) {
     return "Feed item not in your church";
+  }
+
+  // Church Live Control schedules: suspension beats every role (pastor-level, leader, host).
+  if (
+    isChurchLiveControlSchedule(args.item, args.body) &&
+    (await isChurchLiveControlSuspended(args.churchId, args.viewerUserId).catch(() => true))
+  ) {
+    return LIVE_CONTROL_SUSPENDED_ERROR;
   }
 
   const isMedia =
@@ -2986,12 +3009,21 @@ async function buildCommentTree(
   );
 }
 
-function emptyFeedListResponse(churchId: string) {
-  return feedListOk(churchId, []);
+/** Fallback after a timeout/failure: still an empty list for older apps, flagged so newer ones can offer Retry. */
+function degradedFeedListResponse(churchId: string) {
+  const sync = getMediaScheduleSync(churchId);
+  return NextResponse.json({
+    ok: true,
+    data: [],
+    degraded: true,
+    mediaScheduleVersion: sync.version,
+    mediaScheduleUpdatedAt: sync.updatedAt,
+  });
 }
 
 export async function GET(req: NextRequest) {
   let churchIdForFallback = String(req.headers.get("x-kristo-church-id") || "").trim();
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   try {
     return await Promise.race([
@@ -2999,9 +3031,9 @@ export async function GET(req: NextRequest) {
         churchIdForFallback = next;
       }),
       new Promise<NextResponse>((resolve) => {
-        setTimeout(() => {
+        timer = setTimeout(() => {
           console.error("[church/feed] GET timed out", { churchId: churchIdForFallback });
-          resolve(emptyFeedListResponse(churchIdForFallback));
+          resolve(degradedFeedListResponse(churchIdForFallback));
         }, FEED_GET_TIMEOUT_MS);
       }),
     ]);
@@ -3011,7 +3043,10 @@ export async function GET(req: NextRequest) {
       message: error?.message,
       stack: error?.stack,
     });
-    return emptyFeedListResponse(churchIdForFallback);
+    return degradedFeedListResponse(churchIdForFallback);
+  } finally {
+    // The race winner is already decided; without this the timer still fires and logs a false timeout.
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -3030,7 +3065,7 @@ async function handleFeedGet(
         console.error("[church/feed] GET feed store unavailable", {
           error: error instanceof Error ? error.message : String(error),
         });
-        return emptyFeedListResponse(getFallbackChurchId());
+        return degradedFeedListResponse(getFallbackChurchId());
       }
       throw error;
     }
@@ -3051,13 +3086,16 @@ async function handleFeedGet(
     logCommentStoreEvent({ op: "read", count: 0, detail: "feed-get-start" });
 
     const ctxOrRes = await guardAuth(req);
-    if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
+    if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
     const ctx = ctxOrRes as any;
     const headerChurchId = String(ctx?.viewer?.churchId || "").trim();
     const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
     const viewerRole = String(ctx?.viewer?.role || "Member").trim();
-    const churchId = await resolveViewerChurchId(req, headerChurchId, viewerUserId, viewerRole);
+    const resolvedChurchId = await resolveViewerChurchId(req, headerChurchId, viewerUserId, viewerRole);
+    // A church that is not active yet has no church feed; its members still get the global feed.
+    const viewerChurchOpen = !resolvedChurchId || (await isChurchOpenById(resolvedChurchId).catch(() => false));
+    const churchId = viewerChurchOpen ? resolvedChurchId : "";
     setFallbackChurchId(churchId || getFallbackChurchId());
     const url = new URL(req.url);
 
@@ -3066,6 +3104,7 @@ async function handleFeedGet(
     const storageMode = String(url.searchParams.get("storage") || "").trim().toLowerCase();
     const feedScope = String(url.searchParams.get("scope") || "church").trim().toLowerCase();
     const isGlobalFeedScope = feedScope === "global" || feedScope === "home";
+    if (!viewerChurchOpen && !isGlobalFeedScope) return churchNotActiveResponse("pending");
     const mediaOnly =
       isGlobalFeedScope &&
       (url.searchParams.get("mediaOnly") === "1" ||
@@ -3090,7 +3129,7 @@ async function handleFeedGet(
 
     if (storageMode === "media" || storageMode === "church") {
       const membershipOrRes = await guard(req);
-      if ("ok" in (membershipOrRes as any) === false && membershipOrRes instanceof NextResponse) {
+      if (membershipOrRes instanceof NextResponse) {
         return membershipOrRes;
       }
 
@@ -3519,7 +3558,7 @@ async function handleFeedGet(
       message: error?.message,
       stack: error?.stack,
     });
-    return emptyFeedListResponse(getFallbackChurchId());
+    return degradedFeedListResponse(getFallbackChurchId());
   }
 }
 
@@ -3552,7 +3591,7 @@ export async function POST(req: NextRequest) {
   const action = String(body?.action || "").trim();
   if (action === "clear_media_schedule_slots") {
     const ctxOrRes = await guard(req);
-    if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) {
+    if (ctxOrRes instanceof NextResponse) {
       return ctxOrRes;
     }
     const a = ctxOrRes as any;
@@ -3564,6 +3603,10 @@ export async function POST(req: NextRequest) {
       serverBuild: "main-clear-media-schedule-slots",
       stage: "early-handler-hit",
     });
+    const suspended = await denyIfLiveControlSuspended(String(a?.churchId || ""), String(a?.viewer?.userId || ""), {
+      source: "feed.clear_media_schedule_slots",
+    });
+    if (suspended) return suspended;
     return await handleClearMediaScheduleSlots(body, a, req.headers);
   }
 
@@ -3759,7 +3802,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     action === "toggle_like" || action === "record_view"
       ? await guardAuth(req)
       : await guard(req);
-  if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
+  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const ctx = ctxOrRes as any;
   const churchId =
@@ -3778,6 +3821,18 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
   const viewerName = String(ctx?.viewer?.name || "").trim();
   const actorLabel = viewerName || viewerUserId;
+
+  // Starting or running a Church Live Control media schedule: suspension beats every role.
+  const isChurchMediaScheduleAction =
+    action === "end_stale_media_schedule" ||
+    action === "clear_media_schedules" ||
+    (action === "create_post" && isIncomingMediaScheduleCreate(body));
+  if (isChurchMediaScheduleAction && isChurchLiveControlSchedule(null, body)) {
+    const suspended = await denyIfLiveControlSuspended(String(body?.churchId || churchId || ""), viewerUserId, {
+      source: `feed.${action}`,
+    });
+    if (suspended) return suspended;
+  }
 
   if (["add_comment", "add_reply"].includes(action) && !String(churchId || "").trim()) {
     return err("Join a church to comment", 403);
@@ -4019,9 +4074,25 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const item = await getFeedItemById(requestPostId);
 
     if (!item) return err("Feed item not found", 404);
+    // Same visibility rule as reading the post: no comments on posts of another church.
+    if (!isDiscoverableFeedItem(item, churchId)) {
+      console.log("KRISTO_COMMENT_WRITE_DENIED", { postId: requestPostId, userId: viewerUserId, reason: "not_visible" });
+      return err("Feed item not found", 404);
+    }
 
     const itemChurchId = String(item.churchId || churchId);
     const canonicalPostId = String(item.id || requestPostId).trim();
+
+    // A reply must point at an existing comment on this same post.
+    const replyParentId = action === "add_reply" ? cleanText(body?.parentCommentId, 240) : "";
+    if (action === "add_reply") {
+      if (!replyParentId) return err("parentCommentId is required", 400);
+      const parent = await findFeedCommentById(replyParentId);
+      if (!parent || !commentPostIdAliases(item, requestPostId).has(String(parent.postId || "").trim())) {
+        console.log("KRISTO_COMMENT_WRITE_DENIED", { postId: canonicalPostId, userId: viewerUserId, reason: "parent_not_on_post" });
+        return err("Parent comment not found", 404);
+      }
+    }
 
     console.log("KRISTO_COMMENT_BACKEND_WRITE_START", {
       postId: canonicalPostId,
@@ -4037,10 +4108,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       id: makeId("comment"),
       churchId: itemChurchId,
       postId: canonicalPostId,
-      parentCommentId:
-        action === "add_reply"
-          ? cleanText(body?.parentCommentId, 240)
-          : undefined,
+      parentCommentId: replyParentId || undefined,
       text,
       createdAt: new Date().toISOString(),
       createdBy: viewerUserId,
@@ -4378,6 +4446,13 @@ const postId = cleanText(body?.postId, 240);
       });
     }
 
+    if (isChurchLiveControlSchedule(item, body)) {
+      const suspended = await denyIfLiveControlSuspended(churchId, viewerUserId, {
+        source: "feed.claim_schedule_slot",
+      });
+      if (suspended) return suspended;
+    }
+
     const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
     const slotIndex = slots.findIndex((slot: any) => String(slot?.id || "") === String(slotId));
     if (slotIndex < 0) return err("Slot not found", 404);
@@ -4507,6 +4582,14 @@ const item = await getFeedItemById(postId);
 
     if (existing.locked && existingOwner && existingOwner !== targetUserId) {
       return err("Slot is locked", 409);
+    }
+
+    if (targetUserId !== existingOwner && isChurchLiveControlSchedule(item, body)) {
+      const suspended = await denyIfLiveControlSuspended(churchId, targetUserId, {
+        self: targetUserId === viewerUserId,
+        source: "feed.assign_schedule_slot",
+      });
+      if (suspended) return suspended;
     }
 
     if (existingOwner && existingOwner !== targetUserId) {

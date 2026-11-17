@@ -16,6 +16,7 @@ export function sanitizeSokoCatalogPaymentOptions(value: unknown) {
     : [];
   return {
     methods: [...new Set(methods)],
+    mobileNetwork: methods.includes("mobile_money") ? text(source.mobileNetwork).slice(0, 100) : "",
     stripeCardAvailable: source.stripeCardAvailable === true,
   };
 }

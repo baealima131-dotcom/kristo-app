@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { getChurchById, searchChurches, type ChurchProfile } from "@/app/api/_lib/churches";
-import { resolveChurchAvatarFields } from "@/app/api/_lib/churchAvatar";
+import { getChurchById, isChurchOpen, isVerifiedChurch, searchChurches, type ChurchProfile } from "@/app/api/_lib/churches";
+import { churchAvatarUpdatedAtMs, resolveChurchAvatarFields } from "@/app/api/_lib/churchAvatar";
 import { getMembershipsForChurch, getMembershipsForUser } from "@/app/api/_lib/memberships";
 import { getChurchFollowerCount, getViewerFollowingChurch } from "@/app/api/_lib/churchFollows";
 import { readMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
 import { listFeedItems, listFeedItemsForChurch } from "@/app/api/_lib/store/feedDb";
 import { isChurchDatabaseError } from "@/app/api/_lib/store/churchDb";
 import { verifySessionToken } from "@/app/api/auth/_lib/sessionToken";
+import { getPlatformRole } from "@/app/api/_lib/platformRoles";
 
 export const runtime = "nodejs";
 
@@ -38,6 +39,22 @@ function isPublicFeedItem(item: any) {
     (!visibility.includes("church") && !visibility.includes("private"))
   );
 }
+
+/** Posts an active member (or platform staff) may see: everything except private. */
+function isMemberVisibleFeedItem(item: any) {
+  return !feedItemVisibility(item).includes("private");
+}
+
+/**
+ * What the viewer may see on a church profile:
+ * - "member": active member of this church, or platform staff (System_Admin / Supervisor):
+ *   member and ministry counts, and church-only posts.
+ * - "visitor": anyone else (signed out, pending, member of another church): public posts and
+ *   follower count only.
+ */
+type ViewerAccess = "member" | "visitor";
+
+const STAFF_PLATFORM_ROLES = new Set(["System_Admin", "Supervisor"]);
 
 function buildLocation(profile: Partial<ChurchProfile> & Record<string, unknown>) {
   const parts = [profile?.city, profile?.province, profile?.country].filter(Boolean);
@@ -131,7 +148,7 @@ async function resolveChurchRecord(churchId: string): Promise<(ChurchProfile & R
   };
 }
 
-async function loadRecentPosts(churchId: string, churchName: string) {
+async function loadRecentPosts(churchId: string, churchName: string, includeMemberPosts = false) {
   let feedRows = await listFeedItemsForChurch(churchId);
   if (!feedRows.length) {
     const all = await listFeedItems();
@@ -139,7 +156,7 @@ async function loadRecentPosts(churchId: string, churchName: string) {
   }
 
   return feedRows
-    .filter((item: any) => isPublicFeedItem(item))
+    .filter((item: any) => (includeMemberPosts ? isMemberVisibleFeedItem(item) : isPublicFeedItem(item)))
     .filter((item: any) => !String(item?.deletedAt || item?.isDeleted || "").trim())
     .slice()
     .sort((a: any, b: any) => {
@@ -193,9 +210,20 @@ export async function GET(req: NextRequest) {
       ministryCount = ministries.filter((m) => normalizeChurchId(m.churchId) === id).length;
     } catch {}
 
-    const recentPosts = await loadRecentPosts(id, String(profile.name || id)).catch(() => []);
     const viewerMembershipStatus = await resolveViewerMembershipStatus(req, id);
     const viewerUserId = resolveOptionalViewerUserId(req);
+    const viewerPlatformRole = viewerUserId ? await getPlatformRole(viewerUserId).catch(() => null) : null;
+    const viewerAccess: ViewerAccess =
+      viewerMembershipStatus === "member" || STAFF_PLATFORM_ROLES.has(String(viewerPlatformRole || ""))
+        ? "member"
+        : "visitor";
+    // A church waiting for activation (church application) has no public profile yet.
+    if (viewerAccess === "visitor" && !isChurchOpen(profile as ChurchProfile)) {
+      return json({ ok: false, error: "Church not found" }, { status: 404 });
+    }
+    const recentPosts = await loadRecentPosts(id, String(profile.name || id), viewerAccess === "member").catch(
+      () => []
+    );
     const viewerFollowing = viewerUserId
       ? await getViewerFollowingChurch(viewerUserId, id).catch(() => false)
       : false;
@@ -211,16 +239,23 @@ export async function GET(req: NextRequest) {
         country: String((profile as any).country || "").trim(),
         province: String((profile as any).province || "").trim(),
         city: String((profile as any).city || "").trim(),
+        // Same public fields Find a Church already shows (no phone): pastor name and verification.
+        pastorName: String(profile.pastorName || "").trim(),
+        verified: isVerifiedChurch(profile),
         avatarUri: avatar.finalAvatarUri || avatar.avatarUri || avatar.churchAvatarUri || avatarUrl,
         avatarUrl,
         logoUrl,
-        memberCount,
-        ministryCount,
-        ministriesCount: ministryCount,
+        // Same freshness stamp as /api/church/overview, so clients can pick server vs cached picture alike.
+        avatarUpdatedAt: churchAvatarUpdatedAtMs(profile) || undefined,
+        // Member and ministry counts are internal: only for members of this church / staff.
+        memberCount: viewerAccess === "member" ? memberCount : null,
+        ministryCount: viewerAccess === "member" ? ministryCount : null,
+        ministriesCount: viewerAccess === "member" ? ministryCount : null,
         followerCount,
         followersCount: followerCount,
         viewerFollowing,
         viewerMembershipStatus,
+        viewerAccess,
         recentPosts,
       },
     });

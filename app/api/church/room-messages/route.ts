@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
-import {
-  assertSafetyEnforcementAllows,
-} from "@/app/api/_lib/rbac";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import {
@@ -11,15 +8,37 @@ import {
   writeRoomMessagesJsonFile,
 } from "@/app/api/_lib/store/roomMessageDb";
 import { purgeFeedSchedulesForDeletedRoomCards } from "@/app/api/_lib/reconcileMediaScheduleFeed";
+import { getActiveMembership } from "@/app/api/_lib/memberships";
+import {
+  resolveVerifiedChurchActor,
+  resolveVerifiedUserId,
+  type VerifiedChurchActor,
+} from "@/app/api/_lib/verifiedChurchActor";
+import { getStoredMediaHosts } from "@/app/api/_lib/churchMediaAccess";
+import { denyIfLiveControlSuspended } from "@/app/api/_lib/churchLiveControlSuspension";
+import { canCreateOrEditScheduleSlots } from "@/app/api/_lib/ministryAuthority";
+import {
+  VOICE_NOTE_MAX_DURATION_MS,
+  deleteVoiceNoteFiles,
+  isAudioAttachment,
+  isChurchMembersRoom,
+  isExpiredVoiceNote,
+  isVisibleUnderHistoryWindow,
+  memberHistoryCutoffMs,
+  voiceNoteExpiresAt,
+} from "@/app/api/_lib/churchMembersRoomPolicy";
 import {
   assertDirectMessageSendAllowed,
   getDirectMessageConversationSettings,
   isDirectRoomId,
   isParticipantInDirectRoom,
+  parseDirectRoomParticipants,
   releaseDirectMessageRequestOutboundSlot,
   resolveDirectMessageStorageChurchId,
   touchDirectMessageThread,
 } from "@/app/api/_lib/directMessages";
+import { notifyKristoDirectMessagePush } from "@/app/api/_lib/kristoPush";
+import { getMessagePrivacySettings } from "@/app/api/_lib/store/messagePrivacySettingsDb";
 
 export const runtime = "nodejs";
 
@@ -80,6 +99,8 @@ type RoomMessage = {
   metadata?: any;
   sharedContent?: any;
   createdAt: number;
+  /** Voice notes in the Church Members room: deleted (with their file) at this time. */
+  expiresAt?: number;
   deletedFor?: string[];
   storageDeletedFor?: Record<
     string,
@@ -132,14 +153,41 @@ async function writeStore(data: Record<string, RoomMessage[]>) {
   await writeRoomMessagesJsonFile(ROOM_MESSAGES_STORE_FILE, data);
 }
 
-function getHeaders(req: Request) {
-  return {
-    churchId: req.headers.get("x-kristo-church-id") || "",
-    userId: req.headers.get("x-kristo-user-id") || "",
-    role: req.headers.get("x-kristo-role") || "Member",
-    name: req.headers.get("x-kristo-user-name") || req.headers.get("x-kristo-display-name") || "",
-  };
+/**
+ * Church Members room: drop expired voice notes and delete their audio files. Messages whose
+ * file could not be deleted stay stored (but hidden) so the next request retries them.
+ */
+async function purgeExpiredChurchMembersVoiceNotes(
+  store: Record<string, RoomMessage[]>,
+  key: string,
+  nowMs: number
+) {
+  const rows = store[key] || [];
+  const expired = rows.filter((m) => isExpiredVoiceNote(m, nowMs));
+  if (!expired.length) return 0;
+  const deletedIds = await deleteVoiceNoteFiles(expired);
+  if (!deletedIds.size) return 0;
+  store[key] = rows.filter((m) => !deletedIds.has(String(m.id)));
+  await writeStore(store);
+  console.log("KRISTO_CHURCH_MEMBERS_VOICE_NOTES_PURGED", {
+    key,
+    purged: deletedIds.size,
+    pendingRetry: expired.length - deletedIds.size,
+  });
+  return deletedIds.size;
 }
+
+/** The viewer's role in this church (durable memberships first, legacy file as fallback). */
+async function viewerChurchRole(churchId: string, userId: string) {
+  try {
+    const membership = await getActiveMembership(userId);
+    if (membership && String(membership.churchId || "").trim() === String(churchId || "").trim()) {
+      return String(membership.churchRole || "").trim();
+    }
+  } catch {}
+  return churchRoleForUser(churchId, userId);
+}
+
 
 function keyOf(churchId: string, roomId: string) {
   return `${churchId}::${roomId}`;
@@ -271,20 +319,14 @@ export async function GET(req: Request) {
   const roomId = String(searchParams.get("roomId") || "").trim();
   const limitRaw = Number(searchParams.get("limit") || 0);
   const limit = limitRaw > 0 ? Math.min(200, Math.max(1, Math.floor(limitRaw))) : 0;
-  const { churchId, userId } = getHeaders(req);
 
-  if (!churchId || !userId) {
-    return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
+  if (!roomId) {
+    return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
   }
 
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
+  const actor = await resolveVerifiedRoomActor(req, roomId);
+  if (actor instanceof NextResponse) return actor;
+  const { churchId, userId } = actor;
 
   if (!roomId) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
@@ -389,7 +431,25 @@ export async function GET(req: Request) {
     docKeys: Object.keys(store || {}).slice(0, 30),
   });
 
+  // Church Members room: server time decides voice-note expiry and the members' 7-day window.
+  const serverNowMs = Date.now();
+  let historyCutoffMs: number | null = null;
+  if (isChurchMembersRoom(roomId)) {
+    try {
+      await purgeExpiredChurchMembersVoiceNotes(store, getStoreKey, serverNowMs);
+    } catch (e) {
+      console.log("KRISTO_CHURCH_MEMBERS_VOICE_PURGE_FAILED", { error: String((e as any)?.message || e) });
+    }
+    historyCutoffMs = memberHistoryCutoffMs(
+      await viewerChurchRole(effectiveChurchId, userId),
+      serverNowMs
+    );
+  }
+
   const rows = (store[getStoreKey] || []).filter((m: any) => {
+    if (isExpiredVoiceNote(m, serverNowMs)) return false;
+    if (!isVisibleUnderHistoryWindow(m, historyCutoffMs)) return false;
+
     const deletedFor = Array.isArray(m?.deletedFor)
       ? m.deletedFor.map(String)
       : [];
@@ -523,27 +583,40 @@ export async function GET(req: Request) {
   return NextResponse.json({
     ok: true,
     data: enriched,
+    ...(isChurchMembersRoom(roomId) ? { serverNowMs, historyCutoffMs } : {}),
+  });
+}
+
+/** Push the receiver of a direct message, honouring their notification privacy settings. */
+async function pushDirectMessage(msg: RoomMessage) {
+  const participants = parseDirectRoomParticipants(msg.roomId);
+  if (!participants) return;
+  const receiverUserId = participants[0] === msg.senderUserId ? participants[1] : participants[0];
+  if (!receiverUserId || receiverUserId === msg.senderUserId) return;
+  const privacy = await getMessagePrivacySettings(receiverUserId);
+  if (privacy.muteAllMessageNotifications) return;
+  const preview =
+    msg.kind === "voice_note"
+      ? "Voice message"
+      : String(msg.text || "").trim() || (msg.attachments?.length ? "Attachment" : "New message");
+  await notifyKristoDirectMessagePush({
+    receiverUserId,
+    roomId: msg.roomId,
+    title: privacy.showSenderNameInNotifications ? msg.senderName || "Kristo" : "Kristo",
+    body: privacy.showMessagePreviews ? preview.slice(0, 160) : "New message",
   });
 }
 
 export async function POST(req: Request) {
-  const { churchId, userId, name } = getHeaders(req);
-
-  if (!churchId || !userId) {
-    return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
-
   const body = await req.json().catch(() => null);
   const roomId = String(body?.roomId || "").trim();
+  if (!roomId) {
+    return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
+  }
+  const actor = await resolveVerifiedRoomActor(req, roomId);
+  if (actor instanceof NextResponse) return actor;
+  const { churchId, userId, churchRole } = actor;
+
   const roomKind = String(body?.roomKind || "ministry").trim();
   const text = String(body?.text || "").trim();
   const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
@@ -794,7 +867,20 @@ export async function POST(req: Request) {
     optionalFields.schedule !== undefined ||
     optionalFields.slot !== undefined;
 
-  if (isScheduleOrClaimSlotCreate) {
+  if (isScheduleOrClaimSlotCreate && !isDirectRoom) {
+    if (!(await isRoomScheduleManager(churchId, roomId, userId, churchRole))) {
+      console.log("KRISTO_ROOM_POST_SLOT_CREATE_DENIED", { userId, roomId, kind });
+      return NextResponse.json({ ok: false, error: "not_allowed_to_create_slots" }, { status: 403 });
+    }
+    // A slot created already claimed must not hand it to a suspended member.
+    const createdOwner = String(card?.claimedByUserId || "").trim();
+    if (createdOwner && isChurchMembersRoom(roomId)) {
+      const suspended = await denyIfLiveControlSuspended(churchId, createdOwner, {
+        self: createdOwner === userId,
+        source: "room-messages.POST.slot",
+      });
+      if (suspended) return suspended;
+    }
   }
 
   // Block + DM request limit after validation, immediately before persist.
@@ -843,9 +929,27 @@ export async function POST(req: Request) {
   }
   const key = keyOf(effectiveChurchId, roomId);
 
+  if (kind === "voice_note") {
+    const audio = attachments.length === 1 ? attachments[0] : null;
+    if (!isChurchMembersRoom(roomId) || !audio || !isAudioAttachment(audio)) {
+      return NextResponse.json(
+        { ok: false, error: "Voice notes are only available in the Church Members room." },
+        { status: 400 }
+      );
+    }
+    if (Number(audio?.durationMs || 0) > VOICE_NOTE_MAX_DURATION_MS) {
+      return NextResponse.json({ ok: false, error: "Voice note is too long." }, { status: 400 });
+    }
+  }
+  if (isChurchMembersRoom(roomId)) {
+    try {
+      await purgeExpiredChurchMembersVoiceNotes(store, key, Date.now());
+    } catch {}
+  }
+
   const identity = await resolveSenderIdentity(userId);
   const senderRole = await churchRoleForUser(effectiveChurchId, userId);
-  const senderName = String(identity.name || body?.senderName || name || "Member").trim();
+  const senderName = String(identity.name || body?.senderName || "Member").trim();
 
   const messageCreatedAt = Date.now();
   const messageAttachments = attachments.map((attachment: any) => {
@@ -874,6 +978,7 @@ export async function POST(req: Request) {
     ...optionalFields,
     createdAt: messageCreatedAt,
   };
+  if (kind === "voice_note") msg.expiresAt = voiceNoteExpiresAt(msg.createdAt);
 
   store[key] = [msg, ...(store[key] || [])].slice(0, 500);
 
@@ -933,6 +1038,12 @@ export async function POST(req: Request) {
         error: String((touchError as any)?.message || touchError),
       });
     }
+    await pushDirectMessage(msg).catch((pushError) =>
+      console.log("KRISTO_DIRECT_MESSAGE_PUSH_FAILED", {
+        roomId,
+        error: String((pushError as any)?.message || pushError),
+      })
+    );
   }
 
   // Verify durability by re-reading the document straight back from the store.
@@ -957,23 +1068,73 @@ export async function POST(req: Request) {
 }
 
 
+/** Church Live Control schedule managers: same roles as live-control-members PATCH, plus media hosts. */
+const LIVE_SCHEDULE_MANAGER_ROLES = new Set(["Pastor", "Church_Admin", "Leader", "System_Admin"]);
+
+function isClaimField(key: string) {
+  return key === "status" || key.startsWith("claimed");
+}
+
+/**
+ * Identity for writes comes only from a verified session token (or the server cookie session),
+ * never from x-kristo-user-id. The church comes from the user's active membership (or, for a DM,
+ * from the conversation's storage church), never from x-kristo-church-id.
+ */
+async function resolveVerifiedRoomActor(
+  req: Request,
+  roomId: string
+): Promise<VerifiedChurchActor | NextResponse> {
+  if (!isDirectRoomId(roomId)) {
+    const actor = await resolveVerifiedChurchActor(req, "room-messages");
+    if (actor instanceof NextResponse || !isChurchMembersRoom(roomId)) return actor;
+    // Church Live Control: a suspended member may not read, send, claim, edit or delete here.
+    const suspended = await denyIfLiveControlSuspended(actor.churchId, actor.userId, { source: "room-messages" });
+    return suspended || actor;
+  }
+
+  const userIdOrRes = await resolveVerifiedUserId(req);
+  if (userIdOrRes instanceof NextResponse) return userIdOrRes;
+  const userId = userIdOrRes;
+
+  if (!isParticipantInDirectRoom(roomId, userId)) {
+    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
+  }
+  const storageChurchId = await resolveDirectMessageStorageChurchId({ roomId, fallbackChurchId: "" });
+  if (storageChurchId) return { userId, churchId: storageChurchId, churchRole: "" };
+  // A new conversation has no storage church yet: use the sender's own church.
+  const own = await getActiveMembership(userId);
+  if (!own?.churchId) {
+    return NextResponse.json({ ok: false, error: "Room not found" }, { status: 404 });
+  }
+  return { userId, churchId: own.churchId, churchRole: "" };
+}
+
+/**
+ * Who may create, edit, release or delete schedule slots in this room: church schedule roles;
+ * in Church Members also the church media hosts; in a ministry room the ministry
+ * Leader/Assistant/Host (canCreateOrEditScheduleSlots). DMs have no managers.
+ */
+async function isRoomScheduleManager(churchId: string, roomId: string, userId: string, churchRole: string) {
+  if (!churchRole) return false;
+  if (LIVE_SCHEDULE_MANAGER_ROLES.has(churchRole)) return true;
+  if (isChurchMembersRoom(roomId)) {
+    const hosts = await getStoredMediaHosts(churchId).catch(() => []);
+    return hosts.some((host) => host.userId === userId);
+  }
+  return canCreateOrEditScheduleSlots({
+    churchId,
+    viewerUserId: userId,
+    viewerAppRole: churchRole,
+    ministryId: roomId,
+  });
+}
+
 export async function PATCH(req: Request) {
-  const { churchId, userId } = getHeaders(req);
-
-  if (!churchId || !userId) {
-    return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
-
   const body = await req.json().catch(() => null);
+  const actor = await resolveVerifiedRoomActor(req, String(body?.roomId || "").trim());
+  if (actor instanceof NextResponse) return actor;
+  const { churchId, userId, churchRole } = actor;
+
   const roomId = String(body?.roomId || "").trim();
   const messageId = String(body?.messageId || "").trim();
   const cardId = String(body?.cardId || "").trim();
@@ -1265,9 +1426,7 @@ export async function PATCH(req: Request) {
   const oldMsg: any = rows[index];
   const oldCard = oldMsg?.card && typeof oldMsg.card === "object" ? oldMsg.card : {};
   const existingOwner = String(oldCard?.claimedByUserId || "").trim();
-  const patchTouchesClaim =
-    Object.prototype.hasOwnProperty.call(patch, "claimedByUserId") ||
-    Object.prototype.hasOwnProperty.call(patch, "status");
+  const patchTouchesClaim = Object.keys(patch).some(isClaimField);
   const incomingOwner = Object.prototype.hasOwnProperty.call(patch, "claimedByUserId")
     ? String(patch.claimedByUserId || "").trim()
     : existingOwner;
@@ -1275,6 +1434,44 @@ export async function PATCH(req: Request) {
   const isReleasePatch =
     nextStatus === "open" ||
     (Object.prototype.hasOwnProperty.call(patch, "claimedByUserId") && !incomingOwner);
+
+  const isManager = await isRoomScheduleManager(churchId, roomId, userId, churchRole);
+  const isOwnSlot = !!existingOwner && existingOwner === userId;
+  const denied = (error: string) => {
+    console.log("KRISTO_ROOM_PATCH_DENIED", {
+      error,
+      userId,
+      roomId,
+      messageId: messageId || null,
+      cardId: cardId || null,
+      existingOwner: existingOwner || null,
+    });
+    return NextResponse.json({ ok: false, error }, { status: 403 });
+  };
+
+  if (String(oldMsg?.kind || "") !== "assignment_card") {
+    if (String(oldMsg?.senderUserId || "") !== userId && !isManager) return denied("not_allowed");
+  } else if (patchTouchesClaim) {
+    if (isReleasePatch) {
+      // Release: the slot owner, or a schedule manager (guest center remove/reject).
+      if (existingOwner && !isOwnSlot && !isManager) return denied("not_slot_owner");
+    } else if (incomingOwner !== userId && !isManager) {
+      // Members may only claim for themselves; claimedByUserId from the body is not trusted.
+      return denied("claim_must_be_self");
+    }
+  } else if (!isOwnSlot && !isManager) {
+    // Time/order/details of a slot: managers, or the member who holds the slot.
+    return denied("not_allowed_to_edit_slot");
+  }
+
+  // A manager may not assign a Church Live Control slot to a suspended member.
+  if (patchTouchesClaim && !isReleasePatch && incomingOwner && incomingOwner !== existingOwner && isChurchMembersRoom(roomId)) {
+    const suspended = await denyIfLiveControlSuspended(churchId, incomingOwner, {
+      self: incomingOwner === userId,
+      source: "room-messages.PATCH.claim",
+    });
+    if (suspended) return suspended;
+  }
 
   if (
     patchTouchesClaim &&
@@ -1318,21 +1515,6 @@ export async function PATCH(req: Request) {
 
 
 export async function DELETE(req: Request) {
-  const { churchId, userId } = getHeaders(req);
-
-  if (!churchId || !userId) {
-    return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
-  }
-
-  const safetyBlocked =
-    await assertSafetyEnforcementAllows(
-      userId,
-      req.method
-    );
-  if (safetyBlocked) {
-    return safetyBlocked;
-  }
-
   const body = await req.json().catch(() => null);
   const roomId = String(body?.roomId || "").trim();
   const cardIds = Array.isArray(body?.cardIds) ? body.cardIds.map(String) : [];
@@ -1340,6 +1522,16 @@ export async function DELETE(req: Request) {
 
   if (!roomId) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
+  }
+
+  const actor = await resolveVerifiedRoomActor(req, roomId);
+  if (actor instanceof NextResponse) return actor;
+  const { churchId, userId, churchRole } = actor;
+  const isManager = await isRoomScheduleManager(churchId, roomId, userId, churchRole);
+
+  if (clearAllAssignmentCards && !isManager) {
+    console.log("KRISTO_ROOM_DELETE_DENIED", { userId, roomId, reason: "clear_all_requires_manager" });
+    return NextResponse.json({ ok: false, error: "not_allowed_to_delete_slots" }, { status: 403 });
   }
 
   const store = await readStore();
@@ -1350,6 +1542,17 @@ export async function DELETE(req: Request) {
     if (clearAllAssignmentCards) return String(m?.kind || "") === "assignment_card";
     return cardIds.includes(String(m?.card?.cardId || m?.id || ""));
   });
+
+  // All-or-nothing: slot cards need a schedule manager; other messages their sender or a manager.
+  const forbidden = deletedMessages.find((m: any) =>
+    String(m?.kind || "") === "assignment_card"
+      ? !isManager
+      : String(m?.senderUserId || "") !== userId && !isManager
+  );
+  if (forbidden) {
+    console.log("KRISTO_ROOM_DELETE_DENIED", { userId, roomId, messageId: String(forbidden?.id || "") });
+    return NextResponse.json({ ok: false, error: "not_allowed_to_delete" }, { status: 403 });
+  }
 
   const next = rows.filter((m: any) => {
     if (clearAllAssignmentCards) return String(m?.kind || "") !== "assignment_card";

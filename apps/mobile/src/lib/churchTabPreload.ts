@@ -257,7 +257,13 @@ export function runChurchTabPreload(session: KristoSession | null) {
   const schedule = (ms: number, fn: () => void | Promise<void>) => {
     timers.push(
       setTimeout(() => {
-        void Promise.resolve(fn()).finally(() => finish(`${ms}ms`));
+        // Background preload: a failure (offline, or a church that is not active yet) must not
+        // surface as an unhandled rejection; screens load their own data.
+        void Promise.resolve(fn())
+          .catch((error) => {
+            if (__DEV__) console.log("KRISTO_CHURCH_TAB_PRELOAD_FAILED", { error: String((error as any)?.message || error) });
+          })
+          .finally(() => finish(`${ms}ms`));
       }, ms)
     );
   };

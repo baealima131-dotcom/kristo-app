@@ -132,6 +132,9 @@ export function homeFeedRowCardFingerprint(row: any): string {
     externalCountsFingerprint(row?.platformStats),
     externalCountsFingerprint(row?.facebookManualStats),
     Array.isArray(row?.platformHiddenFields) ? row.platformHiddenFields.join(",") : "",
+    // Video shape decides the card frame, so a row that gains it must replace the cached one.
+    String(row?.videoWidth || ""),
+    String(row?.videoHeight || ""),
   ].join("|");
 }
 

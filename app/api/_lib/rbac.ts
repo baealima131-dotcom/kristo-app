@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { denyIfChurchNotActive } from "@/app/api/_lib/churchActivationGate";
 import type { NextRequest } from "next/server";
 
 import {
@@ -8,6 +9,7 @@ import {
   loadSafetyEnforcementCached,
   readSafetyEnforcementCache,
 } from "@/app/api/_lib/safetyEnforcementCache";
+import { assertProgramMemberAllowed } from "@/app/api/_lib/offlineActivationProgram";
 import { sokoCheckoutTimer } from "@/app/api/_lib/sokoCheckoutTiming";
 import { isSokoAccountDeleted } from "@/app/api/_lib/store/sokoAccountStateDb";
 
@@ -505,6 +507,10 @@ export async function guard(req: NextRequest, roles?: Role[]): Promise<GuardCont
   const ctxOrRes = await requireActiveMembership(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
+  // Churches from a church application are closed to church features until activated.
+  const notActive = await denyIfChurchNotActive(String(ctxOrRes.churchId || ""), req, "rbac.guard");
+  if (notActive) return notActive;
+
   const blocked =
     await assertSafetyEnforcementAllows(
       ctxOrRes.viewer.userId,
@@ -564,6 +570,16 @@ export async function guardPlatformOfflineActivation(
         details: { required: roles, youAre: platformRole || null },
       } satisfies ApiErr,
       { status: 403 }
+    );
+  }
+
+  // Program suspensions/revocations also close the legacy offline-activation routes.
+  try {
+    await assertProgramMemberAllowed(userId, platformRole, { requireAgentRegistration: false });
+  } catch (error: any) {
+    return json(
+      { ok: false, error: String(error?.message || "Access not active") } satisfies ApiErr,
+      { status: Number(error?.status) || 403 }
     );
   }
 

@@ -1,18 +1,15 @@
-import React, { memo, useEffect, useRef, useState } from "react";
-import { Animated, Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { useRouter } from "expo-router";
+import React, { memo, useRef } from "react";
+import { Animated, Platform, Pressable, StyleSheet, View } from "react-native";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import type { HomeFeedPostKindFilter } from "./homeFeedUtils";
+import { HEADER_INBOX_ICONS_WIDTH, HEADER_INBOX_ROUTES, HeaderInboxIcons } from "./HeaderInboxIcons";
 import { KristoBrandLogo } from "./KristoBrandLogo";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
 import { HOME_FEED_BG } from "./theme";
-import {
-  fetchProfileCommunicationInboxSnapshot,
-  formatProfileCommunicationBadgeCount,
-} from "@/src/lib/profileCommunicationInbox";
 
 type Props = {
   activeFilter?: HomeFeedPostKindFilter | null;
@@ -25,49 +22,12 @@ const ICON_SIZE = 18;
 const TOP_BAR_ROW_HEIGHT = 52;
 const SEARCH_SIZE = 36;
 const HEADER_SIDE_SIZE = SEARCH_SIZE;
+const TITLE_ROW_PADDING = 16;
+const LOGO_SIDE_INSET = TITLE_ROW_PADDING + HEADER_INBOX_ICONS_WIDTH + 8;
 
 export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Props) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const [communicationCounts, setCommunicationCounts] = useState({
-    unreadMessages: 0,
-    missedCalls: 0,
-  });
-
-  useEffect(() => {
-    let active = true;
-    let refreshing = false;
-    const refreshCounts = async () => {
-      if (refreshing) return;
-      refreshing = true;
-      let base = String(process.env.EXPO_PUBLIC_API_BASE || "");
-      while (base.endsWith("/")) base = base.slice(0, -1);
-      if (!base) {
-        refreshing = false;
-        return;
-      }
-      try {
-        const snapshot = await fetchProfileCommunicationInboxSnapshot({ base });
-        if (active) {
-          setCommunicationCounts({
-            unreadMessages: snapshot.unreadMessages,
-            missedCalls: snapshot.missedCalls,
-          });
-        }
-      } catch {
-        // Keep the last successful counts if a background refresh fails.
-      } finally {
-        refreshing = false;
-      }
-    };
-
-    void refreshCounts();
-    const timer = setInterval(refreshCounts, 20_000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, []);
 
   return (
     <View
@@ -81,56 +41,14 @@ export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Pr
           <KristoBrandLogo />
         </View>
 
-        <View style={styles.headerActions}>
-          <HeaderActionButton
-            icon="chatbubble-ellipses-outline"
-            label="Messages"
-            count={communicationCounts.unreadMessages}
-            onPress={() => router.push("/(tabs)/profile/messages" as any)}
-          />
-          <HeaderActionButton
-            icon="call-outline"
-            label="Calls and call history"
-            count={communicationCounts.missedCalls}
-            onPress={() => router.push("/(tabs)/profile/messages" as any)}
-          />
-        </View>
+        <HeaderInboxIcons
+          useFocus
+          onOpen={(target) => router.push(HEADER_INBOX_ROUTES[target] as any)}
+        />
       </View>
     </View>
   );
 });
-
-function HeaderActionButton({
-  icon,
-  label,
-  count,
-  onPress,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  count: number;
-  onPress: () => void;
-}) {
-  const badge = formatProfileCommunicationBadgeCount(count);
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={8}
-      accessibilityLabel={label + (badge ? ", " + badge + " new" : "")}
-      accessibilityRole="button"
-      style={styles.headerActionHitArea}
-    >
-      <View style={styles.headerActionButton}>
-        <Ionicons name={icon} size={19} color="#F6E5B5" />
-      </View>
-      {badge ? (
-        <View style={styles.headerActionBadge} pointerEvents="none">
-          <Text style={styles.headerActionBadgeText}>{badge}</Text>
-        </View>
-      ) : null}
-    </Pressable>
-  );
-}
 
 function PremiumSearchButton({ onPress }: { onPress: () => void }) {
   const scale = useRef(new Animated.Value(1)).current;
@@ -239,57 +157,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  // Same inset on both sides (the wider right side: Messages + missed calls icons), so the logo
+  // stays centered and never runs under the icons.
   logoCenter: {
     position: "absolute",
-    left: 0,
-    right: 0,
+    left: LOGO_SIDE_INSET,
+    right: LOGO_SIDE_INSET,
     alignItems: "center",
     justifyContent: "center",
-  },
-  sideSpacer: {
-    width: HEADER_SIDE_SIZE,
-    height: HEADER_SIDE_SIZE,
-  },
-  headerActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  headerActionHitArea: {
-    width: HEADER_SIDE_SIZE,
-    height: HEADER_SIDE_SIZE,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerActionButton: {
-    width: SEARCH_SIZE,
-    height: SEARCH_SIZE,
-    borderRadius: 11,
-    borderWidth: 1,
-    borderColor: "rgba(232,200,114,0.48)",
-    backgroundColor: "rgba(5,4,9,0.38)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerActionBadge: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    minWidth: 16,
-    height: 16,
-    paddingHorizontal: 3,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: HOME_FEED_BG,
-    backgroundColor: "#F54164",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerActionBadgeText: {
-    color: "#FFFFFF",
-    fontSize: 9,
-    fontWeight: "900",
-    lineHeight: 11,
   },
   searchHitArea: {
     width: HEADER_SIDE_SIZE,

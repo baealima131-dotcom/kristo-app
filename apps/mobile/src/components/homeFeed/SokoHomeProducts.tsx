@@ -1,3 +1,4 @@
+import MobileMoneyProviderIcon, {mobileMoneyProviderName} from "../MobileMoneyProviderIcon";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import React, { useEffect, useRef, useState } from "react";
@@ -28,6 +29,7 @@ import {
   SOKO_SESSION_EXPIRED_MESSAGE,
   type CheckoutDraft,
 } from "@/src/lib/sokoCheckoutReconnect";
+import SokoContactCheckout,{type ContactSummary} from "./SokoContactCheckout";
 import SokoBuyerSellerChat from "@/src/components/homeFeed/SokoBuyerSellerChat";
 import { recognizeText } from "@infinitered/react-native-mlkit-text-recognition";
 import {
@@ -363,6 +365,8 @@ export const SokoHomeProductCard=React.memo(function SokoHomeProductCard({produc
   const [reconnectPassword,setReconnectPassword]=useState("");
   const [reconnectBusy,setReconnectBusy]=useState(false);
   const [reconnectFormError,setReconnectFormError]=useState("");
+  const [contactCheckoutOpen,setContactCheckoutOpen]=useState(false);
+  const [contactSummary,setContactSummary]=useState<ContactSummary|null>(null);
   const [sokoChatOpen,setSokoChatOpen]=useState(false);
   const checkoutOpenRef=useRef(false);
   const refreshCheckoutPaymentStatusRef=useRef<()=>Promise<void>>(async()=>{});
@@ -439,7 +443,8 @@ export const SokoHomeProductCard=React.memo(function SokoHomeProductCard({produc
       return;
     }
     setCheckoutOpen(false);
-    setSokoChatOpen(true);
+    setSelected(false);
+    setContactCheckoutOpen(true);
   };
   const contactSeller=async()=>{
     openSokoProductConversation();
@@ -2313,16 +2318,19 @@ Ukikubali, malipo yatafunguliwa.`
       cardHeight:rowHeight
     });
   }}>
+    {contactCheckoutOpen?<SokoContactCheckout product={product} productId={realId} onClose={()=>setContactCheckoutOpen(false)} onCard={()=>{setContactCheckoutOpen(false);setTimeout(()=>void openSecureCheckout("stripe_card"),350);}} onContinue={summary=>{setContactSummary(summary);setContactCheckoutOpen(false);setTimeout(()=>setSokoChatOpen(true),350);}}/>:null}
     <SokoBuyerSellerChat
+      checkoutSummary={contactSummary}
       visible={sokoChatOpen}
       productId={realId}
       sellerName={product.seller.name}
       productTitle={product.title}
       onClose={()=>setSokoChatOpen(false)}
+      onCard={()=>{setSokoChatOpen(false);setTimeout(()=>void openSecureCheckout("stripe_card"),350);}}
     /><View style={[styles.card,{width:cardWidth}]}>
     <Pressable style={[styles.media,{height:imageHeight,width:"100%"}]} onPress={()=>setSelected(true)}><SokoProductPhoto uri={product.image} width={cardWidth} height={imageHeight} style={[styles.cover,{width:cardWidth,height:imageHeight}]}/><View style={styles.badge}><Text style={styles.badgeText}>{product.condition.toUpperCase()}</Text></View></Pressable>
     <Pressable style={styles.identity} onPress={()=>setSelected(true)}><View style={styles.avatar}>{sellerAvatarUri&&!avatarFailed?<Image source={{uri:absolute(sellerAvatarUri)}} style={styles.avatarImage} onError={()=>setAvatarFailed(true)}/>:<Text style={styles.avatarText}>{initial}</Text>}</View><View style={styles.body}><View style={styles.sellerLine}><Text numberOfLines={1} style={styles.seller}>{product.seller.name}</Text><Ionicons name="checkmark-circle" size={15} color="#18724B"/></View><Text numberOfLines={2} style={styles.title}>{product.title}</Text><View style={styles.meta}><Text style={styles.price}>{money(product)}</Text><Text style={styles.dot}>•</Text><Text numberOfLines={1} style={styles.location}>{product.location}</Text></View></View></Pressable>
-    {(paymentMethods.length>0||stripeCardAvailable)&&<View style={styles.payments}><Text style={styles.paymentsLabel}>PAY WITH</Text><ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paymentList}>{stripeCardAvailable?<Pressable key="stripe_card" disabled={paymentBusy} onPress={()=>openSecureCheckout("stripe_card")} style={[styles.paymentChip,styles.cashAppChip,paymentBusy&&styles.disabledChip]}><View style={[styles.paymentIcon,styles.cashAppIcon]}><Ionicons name="card-outline" size={14} color="#FFF"/></View><Text style={[styles.paymentText,styles.cashAppText]}>{paymentBusy?"Opening…":"Card"}</Text></Pressable>:null}{paymentMethods.map(method=>{const cashApp=method==="cash_app";const mobile=method==="mobile_money";return <Pressable key={method} disabled={!cashApp||paymentBusy} onPress={()=>cashApp?void openSokoProductConversation():undefined} style={[styles.paymentChip,cashApp&&styles.cashAppChip,paymentBusy&&cashApp&&styles.disabledChip]}><View style={[styles.paymentIcon,cashApp&&styles.cashAppIcon]}><Ionicons name={cashApp?"logo-usd":mobile?"phone-portrait-outline":"cash-outline"} size={14} color={cashApp?"#FFF":"#176844"}/></View><Text style={[styles.paymentText,cashApp&&styles.cashAppText]}>{cashApp?(paymentBusy?"Opening…":"Cash App"):mobile?(product.paymentOptions?.mobileNetwork||"Mobile Money"):"Cash"}</Text></Pressable>;})}</ScrollView></View>}
+    {(paymentMethods.length>0||stripeCardAvailable)&&<View style={styles.payments}><Text style={styles.paymentsLabel}>PAY WITH</Text><ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paymentList}>{stripeCardAvailable?<Pressable key="stripe_card" disabled={paymentBusy} onPress={()=>openSecureCheckout("stripe_card")} style={[styles.paymentChip,styles.cashAppChip,paymentBusy&&styles.disabledChip]}><View style={[styles.paymentIcon,styles.cashAppIcon]}><Ionicons name="card-outline" size={14} color="#FFF"/></View><Text style={[styles.paymentText,styles.cashAppText]}>{paymentBusy?"Opening…":"Card"}</Text></Pressable>:null}{paymentMethods.map(method=>{const cashApp=method==="cash_app";const mobile=method==="mobile_money";return <Pressable key={method} disabled={!cashApp||paymentBusy} onPress={()=>cashApp?void openSokoProductConversation():undefined} style={[styles.paymentChip,cashApp&&styles.cashAppChip,paymentBusy&&cashApp&&styles.disabledChip]}><View style={[styles.paymentIcon,cashApp&&styles.cashAppIcon]}>{mobile?<MobileMoneyProviderIcon name={mobileMoneyProviderName(product.paymentOptions?.mobileNetwork)} size={26}/>:<Ionicons name={cashApp?"logo-usd":"cash-outline"} size={14} color={cashApp?"#FFF":"#176844"}/>}</View><Text style={[styles.paymentText,cashApp&&styles.cashAppText]}>{cashApp?(paymentBusy?"Opening…":"Cash App"):mobile?mobileMoneyProviderName(product.paymentOptions?.mobileNetwork):"Cash"}</Text></Pressable>;})}</ScrollView></View>}
     <View style={styles.commerceActions}><Pressable style={styles.contactButton} onPress={()=>void contactSeller()} disabled={contacting}><Ionicons name="chatbubble-ellipses" size={20} color="#FFF"/><Text style={styles.contactText}>{contacting?"Opening…":"Contact Seller"}</Text></Pressable><Action icon="share-outline" label="Share" onPress={()=>void share()}/><Action icon={saved?"bookmark":"bookmark-outline"} label={saved?"Saved":"Save"} active={saved} onPress={()=>void toggleSaved()}/><Action icon="information-circle-outline" label="Details" onPress={()=>setSelected(true)}/></View>
   </View><Modal visible={selected} animationType="slide" onRequestClose={()=>setSelected(false)}>
     <View style={styles.pdRoot}>

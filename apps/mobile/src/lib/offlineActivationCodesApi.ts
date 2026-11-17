@@ -468,6 +468,8 @@ export type ActivationChurchActivityItem = {
   supervisorUserId?: string | null;
   agentName?: string;
   agentUserId?: string | null;
+  /** Not sent by /api/offline-activation/church-activity today; shown as "—" when absent. */
+  durationLabel?: string;
   status: "Redeemed";
 };
 

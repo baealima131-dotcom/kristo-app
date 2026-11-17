@@ -833,7 +833,7 @@ export default function ChurchProfileScreen() {
 
           <View style={styles.statsRow}>
             <View style={styles.statCard}>
-              <Text style={styles.statValue}>{profile.memberCount}</Text>
+              <Text style={styles.statValue}>{profile.memberCount ?? "—"}</Text>
               <Text style={styles.statLabel}>Members</Text>
             </View>
             <View style={styles.statCard}>
@@ -841,7 +841,7 @@ export default function ChurchProfileScreen() {
               <Text style={styles.statLabel}>Followers</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={styles.statValue}>{profile.ministriesCount}</Text>
+              <Text style={styles.statValue}>{profile.ministriesCount ?? "—"}</Text>
               <Text style={styles.statLabel}>Ministries</Text>
             </View>
           </View>

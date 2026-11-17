@@ -3,6 +3,21 @@ import type { UserProfile } from "@/app/api/auth/_lib/profile";
 
 neonConfig.fetchConnectionCache = true;
 
+/**
+ * Review/testing only: send Neon HTTP queries to a local adapter in front of a
+ * throw-away Postgres (see .review-tools). Ignored on Vercel/Lambda and for any
+ * endpoint that is not loopback, so it can never redirect a hosted deployment.
+ */
+const localNeonEndpoint = String(process.env.KRISTO_REVIEW_LOCAL_NEON_HTTP_ENDPOINT || "").trim();
+if (
+  localNeonEndpoint &&
+  !process.env.VERCEL &&
+  !process.env.AWS_LAMBDA_FUNCTION_NAME &&
+  /^http:\/\/127\.0\.0\.1:\d{2,5}\/sql$/.test(localNeonEndpoint)
+) {
+  neonConfig.fetchEndpoint = localNeonEndpoint;
+}
+
 export type UserRecord = {
   id: string;
   kristoId?: string;

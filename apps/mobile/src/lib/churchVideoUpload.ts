@@ -5,6 +5,7 @@ import {
 } from "@/src/lib/brandedVideoPoster";
 import type { HomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import type { MediaStatus } from "@/src/lib/mediaStatus";
+import { loadFileSystemLegacy } from "@/src/lib/nativeModuleLoaders";
 
 type HeadersRec = Record<string, string>;
 
@@ -76,7 +77,7 @@ export function fileNameFromUri(uri: string, fallback = "video.mp4") {
 }
 
 export async function resolveUploadFileSize(uri: string): Promise<number> {
-  const FileSystem = await import("expo-file-system/legacy");
+  const FileSystem = await loadFileSystemLegacy();
   const info = await FileSystem.getInfoAsync(uri, { size: true } as any);
   const directSize = Number((info as any)?.size || 0);
   if (directSize > 0) return directSize;
@@ -184,7 +185,7 @@ async function uploadFileToSignedUrlOnce(params: {
   label: string;
   onProgress?: (percent: number) => void;
 }) {
-  const FileSystem = await import("expo-file-system/legacy");
+  const FileSystem = await loadFileSystemLegacy();
 
   let uploadTask: any = null;
 

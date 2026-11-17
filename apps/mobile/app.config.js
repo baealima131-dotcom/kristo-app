@@ -36,6 +36,7 @@ module.exports = {
         },
       ],
       "./plugins/withDevClientMetroPort",
+      "./plugins/withAndroidPortraitMainActivity",
       // Calls: background audio + CallKit/VoIP push (iOS); strips unused push capabilities.
       "./plugins/withoutIosPushCapabilities",
       "./plugins/withIosCalls",

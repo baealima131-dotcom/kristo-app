@@ -1,3 +1,4 @@
+import { fetchMyChurchApplication } from "@/src/lib/churchApplicationsApi";
 import { Tabs, useGlobalSearchParams, useSegments, useRouter} from "expo-router";
 import {
   getExternalProfileTabActive,
@@ -84,9 +85,11 @@ const VIP_BORDER = "rgba(255,255,255,0.08)";
 const GOLD = HOME_FEED_GOLD;
 const MUTED = HOME_FEED_INACTIVE;
 const MORE_SHELL_BG = "#010102";
-/** Hold time before onLongPress; RN default is 500ms. */
-const LIVE_RING_LONG_PRESS_MS = 150;
-
+/**
+ * Hold time before onLongPress opens LIVE / the personal ring. Matches the RN
+ * default so a normal tap (often 150-300ms) opens the tab instead.
+ */
+const LIVE_RING_LONG_PRESS_MS = 500;
 type LiveRingNavTrigger = "longPress" | "tabPress";
 
 
@@ -272,6 +275,27 @@ function ProfileAvatarIcon({
       </View>
     </View>
   );
+}
+
+// KRISTO_ANDROID_DETAIL_TABS_V1
+// Android: show the four main navigation buttons only on top-level tab pages.
+// Detail/chat screens keep their own back button and composer above Android system navigation.
+function shouldHideAndroidDetailTabs(routeSegments: string[]): boolean {
+  if (routeSegments[0] !== "(tabs)") return false;
+
+  const tab = String(routeSegments[1] || "index");
+  const detailSegments = routeSegments.slice(2).filter((part) => part && part !== "index");
+
+  // Church Overview is a main tab destination; its child pages are details.
+  if (tab === "church") {
+    return detailSegments.length > 0 &&
+      !(detailSegments.length === 1 && detailSegments[0] === "overview");
+  }
+
+  if (tab === "index" || tab === "more" || tab === "profile") {
+    return detailSegments.length > 0;
+  }
+  return false;
 }
 
 export default function TabLayout() {
@@ -703,7 +727,12 @@ export default function TabLayout() {
     segments[3] === "messages" &&
     Boolean(segments[4]);
 
-  const hideTabBar = hideAnnouncementsCreate || hidePosterProfile || hideAssignmentRoom || hideChurchCreate;
+  const hideAndroidDetailTabBar =
+    Platform.OS === "android" && shouldHideAndroidDetailTabs(segments);
+
+  const hideTabBar =
+    hideAnnouncementsCreate || hidePosterProfile || hideAssignmentRoom || hideChurchCreate ||
+    hideAndroidDetailTabBar;
 
   const activeMessagesTab =
     isMessagesMode
@@ -1066,17 +1095,15 @@ export default function TabLayout() {
         : ({ children }: any) => (
             <Pressable
               onPress={() => router.replace("/(tabs)/profile" as any)}
-              onLongPress={() => {
-                if (!personalScheduleTabAlert) {
-                  console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
-                    tab: "profile",
-                    reason: "no_personal_ring_alert",
-                  });
-                  return;
-                }
-                openPersonalScheduleAlert();
-              }}
-              delayLongPress={LIVE_RING_LONG_PRESS_MS}
+              // Attach long press only while the ring has an action. With a no-op
+              // handler, any tap held past LIVE_RING_LONG_PRESS_MS was swallowed as
+              // a long press and onPress never ran, so the tab needed several taps.
+              onLongPress={
+                personalScheduleTabAlert ? openPersonalScheduleAlert : undefined
+              }
+              delayLongPress={
+                personalScheduleTabAlert ? LIVE_RING_LONG_PRESS_MS : undefined
+              }
               style={{
                 flex: 1,
                 height: 70,
@@ -1219,27 +1246,26 @@ export default function TabLayout() {
           title: churchTabTitle,
           tabBarButton: ({ children }: any) => (
             <Pressable
-              onLongPress={() => {
-                const gestureAt = Date.now();
-                console.log("KRISTO_LIVE_RING_GESTURE_DETECTED", {
-                  tab: "church",
-                  trigger: "longPress",
-                  delayLongPressMs: LIVE_RING_LONG_PRESS_MS,
-                  at: gestureAt,
-                });
-
-                if (!churchIsLive) {
-                  console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
-                    tab: "church",
-                    reason: "church_tab_not_live",
-                    sinceGestureMs: 0,
-                  });
-                  return;
-                }
-
-                openChurchLiveAsViewer("longPress", gestureAt);
-              }}
-              delayLongPress={LIVE_RING_LONG_PRESS_MS}
+              // Long press opens LIVE only while the church is live. Without a live
+              // ring there is no long-press action, so leave it off and let every
+              // tap reach onPress (a no-op long press swallowed taps held >150ms).
+              onLongPress={
+                churchIsLive
+                  ? () => {
+                      const gestureAt = Date.now();
+                      console.log("KRISTO_LIVE_RING_GESTURE_DETECTED", {
+                        tab: "church",
+                        trigger: "longPress",
+                        delayLongPressMs: LIVE_RING_LONG_PRESS_MS,
+                        at: gestureAt,
+                      });
+                      openChurchLiveAsViewer("longPress", gestureAt);
+                    }
+                  : undefined
+              }
+              delayLongPress={
+                churchIsLive ? LIVE_RING_LONG_PRESS_MS : undefined
+              }
               onPress={async () => {
                 if (isMessagesMode) {
                   pauseHomeFeedBackgroundWorkForLiveNavigation("live-ring-messages-tab");
@@ -1249,6 +1275,12 @@ export default function TabLayout() {
 
                 // LIVE room opens only on long press (red ring).
                 if (!hasChurch) {
+                  // Someone who applied for a church follows the application here.
+                  const applied = await fetchMyChurchApplication().catch(() => null);
+                  if (applied?.ok && applied.data.application) {
+                    router.replace("/(tabs)/church/application" as any);
+                    return;
+                  }
                   await ensureChurchAccessOrSetup({
                     session,
                     setSession,

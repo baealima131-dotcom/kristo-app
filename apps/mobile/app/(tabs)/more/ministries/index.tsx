@@ -1,3 +1,4 @@
+import { ChurchActivationGate } from "@/src/components/church/ChurchActivationGate";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -410,7 +411,7 @@ async function apiFetchLiveControlSelfStatus(viewerId: string): Promise<LiveCont
   }
 }
 
-export default function MoreMinistriesList() {
+function MoreMinistriesList() {
 
   const auth = getKristoAuth() as any;
   const viewerId = String(auth?.userId || "").trim();
@@ -1860,3 +1861,12 @@ const s = StyleSheet.create<any>({
     letterSpacing: 0.2,
   },
 });
+
+/** Closed while the church (from a church application) is not active; the server refuses it too. */
+export default function MoreMinistriesListRoute() {
+  return (
+    <ChurchActivationGate feature="Ministries">
+      <MoreMinistriesList />
+    </ChurchActivationGate>
+  );
+}

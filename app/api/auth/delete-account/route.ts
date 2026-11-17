@@ -129,7 +129,8 @@ async function purgeUserAccount(userId: string) {
 async function deleteAccount(req: NextRequest) {
   logAuthRequestDiag(req, "delete-account");
   const auth = resolveRequestUserId(req);
-  if (!auth.userId) {
+  // Deleting an account needs a verified session token, even where raw dev headers are trusted.
+  if (!auth.userId || auth.via === "dev-header") {
     console.log("KRISTO_DELETE_ACCOUNT_API_FAILED", {
       userId: null,
       reason: auth.reason || "unauthorized",

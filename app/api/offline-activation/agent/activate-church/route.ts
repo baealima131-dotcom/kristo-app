@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { activateChurchWithAgentCode } from "@/app/api/_lib/offlineActivationCodeStore";
+import { getChurchById, isChurchOpen } from "@/app/api/_lib/churches";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -21,6 +22,22 @@ export async function POST(req: NextRequest) {
 
     if (!churchId || !activationCode) {
       return json({ ok: false, error: "churchId and activationCode are required" }, { status: 400 });
+    }
+
+    // A church from a church application opens only through System Admin review; an agent code
+    // cannot activate it here (the application records the agent's code instead).
+    const church = await getChurchById(churchId.toUpperCase());
+    if (church && !isChurchOpen(church)) {
+      // Older agent apps show `error` directly: keep it a plain sentence.
+      return json(
+        {
+          ok: false,
+          error: "This church is waiting for Kristo App to activate it. Agent codes cannot activate it.",
+          message: "This church is waiting for Kristo App to activate it. Agent codes cannot activate it.",
+          code: "church_application_required",
+        },
+        { status: 403 }
+      );
     }
 
     const result = await activateChurchWithAgentCode({

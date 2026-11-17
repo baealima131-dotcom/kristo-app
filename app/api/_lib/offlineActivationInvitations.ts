@@ -18,6 +18,8 @@ import {
 import {
   updateAgentRegistrationStatusByInvite,
 } from "@/app/api/_lib/offlineActivationAgentStore";
+import { callProgramFunction, ProgramDbError, useProgramPostgres } from "@/app/api/_lib/store/offlineActivationProgramDb";
+import { appendOfflineActivationAudit } from "@/app/api/_lib/offlineActivationAudit";
 import { upsertPlatformRole, type PlatformRole } from "@/app/api/_lib/platformRoles";
 
 export type {
@@ -405,6 +407,24 @@ export async function respondToInvitation(input: {
     throw new Error("action must be accept or decline");
   }
 
+  if (useProgramPostgres()) {
+    // Invitation, platform role, agent registration and audit change in one transaction.
+    let result: { status: string; platformRole: PlatformRole | null };
+    try {
+      result = await callProgramFunction<{ status: string; platformRole: PlatformRole | null }>(
+        "oact_respond_invitation",
+        [invitationId, inviteeUserId, action, new Date().toISOString()],
+        ["text", "text", "text", "text"]
+      );
+    } catch (error) {
+      if (error instanceof ProgramDbError) throw new Error(error.message);
+      throw error;
+    }
+    const updated = await getInvitationById(invitationId);
+    if (!updated) throw new Error("Invitation not found");
+    return { invitation: updated, platformRole: result.platformRole || null };
+  }
+
   const existing = await getInvitationById(invitationId);
   if (!existing) throw new Error("Invitation not found");
   if (existing.inviteeUserId !== inviteeUserId) {
@@ -430,6 +450,14 @@ export async function respondToInvitation(input: {
         status: "declined",
       });
     }
+    await appendOfflineActivationAudit({
+      actorUserId: inviteeUserId,
+      actorRole: "Member",
+      action: existing.role === "Agent" ? "agent.invitation_responded" : "supervisor.invitation_responded",
+      targetType: "invitation",
+      targetId: invitationId,
+      details: { response: "declined", invitedByUserId: existing.invitedByUserId },
+    });
     return { invitation: declined, platformRole: null };
   }
 
@@ -453,6 +481,23 @@ export async function respondToInvitation(input: {
     invitationId,
     status: "accepted",
     respondedAt,
+  });
+
+  await appendOfflineActivationAudit({
+    actorUserId: inviteeUserId,
+    actorRole: "Member",
+    action: existing.role === "Agent" ? "agent.invitation_responded" : "supervisor.invitation_responded",
+    targetType: "invitation",
+    targetId: invitationId,
+    details: { response: "accepted", invitedByUserId: existing.invitedByUserId },
+  });
+  await appendOfflineActivationAudit({
+    actorUserId: inviteeUserId,
+    actorRole: "Member",
+    action: "role.granted",
+    targetType: "user",
+    targetId: inviteeUserId,
+    details: { role: targetRole, via: "invitation", invitationId },
   });
 
   return { invitation: accepted, platformRole: savedRole.platformRole };

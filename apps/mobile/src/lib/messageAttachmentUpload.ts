@@ -121,6 +121,7 @@ export function normalizeMsgAttachment(raw: any): MsgAttachment {
     durationSec: Number(raw?.durationSec || 0) || undefined,
     expiresAt: Number(raw?.expiresAt || 0) || undefined,
     expired: raw?.expired === true,
+    ...(Number(raw?.durationMs || 0) > 0 ? { durationMs: Number(raw.durationMs) } : {}),
   };
 }
 

@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
 export async function GET() {
+  // Dev identity defaults: local development only.
+  if (process.env.NODE_ENV !== "development") {
+    return NextResponse.json({ ok: false, error: "Not available." }, { status: 404 });
+  }
   return NextResponse.json({
     ok: true,
     NODE_ENV: process.env.NODE_ENV || null,

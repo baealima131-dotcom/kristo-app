@@ -3,6 +3,16 @@ import {
   readOfflineActivationJsonFile,
   updateOfflineActivationJsonFile,
 } from "@/app/api/_lib/store/offlineActivationDb";
+import {
+  callProgramFunction,
+  dbInsertAgent,
+  dbListAgents,
+  dbSetAgentStatusByInvite,
+  mapAgentRow,
+  programDefaultAgentLimit,
+  ProgramDbError,
+  useProgramPostgres,
+} from "@/app/api/_lib/store/offlineActivationProgramDb";
 
 export type OfflineActivationAgentStatus =
   | "pending"
@@ -77,6 +87,10 @@ async function readStore(): Promise<AgentStore> {
 }
 
 export async function listAgentsByLinkedUserId(linkedUserId: string): Promise<OfflineActivationAgent[]> {
+  if (useProgramPostgres()) {
+    const uid = String(linkedUserId || "").trim();
+    return uid ? dbListAgents({ linkedUserId: uid }) : [];
+  }
   const uid = String(linkedUserId || "").trim();
   if (!uid) return [];
   const store = await readStore();
@@ -86,6 +100,10 @@ export async function listAgentsByLinkedUserId(linkedUserId: string): Promise<Of
 }
 
 export async function listSupervisorAgents(supervisorUserId: string): Promise<OfflineActivationAgent[]> {
+  if (useProgramPostgres()) {
+    const uid = String(supervisorUserId || "").trim();
+    return uid ? dbListAgents({ supervisorUserId: uid }) : [];
+  }
   const uid = String(supervisorUserId || "").trim();
   if (!uid) return [];
   const store = await readStore();
@@ -98,6 +116,12 @@ export async function getSupervisorAgent(
   supervisorUserId: string,
   agentId: string
 ): Promise<OfflineActivationAgent | null> {
+  if (useProgramPostgres()) {
+    const uid = String(supervisorUserId || "").trim();
+    const id = String(agentId || "").trim();
+    if (!uid || !id) return null;
+    return (await dbListAgents({ supervisorUserId: uid, id }))[0] || null;
+  }
   const uid = String(supervisorUserId || "").trim();
   const id = String(agentId || "").trim();
   if (!uid || !id) return null;
@@ -110,6 +134,13 @@ export async function findSupervisorAgentByLinkedUser(
   linkedUserId: string,
   churchId: string
 ): Promise<OfflineActivationAgent | null> {
+  if (useProgramPostgres()) {
+    const uid = String(supervisorUserId || "").trim();
+    const linked = String(linkedUserId || "").trim();
+    const church = String(churchId || "").trim();
+    if (!uid || !linked || !church) return null;
+    return (await dbListAgents({ supervisorUserId: uid, linkedUserId: linked, churchId: church }))[0] || null;
+  }
   const uid = String(supervisorUserId || "").trim();
   const linked = String(linkedUserId || "").trim();
   const church = String(churchId || "").trim();
@@ -166,6 +197,11 @@ export async function createSupervisorAgent(input: {
     updatedAt: now,
   });
 
+  if (useProgramPostgres()) {
+    // The partial unique index rejects a second live registration for the same church.
+    return dbInsertAgent(agent as any);
+  }
+
   await updateOfflineActivationJsonFile<AgentStore>(
     STORE_FILE,
     (current) => {
@@ -189,6 +225,20 @@ export async function updateSupervisorAgent(input: {
   const supervisorUserId = String(input.supervisorUserId || "").trim();
   const agentId = String(input.agentId || "").trim();
   if (!supervisorUserId || !agentId) throw new Error("supervisorUserId and agentId required");
+
+  if (useProgramPostgres()) {
+    // Limit, permissions and suspend/revoke are checked inside one transaction.
+    try {
+      const row = await callProgramFunction<any>("oact_update_agent",
+        [supervisorUserId, agentId, input.fullName ?? null, input.phone ?? null, input.status ?? null,
+          input.avatarUrl ?? null, programDefaultAgentLimit()],
+        ["text", "text", "text", "text", "text", "text", "int"]);
+      return mapAgentRow(row);
+    } catch (error) {
+      if (error instanceof ProgramDbError) throw Object.assign(new Error(error.message), { status: error.status });
+      throw error;
+    }
+  }
 
   let updated: OfflineActivationAgent | null = null;
   await updateOfflineActivationJsonFile<AgentStore>(
@@ -220,6 +270,17 @@ export async function deleteSupervisorAgent(supervisorUserId: string, agentId: s
   const id = String(agentId || "").trim();
   if (!uid || !id) return false;
 
+  if (useProgramPostgres()) {
+    try {
+      await callProgramFunction("oact_remove_agent", [uid, id], ["text", "text"]);
+      return true;
+    } catch (error) {
+      if (error instanceof ProgramDbError && error.status === 404) return false;
+      if (error instanceof ProgramDbError) throw Object.assign(new Error(error.message), { status: error.status });
+      throw error;
+    }
+  }
+
   let removed = false;
   await updateOfflineActivationJsonFile<AgentStore>(
     STORE_FILE,
@@ -238,6 +299,7 @@ export async function deleteSupervisorAgent(supervisorUserId: string, agentId: s
 export async function resolveAgentDisplayName(agentId: string): Promise<string | undefined> {
   const id = String(agentId || "").trim();
   if (!id) return undefined;
+  if (useProgramPostgres()) return (await dbListAgents({ id }))[0]?.fullName || undefined;
   const store = await readStore();
   const agent = store.agents.find((row) => row.id === id);
   return agent?.fullName || undefined;
@@ -253,6 +315,9 @@ export async function updateAgentRegistrationStatusByInvite(input: {
   const linkedUserId = String(input.linkedUserId || "").trim();
   const churchId = String(input.churchId || "").trim();
   if (!supervisorUserId || !linkedUserId || !churchId) return null;
+  if (useProgramPostgres()) {
+    return dbSetAgentStatusByInvite({ supervisorUserId, linkedUserId, churchId, status: input.status });
+  }
 
   let updated: OfflineActivationAgent | null = null;
   await updateOfflineActivationJsonFile<AgentStore>(

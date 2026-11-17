@@ -19,6 +19,7 @@ import { Room, RoomEvent } from "livekit-client";
 
 import LiveMainStageSaturnOrbit from "@/src/components/live/LiveMainStageSaturnOrbit";
 import { useOngoingCallElapsed } from "@/src/components/PrivateCallOngoingHost";
+import SokoLiveStore from "@/src/components/homeFeed/SokoLiveStore";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { ensurePrivateCallRingingAudioFiles, type PrivateCallRingingAudioUris } from "@/src/lib/privateCallRingingAudio";
 import { cancelIncomingCallNotification } from "@/src/lib/push/kristoCallNotifications";
@@ -633,12 +634,17 @@ function PrivateCallOngoingView({
   peerAvatar,
   onEnd,
   onMinimize,
+  isSokoCall,
+  currentUserId,
 }: {
   callId: string;
   peerName: string;
   peerAvatar?: string;
   onEnd: () => void;
   onMinimize: () => void;
+  /** Soko purchase call: buyer and seller see the live store while connected. */
+  isSokoCall: boolean;
+  currentUserId: string;
 }) {
   const ongoing = useOngoingPrivateCallState();
   const isThisCall = ongoing.call?.callId === callId;
@@ -666,6 +672,7 @@ function PrivateCallOngoingView({
           <Text style={styles.durationText}>{formatCallDuration(elapsedSec)}</Text>
         ) : null}
         <Text style={styles.subtitle}>{peerName}</Text>
+        {isSokoCall && connected ? <SokoLiveStore callId={callId} currentUserId={currentUserId} /> : null}
         <Text style={styles.ongoingHint}>
           Unaweza kurudi nyuma na kuendelea kutumia app — simu itaendelea.
         </Text>
@@ -1605,7 +1612,7 @@ export default function PrivateCallScreen() {
   const statusMessage = (() => {
     if (!session) return "";
     if (session.status === "ringing" && role === "caller") {
-      return `Calling your Pastor…`;
+      return session.pastorSourceField === "soko-purchase-call" ? "Calling seller…" : `Calling your Pastor…`;
     }
     if (session.status === "ringing" && role === "pastor") {
       return `${session.callerName} is calling`;
@@ -1613,6 +1620,7 @@ export default function PrivateCallScreen() {
     if (session.status === "declined") return "Call declined.";
     if (session.status === "timeout") return "No answer.";
     if (session.status === "ended") return "Call ended.";
+    if (session.status === "failed") return "Call could not connect.";
     return "";
   })();
 
@@ -1684,6 +1692,8 @@ export default function PrivateCallScreen() {
           peerAvatar={connectedPeerDisplay.peerAvatar}
           onEnd={() => void handleEndCall()}
           onMinimize={leaveCallRoute}
+          isSokoCall={session.pastorSourceField === "soko-purchase-call" && Boolean(session.sokoConversationId)}
+          currentUserId={currentUserId}
         />
       </View>
     );

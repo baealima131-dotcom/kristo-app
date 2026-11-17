@@ -63,6 +63,8 @@ const SLIM_STRING_FIELDS = [
   "scheduleType",
   "parentScheduleId",
   "sourceScheduleId",
+  // Video shape, so cached rows keep the right frame (vertical vs landscape) on first paint.
+  "videoDisplayType",
 ] as const;
 
 const SLIM_NUMBER_FIELDS = [
@@ -77,6 +79,8 @@ const SLIM_NUMBER_FIELDS = [
   "duration",
   "churchAvatarUpdatedAt",
   "avatarUpdatedAt",
+  "videoWidth",
+  "videoHeight",
 ] as const;
 
 const TEXT_TRIM_FIELDS = new Set(["body", "text", "title"]);

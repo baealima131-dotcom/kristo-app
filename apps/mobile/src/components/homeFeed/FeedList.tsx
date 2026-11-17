@@ -6,11 +6,13 @@ import React, {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import {
   ActivityIndicator,
   FlatList,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
@@ -135,6 +137,9 @@ type Props = {
   onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
   emptyTitle?: string;
   emptyBody?: string;
+  /** Optional button under the empty/error message (e.g. Retry). */
+  emptyActionLabel?: string;
+  onEmptyAction?: () => void;
   youtubeInitialScrollOffset?: number;
 };
 
@@ -162,6 +167,8 @@ export const FeedList = memo(
       onVideoPress,
       emptyTitle,
       emptyBody,
+      emptyActionLabel,
+      onEmptyAction,
       youtubeInitialScrollOffset = 0,
     },
     ref
@@ -196,6 +203,24 @@ export const FeedList = memo(
       if (index >= rows.length) unlocked.delete(index);
     }
   }, [rows.length, youtubeLayout]);
+
+  // A card rendered during a fast scroll (before the active row caught up) decided "no image"
+  // once and was never re-rendered, so its poster stayed blank. When the active row moves, unlock
+  // posters around it and re-render the list cells only if something new was unlocked.
+  const [youtubeImageUnlockEpoch, setYoutubeImageUnlockEpoch] = useState(0);
+  useEffect(() => {
+    if (!youtubeLayout || !rows.length) return;
+    const unlocked = youtubeImageLoadUnlockedRef.current;
+    let added = false;
+    const last = Math.min(rows.length - 1, activeIndex + 2);
+    for (let index = Math.max(0, activeIndex - 2); index <= last; index += 1) {
+      if (!unlocked.has(index)) {
+        unlocked.add(index);
+        added = true;
+      }
+    }
+    if (added) setYoutubeImageUnlockEpoch((epoch) => epoch + 1);
+  }, [activeIndex, rows.length, youtubeLayout]);
 
   const youtubeRowKey = useCallback(
     (row: any, index: number) => feedRenderKey(row) || String(row?.id || `row-${index}`),
@@ -838,6 +863,14 @@ export const FeedList = memo(
           </View>
         );
       }
+      if (loadingMore) {
+        return (
+          <View style={styles.footer} accessibilityLabel="Loading more videos">
+            <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="small" />
+            <Text style={styles.loadingMoreText}>Loading more videos…</Text>
+          </View>
+        );
+      }
       return null;
     }
     if (showCaughtUpFooter) {
@@ -879,6 +912,11 @@ export const FeedList = memo(
         <Text style={styles.emptyBody}>
           {emptyBody || "Posts from your church and community will appear here."}
         </Text>
+        {emptyActionLabel && onEmptyAction ? (
+          <Pressable onPress={onEmptyAction} style={styles.emptyAction} accessibilityRole="button" hitSlop={8}>
+            <Text style={styles.emptyActionText}>{emptyActionLabel}</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   }
@@ -889,6 +927,7 @@ export const FeedList = memo(
         key="home-youtube-feed-list"
         ref={listRef}
         data={rows}
+        extraData={youtubeImageUnlockEpoch}
         keyExtractor={keyExtractor}
         renderItem={renderYouTubeItem}
         showsVerticalScrollIndicator={false}
@@ -984,6 +1023,19 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: "center",
   },
+  emptyAction: {
+    marginTop: 8,
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: HOME_FEED_GOLD_SOFT,
+  },
+  emptyActionText: {
+    color: HOME_FEED_GOLD_SOFT,
+    fontSize: 15,
+    fontWeight: "700",
+  },
   footer: {
     alignItems: "center",
     justifyContent: "center",
@@ -1003,6 +1055,13 @@ const styles = StyleSheet.create({
   caughtUpText: {
     color: HOME_FEED_MUTED,
     fontSize: 14,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  loadingMoreText: {
+    marginTop: 8,
+    color: HOME_FEED_MUTED,
+    fontSize: 13,
     fontWeight: "600",
     textAlign: "center",
   },

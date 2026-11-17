@@ -86,6 +86,27 @@ export async function deleteSokoProductImagesByOwner(ownerHash: string) {
   }
 }
 
+/**
+ * Delete specific objects by key (room voice-note expiry). Returns the keys that could not be
+ * deleted so callers can retry them later.
+ */
+export async function deleteStorageObjects(keys: string[]): Promise<Set<string>> {
+  const failed = new Set<string>();
+  const unique = Array.from(new Set(keys.map((k) => String(k || "").trim()).filter(Boolean)));
+  const config = getVideoStorageConfig();
+  if (!config || !unique.length) return failed;
+  const client = createStorageClient(config);
+  for (let i = 0; i < unique.length; i += 1000) {
+    const batch = unique.slice(i, i + 1000);
+    const result = await client.send(new DeleteObjectsCommand({
+      Bucket: config.bucket,
+      Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+    }));
+    for (const err of result.Errors || []) if (err.Key) failed.add(err.Key);
+  }
+  return failed;
+}
+
 export function videoStorageConfigError(): string {
   const missing: string[] = [];
   if (!readEnv("KRISTO_VIDEO_STORAGE_BUCKET")) missing.push("KRISTO_VIDEO_STORAGE_BUCKET");

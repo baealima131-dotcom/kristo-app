@@ -6,21 +6,12 @@ import {
   uploadBufferToStorage,
 } from "@/app/api/_lib/media/objectStorage";
 import { isServerlessRuntime } from "@/app/api/_lib/profileAvatarUpload";
-import {
-  assertSafetyEnforcementAllows,
-} from "@/app/api/_lib/rbac";
+import { resolveVerifiedChurchActor } from "@/app/api/_lib/verifiedChurchActor";
 
 export const runtime = "nodejs";
 
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
-
-function getHeaders(req: Request) {
-  return {
-    churchId: String(req.headers.get("x-kristo-church-id") || "").trim(),
-    userId: String(req.headers.get("x-kristo-user-id") || "").trim(),
-  };
-}
 
 function safeFilename(raw: string) {
   const base = String(raw || "attachment")
@@ -51,19 +42,10 @@ function isImageMime(mime: string) {
 
 export async function POST(req: Request) {
   try {
-    const { churchId, userId } = getHeaders(req);
-    if (!churchId || !userId) {
-      return NextResponse.json({ ok: false, error: "Missing auth headers" }, { status: 401 });
-    }
-
-    const safetyBlocked =
-      await assertSafetyEnforcementAllows(
-        userId,
-        req.method
-      );
-    if (safetyBlocked) {
-      return safetyBlocked;
-    }
+    // Uploader and storage folder come from the verified session and active membership.
+    const actor = await resolveVerifiedChurchActor(req, "room-attachments-upload");
+    if (actor instanceof NextResponse) return actor;
+    const { churchId, userId } = actor;
 
     const contentType = req.headers.get("content-type") || "";
     if (!contentType.toLowerCase().includes("multipart/form-data")) {

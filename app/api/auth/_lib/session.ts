@@ -481,8 +481,8 @@ export async function readSession(req?: any) {
         };
       }
     }
-    // Stage-1: keep header-session for installed older profile/church clients.
-    // Checkout/orders must not call this function.
+    // Stage-1 header-session is closed: x-kristo-user-id without a verified token is not a
+    // session. Only the server cookie session (below) remains as a fallback.
     if (headerUserId) {
       logDeprecatedHeaderSession({
         source: "readSession",
@@ -491,16 +491,8 @@ export async function readSession(req?: any) {
         reason: token
           ? resolvePresentedMobileSession(req).reason || "unverified-token"
           : "missing_token",
-        via: "header-session",
+        via: "header-session-rejected",
       });
-      const now = Date.now();
-      return {
-        id: `header-session-${headerUserId}`,
-        userId: headerUserId,
-        createdAt: now,
-        lastSeenAt: now,
-        expiresAt: now + SESSION_MAX_AGE_MS,
-      };
     }
   } catch {}
 
@@ -532,6 +524,21 @@ export async function readCookieSessionUserId(): Promise<string> {
     return String(session.userId || "").trim();
   } catch {
     return "";
+  }
+}
+
+/** Logout: drop the server cookie session itself, not only the browser cookie. */
+export async function destroyCookieSession(): Promise<boolean> {
+  try {
+    const jar = await cookies();
+    const sid = jar.get(SESSION_COOKIE)?.value || "";
+    if (!sid) return false;
+    const store = sessStore();
+    if (!store[sid]) return false;
+    delete store[sid];
+    return true;
+  } catch {
+    return false;
   }
 }
 

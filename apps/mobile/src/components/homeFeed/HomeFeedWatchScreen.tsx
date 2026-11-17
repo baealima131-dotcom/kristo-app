@@ -6,6 +6,7 @@ import {
   Linking,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StatusBar,
@@ -15,6 +16,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
+import { allowWatchRotation, restoreAppPortrait } from "@/src/lib/watchOrientation";
 import { WebView } from "react-native-webview";
 import {
   buildFacebookSdkPlayerHtml,
@@ -343,6 +345,118 @@ function buildWatchVideoPlayerSource(uri: string) {
   };
 }
 
+// Fullscreen is landscape; rotating back to portrait exits it. Both platforms skip
+// the auto-exit while the system rotation lock is on.
+const WATCH_FULLSCREEN_OPTIONS: NonNullable<React.ComponentProps<typeof VideoView>["fullscreenOptions"]> = {
+  enable: true,
+  orientation: "landscape",
+  autoExitOnRotate: true,
+};
+// A vertical video (4:5, 9:16) opens fullscreen in the phone's own orientation, so it fills the
+// portrait screen instead of a small strip of a landscape one (Android; iOS: IosWatchFullscreen).
+const WATCH_VERTICAL_FULLSCREEN_OPTIONS: NonNullable<React.ComponentProps<typeof VideoView>["fullscreenOptions"]> = {
+  enable: true,
+  orientation: "default",
+  autoExitOnRotate: false,
+};
+const WATCH_MODAL_ORIENTATIONS: React.ComponentProps<typeof Modal>["supportedOrientations"] = [
+  "portrait",
+  "landscape-left",
+  "landscape-right",
+];
+// iOS uses Kristo's own fullscreen (IosWatchFullscreen: clear close button, swipe down to go
+// back) instead of the native one, so the native fullscreen button is hidden there.
+const IOS_NATIVE_FULLSCREEN_OFF: NonNullable<React.ComponentProps<typeof VideoView>["fullscreenOptions"]> = {
+  enable: false,
+};
+const IOS_FULLSCREEN_SWIPE_CLOSE_DISTANCE = 120;
+const IOS_FULLSCREEN_SWIPE_CLOSE_VELOCITY = 1.2;
+// Android fullscreen is a separate activity, so the React host reports
+// "background" around the same time onFullscreenEnter arrives.
+const ANDROID_FULLSCREEN_BACKGROUND_GRACE_MS = 350;
+
+/**
+ * iOS fullscreen for the Watch video. It shows the same player, so playback goes on from the same
+ * position when it closes. Close with the button or by swiping down.
+ */
+function IosWatchFullscreen({
+  visible,
+  player,
+  onClose,
+}: {
+  visible: boolean;
+  player: ReturnType<typeof useVideoPlayer>;
+  onClose: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const dragY = useRef(new Animated.Value(0)).current;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+          gesture.dy > 12 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.5,
+        onPanResponderMove: (_event, gesture) => dragY.setValue(Math.max(0, gesture.dy)),
+        onPanResponderRelease: (_event, gesture) => {
+          if (
+            gesture.dy > IOS_FULLSCREEN_SWIPE_CLOSE_DISTANCE ||
+            gesture.vy > IOS_FULLSCREEN_SWIPE_CLOSE_VELOCITY
+          ) {
+            onCloseRef.current();
+            dragY.setValue(0);
+            return;
+          }
+          Animated.spring(dragY, { toValue: 0, useNativeDriver: true }).start();
+        },
+        onPanResponderTerminate: () =>
+          Animated.spring(dragY, { toValue: 0, useNativeDriver: true }).start(),
+      }),
+    [dragY]
+  );
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="fade"
+      presentationStyle="fullScreen"
+      supportedOrientations={WATCH_MODAL_ORIENTATIONS}
+      onRequestClose={onClose}
+    >
+      <View style={styles.iosFullscreenRoot} {...panResponder.panHandlers}>
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              transform: [{ translateY: dragY }],
+              opacity: dragY.interpolate({ inputRange: [0, 320], outputRange: [1, 0.45], extrapolate: "clamp" }),
+            },
+          ]}
+        >
+          {visible ? (
+            <VideoView
+              player={player}
+              style={StyleSheet.absoluteFill}
+              contentFit="contain"
+              nativeControls
+              fullscreenOptions={IOS_NATIVE_FULLSCREEN_OFF}
+            />
+          ) : null}
+        </Animated.View>
+        <Pressable
+          onPress={onClose}
+          hitSlop={12}
+          style={[styles.iosFullscreenClose, { top: insets.top + 10, left: insets.left + 14 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Close fullscreen"
+        >
+          <Ionicons name="close" size={24} color="#FFFFFF" />
+        </Pressable>
+      </View>
+    </Modal>
+  );
+}
+
 /** Height (px) of the purple line left under the video when the panel is folded. */
 const WATCH_PANEL_FOLDED_LINE = 4;
 
@@ -404,6 +518,14 @@ function WatchVideoSurface({
 
   const isTikTokLayout = displayType === "tiktok";
 
+  const videoViewRef = useRef<VideoView | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  // Fullscreen opens only when the viewer asks for it (never by itself, e.g. on rotating the
+  // phone). iOS uses IosWatchFullscreen, Android the native one.
+  const fullscreenRef = useRef(false);
+  const [iosFullscreenOpen, setIosFullscreenOpen] = useState(false);
+  const closeIosFullscreenRef = useRef<() => void>(() => {});
+
   const isWatchAutoPlayBlocked = useCallback(
     () => userPausedRef.current || backgroundPausedRef.current,
     []
@@ -464,8 +586,8 @@ function WatchVideoSurface({
   }, [player, reportTrackDisplayType]);
 
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (next) => {
-      if (next === "active") return;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    const pauseForBackground = () => {
       backgroundPausedRef.current = true;
       const uri = playbackUri;
       safePauseVideoPlayer(backdropPlayerRef.current, {
@@ -474,8 +596,25 @@ function WatchVideoSurface({
       });
       safePauseVideoPlayer(playerRef.current, { source: "home-feed-watch", uri });
       notifyWatchPlaybackPaused(postId);
+    };
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") return;
+      if (Platform.OS === "android") {
+        if (fullscreenRef.current) return;
+        if (graceTimer) clearTimeout(graceTimer);
+        graceTimer = setTimeout(() => {
+          graceTimer = null;
+          if (fullscreenRef.current || AppState.currentState === "active") return;
+          pauseForBackground();
+        }, ANDROID_FULLSCREEN_BACKGROUND_GRACE_MS);
+        return;
+      }
+      pauseForBackground();
     });
-    return () => sub.remove();
+    return () => {
+      if (graceTimer) clearTimeout(graceTimer);
+      sub.remove();
+    };
   }, [playbackUri, postId]);
 
   useEffect(() => {
@@ -483,6 +622,11 @@ function WatchVideoSurface({
   }, [ended]);
 
   useEventListener(player, "playToEnd", () => {
+    if (Platform.OS === "ios") {
+      closeIosFullscreenRef.current();
+    } else if (fullscreenRef.current) {
+      void videoViewRef.current?.exitFullscreen().catch(() => {});
+    }
     endedRef.current = true;
     clearHomeFeedVideoProgress(postId);
     setEnded(true);
@@ -691,6 +835,54 @@ function WatchVideoSurface({
       ).trim()
     : "";
 
+  // Android fullscreen pauses the React host, which stops the 1s progress timer above.
+  // timeUpdate is emitted natively by the same player, so it keeps the saved position
+  // current while fullscreen.
+  useEffect(() => {
+    if (!player) return;
+    try {
+      player.timeUpdateEventInterval = isFullscreen ? 1 : 0;
+    } catch {}
+  }, [player, isFullscreen]);
+
+  useEventListener(player, "timeUpdate", ({ currentTime }) => {
+    if (!fullscreenRef.current || endedRef.current || !postId) return;
+    if (Number.isFinite(currentTime) && currentTime > 0.5) {
+      const playerDuration = Number((player as any)?.duration || 0);
+      saveHomeFeedVideoProgress(
+        postId,
+        currentTime,
+        Number.isFinite(playerDuration) && playerDuration > 0 ? playerDuration : durationSec
+      );
+    }
+  });
+
+  const handleFullscreenEnter = useCallback(() => {
+    fullscreenRef.current = true;
+    setIsFullscreen(true);
+    console.log("KRISTO_WATCH_FULLSCREEN_ENTER", { postId });
+  }, [postId]);
+
+  const handleFullscreenExit = useCallback(() => {
+    fullscreenRef.current = false;
+    setIsFullscreen(false);
+    console.log("KRISTO_WATCH_FULLSCREEN_EXIT", { postId });
+  }, [postId]);
+
+  const closeIosFullscreen = useCallback(() => {
+    if (!fullscreenRef.current) return;
+    setIosFullscreenOpen(false);
+    handleFullscreenExit();
+  }, [handleFullscreenExit]);
+  closeIosFullscreenRef.current = closeIosFullscreen;
+
+  const openIosFullscreen = useCallback(() => {
+    if (fullscreenRef.current || endedRef.current) return;
+    console.log("KRISTO_WATCH_TAP_FULLSCREEN_ENTER", { postId });
+    setIosFullscreenOpen(true);
+    handleFullscreenEnter();
+  }, [postId, handleFullscreenEnter]);
+
   if (!playbackUri) return null;
 
   return (
@@ -716,15 +908,39 @@ function WatchVideoSurface({
           <View style={styles.tikTokBackdropOverlay} pointerEvents="none" />
         </>
       ) : null}
-      {!ended ? (
+      {(!ended || isFullscreen) && !iosFullscreenOpen ? (
         <>
         <VideoView
+          ref={videoViewRef}
           player={player}
           style={displayType === "youtube" ? styles.video : [styles.videoPortrait, containedVideoSize]}
           contentFit="contain"
           nativeControls
+          fullscreenOptions={
+            Platform.OS === "ios"
+              ? IOS_NATIVE_FULLSCREEN_OFF
+              : isTikTokLayout
+                ? WATCH_VERTICAL_FULLSCREEN_OPTIONS
+                : WATCH_FULLSCREEN_OPTIONS
+          }
+          onFullscreenEnter={handleFullscreenEnter}
+          onFullscreenExit={handleFullscreenExit}
         />
         </>
+      ) : null}
+      {Platform.OS === "ios" && !ended && !iosFullscreenOpen ? (
+        <Pressable
+          onPress={openIosFullscreen}
+          hitSlop={10}
+          style={styles.iosExpandButton}
+          accessibilityRole="button"
+          accessibilityLabel="Fullscreen"
+        >
+          <Ionicons name="expand" size={18} color="#FFFFFF" />
+        </Pressable>
+      ) : null}
+      {Platform.OS === "ios" ? (
+        <IosWatchFullscreen visible={iosFullscreenOpen} player={player} onClose={closeIosFullscreen} />
       ) : null}
       {ended ? (
         <Pressable style={styles.replayOverlay} onPress={handleReplay} accessibilityLabel="Replay video">
@@ -1509,6 +1725,15 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     return () => notifyWatchScreenClosed();
   }, []);
 
+  // Rotation is allowed only while Watch is open; everything else stays portrait.
+  useEffect(() => {
+    if (!visible) return;
+    void allowWatchRotation();
+    return () => {
+      void restoreAppPortrait();
+    };
+  }, [visible]);
+
   useEffect(() => {
     if (!visible || !payload) return;
     setPlaybackStarted(false);
@@ -1539,7 +1764,12 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   if (!payload) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={onClose}
+      supportedOrientations={WATCH_MODAL_ORIENTATIONS}
+    >
       <View style={styles.screen}>
         <StatusBar barStyle="light-content" />
         <View style={styles.headerChrome}>
@@ -1880,6 +2110,35 @@ const styles = StyleSheet.create({
     flex: 1,
     width: "100%",
     height: "100%",
+  },
+  iosFullscreenRoot: {
+    flex: 1,
+    backgroundColor: "#000000",
+  },
+  iosFullscreenClose: {
+    position: "absolute",
+    zIndex: 5,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.55)",
+  },
+  // iOS: opens IosWatchFullscreen (the native fullscreen button is hidden there).
+  iosExpandButton: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    zIndex: 4,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
   },
   // Sized in code to the video's own proportions inside the frame (see containedVideoSize).
   videoPortrait: {

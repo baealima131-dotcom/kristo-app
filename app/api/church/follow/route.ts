@@ -1,3 +1,4 @@
+import { churchNotActiveResponse, isChurchOpenById } from "@/app/api/_lib/churchActivationGate";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
@@ -190,6 +191,11 @@ export async function POST(req: NextRequest) {
         requestBody: body,
       });
       return json({ ok: false, error: "following must be true or false" }, { status: 400 });
+    }
+
+    // A church that is not active yet (church application) cannot be followed; unfollowing stays.
+    if (following && !(await isChurchOpenById(churchId))) {
+      return churchNotActiveResponse("pending");
     }
 
     const edges = following

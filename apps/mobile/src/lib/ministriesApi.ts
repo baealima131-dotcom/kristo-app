@@ -29,12 +29,11 @@ function getAuthBits() {
 
 function headers() {
   const { churchId, userId, role } = getAuthBits();
+  // Includes the signed session token; the backend no longer accepts x-kristo-user-id alone.
   return {
     accept: "application/json",
     "content-type": "application/json",
-    "x-kristo-user-id": userId,
-    "x-kristo-role": role,
-    "x-kristo-church-id": churchId,
+    ...(getKristoHeaders({ userId, role: role as any, churchId }) as Record<string, string>),
   };
 }
 

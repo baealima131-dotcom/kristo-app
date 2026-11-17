@@ -23,6 +23,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
   type TextStyle,
   type ViewStyle
 } from "react-native";
@@ -58,7 +59,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
-import { ensureThread, sendMessage, setThreadMessages, clearThreadMessages, clearThreadTextMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
+import { ensureThread, sendMessage, setThreadMessages, clearThreadMessages, clearThreadTextMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, getMessagesStoreScope, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
 import { HomeLiveScheduleCard, ScheduleClaimAvatarRing } from "@/src/components/HomeLiveScheduleCard";
 import {
@@ -128,6 +129,12 @@ import { getApiBase } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
+  fetchLiveControlSelfStatus,
+  isLiveControlSuspendedError,
+  lastKnownLiveControlStatus,
+  rememberLiveControlStatus,
+} from "@/src/lib/churchLiveControlAccess";
+import {
   DM_REQUEST_MESSAGE_LIMIT,
   fetchDirectMessageConversationSettings,
   markDirectMessageThreadRead,
@@ -138,6 +145,7 @@ import {
 import { buildDmMembershipLabel } from "@/src/lib/dmMembershipLabel";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
 import { createPrivateCallToUser } from "@/src/lib/privateCallService";
+import { isRoomMessageRowForViewer } from "@/src/lib/roomMessageVisibility";
 import {
   applyPastorAuthorityToMinistryBoard,
   canOpenMinistryTool,
@@ -162,6 +170,13 @@ import {
 } from "@/src/lib/ministryLiveActivation";
 import { pushLiveRoomWithSilentPreflight } from "@/src/lib/liveSilentPreflight";
 import { parseLiveAllScheduleSlotsJson } from "@/src/lib/scheduleSlotUtils";
+import {
+  ChatDateSeparator,
+  ChurchVoiceNoteBubble,
+  ChurchVoiceNoteButton,
+  chatDayKey,
+  chatDayLabel,
+} from "@/src/components/churchRoom/ChurchVoiceNote";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
 import ImageViewing from "react-native-image-viewing";
@@ -499,6 +514,21 @@ function initials(name: string) {
   const s = (name || "?").trim();
 
   return (s[0] || "?").toUpperCase();
+}
+
+/**
+ * First letters of the first and last name ("Grace Mwita" -> "GM"); one letter for a single name.
+ * Bracketed notes and non-letters are ignored ("Review Supervisor (test)" -> "RS").
+ */
+function nameInitials(name: string) {
+  const parts = String(name || "")
+    .replace(/\([^)]*\)/g, " ")
+    .split(/\s+/)
+    .map((w) => (w.match(/\p{L}/u) || [""])[0])
+    .filter(Boolean);
+  if (!parts.length) return "?";
+  const last = parts.length > 1 ? parts[parts.length - 1] : "";
+  return (parts[0] + last).toUpperCase();
 }
 
 function formatMeetingInShort(diffMs: number) {
@@ -2030,6 +2060,7 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, _api
       ? x.attachments.map((att: any) => normalizeMsgAttachment(att))
       : undefined,
     createdAt: Number(x.createdAt || Date.now()),
+    ...(Number(x.expiresAt || 0) > 0 ? { expiresAt: Number(x.expiresAt) } : {}),
     kind,
     sharedContent,
     card: x.card || undefined,
@@ -2113,11 +2144,14 @@ function MessageBubbleAvatar({
   label,
   show,
   side,
+  initialsText,
 }: {
   uri: string;
   label: string;
   show: boolean;
   side: "left" | "right";
+  /** Letters shown without a photo; default is the first letter of label. */
+  initialsText?: string;
 }) {
   if (!show) {
     return <View style={s.avatarSpacer} />;
@@ -2128,7 +2162,7 @@ function MessageBubbleAvatar({
       {uri ? (
         <Image source={{ uri }} style={s.avatarMiniImage as any} />
       ) : (
-        <Text style={t.avatarMiniText}>{initials(label || "U")}</Text>
+        <Text style={t.avatarMiniText}>{initialsText || initials(label || "U")}</Text>
       )}
     </View>
   );
@@ -5384,6 +5418,43 @@ function AppointmentRequestVipCard({
   );
 }
 
+/** Church Members room: slot cards show as smaller messages inside the chat (scaled uniformly). */
+const CHURCH_SLOT_INLINE_SCALE = 0.72;
+
+/** Width a slot card gets in the chat list (list padding 14 + 14). */
+function churchSlotCardNaturalWidth(windowWidth: number) {
+  return Math.max(280, windowWidth - 28);
+}
+
+/** Same container height the Live Slots screen gives this card: it fills it with `flex: 1`. */
+function churchSlotCardNaturalHeight(windowHeight: number) {
+  return Math.min(520, Math.round(windowHeight * 0.62));
+}
+
+/**
+ * Lays a slot card out at its normal width and Live Slots height, then scales it down uniformly
+ * so its text, avatars and buttons all stay visible and tappable at a smaller size.
+ */
+function ScaledSlotCard({ scale, children }: { scale: number; children: React.ReactNode }) {
+  const { width, height } = useWindowDimensions();
+  const naturalWidth = churchSlotCardNaturalWidth(width);
+  const naturalHeight = churchSlotCardNaturalHeight(height);
+  return (
+    <View style={{ width: naturalWidth * scale, height: naturalHeight * scale }}>
+      <View
+        style={{
+          width: naturalWidth,
+          height: naturalHeight,
+          transformOrigin: "top left",
+          transform: [{ scale }],
+        }}
+      >
+        {children}
+      </View>
+    </View>
+  );
+}
+
 function Bubble({
   m,
   showAvatar,
@@ -6655,6 +6726,53 @@ function Bubble({
     );
   }
 
+  if (m.kind === "voice_note") {
+    const audio: any = (m.attachments || [])[0];
+    const mine = m.sender === "me";
+    // Who sent it: avatar (photo, or the sender's initials) beside the voice, name above it.
+    const voiceSenderName = String(m.displayName || (mine ? "Me" : "Member"));
+    const voiceSenderAvatar = (
+      <MessageBubbleAvatar
+        uri={resolveMessageSenderAvatar(m).uri}
+        label={voiceSenderName}
+        initialsText={nameInitials(voiceSenderName)}
+        show={true}
+        side={mine ? "right" : "left"}
+      />
+    );
+    return (
+      <Pressable
+        onPress={onPress}
+        onLongPress={onLongPress}
+        delayLongPress={280}
+        style={[
+          s.voiceNoteRow,
+          mine ? s.voiceNoteRowMine : null,
+          selected || actionHighlighted ? s.bubbleSelectedGlow : null,
+        ]}
+      >
+        {!mine ? voiceSenderAvatar : null}
+        <View style={s.voiceNoteBody}>
+          {!mine ? (
+            <Text style={s.voiceNoteSender} numberOfLines={1}>
+              {voiceSenderName}
+            </Text>
+          ) : null}
+          <ChurchVoiceNoteBubble
+            url={resolveMessageAttachmentUrl(audio?.url || audio?.uri || "")}
+            durationMs={Number(audio?.durationMs || 0)}
+            expiresAt={Number((m as any).expiresAt || 0) || undefined}
+            nowMs={Number(liveScheduleNowMs || Date.now())}
+            // Every viewer sees the Pastor's voice notes in the Pastor's purple, like the Pastor's text messages.
+            style={pastorMessage ? s.bubblePastor : undefined}
+          />
+          <Text style={[t.msgTime, mine ? s.voiceNoteTimeMine : null]}>{formatTime(m.createdAt)}</Text>
+        </View>
+        {mine ? voiceSenderAvatar : null}
+      </Pressable>
+    );
+  }
+
   if (m.kind === "assignment_card") {
     const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
 
@@ -6687,9 +6805,9 @@ function Bubble({
           onPress={onPress}
           onLongPress={onLongPress}
           delayLongPress={280}
-          style={[s.churchLiveScheduleCardWrap, highlightStyle]}
+          style={[s.churchSlotInlineWrap, highlightStyle]}
         >
-          <View style={s.churchLiveScheduleCardShell}>
+          <ScaledSlotCard scale={CHURCH_SLOT_INLINE_SCALE}>
             <HomeLiveScheduleCard
               item={item}
               activeSlot={activeSlot}
@@ -6710,7 +6828,7 @@ function Bubble({
                   : undefined
               }
             />
-          </View>
+          </ScaledSlotCard>
           <Text style={[t.msgTime, s.assignmentTime]}>{formatTime(m.createdAt)}</Text>
         </Pressable>
       );
@@ -6948,6 +7066,22 @@ function MenuRow({
   );
 }
 
+/**
+ * Android: a translucent tile with `elevation` shows its shadow through the background as a dark
+ * block inside the card. Elevation is off there and the glow uses boxShadow instead (iOS unchanged).
+ */
+function androidMenuTileShadow(active: boolean, roleLocked: boolean): ViewStyle | null {
+  if (Platform.OS !== "android") return null;
+  return {
+    elevation: 0,
+    boxShadow: active
+      ? "0 0 14px rgba(244,208,111,0.35)"
+      : roleLocked
+        ? "0 0 8px rgba(244,208,111,0.16)"
+        : undefined,
+  } as ViewStyle;
+}
+
 function MenuTile({
   icon,
   label,
@@ -7035,6 +7169,7 @@ function MenuTile({
         !isV2Restricted && busy ? [s.menuTileDisabled, ({ opacity: 0.58 } as ViewStyle)] : null,
         !isV2Restricted && !roleLocked && pressed && !busy ? s.menuTilePressed : null,
         roleLocked && pressed && !busy ? s.menuTileRoleLockedPressed : null,
+        androidMenuTileShadow(!isV2Restricted && !!activeGlow && !roleLocked && !busy, !isV2Restricted && roleLocked),
       ]}
     >
       {tileBody}
@@ -7571,6 +7706,12 @@ export default function MessageThreadScreen() {
           ? "Host"
           : String(effectiveAuthRole || assignmentRole || "Member");
 
+  // Church Members is opened with `role` (not `assignmentRole`), so the header fell back to
+  // "MEMBER" for pastors; show the viewer's resolved role there instead.
+  const headerAssignmentRoleLabel = isChurchLiveControlRoom
+    ? resolvedLiveRole.replace(/_/g, " ").toUpperCase()
+    : assignmentRoleParam;
+
   const canManageAssignmentMembers = ministryAuthority.canManageMembers;
   const canScheduleStructuredMeeting = ministryAuthority.canCreateMeeting;
   const canManageMcHosts = ministryAuthority.canManageHosts;
@@ -7822,6 +7963,16 @@ export default function MessageThreadScreen() {
           return false;
         }
 
+        // Church Members voice notes disappear at expiry even if a copy is still cached locally.
+        const voiceNoteExpiresAt = Number(message.expiresAt || 0);
+        if (
+          String(message.kind || "") === "voice_note" &&
+          voiceNoteExpiresAt > 0 &&
+          voiceNoteExpiresAt <= liveCountdownNow
+        ) {
+          return false;
+        }
+
         const hasAttachments =
           Array.isArray(
             message.attachments
@@ -7976,6 +8127,27 @@ export default function MessageThreadScreen() {
     ]
   );
 
+  // Church Members room: slot cards that have not started yet, and whether a slot is live now.
+  const churchSlotTiming = useMemo(() => {
+    const upcoming: { id: string; startMs: number }[] = [];
+    let liveNow = false;
+    if (!isChurchLiveControlRoom) return { upcoming, liveNow };
+    for (const m of visibleMessages) {
+      const model = churchLiveControlScheduleRenderById[m.id];
+      if (!model?.activeSlot) continue;
+      const startMs = parseSlotStartMs(model.activeSlot);
+      if (!startMs) continue;
+      const endMs = parseSlotEndMs(model.activeSlot, startMs);
+      if (liveCountdownNow < startMs) upcoming.push({ id: m.id, startMs });
+      else if (!endMs || liveCountdownNow < endMs) liveNow = true;
+    }
+    upcoming.sort((a, b) => a.startMs - b.startMs);
+    return { upcoming, liveNow };
+  }, [isChurchLiveControlRoom, visibleMessages, churchLiveControlScheduleRenderById, liveCountdownNow]);
+  const showChurchUpcomingSlotsLive =
+    isChurchLiveControlRoom && churchSlotTiming.upcoming.length > 0 && !churchSlotTiming.liveNow;
+  const [flashSlotMessageId, setFlashSlotMessageId] = useState("");
+
   const liveScheduleProfileName = String(
     auth?.displayName || auth?.name || auth?.fullName || "You"
   ).trim();
@@ -8021,13 +8193,27 @@ export default function MessageThreadScreen() {
   }, []);
 
   const applyVisibleRoomMessageRows = useCallback(
-    (visibleRows: any[]): boolean => {
+    (visibleRows: any[], requestScope?: string): boolean => {
       if (!threadId) return false;
+      // A response for the previous account (request started before logout/login) must not
+      // land in the new account's store.
+      if (requestScope !== undefined && requestScope !== getMessagesStoreScope()) {
+        console.log("KRISTO_ROOM_MESSAGES_STALE_SESSION_DROPPED", { threadId });
+        return false;
+      }
 
       const headers: any = getKristoHeaders();
       const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+      const viewerChurchId = String(headers?.["x-kristo-church-id"] || "").trim();
       const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
       const mapped: MsgItem[] = filterVisibleRoomMessageRows(visibleRows)
+        .filter((x: any) =>
+          isRoomMessageRowForViewer({
+            isPersonToPersonDm,
+            rowChurchId: String(x?.churchId || ""),
+            viewerChurchId,
+          })
+        )
         .map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase))
         .map((m) => enrichMessageSenderAvatar(m, memberAvatarByUserIdRef.current));
 
@@ -8073,7 +8259,12 @@ export default function MessageThreadScreen() {
 
       roomMessagesSigRef.current = sig;
       if (merged.length > 0 || messages.length === 0 || allowEmptyRoomOverwriteRef.current) {
-        setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+        setThreadMessages(
+          threadId,
+          merged,
+          { title: roomTitle, sub: String(sub || "") },
+          requestScope !== undefined ? { expectedScope: requestScope } : undefined
+        );
         if (allowEmptyRoomOverwriteRef.current && merged.length === 0) {
           allowEmptyRoomOverwriteRef.current = false;
         }
@@ -8107,6 +8298,7 @@ export default function MessageThreadScreen() {
       messages.length,
       filterVisibleRoomMessageRows,
       (params as any)?.assignmentTitle,
+      isPersonToPersonDm,
     ]
   );
 
@@ -8130,6 +8322,7 @@ export default function MessageThreadScreen() {
       Boolean(hostsPeek && isChurchMediaRoomCacheFresh(hostsPeek.updatedAt));
 
     let alive = true;
+    const requestScope = getMessagesStoreScope();
 
     (async () => {
       const [msgsCache, liveCache, hostsCache] = await Promise.all([
@@ -8141,7 +8334,7 @@ export default function MessageThreadScreen() {
       if (!alive) return;
 
       if (msgsCache?.rawRows?.length) {
-        applyVisibleRoomMessageRows(msgsCache.rawRows as any[]);
+        applyVisibleRoomMessageRows(msgsCache.rawRows as any[], requestScope);
       }
 
       if (liveCache?.rawRows) {
@@ -8186,7 +8379,7 @@ export default function MessageThreadScreen() {
         // Apply even an empty result. applyVisibleRoomMessageRows itself guards
         // against wiping existing local messages with an empty cache, so a
         // cache:0 hydrate cannot erase a just-sent image/card.
-        applyVisibleRoomMessageRows(refresh.rawRows || []);
+        applyVisibleRoomMessageRows(refresh.rawRows || [], requestScope);
         if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
       });
 
@@ -8292,6 +8485,7 @@ export default function MessageThreadScreen() {
       }
       if (!roomId) return false;
 
+      const requestScope = getMessagesStoreScope();
       const headers: any = getKristoHeaders();
       const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
 
@@ -8321,6 +8515,11 @@ export default function MessageThreadScreen() {
             );
 
             if (!alive) return false;
+            if (isLiveControlSuspendedError(res)) {
+              rememberLiveControlStatus(selfId, "Suspended");
+              setLiveControlAccess("suspended");
+              return false;
+            }
 
             const rawRows = Array.isArray(res?.data) ? res.data : [];
             const visibleRows = filterVisibleRoomMessageRows(rawRows);
@@ -8338,7 +8537,7 @@ export default function MessageThreadScreen() {
               mediaRoomCacheFreshRef.current = true;
             } catch {}
 
-            updated = applyVisibleRoomMessageRows(visibleRows);
+            updated = applyVisibleRoomMessageRows(visibleRows, requestScope);
             console.log("[RoomMessagesFreshGET] done", {
               roomId: CHURCH_MEDIA_ROOM_ID,
               rawCount: rawRows.length,
@@ -8363,7 +8562,7 @@ export default function MessageThreadScreen() {
           const visibleRows = filterVisibleRoomMessageRows(refresh.rawRows);
           count = visibleRows.length;
           if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
-          updated = applyVisibleRoomMessageRows(visibleRows);
+          updated = applyVisibleRoomMessageRows(visibleRows, requestScope);
           return updated;
         } finally {
           roomMessagesInflightRef.current = false;
@@ -8391,7 +8590,7 @@ export default function MessageThreadScreen() {
 
         const visibleRows = filterVisibleRoomMessageRows(rows);
         count = visibleRows.length;
-        updated = applyVisibleRoomMessageRows(visibleRows);
+        updated = applyVisibleRoomMessageRows(visibleRows, requestScope);
         return updated;
       } finally {
         roomMessagesInflightRef.current = false;
@@ -8499,6 +8698,12 @@ export default function MessageThreadScreen() {
   // COMPOSER_KEYBOARD_SPACING_V4
   // COMPOSER_SAFE_AREA_V6
   const [composerKeyboardVisible, setComposerKeyboardVisible] = useState(false);
+  // ANDROID_COMPOSER_KEYBOARD_INSET_V1
+  // Android edge-to-edge does not resize the window for the IME, so the composer
+  // wrapper (which reaches the screen bottom) is lifted by the IME overlap.
+  // RN reports the keyboard height without the system nav bar, so the overlap
+  // is that height plus the bottom safe-area inset.
+  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
 
   // SMART_EXPANDING_COMPOSER_V5
   const [composerExpanded, setComposerExpanded] = useState(false);
@@ -8511,11 +8716,15 @@ export default function MessageThreadScreen() {
     const hideEvent =
       Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
-    const showSubscription = Keyboard.addListener(showEvent, () => {
+    const showSubscription = Keyboard.addListener(showEvent, (e) => {
       setComposerKeyboardVisible(true);
+      if (Platform.OS === "android") {
+        setAndroidKeyboardHeight(Math.max(0, Number(e?.endCoordinates?.height || 0)));
+      }
     });
     const hideSubscription = Keyboard.addListener(hideEvent, () => {
       setComposerKeyboardVisible(false);
+      if (Platform.OS === "android") setAndroidKeyboardHeight(0);
     });
 
     return () => {
@@ -8799,8 +9008,30 @@ export default function MessageThreadScreen() {
   const [adminsOpen, setAdminsOpen] = useState(false);
   const [suspendedOpen, setSuspendedOpen] = useState(false);
 
-  const accessChecked = true;
-  const accessAllowed = true;
+  // Church Live Control: a suspended member gets no room access, from any entry point (Church
+  // Overview, Ministries, links). The server refuses their requests too; this keeps cached room
+  // content off screen.
+  const [liveControlAccess, setLiveControlAccess] = useState<"checking" | "allowed" | "suspended">(() => {
+    const known = lastKnownLiveControlStatus(effectiveAuthUserId);
+    if (known === "Suspended") return "suspended";
+    return known === "Active" ? "allowed" : "checking";
+  });
+
+  useEffect(() => {
+    if (!isChurchLiveControlRoom || !isFocused || !effectiveAuthUserId) return;
+    let alive = true;
+    void fetchLiveControlSelfStatus(effectiveAuthUserId).then((status) => {
+      if (!alive) return;
+      // Unknown (offline): keep the room usable; the server still blocks a suspended member.
+      setLiveControlAccess(status === "Suspended" ? "suspended" : "allowed");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [isChurchLiveControlRoom, isFocused, effectiveAuthUserId]);
+
+  const accessChecked = !isChurchLiveControlRoom || liveControlAccess !== "checking";
+  const accessAllowed = !isChurchLiveControlRoom || liveControlAccess !== "suspended";
 
   const headerTitle = useMemo(
     () =>
@@ -9042,6 +9273,25 @@ const displayHeaderTitle = assignmentDisplayTitle;
   const assignmentLiveBadge = isAssignmentThread && true;
 
   const livePulse = useRef(new Animated.Value(1)).current;
+
+  // Church Members room: the LIVE waves pulse while slots are scheduled but not yet started.
+  useEffect(() => {
+    if (!showChurchUpcomingSlotsLive) {
+      livePulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(livePulse, { toValue: 1.25, duration: 650, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(livePulse, { toValue: 1, duration: 650, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+      livePulse.setValue(1);
+    };
+  }, [showChurchUpcomingSlotsLive, livePulse]);
 
   const meetingScheduleKey = String(
     resolvedMinistryId ||
@@ -10048,6 +10298,43 @@ const displayHeaderTitle = assignmentDisplayTitle;
       (String(draft || "").trim().length > 0 || pending.length > 0),
     [draft, pending, attachUploading, dmComposerLocked]
   );
+
+  /** Church Members room: upload a recorded voice note and post it (server deletes it after 7 days). */
+  async function sendChurchVoiceNote(uri: string, durationMs: number, mime: string) {
+    const sendHeaders: any = getKristoHeaders();
+    const senderName = String(
+      sendHeaders?.["x-kristo-user-name"] ||
+      sendHeaders?.["x-kristo-display-name"] ||
+      sendHeaders?.["x-kristo-name"] ||
+      "Member"
+    ).trim();
+    const uploaded = await uploadMessageAttachment(
+      {
+        id: `voice_${Date.now()}`,
+        kind: "file",
+        localUri: uri,
+        name: `voice-note-${Date.now()}.m4a`,
+        mime,
+      } as any,
+      sendHeaders
+    );
+    const postRes: any = await apiPost(
+      "/api/church/room-messages",
+      {
+        roomId: backendRoomId,
+        roomKind: resolvedSendRoomKind,
+        senderName,
+        text: "",
+        kind: "voice_note",
+        attachments: [{ ...uploaded, mime: uploaded.mime || mime, durationMs: Math.round(durationMs) }],
+        clientId: `local_voice_${Date.now()}`,
+      },
+      { headers: sendHeaders }
+    );
+    if (!postRes?.ok) throw new Error(String(postRes?.error || "Failed to send voice note"));
+    forceReloadRoomMessages();
+    setTimeout(() => listRef.current?.scrollToOffset?.({ offset: 0, animated: true }), 0);
+  }
 
   async function onSend() {
     if (attachUploading) return;
@@ -12504,7 +12791,23 @@ function saveAssignmentVideoTrim() {
     );
   }
 
+  const liveHeaderTone = showChurchUpcomingSlotsLive ? "scheduled" : liveAssignmentCtaMeta.tone;
+  const liveHeaderSublabel = showChurchUpcomingSlotsLive
+    ? `${churchSlotTiming.upcoming.length} slot${churchSlotTiming.upcoming.length === 1 ? "" : "s"} scheduled`
+    : liveAssignmentCtaMeta.sublabel;
+
   function handleSmartLivePress() {
+    // Church Members room: slots scheduled but not started yet -> bring the next one into view.
+    if (showChurchUpcomingSlotsLive) {
+      const target = churchSlotTiming.upcoming[0];
+      const index = visibleMessages.findIndex((m) => m.id === target.id);
+      if (index >= 0) {
+        listRef.current?.scrollToIndex?.({ index, animated: true, viewPosition: 0.5 });
+        setFlashSlotMessageId(target.id);
+        setTimeout(() => setFlashSlotMessageId((cur) => (cur === target.id ? "" : cur)), 2400);
+      }
+      return;
+    }
     // Evaluate eligibility FIRST: a claimed/active/live slot (or a pastor instant
     // start) already reports canOpenLive === true and must always be able to enter,
     // regardless of tone. Gating on tone before this caused LIVE NOW slots to be
@@ -14206,6 +14509,32 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     );
   }
 
+  if (!accessAllowed && isChurchLiveControlRoom) {
+    return (
+      <View style={[s.screen, s.suspendedGateScreen, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+        <View style={s.suspendedGateCard}>
+          <View style={s.suspendedGateIcon}>
+            <Ionicons name="lock-closed" size={26} color={GOLD} />
+          </View>
+          <Text style={t.suspendedGateTitle}>Access suspended</Text>
+          <Text style={t.suspendedGateSub}>
+            Your Church Live Control access is suspended. You cannot open the room or claim media
+            slots until a church leader restores your access.
+          </Text>
+          <Pressable
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else router.replace("/church/overview" as any);
+            }}
+            style={({ pressed }) => [s.suspendedGateBtn, pressed ? ({ opacity: 0.9 } as ViewStyle) : null]}
+          >
+            <Text style={t.suspendedGateBtnText}>Back</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   if (!accessAllowed) {
     return (
       <View style={[s.screen, { paddingTop: insets.top, alignItems: "center", justifyContent: "center" }]}>
@@ -14305,8 +14634,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             >
               {isAssignmentThread
                 ? assignmentStatusParam
-                  ? `${assignmentRoleParam} • ${assignmentStatusParam}`
-                  : assignmentRoleParam
+                  ? `${headerAssignmentRoleLabel} • ${assignmentStatusParam}`
+                  : headerAssignmentRoleLabel
                 : isMinistryThread
                   ? isSuspended ? `${currentRole.toUpperCase()} • suspended` : currentRole.toUpperCase()
                   : ""}
@@ -14321,11 +14650,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 onPress={handleSmartLivePress}
                 style={({ pressed }) => [
                   s.liveBtn,
-                  liveAssignmentCtaMeta.tone === "scheduled"
+                  liveHeaderTone === "scheduled"
                     ? s.liveBtnScheduled
-                    : liveAssignmentCtaMeta.tone === "preview"
+                    : liveHeaderTone === "preview"
                       ? s.liveBtnPreview
-                      : liveAssignmentCtaMeta.tone === "live"
+                      : liveHeaderTone === "live"
                         ? s.liveBtnLive
                         : s.liveBtnIdle,
                   pressed ? ({ opacity: 0.82, transform: [{ scale: 0.98 }] } as ViewStyle) : null,
@@ -14334,9 +14663,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 <LinearGradient
                   pointerEvents="none"
                   colors={
-                    liveAssignmentCtaMeta.tone === "live" || liveAssignmentCtaMeta.tone === "preview"
+                    liveHeaderTone === "live" || liveHeaderTone === "preview"
                       ? ["rgba(34,197,94,0.22)", "rgba(34,197,94,0.08)", "rgba(255,255,255,0.04)"]
-                      : liveAssignmentCtaMeta.tone === "scheduled"
+                      : liveHeaderTone === "scheduled"
                         ? ["rgba(245,215,128,0.18)", "rgba(245,215,128,0.06)", "rgba(255,255,255,0.03)"]
                         : ["rgba(255,255,255,0.08)", "rgba(255,255,255,0.03)", "transparent"]
                   }
@@ -14355,11 +14684,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     style={{ opacity: 0.95 }}
                     size={13}
                     color={
-                      liveAssignmentCtaMeta.tone === "scheduled"
+                      liveHeaderTone === "scheduled"
                         ? "#F5D780"
-                        : liveAssignmentCtaMeta.tone === "preview"
+                        : liveHeaderTone === "preview"
                           ? "#22c55e"
-                          : liveAssignmentCtaMeta.tone === "live"
+                          : liveHeaderTone === "live"
                             ? "#22c55e"
                             : "rgba(255,255,255,0.72)"
                     }
@@ -14369,9 +14698,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 <Text
                   style={[
                     t.liveBtnText,
-                    liveAssignmentCtaMeta.tone === "scheduled"
+                    liveHeaderTone === "scheduled"
                       ? t.liveBtnTextScheduled
-                      : liveAssignmentCtaMeta.tone === "preview" || liveAssignmentCtaMeta.tone === "live"
+                      : liveHeaderTone === "preview" || liveHeaderTone === "live"
                         ? t.liveBtnTextLive
                         : t.liveBtnTextIdle,
                   ]}
@@ -14380,7 +14709,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 </Text>
               </Pressable>
 
-              {liveAssignmentCtaMeta.tone === "scheduled" ? (
+              {liveHeaderTone === "scheduled" ? (
                 <Text
                   numberOfLines={1}
                   style={{
@@ -14393,9 +14722,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     maxWidth: 84,
                   }}
                 >
-                  {liveAssignmentCtaMeta.sublabel || "Live starts soon"}
+                  {liveHeaderSublabel || "Live starts soon"}
                 </Text>
-              ) : liveAssignmentCtaMeta.tone === "preview" ? (
+              ) : liveHeaderTone === "preview" ? (
                 <Text
                   numberOfLines={1}
                   style={{
@@ -14410,7 +14739,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 >
                   {liveAssignmentCtaMeta.sublabel || "Ready room open"}
                 </Text>
-              ) : liveAssignmentCtaMeta.tone === "live" ? (
+              ) : liveHeaderTone === "live" ? (
                 <Text
                   numberOfLines={1}
                   style={{
@@ -14516,9 +14845,16 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             const prev = visibleMessages[index + 1];
             const showAvatar = true;
             const isSelected = selectedMessageIds.has(item.id);
-            const isActionHighlighted = messageActionsOpen && messageActionsTarget?.id === item.id;
+            const isActionHighlighted =
+              (messageActionsOpen && messageActionsTarget?.id === item.id) || flashSlotMessageId === item.id;
+            // Church Members room: day separator above the first message of each day (list is inverted).
+            const dayLabel =
+              isChurchLiveControlRoom &&
+              (!prev || chatDayKey(Number(prev.createdAt || 0)) !== chatDayKey(Number(item.createdAt || 0)))
+                ? chatDayLabel(Number(item.createdAt || 0), liveCountdownNow)
+                : "";
 
-            return (
+            const bubble = (
               <Bubble
                 m={item}
                 showAvatar={showAvatar}
@@ -14563,6 +14899,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 }
               />
             );
+            return dayLabel ? (
+              <View>
+                <ChatDateSeparator label={dayLabel} />
+                {bubble}
+              </View>
+            ) : (
+              bubble
+            );
           }}
           ListEmptyComponent={
             <View style={s.chatEmptyList}>
@@ -14582,7 +14926,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       </View>
 
       {/* Composer */}
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}>
+      <KeyboardAvoidingView
+        style={
+          Platform.OS === "android" && androidKeyboardHeight > 0
+            ? { paddingBottom: androidKeyboardHeight + insets.bottom }
+            : undefined
+        }
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
+      >
         {messageSelectionMode ? (() => {
           const selectedMessages = messages.filter((m) => selectedMessageIds.has(m.id));
           const canDeleteEveryoneSelection =
@@ -14833,9 +15185,12 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             style={[
               s.composer,
               {
-                marginBottom: composerKeyboardVisible
-                  ? 6
-                  : Math.max(tabBarH, insets.bottom + 10),
+                // Android: a hardware/floating keyboard reports height 0 and does not cover
+                // the nav bar, so keep the resting inset unless a docked keyboard lifts us.
+                marginBottom:
+                  composerKeyboardVisible && (Platform.OS !== "android" || androidKeyboardHeight > 0)
+                    ? 6
+                    : Math.max(tabBarH, insets.bottom + 10),
               },
             ]}
           >
@@ -15003,7 +15358,12 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 </>
               ) : null}
 
-              {voiceRecording || (!draft.trim() && pending.length === 0) ? (
+              {isChurchLiveControlRoom && !canSend && !attachUploading ? (
+                <ChurchVoiceNoteButton
+                  disabled={isMessagingDisabledV1 || dmComposerLocked}
+                  onSend={sendChurchVoiceNote}
+                />
+              ) : voiceRecording || (!draft.trim() && pending.length === 0) ? (
               <MessageVoiceRecorderButton
                 disabled={dmComposerLocked || attachUploading}
                 onRecordingChange={setVoiceRecording}
@@ -15149,9 +15509,18 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       >
         <View style={s.menuOverlay}>
           <Pressable style={s.menuBackdrop} onPress={() => setAddMemberOpen(false)} />
-          <View style={s.memberSheet}>
+          <View
+            style={[
+              s.memberSheet,
+              // Android: dark/gold sheet that sits above the system navigation bar.
+              Platform.OS === "android" ? [s.addSuspendSheetAndroid, { marginBottom: insets.bottom + 10 }] : null,
+            ]}
+          >
+            {Platform.OS === "android" ? <View style={s.addSuspendHandleAndroid} /> : null}
             <View style={s.memberSheetHeader}>
-              <Text style={t.menuTitle}>{isChurchLiveControlRoom ? "ADD & Suspend" : "ADD & Remove"}</Text>
+              <Text style={[t.menuTitle, Platform.OS === "android" ? t.addSuspendTitleAndroid : null]}>
+                {isChurchLiveControlRoom ? "ADD & Suspend" : "ADD & Remove"}
+              </Text>
               <Text style={t.menuSub}>
                 {isChurchLiveControlRoom
                   ? `Restore or suspend access for ${headerTitle}`
@@ -15220,6 +15589,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 })
               }
               keyExtractor={(item: any) => String(item.userId || item.id)}
+              style={Platform.OS === "android" ? s.addSuspendListAndroid : undefined}
               contentContainerStyle={s.memberListContent}
               ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
               ListEmptyComponent={
@@ -15350,9 +15720,18 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     : !!selectedRemoveMemberId && !selectedRemoveProtected;
                 return [
                   s.menuCancelBtn,
+                  Platform.OS === "android" ? s.addSuspendBtnAndroid : null,
                   {
-                    backgroundColor: enabled ? GOLD : "rgba(255,255,255,0.08)",
-                    borderColor: enabled ? GOLD : "rgba(255,255,255,0.12)",
+                    backgroundColor: enabled
+                      ? GOLD
+                      : Platform.OS === "android"
+                        ? "rgba(217,179,95,0.06)"
+                        : "rgba(255,255,255,0.08)",
+                    borderColor: enabled
+                      ? GOLD
+                      : Platform.OS === "android"
+                        ? "rgba(217,179,95,0.26)"
+                        : "rgba(255,255,255,0.12)",
                   },
                   pressed && enabled ? ({ opacity: 0.9 } as ViewStyle) : null,
                 ];
@@ -15365,7 +15744,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     color:
                       (addMemberMode === "add" ? selectedAddMemberId : selectedRemoveMemberId)
                         ? "#0B0F17"
-                        : "rgba(255,255,255,0.45)",
+                        : Platform.OS === "android"
+                          ? "rgba(217,179,95,0.55)"
+                          : "rgba(255,255,255,0.45)",
                   },
                 ]}
               >
@@ -15391,9 +15772,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
             <Pressable
               onPress={() => setAddMemberOpen(false)}
-              style={({ pressed }) => [s.menuCancelBtn, pressed ? ({ opacity: 0.9 } as ViewStyle) : null]}
+              style={({ pressed }) => [
+                s.menuCancelBtn,
+                Platform.OS === "android" ? [s.addSuspendBtnAndroid, s.addSuspendCancelAndroid] : null,
+                pressed ? ({ opacity: 0.9 } as ViewStyle) : null,
+              ]}
             >
-              <Text style={t.menuCancelText}>Cancel</Text>
+              <Text style={[t.menuCancelText, Platform.OS === "android" ? t.addSuspendCancelTextAndroid : null]}>
+                Cancel
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -16094,7 +16481,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
             <ScrollView
               style={s.menuBodyScroll}
-              contentContainerStyle={s.menuScrollContent}
+              contentContainerStyle={[
+                s.menuScrollContent,
+                // Android: the sheet draws under the navigation bar; keep the last cards scrollable above it.
+                Platform.OS === "android" ? { paddingBottom: 34 + insets.bottom + 24 } : null,
+              ]}
               showsVerticalScrollIndicator={false}
               bounces={false}
             >
@@ -18470,6 +18861,63 @@ videoEditorSplitTimelineBadgeText: {
   } as TextStyle,
 
   screen: { flex: 1, backgroundColor: BG, paddingHorizontal: PAD } as ViewStyle,
+  addSuspendSheetAndroid: {
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.42)",
+    backgroundColor: "#0B0F17",
+    borderRadius: 30,
+    elevation: 0,
+    boxShadow: "0 0 26px rgba(217,179,95,0.20)",
+    paddingTop: 8,
+  } as ViewStyle,
+  addSuspendHandleAndroid: {
+    alignSelf: "center",
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    marginBottom: 4,
+    backgroundColor: "rgba(217,179,95,0.45)",
+  } as ViewStyle,
+  addSuspendListAndroid: { flexGrow: 0, flexShrink: 1 } as ViewStyle,
+  addSuspendBtnAndroid: { minHeight: 46, borderRadius: 18, marginTop: 9 } as ViewStyle,
+  addSuspendCancelAndroid: {
+    borderColor: "rgba(217,179,95,0.45)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  } as ViewStyle,
+  suspendedGateScreen: { alignItems: "center", justifyContent: "center", backgroundColor: "#0B0F17" } as ViewStyle,
+  suspendedGateCard: {
+    width: "100%",
+    alignItems: "center",
+    paddingHorizontal: 22,
+    paddingVertical: 28,
+    borderRadius: 28,
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.42)",
+    backgroundColor: "rgba(14,19,30,0.98)",
+    boxShadow: "0 0 22px rgba(217,179,95,0.18)",
+  } as ViewStyle,
+  suspendedGateIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.45)",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    marginBottom: 16,
+  } as ViewStyle,
+  suspendedGateBtn: {
+    alignSelf: "stretch",
+    minHeight: 48,
+    marginTop: 22,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.55)",
+    backgroundColor: "rgba(217,179,95,0.12)",
+  } as ViewStyle,
 
   header: {
     flexDirection: "row",
@@ -19900,6 +20348,40 @@ videoEditorSplitTimelineBadgeText: {
     overflow: "visible",
   } as ViewStyle,
 
+  churchSlotInlineWrap: {
+    alignSelf: "flex-start",
+    marginTop: 4,
+    marginBottom: 10,
+  } as ViewStyle,
+
+  voiceNoteRow: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "flex-start",
+    maxWidth: "94%",
+    marginVertical: 6,
+  } as ViewStyle,
+
+  voiceNoteBody: {
+    flexShrink: 1,
+    gap: 4,
+  } as ViewStyle,
+
+  voiceNoteRowMine: {
+    alignSelf: "flex-end",
+  } as ViewStyle,
+
+  voiceNoteSender: {
+    color: "rgba(245,215,128,0.9)",
+    fontSize: 12,
+    fontWeight: "700",
+    marginLeft: 4,
+  } as TextStyle,
+
+  voiceNoteTimeMine: {
+    alignSelf: "flex-end",
+  } as TextStyle,
+
   churchLiveScheduleCardShell: {
     width: "100%",
     alignSelf: "stretch",
@@ -20980,6 +21462,18 @@ const t = StyleSheet.create({
   input: { color: "white", fontWeight: "700", fontSize: 15, lineHeight: 21 } as TextStyle,
 
   emptyTitle: { color: "white", fontWeight: "900", fontSize: 16 } as TextStyle,
+  addSuspendTitleAndroid: { color: "#F4D06F", letterSpacing: 0.6 } as TextStyle,
+  addSuspendCancelTextAndroid: { color: "#D9B35F" } as TextStyle,
+  suspendedGateTitle: { color: "white", fontWeight: "900", fontSize: 20, letterSpacing: 0.2 } as TextStyle,
+  suspendedGateSub: {
+    marginTop: 8,
+    color: "rgba(255,255,255,0.66)",
+    fontWeight: "700",
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: "center",
+  } as TextStyle,
+  suspendedGateBtnText: { color: "#D9B35F", fontWeight: "900", fontSize: 14 } as TextStyle,
   emptySub: { marginTop: 6, color: "rgba(255,255,255,0.62)", fontWeight: "700", fontSize: 12 } as TextStyle,
 
   pendingChipName: {

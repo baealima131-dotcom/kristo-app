@@ -2,8 +2,8 @@
   "expo": {
     "name": "Kristo App",
     "slug": "mobile",
-    "version": "1.0.2",
-    "orientation": "portrait",
+    "version": "1.0.5",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "mobile",
     "userInterfaceStyle": "automatic",
@@ -24,7 +24,7 @@
         "NSMicrophoneUsageDescription": "Kristo App needs microphone access for live streaming and audio in live rooms.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "5"
+      "buildNumber": "14"
     },
     "android": {
       "adaptiveIcon": {
@@ -40,7 +40,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "versionCode": 100
+      "versionCode": 110
     },
     "web": {
       "bundler": "metro",
@@ -67,7 +67,13 @@
       ],
       "expo-video",
       "@livekit/react-native-expo-plugin",
-      "react-native-compressor"
+      "react-native-compressor",
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "PORTRAIT_UP"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
