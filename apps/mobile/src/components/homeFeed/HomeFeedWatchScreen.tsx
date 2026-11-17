@@ -1814,15 +1814,15 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           />
           <View style={{ paddingTop: insets.top }}>
             <View style={styles.topBar}>
+              {/* Between the back button and the two inbox buttons; shrinks to fit narrow phones. */}
               <View style={styles.topBarTitleRow} pointerEvents="none">
-                <Text style={styles.topBarTitleWord} numberOfLines={1}>
-                  JESUS
-                </Text>
-                <Text style={styles.topBarTitleWord} numberOfLines={1}>
-                  IS
-                </Text>
-                <Text style={styles.topBarTitleWord} numberOfLines={1}>
-                  KING
+                <Text
+                  style={styles.topBarTitleWord}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}
+                >
+                  JESUS IS KING
                 </Text>
               </View>
               <Pressable
