@@ -85,10 +85,7 @@ import {
   saveHomeFeedVideoProgress,
 } from "@/src/lib/homeFeedVideoProgressStore";
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
-import {
-  fetchProfileCommunicationInboxSnapshot,
-  formatProfileCommunicationBadgeCount,
-} from "@/src/lib/profileCommunicationInbox";
+import { HEADER_INBOX_ROUTES, HeaderInboxIcons, type HeaderInboxTarget } from "./HeaderInboxIcons";
 import {
   YOUTUBE_CARD_H_PADDING,
   resolveWatchPlayerHeight,
@@ -470,6 +467,15 @@ function IosWatchFullscreen({
     </Modal>
   );
 }
+
+// Watch header buttons match the 42 px back button (Home keeps its smaller ones).
+const WATCH_HEADER_SIDE_PADDING = 12;
+const WATCH_HEADER_BACK_SIZE = 42;
+const WATCH_HEADER_INBOX_SIZE = 42;
+const WATCH_HEADER_INBOX_GAP = 10;
+const WATCH_HEADER_TITLE_LEFT = WATCH_HEADER_SIDE_PADDING + WATCH_HEADER_BACK_SIZE + 6;
+const WATCH_HEADER_TITLE_RIGHT =
+  WATCH_HEADER_SIDE_PADDING + WATCH_HEADER_INBOX_SIZE * 2 + WATCH_HEADER_INBOX_GAP + 8;
 
 /** Height (px) of the purple line left under the video when the panel is folded. */
 const WATCH_PANEL_FOLDED_LINE = 4;
@@ -1502,10 +1508,14 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     detectedForPost?.aspect ??
     rememberedAspect ??
     defaultHomeFeedVideoAspectRatio(displayType ?? "portrait45");
-  const openMessages = useCallback(() => {
-    onClose();
-    requestAnimationFrame(() => router.push("/(tabs)/profile/messages" as any));
-  }, [onClose, router]);
+  // Messages and missed calls (build 16 header): Watch closes first, then the inbox opens.
+  const handleInboxOpen = useCallback(
+    (target: HeaderInboxTarget) => {
+      onClose();
+      requestAnimationFrame(() => router.push(HEADER_INBOX_ROUTES[target] as any));
+    },
+    [onClose, router]
+  );
   const facebookReel = isFacebookVerticalItem(payload?.item);
   const playerHeight = useMemo(
     () =>
@@ -1525,48 +1535,6 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const upNextViewportHeightRef = useRef(0);
   const upNextPanStartOffsetRef = useRef(0);
   const [playbackStarted, setPlaybackStarted] = useState(false);
-  const [communicationCounts, setCommunicationCounts] = useState({
-    unreadMessages: 0,
-    missedCalls: 0,
-  });
-  const communicationBadge = formatProfileCommunicationBadgeCount(
-    communicationCounts.unreadMessages + communicationCounts.missedCalls
-  );
-  useEffect(() => {
-    if (!visible) return;
-    let active = true;
-    let refreshing = false;
-    const refreshCounts = async () => {
-      if (refreshing) return;
-      refreshing = true;
-      let base = String(process.env.EXPO_PUBLIC_API_BASE || "");
-      while (base.endsWith("/")) base = base.slice(0, -1);
-      if (!base) {
-        refreshing = false;
-        return;
-      }
-      try {
-        const snapshot = await fetchProfileCommunicationInboxSnapshot({ base });
-        if (active) {
-          setCommunicationCounts({
-            unreadMessages: snapshot.unreadMessages,
-            missedCalls: snapshot.missedCalls,
-          });
-        }
-      } catch {
-        // Keep the last successful values if a refresh fails.
-      } finally {
-        refreshing = false;
-      }
-    };
-
-    void refreshCounts();
-    const timer = setInterval(refreshCounts, 20_000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [visible]);
   // Near the end of Up Next (about two cards left), ask once per list length for more videos.
   const upNextEndReachedRef = useRef(onUpNextEndReached);
   upNextEndReachedRef.current = onUpNextEndReached;
@@ -1582,14 +1550,32 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const [panelHeight, setPanelHeight] = useState(0);
   const upNextScrollY = useRef(new Animated.Value(0)).current;
   const panelFoldMax = Math.max(0, panelHeight - WATCH_PANEL_FOLDED_LINE);
-  const panelTranslateY = useMemo(
+  // Build 16: the fold follows the finger 1:1 (scrolling down folds, scrolling up unfolds at once,
+  // wherever Up Next is), on the native driver; a new video sets the scroll back to 0, which also
+  // unfolds it. Overscroll at the top (iOS bounce) is ignored.
+  const panelFold = useMemo(
     () =>
-      upNextScrollY.interpolate({
-        inputRange: [0, Math.max(1, panelFoldMax)],
-        outputRange: [0, -panelFoldMax],
+      Animated.diffClamp(
+        upNextScrollY.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, 1],
+          extrapolateLeft: "clamp",
+        }),
+        0,
+        Math.max(1, panelFoldMax)
+      ),
+    [upNextScrollY, panelFoldMax]
+  );
+  const panelTranslateY = useMemo(() => Animated.multiply(panelFold, -1), [panelFold]);
+  // The panel's contents fade as it folds, leaving the thin purple line with its gold edge.
+  const panelContentOpacity = useMemo(
+    () =>
+      panelFold.interpolate({
+        inputRange: [0, Math.max(1, panelFoldMax * 0.6)],
+        outputRange: [1, 0],
         extrapolate: "clamp",
       }),
-    [upNextScrollY, panelFoldMax]
+    [panelFold, panelFoldMax]
   );
   const handlePanelLayout = useCallback((event: any) => {
     const next = Math.round(Number(event?.nativeEvent?.layout?.height || 0));
@@ -1847,22 +1833,14 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
               >
                 <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
               </Pressable>
-              <Pressable
-                onPress={openMessages}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                accessibilityRole="button"
-                accessibilityLabel="Open messages"
-                style={styles.messageButton}
-              >
-                <Ionicons name="chatbubble-ellipses-outline" size={21} color="#FFFFFF" />
-                {communicationBadge ? (
-                  <View style={styles.watchHeaderBadge} pointerEvents="none">
-                    <Text style={styles.watchHeaderBadgeText}>
-                      {communicationBadge}
-                    </Text>
-                  </View>
-                ) : null}
-              </Pressable>
+              {/* Messages and missed calls, each with its own count (missed calls open Calls). */}
+              <View style={styles.watchHeaderInbox}>
+                <HeaderInboxIcons
+                  onOpen={handleInboxOpen}
+                  size={WATCH_HEADER_INBOX_SIZE}
+                  gap={WATCH_HEADER_INBOX_GAP}
+                />
+              </View>
             </View>
           </View>
         </View>
@@ -1950,7 +1928,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
               style={StyleSheet.absoluteFillObject}
               pointerEvents="none"
             />
-            <View style={styles.panelContent}>
+            <Animated.View style={[styles.panelContent, { opacity: panelContentOpacity }]}>
               {item ? <WatchVideoMeta item={item} fallbackTitle={payload.title} /> : null}
               {item ? <View style={styles.actionsDivider} /> : null}
               <View style={styles.actionsWrap}>
@@ -1965,7 +1943,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
                   />
                 ) : null}
               </View>
-            </View>
+            </Animated.View>
           </Animated.View>
         </View>
 
@@ -2056,8 +2034,8 @@ const styles = StyleSheet.create({
   // Equal side insets keep the word row mathematically centered vs the back button.
   topBarTitleRow: {
     position: "absolute",
-    left: 62,
-    right: 62,
+    left: WATCH_HEADER_TITLE_LEFT,
+    right: WATCH_HEADER_TITLE_RIGHT,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
@@ -2091,6 +2069,10 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 6,
+  },
+  watchHeaderInbox: {
+    position: "absolute",
+    right: WATCH_HEADER_SIDE_PADDING,
   },
   messageButton: {
     position: "absolute", right: 12, width: 42, height: 42, borderRadius: 21,
@@ -2229,7 +2211,16 @@ const styles = StyleSheet.create({
   },
   // Clips the panel as it slides up, so it disappears under the video's bottom edge.
   upNextArea: { flex: 1, overflow: "hidden" },
-  currentVideoPanelFloating: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 2 },
+  // Gold edge and shadow under the panel (build 16), so the folded line still reads as the panel.
+  currentVideoPanelFloating: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 2,
+    borderBottomColor: "rgba(244,208,111,0.55)",
+    boxShadow: "0 8px 18px rgba(0,0,0,0.65), 0 2px 10px rgba(168,85,247,0.35)",
+  },
   currentVideoPanel: {
     borderTopWidth: 1,
     borderTopColor: "rgba(244,208,111,0.28)",
