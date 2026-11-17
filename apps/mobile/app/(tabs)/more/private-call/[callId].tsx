@@ -9,32 +9,38 @@ import {
   Text,
   View,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import {
-  setAudioModeAsync,
-  useAudioPlayer,
-  useAudioPlayerStatus,
-} from "expo-audio";
-import {
-  RoomContext,
-  registerGlobals,
-  useRoomContext,
-} from "@livekit/react-native";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import { registerGlobals } from "@livekit/react-native";
 import { Room, RoomEvent } from "livekit-client";
 
 import LiveMainStageSaturnOrbit from "@/src/components/live/LiveMainStageSaturnOrbit";
+import { useOngoingCallElapsed } from "@/src/components/PrivateCallOngoingHost";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { ensurePrivateCallRingingAudioFiles, type PrivateCallRingingAudioUris } from "@/src/lib/privateCallRingingAudio";
+import { cancelIncomingCallNotification } from "@/src/lib/push/kristoCallNotifications";
+import { consumePendingCallAnswer } from "@/src/lib/push/kristoCallRouting";
 import {
-  PrivateCallAudioRenderer,
-  PrivateCallLiveKitRoomDiagnostics,
+  endOngoingPrivateCall,
+  getOngoingPrivateCallState,
+  setPrivateCallScreenFocused,
+  startOngoingPrivateCall,
+  startPrivateCallUnavailablePrompt,
+  stopPrivateCallUnavailablePrompt,
+  toggleOngoingPrivateCallMute,
+  useOngoingPrivateCallState,
+} from "@/src/lib/privateCallOngoingStore";
+import {
+  disposePreconnectedPrivateCallRoom,
+  preconnectedPrivateCallRooms,
+} from "@/src/lib/privateCallPreconnect";
+import {
   ensurePrivateCallAudioSession,
   logPrivateCallAudioLatencyDiag,
 } from "@/src/lib/privateCallAudioRenderer";
-import { logLiveKitTokenClaims } from "@/src/lib/liveKitTokenDecode";
 import { buildLiveKitRoomOptions } from "@/src/lib/liveKitVideoQuality";
 import {
   buildPrivateCallConnectOptions,
@@ -45,6 +51,7 @@ import {
   acceptPrivateCall,
   declinePrivateCall,
   endPrivateCall,
+  endPrivateCallIfRinging,
   fetchPrivateCallLiveKitCredentials,
   fetchPrivateCallSession,
   isPrivateCallTerminalStatus,
@@ -73,20 +80,6 @@ type StableLiveKitBinding = {
   serverUrl: string;
   token: string;
 };
-
-type PreconnectedPrivateCallRoom = {
-  callId: string;
-  roomName: string;
-  serverUrl: string;
-  token: string;
-  room: Room;
-  subscriptionBridgeCleanup?: () => void;
-};
-
-const preconnectedPrivateCallRooms = new Map<
-  string,
-  PreconnectedPrivateCallRoom
->();
 
 function installPrivateCallRingingSubscriptionBridge(
   room: Room,
@@ -245,38 +238,6 @@ function installPrivateCallRingingSubscriptionBridge(
   };
 }
 
-function takePreconnectedPrivateCallRoom(
-  callId: string,
-  roomName: string
-): PreconnectedPrivateCallRoom | null {
-  const existing = preconnectedPrivateCallRooms.get(callId) || null;
-  if (!existing) return null;
-
-  if (existing.roomName !== roomName) {
-    preconnectedPrivateCallRooms.delete(callId);
-    existing.subscriptionBridgeCleanup?.();
-    void existing.room.disconnect(true);
-    return null;
-  }
-
-  preconnectedPrivateCallRooms.delete(callId);
-  return existing;
-}
-
-async function disposePreconnectedPrivateCallRoom(callId: string) {
-  const existing = preconnectedPrivateCallRooms.get(callId);
-  if (!existing) return;
-
-  preconnectedPrivateCallRooms.delete(callId);
-  existing.subscriptionBridgeCleanup?.();
-
-  try {
-    await existing.room.disconnect(true);
-  } catch {
-    // Best effort cleanup.
-  }
-}
-
 type ConnectedPeerDisplay = {
   peerName: string;
   peerAvatar?: string;
@@ -284,7 +245,6 @@ type ConnectedPeerDisplay = {
 const AVATAR_SIZE = 112;
 const RINGING_SESSION_POLL_MS = 500;
 const CONNECTED_SESSION_POLL_MS = 1500;
-const REMOTE_DISCONNECT_GRACE_MS = 5000;
 const OUTGOING_RINGING_HAPTIC_MS = 1700;
 
 function PrivateCallOutgoingRinging({ callId }: { callId: string }) {
@@ -414,34 +374,69 @@ function PrivateCallOutgoingRinging({ callId }: { callId: string }) {
 }
 
 
+// The outgoing call rings (Mountain waittone) for exactly this long, never longer.
+// Measured from the moment the ringing starts, not from when the audio first plays.
+const PRIVATE_CALL_RING_LIMIT_MS = 29_000;
+
+type PrivateCallRingingPhase = "idle" | "waittone" | "checking" | "unavailable" | "done";
+
+/**
+ * Outgoing ringback for the caller. Reuses the existing call audio stack instead of
+ * building a new one:
+ * - audio session: the LiveKit session from `ensurePrivateCallAudioSession` (the same
+ *   one the ringing preconnect and the connected call already use) — no
+ *   `setAudioModeAsync` here, so the call's session is never reconfigured;
+ * - player: one `useAudioPlayer` (the expo-audio player the app already uses for voice
+ *   notes), switched from the waittone to the unavailable prompt with `replace()`.
+ *
+ * The waittone plays for at most 29s. At the limit it stops and `onRingLimitReached`
+ * decides (from the server state) whether the unavailable prompt plays: it does not
+ * when the pastor has accepted. When `forceUnavailable` is set (the pastor declined)
+ * the prompt plays right away. Unmounting the component (accept or Cancel) stops all
+ * sound and the prompt never plays.
+ */
 function PrivateCallRingingAudio({
   callId,
-  onPromptFinished,
+  forceUnavailable = false,
+  onRingLimitReached,
   onRingingStarted,
   onUnavailableStarted,
 }: {
   callId: string;
-  onPromptFinished: () => void;
+  forceUnavailable?: boolean;
+  onRingLimitReached: () => Promise<boolean>;
   onRingingStarted?: () => void;
   onUnavailableStarted?: () => void;
 }) {
   const [audioUris, setAudioUris] = useState<PrivateCallRingingAudioUris | null>(null);
-  const waittonePlayer = useAudioPlayer(
-    audioUris?.waittone ? { uri: audioUris.waittone } : null
+  // keepAudioSessionActive: pausing/switching the prompt must not deactivate the
+  // shared LiveKit audio session.
+  const player = useAudioPlayer(
+    audioUris?.waittone ?? null,
+    { keepAudioSessionActive: true }
   );
-  const unavailablePlayer = useAudioPlayer(
-    audioUris?.unavailable ? { uri: audioUris.unavailable } : null
-  );
-  const waittoneStatus = useAudioPlayerStatus(waittonePlayer);
-  const unavailableStatus = useAudioPlayerStatus(unavailablePlayer);
-  const startedCallRef = useRef("");
-  const promptFinishedRef = useRef(false);
+  const status = useAudioPlayerStatus(player);
+  const [waittoneElapsed, setWaittoneElapsed] = useState(false);
+  const phaseRef = useRef<PrivateCallRingingPhase>("idle");
+  const mountedRef = useRef(true);
+  const waittoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playerRef = useRef(player);
+  const onRingLimitReachedRef = useRef(onRingLimitReached);
   const onRingingStartedRef = useRef(onRingingStarted);
+  const onUnavailableStartedRef = useRef(onUnavailableStarted);
+  const audioUrisRef = useRef<PrivateCallRingingAudioUris | null>(null);
 
-  useEffect(() => {
-    onRingingStartedRef.current = onRingingStarted;
-  }, [onRingingStarted]);
+  playerRef.current = player;
+  audioUrisRef.current = audioUris;
+  onRingLimitReachedRef.current = onRingLimitReached;
+  onRingingStartedRef.current = onRingingStarted;
+  onUnavailableStartedRef.current = onUnavailableStarted;
 
+  const setRingingPhase = useCallback((next: PrivateCallRingingPhase) => {
+    phaseRef.current = next;
+  }, []);
+
+  // Load the bundled mp3 files once per call.
   useEffect(() => {
     let active = true;
     onRingingStartedRef.current?.();
@@ -461,71 +456,121 @@ function PrivateCallRingingAudio({
     };
   }, [callId]);
 
+  // Unmount (Cancel, accept, or leaving the screen): stop the sound immediately.
+  // The LiveKit audio session is left untouched for the call.
+  // The 29s ring limit starts when ringing starts (mount), so the caller never hears
+  // more than 29s of waittone even if the audio file loads late.
   useEffect(() => {
-    if (!audioUris || !waittoneStatus.isLoaded || startedCallRef.current === callId) {
-      return;
-    }
-
-    startedCallRef.current = callId;
-    let active = true;
-
-    void setAudioModeAsync({
-      playsInSilentMode: true,
-      allowsRecording: true,
-    }).catch((error: any) => {
-      console.warn("KRISTO_PRIVATE_CALL_PROMPT_AUDIO_MODE_FAILED", {
+    mountedRef.current = true;
+    phaseRef.current = "idle";
+    setWaittoneElapsed(false);
+    waittoneTimerRef.current = setTimeout(() => {
+      waittoneTimerRef.current = null;
+      console.log("KRISTO_PRIVATE_CALL_RING_LIMIT_REACHED", {
         callId,
-        error: String(error?.message || error),
+        limitMs: PRIVATE_CALL_RING_LIMIT_MS,
       });
-    });
+      if (mountedRef.current) setWaittoneElapsed(true);
+    }, PRIVATE_CALL_RING_LIMIT_MS);
+    return () => {
+      mountedRef.current = false;
+      if (waittoneTimerRef.current) clearTimeout(waittoneTimerRef.current);
+      waittoneTimerRef.current = null;
+      phaseRef.current = "done";
+      try {
+        playerRef.current.pause();
+      } catch {}
+    };
+  }, [callId]);
 
-    void waittonePlayer.seekTo(0)
-      .then(() => {
-        if (active) waittonePlayer.play();
-      })
-      .catch((error: any) => {
+  // Start the Mountain waittone once it is loaded, inside the existing call audio session.
+  useEffect(() => {
+    if (!audioUris || !status.isLoaded || phaseRef.current !== "idle") return;
+    setRingingPhase("waittone");
+
+    void (async () => {
+      await ensurePrivateCallAudioSession(callId);
+      if (phaseRef.current !== "waittone") return;
+
+      const current = playerRef.current;
+      try {
+        current.loop = true;
+        current.volume = 1;
+        await current.seekTo(0);
+        if (phaseRef.current !== "waittone") return;
+        current.play();
+        console.log("KRISTO_PRIVATE_CALL_WAITTONE_STARTED", {
+          callId,
+          limitMs: PRIVATE_CALL_RING_LIMIT_MS,
+        });
+      } catch (error: any) {
         console.warn("KRISTO_PRIVATE_CALL_WAITTONE_PLAY_FAILED", {
           callId,
           error: String(error?.message || error),
         });
-      });
+      }
+    })();
+  }, [audioUris, callId, setRingingPhase, status.isLoaded]);
 
-    const unavailableTimer = setTimeout(() => {
-      if (!active) return;
-      onUnavailableStarted?.();
-      waittonePlayer.pause();
-      void unavailablePlayer.seekTo(0)
-        .then(() => {
-          if (active) unavailablePlayer.play();
-        })
-        .catch((error: any) => {
-          console.warn("KRISTO_PRIVATE_CALL_UNAVAILABLE_PROMPT_PLAY_FAILED", {
-            callId,
-            error: String(error?.message || error),
-          });
-          onPromptFinished();
-        });
-    }, 29_000);
+  // Not answered / declined: the Mountain tone is already stopped. The "hapatikani" prompt
+  // is handed to the app-wide host (a short banner) and this screen returns to the previous
+  // page, so the caller is not held on a large empty No answer page.
+  const playUnavailablePrompt = useCallback(() => {
+    setRingingPhase("done");
+    try {
+      playerRef.current.pause();
+    } catch {}
+    console.log("KRISTO_PRIVATE_CALL_UNAVAILABLE_PROMPT_HANDOFF_REQUESTED", { callId });
+    onUnavailableStartedRef.current?.();
+  }, [callId, setRingingPhase]);
 
-    return () => {
-      active = false;
-      clearTimeout(unavailableTimer);
-      waittonePlayer.pause();
-      unavailablePlayer.pause();
-    };
-  }, [
-    audioUris,
-    callId,
-    unavailablePlayer,
-    waittonePlayer,
-    waittoneStatus.isLoaded,
-  ]);
-
+  // Ring limit reached, or the call was declined: stop the waittone at once. On a
+  // decline the prompt plays right away; at the ring limit it plays only if the
+  // server confirms the call was not accepted.
   useEffect(() => {
-    if (!unavailableStatus.didJustFinish || promptFinishedRef.current) return;
-    promptFinishedRef.current = true;
-    onPromptFinished();
-  }, [onPromptFinished, unavailableStatus.didJustFinish]);
+    if (!waittoneElapsed && !forceUnavailable) return;
+    if (forceUnavailable && !audioUris) return; // wait for the prompt file
+    if (phaseRef.current !== "idle" && phaseRef.current !== "waittone") return;
+    if (waittoneTimerRef.current) clearTimeout(waittoneTimerRef.current);
+    waittoneTimerRef.current = null;
+
+    try {
+      const current = playerRef.current;
+      current.loop = false;
+      current.pause();
+    } catch {}
+    console.log("KRISTO_PRIVATE_CALL_WAITTONE_STOPPED", {
+      callId,
+      reason: forceUnavailable ? "declined-or-timeout" : "ring-limit",
+    });
+
+    if (forceUnavailable) {
+      playUnavailablePrompt();
+      return;
+    }
+
+    setRingingPhase("checking");
+    void (async () => {
+      let shouldPlay = false;
+      try {
+        shouldPlay = await onRingLimitReachedRef.current();
+      } catch (error: any) {
+        console.warn("KRISTO_PRIVATE_CALL_RING_LIMIT_CHECK_FAILED", {
+          callId,
+          error: String(error?.message || error),
+        });
+      }
+      // Accepted, cancelled or unmounted meanwhile: stay silent.
+      if (!mountedRef.current || phaseRef.current !== "checking") return;
+      if (!shouldPlay) {
+        setRingingPhase("done");
+        console.log("KRISTO_PRIVATE_CALL_UNAVAILABLE_PROMPT_SKIPPED", { callId });
+        return;
+      }
+      playUnavailablePrompt();
+    })();
+  }, [audioUris, callId, forceUnavailable, playUnavailablePrompt, setRingingPhase, waittoneElapsed]);
+
 
   return null;
 }
@@ -577,495 +622,77 @@ function PrivateCallAvatar({
   );
 }
 
-function PrivateCallHangupSync({
-  callId,
-  peerUserId,
-  onRemoteTermination,
-  registerRoomDisconnect,
-}: {
-  callId: string;
-  peerUserId: string;
-  onRemoteTermination: (source: string, status: string) => void;
-  registerRoomDisconnect: (disconnect: (() => void) | null) => void;
-}) {
-  const room = useRoomContext();
-  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    registerRoomDisconnect(() => {
-      void room?.disconnect(true);
-    });
-    return () => registerRoomDisconnect(null);
-  }, [room, registerRoomDisconnect]);
-
-  useEffect(() => {
-    if (!room) return;
-
-    const clearGrace = () => {
-      if (!graceTimerRef.current) return;
-      clearTimeout(graceTimerRef.current);
-      graceTimerRef.current = null;
-    };
-
-    const verifySessionAfterDisconnect = async (source: string) => {
-      const next = await fetchPrivateCallSession(callId).catch(() => null);
-      if (next && isPrivateCallTerminalStatus(next.status)) {
-        onRemoteTermination(source, next.status);
-      }
-    };
-
-    const onParticipantDisconnected = (participant: any) => {
-      if (participant?.isLocal) return;
-      const identity = String(participant?.identity || "").trim();
-      if (peerUserId && identity !== peerUserId) return;
-
-      console.log("KRISTO_PRIVATE_CALL_REMOTE_PARTICIPANT_DISCONNECTED", {
-        callId,
-        peerUserId,
-        identity,
-      });
-
-      clearGrace();
-      graceTimerRef.current = setTimeout(() => {
-        void verifySessionAfterDisconnect("participant-disconnected-grace");
-      }, REMOTE_DISCONNECT_GRACE_MS);
-    };
-
-    const onParticipantConnected = (participant: any) => {
-      if (participant?.isLocal) return;
-      const identity = String(participant?.identity || "").trim();
-      if (peerUserId && identity === peerUserId) {
-        clearGrace();
-      }
-    };
-
-    const onReconnecting = () => {
-      clearGrace();
-    };
-
-    const onDisconnected = () => {
-      void verifySessionAfterDisconnect("room-disconnected");
-    };
-
-    room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
-    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
-    room.on(RoomEvent.Reconnecting, onReconnecting);
-    room.on(RoomEvent.Disconnected, onDisconnected);
-
-    return () => {
-      clearGrace();
-      room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
-      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
-      room.off(RoomEvent.Reconnecting, onReconnecting);
-      room.off(RoomEvent.Disconnected, onDisconnected);
-    };
-  }, [room, callId, peerUserId, onRemoteTermination]);
-
-  return null;
-}
-
-function PrivateCallConnectedRoom({
+/**
+ * Connected call UI. The call itself (LiveKit room, audio, microphone, timer, CallKit,
+ * Android foreground service) is owned by PrivateCallOngoingHost, so this view can be left
+ * with Back / another tab without disconnecting; it only reads and drives the shared state.
+ */
+function PrivateCallOngoingView({
   callId,
   peerName,
   peerAvatar,
-  currentUserId,
   onEnd,
+  onMinimize,
 }: {
   callId: string;
   peerName: string;
   peerAvatar?: string;
-  currentUserId: string;
   onEnd: () => void;
+  onMinimize: () => void;
 }) {
-  const room = useRoomContext();
-
-  const [micEnabled, setMicEnabled] = useState(true);
-  const [elapsedSec, setElapsedSec] = useState(0);
-  const durationStartedRef = useRef(false);
-  const elapsedSecRef = useRef(0);
-
-  const applyMicState = useCallback(
-    (enabled: boolean) => {
-      if (!room) return;
-      void room.localParticipant.setMicrophoneEnabled(enabled).catch(() => {});
-    },
-    [room]
-  );
-
-  useEffect(() => {
-    if (!room) return;
-
-    const syncMic = () => applyMicState(micEnabled);
-
-    syncMic();
-    room.on(RoomEvent.Connected, syncMic);
-    room.on(RoomEvent.Reconnected, syncMic);
-
-    return () => {
-      room.off(RoomEvent.Connected, syncMic);
-      room.off(RoomEvent.Reconnected, syncMic);
-    };
-  }, [room, micEnabled, applyMicState]);
-
-  useEffect(() => {
-    if (durationStartedRef.current) return;
-    durationStartedRef.current = true;
-
-    console.log("KRISTO_PRIVATE_CALL_DURATION_START", {
-      callId,
-      currentUserId,
-    });
-
-    const timer = setInterval(() => {
-      setElapsedSec((current) => {
-        const next = current + 1;
-        elapsedSecRef.current = next;
-        return next;
-      });
-    }, 1000);
-
-    return () => {
-      clearInterval(timer);
-      console.log("KRISTO_PRIVATE_CALL_DURATION_STOP", {
-        callId,
-        currentUserId,
-        elapsedSec: elapsedSecRef.current,
-      });
-    };
-  }, [callId, currentUserId]);
-
-  const handleToggleMute = async () => {
-    if (!room) return;
-    const nextMicEnabled = !micEnabled;
-    setMicEnabled(nextMicEnabled);
-    try {
-      await room.localParticipant.setMicrophoneEnabled(nextMicEnabled);
-    } catch {
-      setMicEnabled(micEnabled);
-      return;
-    }
-
-    console.log("KRISTO_PRIVATE_CALL_MUTE_TOGGLE", {
-      callId,
-      currentUserId,
-      muted: !nextMicEnabled,
-      micEnabled: nextMicEnabled,
-    });
-  };
+  const ongoing = useOngoingPrivateCallState();
+  const isThisCall = ongoing.call?.callId === callId;
+  const connected = isThisCall && !!ongoing.room;
+  const micEnabled = isThisCall ? ongoing.micEnabled : true;
+  const elapsedSec = useOngoingCallElapsed(isThisCall && connected ? ongoing.startedAt : 0);
 
   return (
-    <View style={styles.centerStage}>
-      <PrivateCallAvatar avatarUri={peerAvatar} animate />
+    <View style={styles.ongoingViewRoot}>
+      <Pressable
+        onPress={onMinimize}
+        accessibilityRole="button"
+        accessibilityLabel="Rudi nyuma, simu itaendelea"
+        style={styles.backBtn}
+        hitSlop={12}
+      >
+        <Ionicons name="chevron-down" size={22} color="#fff" />
+      </Pressable>
 
-      <Text style={styles.title}>Connected</Text>
-      {elapsedSec > 0 ? (
-        <Text style={styles.durationText}>{formatCallDuration(elapsedSec)}</Text>
-      ) : null}
-      <Text style={styles.subtitle}>{peerName}</Text>
+      <View style={styles.centerStage}>
+        <PrivateCallAvatar avatarUri={peerAvatar} animate />
 
-      <View style={styles.connectedControls}>
-        <Pressable
-          onPress={() => void handleToggleMute()}
-          style={[styles.muteCircleBtn, !micEnabled && styles.muteCircleBtnActive]}
-        >
-          <Ionicons
-            name={micEnabled ? "mic" : "mic-off"}
-            size={24}
-            color="#fff"
-          />
-          <Text style={styles.muteLabel}>{micEnabled ? "Mic On" : "Muted"}</Text>
-        </Pressable>
+        <Text style={styles.title}>{connected ? "Connected" : "Connecting…"}</Text>
+        {elapsedSec > 0 ? (
+          <Text style={styles.durationText}>{formatCallDuration(elapsedSec)}</Text>
+        ) : null}
+        <Text style={styles.subtitle}>{peerName}</Text>
+        <Text style={styles.ongoingHint}>
+          Unaweza kurudi nyuma na kuendelea kutumia app — simu itaendelea.
+        </Text>
 
-        <Pressable onPress={onEnd} style={styles.endBtn}>
-          <Ionicons name="call" size={20} color="#fff" />
-          <Text style={styles.endBtnText}>End Call</Text>
-        </Pressable>
+        <View style={styles.connectedControls}>
+          <Pressable
+            onPress={() => void toggleOngoingPrivateCallMute()}
+            disabled={!connected}
+            style={[
+              styles.muteCircleBtn,
+              !micEnabled && styles.muteCircleBtnActive,
+              !connected && styles.cancelCallBtnPressed,
+            ]}
+          >
+            <Ionicons name={micEnabled ? "mic" : "mic-off"} size={24} color="#fff" />
+            <Text style={styles.muteLabel}>{micEnabled ? "Mic On" : "Muted"}</Text>
+          </Pressable>
+
+          <Pressable onPress={onEnd} style={styles.endBtn}>
+            <Ionicons name="call" size={20} color="#fff" />
+            <Text style={styles.endBtnText}>End Call</Text>
+          </Pressable>
+        </View>
       </View>
     </View>
   );
 }
-
-const PrivateCallLiveKitShell = React.memo(function PrivateCallLiveKitShell({
-  binding,
-  peerUserId,
-  currentUserId,
-  peerDisplay,
-  onEndRef,
-  onRemoteTerminationRef,
-  registerRoomDisconnect,
-  latencyMarksRef,
-}: {
-  binding: StableLiveKitBinding;
-  peerUserId: string;
-  currentUserId: string;
-  peerDisplay: ConnectedPeerDisplay;
-  onEndRef: React.MutableRefObject<() => void>;
-  onRemoteTerminationRef: React.MutableRefObject<(source: string, status: string) => void>;
-  registerRoomDisconnect: (disconnect: (() => void) | null) => void;
-  latencyMarksRef: React.MutableRefObject<Record<string, number>>;
-}) {
-  const liveKitRoomKey = useMemo(
-    () => `${binding.callId}|${binding.roomName}|${binding.token}`,
-    [binding.callId, binding.roomName, binding.token]
-  );
-  const liveKitOptions = useMemo(() => buildLiveKitRoomOptions(), []);
-  const stableConnectOptions = useMemo(() => buildPrivateCallConnectOptions(), []);
-  const [ownedRoom, setOwnedRoom] = useState<Room | null>(null);
-  const connectSessionRef = useRef(0);
-  const mountLoggedRef = useRef("");
-
-  useEffect(() => {
-    console.log("KRISTO_PRIVATE_CALL_LIVEKIT_KEY", {
-      liveKitRoomKey,
-      callId: binding.callId,
-      roomName: binding.roomName,
-    });
-    console.log("KRISTO_PRIVATE_CALL_LIVEKIT_PROPS_STABLE", {
-      callId: binding.callId,
-      roomName: binding.roomName,
-      serverUrl: binding.serverUrl,
-      tokenLen: binding.token.length,
-      connect: true,
-      audioCapture: false,
-      autoSubscribe: stableConnectOptions.autoSubscribe,
-      ts: Date.now(),
-    });
-    logLiveKitTokenClaims(binding.token, {
-      source: "private-call-shell-bind",
-      callId: binding.callId,
-      roomName: binding.roomName,
-    });
-  }, [
-    binding.callId,
-    binding.roomName,
-    binding.serverUrl,
-    binding.token,
-    liveKitRoomKey,
-    stableConnectOptions.autoSubscribe,
-  ]);
-
-  useEffect(() => {
-    const session = ++connectSessionRef.current;
-
-    const preconnected = takePreconnectedPrivateCallRoom(
-      binding.callId,
-      binding.roomName
-    );
-
-    const room = preconnected?.room || new Room(liveKitOptions);
-
-    void (async () => {
-      try {
-        if (preconnected) {
-          const hadRingingOwner =
-            !!preconnected.subscriptionBridgeCleanup;
-
-          preconnected.subscriptionBridgeCleanup?.();
-
-          console.log(
-            "KRISTO_PRIVATE_CALL_SUBSCRIPTION_OWNER_HANDOFF",
-            {
-              callId: binding.callId,
-              roomName: binding.roomName,
-              roomInstanceId:
-                getPrivateCallRoomInstanceId(room),
-              from: hadRingingOwner ? "ringing" : "none",
-              to: "renderer",
-              ts: Date.now(),
-            }
-          );
-
-          console.log("KRISTO_PRIVATE_CALL_PRECONNECTED_ROOM_ADOPTED", {
-            callId: binding.callId,
-            roomName: binding.roomName,
-            ringingSubscriptionBridgeActive: false,
-            ts: Date.now(),
-          });
-        } else {
-          console.log("KRISTO_PRIVATE_CALL_ROOM_CONNECT_START", {
-            callId: binding.callId,
-            roomName: binding.roomName,
-            autoSubscribeRequested: stableConnectOptions.autoSubscribe,
-            ts: Date.now(),
-          });
-
-          await room.connect(
-            binding.serverUrl,
-            binding.token,
-            stableConnectOptions
-          );
-        }
-
-        if (session !== connectSessionRef.current) {
-          await room.disconnect(true);
-          return;
-        }
-
-        logPrivateCallAutoSubscribeEffective(room, {
-          callId: binding.callId,
-          roomName: binding.roomName,
-          source: preconnected
-            ? "ringing-preconnect-adopted"
-            : "manual-room-connect",
-          requestedAutoSubscribe: stableConnectOptions.autoSubscribe,
-        });
-
-        setOwnedRoom(room);
-
-        void room.localParticipant
-          .setMicrophoneEnabled(true)
-          .catch((error: any) => {
-            console.log("KRISTO_PRIVATE_CALL_MIC_ENABLE_ERROR", {
-              callId: binding.callId,
-              roomName: binding.roomName,
-              error: String(error?.message || error),
-              ts: Date.now(),
-            });
-          });
-      } catch (error: any) {
-        if (session !== connectSessionRef.current) return;
-
-        console.log("KRISTO_PRIVATE_CALL_ROOM_CONNECT_ERROR", {
-          callId: binding.callId,
-          roomName: binding.roomName,
-          source: preconnected
-            ? "ringing-preconnect-adopt"
-            : "manual-room-connect",
-          error: String(error?.message || error),
-          ts: Date.now(),
-        });
-
-        setOwnedRoom(null);
-      }
-    })();
-
-    return () => {
-      connectSessionRef.current++;
-
-      // The call exit path may already have disconnected this Room.
-      // Avoid starting a second overlapping LiveKit disconnect/negotiation.
-      const roomState = String((room as any)?.state || "");
-
-      console.log("KRISTO_PRIVATE_CALL_ROOM_SHELL_CLEANUP", {
-        callId: binding.callId,
-        roomName: binding.roomName,
-        roomState,
-        ts: Date.now(),
-      });
-
-      if (
-        roomState !== "disconnected" &&
-        roomState !== "disconnecting"
-      ) {
-        void room.disconnect(true).catch((error: any) => {
-          console.log("KRISTO_PRIVATE_CALL_ROOM_DISCONNECT_CLEANUP_ERROR", {
-            callId: binding.callId,
-            roomName: binding.roomName,
-            error: String(error?.message || error),
-            ts: Date.now(),
-          });
-        });
-      }
-
-      setOwnedRoom(null);
-    };
-  }, [
-    binding.callId,
-    binding.roomName,
-    binding.serverUrl,
-    binding.token,
-    liveKitOptions,
-    stableConnectOptions,
-  ]);
-
-  useEffect(() => {
-    if (mountLoggedRef.current === liveKitRoomKey) {
-      console.log("KRISTO_PRIVATE_CALL_ROOM_REMOUNT_BLOCKED", {
-        liveKitRoomKey,
-        callId: binding.callId,
-      });
-      return;
-    }
-    if (mountLoggedRef.current) {
-      console.log("KRISTO_PRIVATE_CALL_ROOM_UNMOUNT", {
-        liveKitRoomKey: mountLoggedRef.current,
-        callId: binding.callId,
-      });
-    }
-    mountLoggedRef.current = liveKitRoomKey;
-    const ts = Date.now();
-    latencyMarksRef.current.roomMount = ts;
-    logPrivateCallAudioLatencyDiag(latencyMarksRef.current, "room-mount", {
-      callId: binding.callId,
-    });
-    console.log("KRISTO_PRIVATE_CALL_ROOM_MOUNT", {
-      callId: binding.callId,
-      currentUserId,
-      liveKitRoomKey,
-      ts,
-    });
-
-    return () => {
-      console.log("KRISTO_PRIVATE_CALL_ROOM_UNMOUNT", {
-        callId: binding.callId,
-        liveKitRoomKey,
-        ts: Date.now(),
-      });
-      if (mountLoggedRef.current === liveKitRoomKey) {
-        mountLoggedRef.current = "";
-      }
-    };
-  }, [binding.callId, currentUserId, latencyMarksRef, liveKitRoomKey]);
-
-  const handleEnd = useCallback(() => {
-    onEndRef.current();
-  }, [onEndRef]);
-
-  const handleRemoteTermination = useCallback(
-    (source: string, status: string) => {
-      onRemoteTerminationRef.current(source, status);
-    },
-    [onRemoteTerminationRef]
-  );
-
-  if (!ownedRoom) {
-    return (
-      <View style={styles.centerStage}>
-        <ActivityIndicator color={GOLD} />
-      </View>
-    );
-  }
-
-  return (
-    <RoomContext.Provider value={ownedRoom}>
-      <PrivateCallLiveKitRoomDiagnostics
-        callId={binding.callId}
-        roomName={binding.roomName}
-        token={binding.token}
-        currentUserId={currentUserId}
-      />
-      <PrivateCallHangupSync
-        callId={binding.callId}
-        peerUserId={peerUserId}
-        onRemoteTermination={handleRemoteTermination}
-        registerRoomDisconnect={registerRoomDisconnect}
-      />
-      <PrivateCallAudioRenderer
-        callId={binding.callId}
-        roomName={binding.roomName}
-        currentUserId={currentUserId}
-        latencyMarksRef={latencyMarksRef}
-      />
-      <PrivateCallConnectedRoom
-        callId={binding.callId}
-        peerName={peerDisplay.peerName}
-        peerAvatar={peerDisplay.peerAvatar}
-        currentUserId={currentUserId}
-        onEnd={handleEnd}
-      />
-    </RoomContext.Provider>
-  );
-});
 
 export default function PrivateCallScreen() {
   const router = useRouter();
@@ -1089,17 +716,20 @@ export default function PrivateCallScreen() {
   );
   const [actionBusy, setActionBusy] = useState(false);
   const [unavailablePromptStarted, setUnavailablePromptStarted] = useState(false);
+  const [ringingAudioStopped, setRingingAudioStopped] = useState(false);
   const exitHandledRef = useRef(false);
   const endRequestedRef = useRef(false);
-  const roomDisconnectRef = useRef<(() => void) | null>(null);
+  const screenFocusedRef = useRef(true);
+  const pendingExitRef = useRef<{ source: string; meta?: Record<string, unknown> } | null>(null);
   const liveKitJoinRef = useRef(false);
   const liveKitBindingRef = useRef<StableLiveKitBinding | null>(null);
   const ringingPreconnectPromiseRef = useRef<Promise<void> | null>(null);
   const latencyMarksRef = useRef<Record<string, number>>({});
   const sessionStatusRef = useRef<string>("");
-  const onEndRef = useRef<() => void>(() => {});
-  const onRemoteTerminationRef = useRef<(source: string, status: string) => void>(() => {});
   const outgoingRingingAudioStartedRef = useRef("");
+  // Set once the caller's "unavailable" prompt has started for this call; from then on
+  // the screen stays on No answer until the prompt finishes (or Cancel is pressed).
+  const unavailablePromptStartedRef = useRef("");
 
   const role = useMemo(() => {
     if (!session || !currentUserId) return "unknown";
@@ -1107,10 +737,6 @@ export default function PrivateCallScreen() {
     if (session.pastorUserId === currentUserId) return "pastor";
     return "unknown";
   }, [session, currentUserId]);
-
-  const registerRoomDisconnect = useCallback((disconnect: (() => void) | null) => {
-    roomDisconnectRef.current = disconnect;
-  }, []);
 
   const leaveCallRoute = useCallback(() => {
     if (returnTo) {
@@ -1137,12 +763,19 @@ export default function PrivateCallScreen() {
         });
         return;
       }
+      // Not on screen (the user moved to another tab with this screen still in its stack):
+      // navigating now would move the wrong stack, so leave when the screen is shown again.
+      if (!screenFocusedRef.current) {
+        pendingExitRef.current = { source, meta };
+        console.log("KRISTO_PRIVATE_CALL_EXIT_DEFERRED_UNTIL_FOCUS", { callId, source });
+        return;
+      }
+      pendingExitRef.current = null;
       exitHandledRef.current = true;
 
-      // Do not disconnect the Room here.
-      // Navigation unmounts PrivateCallLiveKitShell, whose cleanup is the
-      // single final owner of room.disconnect(). Calling disconnect here
-      // and again during Shell unmount creates a teardown negotiation race.
+      // Do not disconnect the Room here. A connected call is owned by
+      // PrivateCallOngoingHost (it keeps running after this screen closes);
+      // its engine is the single final owner of room.disconnect().
       console.log("KRISTO_PRIVATE_CALL_ROOM_DISCONNECT_DEFERRED_TO_SHELL", {
         callId,
         currentUserId,
@@ -1161,6 +794,21 @@ export default function PrivateCallScreen() {
       leaveCallRoute();
     },
     [callId, currentUserId, leaveCallRoute, returnTo]
+  );
+
+  // While this screen is on screen the "Simu inaendelea" bar is hidden; a deferred exit runs
+  // as soon as the screen is shown again.
+  useFocusEffect(
+    useCallback(() => {
+      screenFocusedRef.current = true;
+      setPrivateCallScreenFocused(callId, true);
+      const pending = pendingExitRef.current;
+      if (pending) exitCallScreen(pending.source, pending.meta);
+      return () => {
+        screenFocusedRef.current = false;
+        setPrivateCallScreenFocused(callId, false);
+      };
+    }, [callId, exitCallScreen])
   );
 
   const handleRemoteTermination = useCallback(
@@ -1182,10 +830,13 @@ export default function PrivateCallScreen() {
         source,
         status,
       });
+      // Caller side: a decline or timeout during ringing, or our own end after the 29s
+      // ring limit, keeps the No answer screen up so the unavailable prompt is heard.
       if (
-        status === "timeout" &&
         role === "caller" &&
-        outgoingRingingAudioStartedRef.current === callId
+        ((outgoingRingingAudioStartedRef.current === callId &&
+          (status === "timeout" || status === "declined")) ||
+          unavailablePromptStartedRef.current === callId)
       ) {
         console.log("KRISTO_PRIVATE_CALL_TIMEOUT_PROMPT_DEFERRED", {
           callId,
@@ -1193,6 +844,10 @@ export default function PrivateCallScreen() {
           status,
         });
         return;
+      }
+      // A connected call is over: clean its session up in the app-wide host as well.
+      if (getOngoingPrivateCallState().call?.callId === callId) {
+        void endOngoingPrivateCall(`remote-${status}`, { notifyServer: false });
       }
       exitCallScreen("remote-end", { source, status });
     },
@@ -1216,6 +871,20 @@ export default function PrivateCallScreen() {
       currentUserId,
       status: session.status,
     });
+
+    // Connected call: the app-wide host ends it (server end request, LiveKit disconnect,
+    // CallKit end, foreground service stop), then this screen leaves.
+    if (getOngoingPrivateCallState().call?.callId === session.id) {
+      const notifyServer = !endRequestedRef.current && !isPrivateCallTerminalStatus(session.status);
+      endRequestedRef.current = true;
+      try {
+        await endOngoingPrivateCall("call-screen-end", { notifyServer });
+      } finally {
+        setActionBusy(false);
+        exitCallScreen("local-end-requested", { status: session.status });
+      }
+      return;
+    }
 
     try {
       if (!endRequestedRef.current && !isPrivateCallTerminalStatus(session.status)) {
@@ -1244,9 +913,6 @@ export default function PrivateCallScreen() {
     }
   }, [session, actionBusy, currentUserId, exitCallScreen]);
 
-  onEndRef.current = handleEndCall;
-  onRemoteTerminationRef.current = handleRemoteTermination;
-
   const resolveConnectedPeerDisplay = useCallback(
     (joinSession: PrivateCallSession): ConnectedPeerDisplay => {
       const isCaller = joinSession.callerUserId === currentUserId;
@@ -1273,6 +939,9 @@ export default function PrivateCallScreen() {
     sessionStatusRef.current = "";
     setLiveKitBinding(null);
     setConnectedPeerDisplay(null);
+    unavailablePromptStartedRef.current = "";
+    setUnavailablePromptStarted(false);
+    setRingingAudioStopped(false);
   }, [callId]);
 
   const commitLiveKitBinding = useCallback(
@@ -1494,6 +1163,15 @@ export default function PrivateCallScreen() {
       }
       liveKitJoinRef.current = true;
 
+      // Returning to a call that is already running in the app-wide host (e.g. from the
+      // "Simu inaendelea" bar): reuse its room binding, no second join.
+      const ongoingCall = getOngoingPrivateCallState().call;
+      if (ongoingCall?.callId === joinSession.id) {
+        console.log("KRISTO_PRIVATE_CALL_ONGOING_REATTACHED", { callId: joinSession.id, source });
+        commitLiveKitBinding(joinSession, { url: ongoingCall.serverUrl, token: ongoingCall.token });
+        return;
+      }
+
       const marks = latencyMarksRef.current;
       logPrivateCallAudioLatencyDiag(marks, "livekit-join-start", { source });
 
@@ -1713,7 +1391,216 @@ export default function PrivateCallScreen() {
     }
   };
 
-  const handleEnd = handleEndCall;
+  const handleAcceptRef = useRef(handleAccept);
+  handleAcceptRef.current = handleAccept;
+
+  // "Answer" pressed on the incoming-call notification (Android) or the CallKit screen (iOS):
+  // accept as soon as the ringing call loads.
+  useEffect(() => {
+    if (!session || role !== "pastor" || session.status !== "ringing") return;
+    if (consumePendingCallAnswer(session.id)) void handleAcceptRef.current();
+  }, [session?.id, session?.status, role]);
+
+  // The ringing notification goes away once the call is answered, declined or over.
+  useEffect(() => {
+    if (!session || role !== "pastor" || session.status === "ringing") return;
+    void cancelIncomingCallNotification(session.id);
+  }, [session?.id, session?.status, role]);
+
+  // A connected call is handed to PrivateCallOngoingHost (tabs layout). The host owns the
+  // LiveKit room, audio, microphone, timer, the CallKit call (iOS) and the ongoing-call
+  // foreground notification (Android), so Back / leaving this screen never disconnects it.
+  useEffect(() => {
+    if (!session || session.status !== "accepted" || !liveKitBinding || !connectedPeerDisplay) return;
+    if (liveKitBinding.callId !== session.id) return;
+    startOngoingPrivateCall({
+      callId: session.id,
+      roomName: liveKitBinding.roomName,
+      serverUrl: liveKitBinding.serverUrl,
+      token: liveKitBinding.token,
+      peerUserId,
+      currentUserId,
+      peerName: connectedPeerDisplay.peerName,
+      peerAvatar: connectedPeerDisplay.peerAvatar,
+      returnTo: returnTo || undefined,
+      latencyMarks: latencyMarksRef.current,
+    });
+  }, [session, liveKitBinding, connectedPeerDisplay, peerUserId, currentUserId, returnTo]);
+
+  // The ongoing call ended outside this screen (bar hang-up, CallKit End, the other side):
+  // leave this screen too.
+  const ongoingState = useOngoingPrivateCallState();
+  useEffect(() => {
+    if (!callId || ongoingState.endedCallId !== callId) return;
+    if (ongoingState.call?.callId === callId) return;
+    exitCallScreen("ongoing-call-ended", { status: sessionStatusRef.current });
+  }, [callId, ongoingState.endedCallId, ongoingState.call?.callId, exitCallScreen]);
+
+  // Cancel stops the waittone / prompt immediately, before the end request resolves.
+  const handleCancelOutgoingCall = useCallback(() => {
+    setRingingAudioStopped(true);
+    void handleEndCall();
+  }, [handleEndCall]);
+
+  // The unavailable prompt has started playing: switch the UI to No answer.
+  // Not answered / declined (never for an accepted call): the "hapatikani" prompt is handed to
+  // the app-wide host, which plays it under a short banner, and this screen returns to the
+  // previous page. The banner disappears when the prompt ends.
+  const handleUnavailablePromptStarted = useCallback(() => {
+    if (!session || role !== "caller") return;
+    if (sessionStatusRef.current === "accepted") return;
+    const id = session.id;
+    unavailablePromptStartedRef.current = id;
+    startPrivateCallUnavailablePrompt({ callId: id, peerName: session.pastorName || "Pastor" });
+
+    // Status could not be confirmed (network): end it only if it is still ringing. If the
+    // pastor accepted meanwhile, stop the prompt and reopen the call so LiveKit connects.
+    if (session.status === "ringing" && !endRequestedRef.current) {
+      endRequestedRef.current = true;
+      void endPrivateCallIfRinging(id)
+        .then(async (res: any) => {
+          if (res?.ok) return;
+          const latest = await fetchPrivateCallSession(id).catch(() => null);
+          if (latest?.status !== "accepted") return;
+          stopPrivateCallUnavailablePrompt(id, "accepted-after-handoff");
+          router.push({ pathname: "/more/private-call/[callId]", params: { callId: id } } as any);
+        })
+        .catch(() => null);
+    }
+
+    exitCallScreen("unavailable-prompt-handoff", { status: session.status });
+  }, [session, role, exitCallScreen, router]);
+
+  // Same hand-off the session poll does when it sees the pastor accept.
+  const applyAcceptedFromRingLimit = useCallback(
+    (next: PrivateCallSession, source: string) => {
+      if (sessionStatusRef.current === "accepted") return;
+      const wasRinging = sessionStatusRef.current === "ringing";
+      setSession(next);
+      sessionStatusRef.current = next.status;
+      if (wasRinging && !liveKitJoinRef.current && !liveKitBindingRef.current) {
+        latencyMarksRef.current.acceptDetected = Date.now();
+        logPrivateCallAudioLatencyDiag(latencyMarksRef.current, "accept-detected-poll", {
+          callId: next.id,
+          source,
+        });
+        void startLiveKitJoin(next, source);
+      }
+    },
+    [startLiveKitJoin]
+  );
+
+  // 29s ring limit reached (the waittone is already stopped). Decide from the server
+  // state whether the caller hears the "unavailable" prompt:
+  // - accepted  -> no prompt, hand over to the LiveKit call;
+  // - declined / timeout -> prompt, nothing to end;
+  // - ringing   -> end the call, then prompt;
+  // - anything else (ended elsewhere, Cancel in progress) -> no prompt.
+  // The end request is conditional (endPrivateCallIfRinging): the server ends the call
+  // only if it is still ringing and keeps an accepted call (HTTP 409), in which case
+  // the caller joins LiveKit and no prompt plays.
+  const handleRingLimitReached = useCallback(async (): Promise<boolean> => {
+    if (!session) return false;
+    const ringingCallId = session.id;
+    const cancelled = () => endRequestedRef.current || exitHandledRef.current;
+    const accepted = () => sessionStatusRef.current === "accepted";
+
+    const readStatus = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const latest = await fetchPrivateCallSession(ringingCallId).catch(() => null);
+        if (latest) return latest;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+      return null;
+    };
+
+    const decide = (latest: PrivateCallSession | null, step: string): boolean | "end" => {
+      console.log("KRISTO_PRIVATE_CALL_RING_LIMIT_STATUS_CHECK", {
+        callId: ringingCallId,
+        step,
+        status: latest?.status || null,
+        localStatus: sessionStatusRef.current || null,
+      });
+      if (cancelled() || accepted()) return false;
+      if (!latest) return true; // unconfirmed: prompt only, never end blindly
+      if (latest.status === "accepted") {
+        applyAcceptedFromRingLimit(latest, `ring-limit-${step}`);
+        return false;
+      }
+      if (latest.status === "declined" || latest.status === "timeout") {
+        unavailablePromptStartedRef.current = ringingCallId;
+        setSession(latest);
+        return true;
+      }
+      if (latest.status === "ringing") return "end";
+      setSession(latest); // ended/failed elsewhere: normal termination path
+      return false;
+    };
+
+    const first = decide(await readStatus(), "before-end");
+    if (first !== "end") return first;
+
+    // Confirmed ringing: end it (only if still ringing on the server) so the pastor can
+    // no longer accept. The prompt ref is set first so the poll/terminal handlers keep
+    // the No answer screen up.
+    unavailablePromptStartedRef.current = ringingCallId;
+    endRequestedRef.current = true;
+    const res: any = await endPrivateCallIfRinging(ringingCallId).catch(() => null);
+    console.log("KRISTO_PRIVATE_CALL_RING_LIMIT_ENDED", {
+      callId: ringingCallId,
+      ok: !!res?.ok,
+      status: res?.data?.status || null,
+      code: res?.code || null,
+    });
+    // Cancel was pressed while the conditional end was in flight: handleEndCall skipped
+    // its own end (one was already requested) and left the screen. If the server kept
+    // the call (accepted), end it now so the pastor is not left alone in the call.
+    const endIfCancelledMeanwhile = () => {
+      if (!exitHandledRef.current) return false;
+      if (res?.ok) return true;
+      console.log("KRISTO_PRIVATE_CALL_RING_LIMIT_CANCELLED_DURING_END", { callId: ringingCallId });
+      void endPrivateCall(ringingCallId).catch(() => null);
+      return true;
+    };
+    if (endIfCancelledMeanwhile()) return false;
+
+    if (res?.data?.status === "accepted") {
+      // Server kept the call because the pastor accepted first: no prompt, join LiveKit.
+      unavailablePromptStartedRef.current = "";
+      endRequestedRef.current = false;
+      applyAcceptedFromRingLimit(res.data, "ring-limit-end-kept-accepted");
+      return false;
+    }
+    if (res?.ok && res?.data) {
+      if (accepted()) return false;
+      if (res.data.acceptedAt) {
+        // Defensive: the conditional end never ends an accepted call, but if a
+        // session ever comes back accepted-then-ended, do not play the prompt;
+        // leave through the normal call-ended path.
+        console.warn("KRISTO_PRIVATE_CALL_RING_LIMIT_RACE_ENDED_ACCEPTED", {
+          callId: ringingCallId,
+          acceptedAt: res.data.acceptedAt,
+        });
+        unavailablePromptStartedRef.current = "";
+        setSession(res.data);
+        return false;
+      }
+      setSession(res.data);
+      return true;
+    }
+
+    // End was rejected (e.g. the call changed state meanwhile): re-read and decide again.
+    unavailablePromptStartedRef.current = "";
+    endRequestedRef.current = false;
+    const second = decide(await readStatus(), "after-end-rejected");
+    if (second === "end") {
+      // Still ringing but the end request failed: play the prompt; the call is ended
+      // when the prompt finishes (handleEndCall) unless the pastor accepts first.
+      unavailablePromptStartedRef.current = ringingCallId;
+      return true;
+    }
+    return second;
+  }, [applyAcceptedFromRingLimit, session]);
 
   const statusMessage = (() => {
     if (!session) return "";
@@ -1791,15 +1678,12 @@ export default function PrivateCallScreen() {
   if (session.status === "accepted" && liveKitBinding && connectedPeerDisplay) {
     return (
       <View style={[styles.screen, { paddingTop: insets.top }]}>
-        <PrivateCallLiveKitShell
-          binding={liveKitBinding}
-          peerUserId={peerUserId}
-          currentUserId={currentUserId}
-          peerDisplay={connectedPeerDisplay}
-          onEndRef={onEndRef}
-          onRemoteTerminationRef={onRemoteTerminationRef}
-          registerRoomDisconnect={registerRoomDisconnect}
-          latencyMarksRef={latencyMarksRef}
+        <PrivateCallOngoingView
+          callId={session.id}
+          peerName={connectedPeerDisplay.peerName}
+          peerAvatar={connectedPeerDisplay.peerAvatar}
+          onEnd={() => void handleEndCall()}
+          onMinimize={leaveCallRoute}
         />
       </View>
     );
@@ -1818,47 +1702,87 @@ export default function PrivateCallScreen() {
     );
   }
 
-  if (session.status === "timeout" && role === "caller") {
-    return (
-      <View style={[styles.screen, styles.terminalCallScreen, { paddingTop: insets.top + 24 }]}>
-        <PrivateCallRingingAudio
-          callId={session.id}
-          onPromptFinished={handleEndCall}
-          onUnavailableStarted={() => setUnavailablePromptStarted(true)}
-          onRingingStarted={() => {
-            outgoingRingingAudioStartedRef.current = session.id;
-          }}
-        />
-        <View style={styles.terminalCallCard}>
-          <PrivateCallAvatar avatarUri={displayAvatar} animate={false} />
-          <Text style={styles.terminalEyebrow}>
-            {unavailablePromptStarted ? "UJUMBE WA SAUTI" : "SIMU INAPIGA"}
-          </Text>
-          <Text style={styles.title}>
-            {unavailablePromptStarted ? "Hapatikani kwa sasa" : "Hakupokea simu"}
-          </Text>
-          <Text style={styles.subtitle}>{displayName}</Text>
-          <View style={styles.terminalStatusPill}>
-            <View style={styles.terminalStatusDot} />
-            <Text style={styles.terminalStatusText}>
-              {unavailablePromptStarted
-                ? "Tunasikiliza ujumbe wa sauti"
-                : "Ujumbe utaanza baada ya muda mfupi"}
-            </Text>
-          </View>
-          <Pressable
-            onPress={leaveCallRoute}
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.terminalCloseBtn,
-              pressed && styles.terminalCloseBtnPressed,
-            ]}
-          >
-            <Ionicons name="arrow-back" size={19} color="#10131B" />
-            <Text style={styles.terminalCloseBtnText}>Rudi nyuma</Text>
-          </Pressable>
-        </View>
+  const isOutgoingCaller = role === "caller";
+  // Declined / timed out while the caller was still hearing the waittone: play the
+  // unavailable prompt right away instead of waiting for the 29s ring limit.
+  const callerUnanswered =
+    isOutgoingCaller &&
+    outgoingRingingAudioStartedRef.current === session.id &&
+    (session.status === "timeout" || session.status === "declined");
+  const showNoAnswerScreen =
+    isOutgoingCaller &&
+    (callerUnanswered ||
+      session.status === "timeout" ||
+      (unavailablePromptStarted &&
+        (session.status === "ringing" || session.status === "ended")));
+  const shouldPlayRingingAudio =
+    isOutgoingCaller &&
+    !ringingAudioStopped &&
+    (session.status === "ringing" ||
+      callerUnanswered ||
+      (unavailablePromptStarted && session.status === "ended"));
+
+  // Rendered as the first child of the same Fragment in both the ringing and the
+  // no-answer screens, so React keeps ONE instance mounted across the
+  // ringing -> no-answer transition and the prompt is not cut off or restarted.
+  const ringingAudio = shouldPlayRingingAudio ? (
+    <PrivateCallRingingAudio
+      key={`ringing-audio-${session.id}`}
+      callId={session.id}
+      forceUnavailable={callerUnanswered}
+      onRingLimitReached={handleRingLimitReached}
+      onUnavailableStarted={handleUnavailablePromptStarted}
+      onRingingStarted={() => {
+        outgoingRingingAudioStartedRef.current = session.id;
+      }}
+    />
+  ) : null;
+
+  const cancelCallButton = (
+    <Pressable
+      onPress={handleCancelOutgoingCall}
+      disabled={actionBusy}
+      accessibilityRole="button"
+      accessibilityLabel="Cancel call"
+      hitSlop={8}
+      style={({ pressed }) => [
+        styles.cancelCallBtn,
+        (pressed || actionBusy) && styles.cancelCallBtnPressed,
+      ]}
+    >
+      <View style={styles.cancelCallIconWrap}>
+        <Ionicons name="call" size={18} color="#FFF" style={styles.cancelCallIcon} />
       </View>
+      <Text style={styles.cancelCallBtnText}>
+        {actionBusy ? "Ending call…" : "Cancel call"}
+      </Text>
+    </Pressable>
+  );
+
+  if (showNoAnswerScreen) {
+    return (
+      <>
+        {ringingAudio}
+        <View style={[styles.screen, styles.terminalCallScreen, { paddingTop: insets.top + 24 }]}>
+          <View style={styles.terminalCallCard}>
+            <PrivateCallAvatar avatarUri={displayAvatar} animate={false} />
+            <Text style={styles.terminalEyebrow}>NO ANSWER</Text>
+            <Text style={styles.title}>{displayName}</Text>
+            <Text style={styles.noAnswerSubtitle}>
+              {unavailablePromptStarted
+                ? "Hapatikani kwa sasa. Tafadhali jaribu tena baadaye."
+                : "Hakupokea simu."}
+            </Text>
+            {unavailablePromptStarted && shouldPlayRingingAudio ? (
+              <View style={styles.terminalStatusPill}>
+                <Ionicons name="volume-high" size={15} color={GOLD} />
+                <Text style={styles.terminalStatusText}>Ujumbe wa sauti unacheza…</Text>
+              </View>
+            ) : null}
+            {cancelCallButton}
+          </View>
+        </View>
+      </>
     );
   }
 
@@ -1892,20 +1816,13 @@ export default function PrivateCallScreen() {
   }
 
   return (
+    <>
+    {ringingAudio}
     <View style={[styles.screen, { paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
-      {session.status === "ringing" && role === "caller" ? (
-        <PrivateCallRingingAudio
-          callId={session.id}
-          onPromptFinished={handleEndCall}
-          onRingingStarted={() => {
-            outgoingRingingAudioStartedRef.current = session.id;
-          }}
-        />
-      ) : null}
       <Pressable
         onPress={() => {
           if (session.status === "ringing") {
-            void handleEndCall();
+            handleCancelOutgoingCall();
             return;
           }
           leaveCallRoute();
@@ -1923,21 +1840,7 @@ export default function PrivateCallScreen() {
           <>
             <Text style={styles.title}>{displayName}</Text>
             <PrivateCallOutgoingRinging callId={session.id} />
-            <Pressable
-              onPress={handleEnd}
-              disabled={actionBusy}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel call"
-              style={({ pressed }) => [
-                styles.cancelCallBtn,
-                (pressed || actionBusy) && styles.cancelCallBtnPressed,
-              ]}
-            >
-              <Ionicons name="call" size={19} color="#FFF" style={styles.cancelCallIcon} />
-              <Text style={styles.cancelCallBtnText}>
-                {actionBusy ? "Ending call…" : "Cancel call"}
-              </Text>
-            </Pressable>
+            {cancelCallButton}
           </>
         ) : (
           <>
@@ -1966,6 +1869,7 @@ export default function PrivateCallScreen() {
         )}
       </View>
     </View>
+    </>
   );
 }
 
@@ -1973,6 +1877,19 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: BG,
+  },
+  ongoingViewRoot: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+  },
+  ongoingHint: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 13,
+    fontWeight: "600",
+    textAlign: "center",
+    lineHeight: 18,
+    maxWidth: 300,
   },
   backBtn: {
     width: 40,
@@ -2093,22 +2010,30 @@ const styles = StyleSheet.create({
   },
   cancelCallBtn: {
     marginTop: 22,
-    width: 280,
-    maxWidth: "100%",
+    alignSelf: "center",
+    maxWidth: 320,
+    width: "100%",
     minHeight: 58,
     borderRadius: 29,
-    borderWidth: 1,
-    borderColor: "rgba(255,112,112,0.42)",
-    backgroundColor: "rgba(176,48,58,0.2)",
+    paddingHorizontal: 22,
+    backgroundColor: "#E5484D",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 11,
-    shadowColor: "#F04452",
-    shadowOpacity: 0.22,
+    gap: 12,
+    shadowColor: "#E5484D",
+    shadowOpacity: 0.35,
     shadowRadius: 14,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 4,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 5,
+  },
+  cancelCallIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.18)",
   },
   cancelCallBtnPressed: {
     opacity: 0.72,
@@ -2170,6 +2095,14 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: GOLD,
+  },
+  noAnswerSubtitle: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 15,
+    fontWeight: "600",
+    lineHeight: 21,
+    textAlign: "center",
+    paddingHorizontal: 8,
   },
   terminalStatusText: {
     color: "rgba(255,255,255,0.78)",

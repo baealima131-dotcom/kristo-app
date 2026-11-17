@@ -189,6 +189,20 @@ export async function endPrivateCall(callId: string) {
   );
 }
 
+/**
+ * Caller-side end used at the ring limit: the server ends the call only if it is
+ * still ringing. If the pastor already accepted, the call is kept and the response
+ * is `{ ok: false }` (HTTP 409, code "call-not-ringing"); the caller should then
+ * re-read the session and join LiveKit.
+ */
+export async function endPrivateCallIfRinging(callId: string) {
+  return apiPatch(
+    PRIVATE_CALL_API_PATH,
+    { callId, action: "end", onlyIfRinging: true },
+    { headers: authHeaders() }
+  );
+}
+
 export async function fetchPrivateCallLiveKitCredentials(input: {
   roomName: string;
   identity: string;

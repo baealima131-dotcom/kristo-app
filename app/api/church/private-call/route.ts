@@ -13,12 +13,14 @@ import { findThreadEntryByRoomId } from "@/app/api/_lib/directMessageRequestLogi
 import { readDirectMessageThreadStore } from "@/app/api/_lib/store/directMessageThreadDb";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { notifyPastorPrivateCallIncoming } from "@/app/api/_lib/privateCallNotifications";
+import { notifyKristoCallClosedPush } from "@/app/api/_lib/kristoPush";
 import {
   createPrivateCallSession,
   getPrivateCallSession,
   listPrivateCallSessionsForUser,
   listRingingCallsForPastor,
   updatePrivateCallSession,
+  type PrivateCallSession,
 } from "@/app/api/_lib/privateCallSessions";
 
 export const runtime = "nodejs";
@@ -447,6 +449,13 @@ export async function POST(req: NextRequest) {
   );
 }
 
+/** Clears the ringing notification / CallKit call on the receiver's devices; push failures never fail the call. */
+async function closeIncomingCallPush(session: PrivateCallSession) {
+  await notifyKristoCallClosedPush(session).catch((error) =>
+    console.warn("KRISTO_CALL_PUSH_UNAVAILABLE", { callId: session.id, error: String(error?.message || error) })
+  );
+}
+
 export async function PATCH(req: NextRequest) {
   const ctxOrRes = await guard(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
@@ -479,12 +488,25 @@ export async function PATCH(req: NextRequest) {
       return json({ ok: false, error: `Call is ${existing.status}` }, { status: 409 });
     }
 
-    const updated = await updatePrivateCallSession(callId, (session) => ({
-      ...session,
-      status: "accepted",
-      acceptedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }));
+    // Re-check inside the store update so an accept can never overwrite a call the
+    // caller has just ended (e.g. the caller's 29s ring limit).
+    let acceptedNow = false as boolean;
+    const updated = await updatePrivateCallSession(callId, (session) => {
+      if (session.status !== "ringing") return session;
+      acceptedNow = true;
+      return {
+        ...session,
+        status: "accepted",
+        acceptedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    });
+
+    if (!acceptedNow) {
+      const status = updated?.status || existing.status;
+      console.log("KRISTO_PRIVATE_CALL_ACCEPT_REJECTED", { callId, pastorUserId: userId, status });
+      return json({ ok: false, error: `Call is ${status}` }, { status: 409 });
+    }
 
     console.log("KRISTO_PRIVATE_CALL_ACCEPTED", {
       callId,
@@ -492,6 +514,7 @@ export async function PATCH(req: NextRequest) {
       callerUserId: existing.callerUserId,
     });
 
+    if (updated) await closeIncomingCallPush(updated);
     return json({ ok: true, data: updated });
   }
 
@@ -517,10 +540,72 @@ export async function PATCH(req: NextRequest) {
       callerUserId: existing.callerUserId,
     });
 
+    if (updated) await closeIncomingCallPush(updated);
     return json({ ok: true, data: updated });
   }
 
   if (action === "end") {
+    // Conditional end (caller's ring limit): end ONLY if the call is still ringing.
+    // If the pastor has already accepted, the call is kept and 409 is returned so the
+    // caller connects to LiveKit instead. The status is checked inside the store
+    // update, not on the earlier read, so a concurrent accept cannot be ended.
+    const onlyIfRinging =
+      body?.onlyIfRinging === true ||
+      String(body?.expectedStatus || "").trim().toLowerCase() === "ringing";
+
+    if (onlyIfRinging) {
+      if (!isCaller) {
+        return json(
+          { ok: false, error: "Only the caller can end a ringing call this way" },
+          { status: 403 }
+        );
+      }
+
+      let endedNow = false as boolean;
+      const updated = await updatePrivateCallSession(callId, (session) => {
+        if (session.status !== "ringing") return session;
+        endedNow = true;
+        return {
+          ...session,
+          status: "ended",
+          endedAt: new Date().toISOString(),
+          endedReason: "caller-ended",
+          updatedAt: new Date().toISOString(),
+        };
+      });
+
+      const current = updated || existing;
+      if (!endedNow) {
+        console.log("KRISTO_PRIVATE_CALL_CONDITIONAL_END_SKIPPED", {
+          callId,
+          endedBy: userId,
+          status: current.status,
+        });
+        return json(
+          {
+            ok: false,
+            error: `Call is ${current.status}`,
+            code: "call-not-ringing",
+            data: current,
+          },
+          { status: 409 }
+        );
+      }
+
+      console.log("KRISTO_PRIVATE_CALL_SESSION_ENDED", {
+        callId,
+        callerUserId: existing.callerUserId,
+        receiverUserId: existing.pastorUserId,
+        endedBy: userId,
+        status: current.status,
+        churchId: existing.churchId,
+        conditional: true,
+      });
+
+      if (current) await closeIncomingCallPush(current);
+      return json({ ok: true, data: current });
+    }
+
     if (existing.status !== "accepted" && existing.status !== "ringing") {
       console.log("KRISTO_PRIVATE_CALL_SESSION_ENDED", {
         callId,
@@ -554,6 +639,7 @@ export async function PATCH(req: NextRequest) {
       churchId: existing.churchId,
     });
 
+    if (updated) await closeIncomingCallPush(updated);
     return json({ ok: true, data: updated });
   }
 

@@ -1,3 +1,4 @@
+import { notifyKristoCallPush } from "@/app/api/_lib/kristoPush";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { isUnsafeActorDisplayName } from "@/app/api/_lib/notificationActor";
 import type { PrivateCallSession } from "@/app/api/_lib/privateCallSessions";
@@ -55,5 +56,11 @@ export async function notifyPastorPrivateCallIncoming(session: PrivateCallSessio
     status: session.status,
   });
 
+  // Incoming-call push (Android FCM full-screen notification, iOS VoIP push -> CallKit) so
+  // the call rings with the app in the background or the screen locked. Push failures never
+  // fail the call.
+  await notifyKristoCallPush(session, title).catch((error) =>
+    console.warn("KRISTO_CALL_PUSH_UNAVAILABLE", { callId: session.id, error: String(error?.message || error) })
+  );
   return created;
 }

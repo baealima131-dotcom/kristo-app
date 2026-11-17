@@ -1,47 +1,28 @@
-import * as FileSystem from "expo-file-system/legacy";
-import {
-  PRIVATE_CALL_UNAVAILABLE_BASE64,
-  PRIVATE_CALL_WAITTONE_BASE64,
-} from "@/src/lib/privateCallAudioData";
+import type { AudioSource } from "expo-audio";
+
+/**
+ * Outgoing private-call audio, bundled as real mp3 assets (same files as the public release):
+ * - Mountain_Waittone_2026-11-08T194359.mp3: plays while the call rings (max 29 s).
+ * - ElevenLabs_2026-11-08T18_40_14__s50_sim75_v4.mp3: the "hapatikani kwa sasa" prompt,
+ *   played only when the call is not answered or is declined.
+ */
+const WAITTONE_SOURCE: AudioSource = require("../../assets/sounds/calls/Mountain_Waittone_2026-11-08T194359.mp3");
+const UNAVAILABLE_SOURCE: AudioSource = require("../../assets/sounds/calls/ElevenLabs_2026-11-08T18_40_14__s50_sim75_v4.mp3");
+
+/** Used by the ongoing-call host, which keeps playing the prompt after the call screen closes. */
+export const PRIVATE_CALL_UNAVAILABLE_SOURCE = UNAVAILABLE_SOURCE;
 
 export type PrivateCallRingingAudioUris = {
-  waittone: string;
-  unavailable: string;
+  waittone: AudioSource;
+  unavailable: AudioSource;
 };
 
-let cachedUrisPromise: Promise<PrivateCallRingingAudioUris> | null = null;
+const SOURCES: PrivateCallRingingAudioUris = {
+  waittone: WAITTONE_SOURCE,
+  unavailable: UNAVAILABLE_SOURCE,
+};
 
+/** Kept async so the call screen API is unchanged; the assets ship inside the app bundle. */
 export function ensurePrivateCallRingingAudioFiles(): Promise<PrivateCallRingingAudioUris> {
-  if (cachedUrisPromise) return cachedUrisPromise;
-
-  cachedUrisPromise = (async () => {
-    const baseDirectory = FileSystem.cacheDirectory || FileSystem.documentDirectory;
-    if (!baseDirectory) throw new Error("Private call audio cache is unavailable.");
-
-    const directory = `${baseDirectory}private-call-audio/`;
-    await FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(() => null);
-
-    const waittone = `${directory}private-call-waittone.mp3`;
-    const unavailable = `${directory}private-call-unavailable.mp3`;
-
-    const writeIfMissing = async (uri: string, base64: string) => {
-      const info = await FileSystem.getInfoAsync(uri).catch(() => null);
-      if (info?.exists && Number((info as any).size || 0) > 0) return;
-      await FileSystem.writeAsStringAsync(uri, base64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-    };
-
-    await Promise.all([
-      writeIfMissing(waittone, PRIVATE_CALL_WAITTONE_BASE64),
-      writeIfMissing(unavailable, PRIVATE_CALL_UNAVAILABLE_BASE64),
-    ]);
-
-    return { waittone, unavailable };
-  })().catch((error) => {
-    cachedUrisPromise = null;
-    throw error;
-  });
-
-  return cachedUrisPromise;
+  return Promise.resolve(SOURCES);
 }

@@ -30,7 +30,14 @@
         "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com"
       },
       "ios": {
-        "scheme": "KristoApp"
+        "scheme": "KristoApp",
+        "env": {
+          "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
+          "EXPO_PUBLIC_WEB_BASE": "https://kristo-app.vercel.app",
+          "EXPO_PUBLIC_WEB_SHARE_BASE": "https://kristo-app.vercel.app",
+          "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com",
+          "KRISTO_IOS_VOIP_PUSH": "1"
+        }
       }
     },
     "app-store-review": {

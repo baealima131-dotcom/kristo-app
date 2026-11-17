@@ -38,7 +38,10 @@ type PrivateCallStore = {
   sessions: PrivateCallSession[];
 };
 
-const RING_TIMEOUT_MS = 45_000;
+// Server-side ring limit (public value). The caller app stops ringing at 29 s and ends the
+// call itself; this also ends unanswered calls when the caller app is gone (e.g. killed),
+// so the pastor's CallKit / full-screen notification does not keep ringing.
+const RING_TIMEOUT_MS = 30_000;
 
 function defaultStore(): PrivateCallStore {
   return { sessions: [] };

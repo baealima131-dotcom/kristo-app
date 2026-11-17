@@ -53,6 +53,8 @@ import {
 } from "@/src/lib/enterLiveRoomNavigation";
 import { pauseHomeFeedBackgroundWorkForLiveNavigation } from "@/src/lib/liveRoomStartup";
 import { PrivateCallIncomingWatcher } from "@/src/components/PrivateCallIncomingWatcher";
+import { KristoPushBridge } from "@/src/components/KristoPushBridge";
+import { PrivateCallOngoingHost } from "@/src/components/PrivateCallOngoingHost";
 import {
   pinLiveKitPublisherHostBeforeToken,
   pinLiveRoomSession,
@@ -1119,6 +1121,7 @@ export default function TabLayout() {
   return (
     <>
       <PrivateCallIncomingWatcher />
+      <KristoPushBridge />
       <Tabs
       initialRouteName="index"
       screenOptions={{
@@ -1295,6 +1298,10 @@ export default function TabLayout() {
 
       <Tabs.Screen name="_ministry_hidden/index" options={{ href: null }} />
     </Tabs>
+    {/* Connected private call: keeps running across screens; "Simu inaendelea" bar above the tabs. */}
+    <PrivateCallOngoingHost
+      bottomOffset={hideTabBar ? safeBottom + 12 : 70 + androidNavInset + 8}
+    />
     {showMoreTabShell ? (
       <View
         pointerEvents="none"

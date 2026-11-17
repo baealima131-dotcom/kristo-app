@@ -37,6 +37,8 @@ export const FOLLOWS_STORE_KEY = "follows.json";
 export const CHURCH_FOLLOWS_STORE_KEY = "church-follows.json";
 export const MY_WAY_SETTINGS_STORE_KEY = "my_way_settings.json";
 export const PRIVATE_CALL_SESSIONS_STORE_KEY = "private_call_sessions.json";
+// Devices registered for incoming-call pushes (FCM on Android, VoIP/APNs on iOS).
+export const PUSH_DEVICES_STORE_KEY = "push_devices.json";
 
 type CoreStoreKey =
   | typeof PROFILES_STORE_KEY
@@ -47,7 +49,8 @@ type CoreStoreKey =
   | typeof FOLLOWS_STORE_KEY
   | typeof CHURCH_FOLLOWS_STORE_KEY
   | typeof MY_WAY_SETTINGS_STORE_KEY
-  | typeof PRIVATE_CALL_SESSIONS_STORE_KEY;
+  | typeof PRIVATE_CALL_SESSIONS_STORE_KEY
+  | typeof PUSH_DEVICES_STORE_KEY;
 
 let sqlClient: ReturnType<typeof neon> | null = null;
 let schemaReady: Promise<void> | null = null;
@@ -105,6 +108,8 @@ function normalizeStoreKey(fileName: string): CoreStoreKey {
   if (f === "private_call_sessions.json" || f === "private-call-sessions.json") {
     return PRIVATE_CALL_SESSIONS_STORE_KEY;
   }
+
+  if (f === PUSH_DEVICES_STORE_KEY) return PUSH_DEVICES_STORE_KEY;
 
   throw new Error(`Unsupported core store file: ${fileName}`);
 }
