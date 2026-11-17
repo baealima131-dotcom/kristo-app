@@ -2865,6 +2865,10 @@ function isPublicOrGlobalFeedItem(item: any) {
 
 /** Home/global feed: public posts from all churches; schedules stay church-scoped. */
 function isGlobalFeedDiscoverable(item: any, viewerChurchId: string) {
+  // Posts hidden by reports and video links a System Admin hid stay out of the Home Feed too
+  // (the church feed already left them out through isDiscoverableFeedItem).
+  if (isHiddenByReportsFeedItem(item)) return false;
+
   const itemChurchId = String(item?.churchId || "").trim();
   const viewerCid = String(viewerChurchId || "").trim();
 
