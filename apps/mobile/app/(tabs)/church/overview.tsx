@@ -120,6 +120,15 @@ function formatChurchDisplayName(name?: string, fallbackName?: string) {
   return "Your Church";
 }
 
+/** Pastor's initials for the Church Profile pastor row ("P" when no pastor is assigned). */
+function pastorInitial(name?: string) {
+  const label = formatPastorDisplayName(name);
+  if (label === "Pastor Not Assigned") return "P";
+  const parts = label.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
+  return label.slice(0, 2).toUpperCase();
+}
+
 function formatPastorDisplayName(name?: string) {
   const s = String(name || "").trim();
   if (!s || isRawBackendId(s)) return "Pastor Not Assigned";
@@ -1493,7 +1502,7 @@ setMediaTargets(
                 <View style={s.profileInfoList}>
                   <View style={s.profileInfoRow}>
                     <View style={s.profileInfoIconWrap}>
-                      <Ionicons name="person-outline" size={21} color={GOLD} />
+                      <Text style={s.pastorInitialText}>{pastorInitial(profile.pastorName)}</Text>
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={s.profileInfoLabel}>Pastor</Text>
@@ -2247,6 +2256,7 @@ const s = StyleSheet.create<any>({
     gap: 12,
   },
 
+  pastorInitialText: { color: GOLD, fontSize: 15, fontWeight: "900", letterSpacing: 0.5 },
   profileInfoIconWrap: {
     width: 44,
     height: 44,

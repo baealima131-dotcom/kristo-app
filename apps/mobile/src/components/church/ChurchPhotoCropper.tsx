@@ -155,6 +155,28 @@ export function ChurchPhotoCropper({ sourceUri, onCancel, onDone }: Props) {
     ty.value = withTiming(0, { duration: 140 });
   }
 
+  // Turns the working copy a quarter turn clockwise (a sideways photo), then starts the framing
+  // again; the crop maths stay the same because they run on the turned copy.
+  async function rotateQuarter() {
+    if (!work || busy) return;
+    setBusy(true);
+    try {
+      const out = await ImageManipulator.manipulateAsync(work.uri, [{ rotate: 90 }], {
+        compress: 0.95,
+        format: ImageManipulator.SaveFormat.JPEG,
+      });
+      zoom.value = 1;
+      tx.value = 0;
+      ty.value = 0;
+      setWork({ uri: out.uri, width: out.width, height: out.height });
+      setError("");
+    } catch {
+      setError("Picture could not be prepared. Please choose the picture again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function confirm() {
     if (!work || busy) return;
     setBusy(true);
@@ -243,6 +265,9 @@ export function ChurchPhotoCropper({ sourceUri, onCancel, onDone }: Props) {
               <Pressable onPress={() => stepZoom(0.25)} style={s.roundBtn} accessibilityLabel="Zoom in" disabled={!work}>
                 <Ionicons name="add" size={22} color={GOLD} />
               </Pressable>
+              <Pressable onPress={() => void rotateQuarter()} style={s.roundBtn} accessibilityLabel="Rotate picture" disabled={!work || busy}>
+                <Ionicons name="sync-outline" size={20} color={GOLD} />
+              </Pressable>
             </View>
           </View>
         </View>
@@ -271,7 +296,7 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(217,179,95,0.06)",
   },
   error: { color: "#FCA5A5", fontSize: 13, textAlign: "center", marginBottom: 8 },
-  controls: { flexDirection: "row", gap: 12, marginTop: 14 },
+  controls: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 14 },
   roundBtn: {
     width: 46,
     height: 46,
