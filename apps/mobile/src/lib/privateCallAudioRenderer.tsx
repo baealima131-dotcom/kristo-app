@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
+import { Platform } from "react-native";
 import { useRoomContext } from "@livekit/react-native";
 import { RoomEvent, Track } from "livekit-client";
 
@@ -74,6 +75,39 @@ export async function ensurePrivateCallAudioSession(callId: string) {
   })();
 
   return audioSessionReadyPromise;
+}
+
+/**
+ * Put the call's audio session back (iOS play-and-record / voice chat, Android communication).
+ * Other media (a Watch video, a YouTube or Facebook player) can switch the session to
+ * playback-only, which silences the microphone or routes the call to the wrong output.
+ * Does nothing when no private call is ringing or connected.
+ */
+export async function reassertPrivateCallAudioSession(callId: string, source: string) {
+  const id = String(callId || "").trim();
+  if (!id) return;
+  try {
+    const { AndroidAudioTypePresets, AudioSession } = await import("@livekit/react-native");
+    if (Platform.OS === "ios") {
+      await AudioSession.setAppleAudioConfiguration({
+        audioCategory: "playAndRecord",
+        audioCategoryOptions: ["allowBluetooth", "allowBluetoothA2DP", "allowAirPlay"],
+        audioMode: "voiceChat",
+      });
+    } else {
+      await AudioSession.configureAudio({
+        android: { audioTypeOptions: AndroidAudioTypePresets.communication },
+      });
+    }
+    await AudioSession.startAudioSession();
+    console.log("KRISTO_PRIVATE_CALL_AUDIO_REASSERTED", { callId: id, source });
+  } catch (error: any) {
+    console.log("KRISTO_PRIVATE_CALL_AUDIO_REASSERT_ERROR", {
+      callId: id,
+      source,
+      error: String(error?.message || error),
+    });
+  }
 }
 
 function normalizePublicationKind(publication: any): string {

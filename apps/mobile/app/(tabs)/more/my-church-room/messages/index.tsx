@@ -28,13 +28,19 @@ import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { clearLegacyMessageLockPrefs } from "@/src/lib/clearLegacyMessageLockPrefs";
 import SokoSystemMessages from "@/src/components/messages/SokoSystemMessages";
+import { PersonAvatarRing } from "@/src/components/PersonAvatarRing";
+import {
+  MessageReceiptTicks,
+  resolveMessageReceiptStatus,
+  type MessageReceiptStatus,
+} from "@/src/components/messages/MessageReceiptTicks";
+import { useThread } from "@/src/lib/messagesStore";
 
 const BG = "#0A1220";
 const TEXT = "rgba(255,255,255,0.94)";
 const GOLD = "rgba(217,179,95,0.92)";
 const PAD = 16;
 
-let messagesInboxMemoryCache: MessagesInboxConversation[] | null = null;
 
 const MESSAGE_GLASS = [
   {
@@ -120,6 +126,7 @@ function roleBadgeKind(role: string): "pastor" | "member" | "leader" | "admin" |
   if (/member/.test(value)) return "member";
   return null;
 }
+const AVATAR_SIZE = 52;
 
 function ConversationRow({
   item,
@@ -130,8 +137,38 @@ function ConversationRow({
 }) {
   const initial = String(item.title || "?").trim().charAt(0).toUpperCase() || "?";
   const isRequest = item.isRequestReceiver === true;
+
+  // A message the viewer is still sending in this chat (local, not yet confirmed by the server).
+  const { messages: localMessages } = useThread(item.id);
+  const sendingMessage = useMemo(() => {
+    const newest = localMessages.reduce<(typeof localMessages)[number] | null>(
+      (best, m) => (!best || Number(m.createdAt || 0) > Number(best.createdAt || 0) ? m : best),
+      null
+    );
+    return newest &&
+      newest.sender === "me" &&
+      newest.pending &&
+      Number(newest.createdAt || 0) > Number(item.lastMessageAt || 0)
+      ? newest
+      : null;
+  }, [localMessages, item.lastMessageAt]);
+
+  // Ticks only for the viewer's own latest message (never for the other person's).
+  const receiptStatus: MessageReceiptStatus | null = sendingMessage
+    ? "Sending"
+    : item.lastMessageFromViewer && Number(item.lastMessageAt || 0) > 0
+      ? resolveMessageReceiptStatus({
+          createdAt: Number(item.lastMessageAt || 0),
+          peerDeliveredAt: item.peerDeliveredAt,
+          peerReadAt: item.peerReadAt,
+          showReadReceipts: item.showReadReceipts,
+        })
+      : null;
+
   const preview = String(
-    item.lastMessagePreview || (isRequest ? "Message request" : "")
+    (sendingMessage ? sendingMessage.text : "") ||
+      item.lastMessagePreview ||
+      (isRequest ? "Message request" : "")
   ).trim();
 
   const previewLower = preview.toLowerCase();
@@ -150,6 +187,10 @@ function ConversationRow({
   const peerRole = item.peerRole || "Member";
   const ringColors = roleRingColors(peerRole);
   const badgeKind = roleBadgeKind(peerRole);
+  // Server-confirmed state when the server sends it; main's sent / read otherwise.
+  const inboxTick: MessageReceiptStatus | null =
+    receiptStatus ??
+    (item.lastMessageStatus === "read" ? "Read" : item.lastMessageStatus === "sent" ? "Sent" : null);
 
   return (
     <Pressable
@@ -171,22 +212,37 @@ function ConversationRow({
       />
 
       <View style={s.avatarDecoration}>
-        <LinearGradient
-          colors={[...ringColors]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={s.avatarRing}
-        >
-          <View style={s.avatarInner}>
-            {item.avatarUri ? (
-              <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
-            ) : (
-              <View style={[s.avatarFallback, { backgroundColor: ringColors[1] + "33" }]}>
-                <Text style={[s.avatarFallbackText, { color: ringColors[0] }]}>{initial}</Text>
-              </View>
-            )}
-          </View>
-        </LinearGradient>
+        {item.peerRingCategory && item.peerRingCategory !== "unknown" ? (
+          // Verified relationship to the viewer (your church gold, another church purple).
+          <PersonAvatarRing category={item.peerRingCategory} size={AVATAR_SIZE}>
+            <View style={s.avatarRelationWrap}>
+              {item.avatarUri ? (
+                <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
+              ) : (
+                <View style={[s.avatarFallback, { backgroundColor: ringColors[1] + "33" }]}>
+                  <Text style={[s.avatarFallbackText, { color: ringColors[0] }]}>{initial}</Text>
+                </View>
+              )}
+            </View>
+          </PersonAvatarRing>
+        ) : (
+          <LinearGradient
+            colors={[...ringColors]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={s.avatarRing}
+          >
+            <View style={s.avatarInner}>
+              {item.avatarUri ? (
+                <Image source={{ uri: item.avatarUri }} style={s.avatarImage} />
+              ) : (
+                <View style={[s.avatarFallback, { backgroundColor: ringColors[1] + "33" }]}>
+                  <Text style={[s.avatarFallbackText, { color: ringColors[0] }]}>{initial}</Text>
+                </View>
+              )}
+            </View>
+          </LinearGradient>
+        )}
         {badgeKind ? (
           <View
             style={[
@@ -243,13 +299,13 @@ function ConversationRow({
             <Text style={[s.rowPreview, { color: previewTone }]} numberOfLines={2}>
               {preview || (isRequest ? "Message request" : "")}
             </Text>
-            {!isRequest && item.lastMessageStatus ? (
+            {!isRequest && inboxTick ? (
               <Ionicons
-                name={item.lastMessageStatus === "read" ? "checkmark-done" : "checkmark"}
+                name={inboxTick === "Sending" ? "time-outline" : inboxTick === "Sent" ? "checkmark" : "checkmark-done"}
                 size={17}
-                color={item.lastMessageStatus === "read" ? "#35B8FF" : "rgba(225,238,235,0.82)"}
+                color={inboxTick === "Read" ? "#35B8FF" : "rgba(225,238,235,0.82)"}
                 style={s.messageReceipt}
-                accessibilityLabel={item.lastMessageStatus === "read" ? "Read" : "Sent"}
+                accessibilityLabel={inboxTick}
               />
             ) : null}
           </View>
@@ -268,14 +324,23 @@ function ConversationRow({
   );
 }
 
+// Last inbox shown to each signed-in user, kept for this app session. Coming back to Messages
+// (e.g. from a conversation, which replaces the route) shows it at once and refreshes quietly.
+const inboxCacheByUserId = new Map<string, MessagesInboxConversation[]>();
+
+function inboxViewerId(): string {
+  return String((getKristoHeaders() as any)?.["x-kristo-user-id"] || "").trim();
+}
+
 export default function MessagesScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(messagesInboxMemoryCache === null);
   const [conversations, setConversations] = useState<MessagesInboxConversation[]>(
-    messagesInboxMemoryCache || []
+    () => inboxCacheByUserId.get(inboxViewerId()) || []
   );
+  // Full-screen spinner only until the first inbox is known; refreshes after that are silent.
+  const [loading, setLoading] = useState(() => !inboxCacheByUserId.has(inboxViewerId()));
   const [composeOpen, setComposeOpen] = useState(false);
 
   useEffect(() => {
@@ -308,20 +373,21 @@ export default function MessagesScreen() {
   const refreshInbox = useCallback(async () => {
     const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
     if (!base) {
-      if (messagesInboxMemoryCache === null) {
+      if (!inboxCacheByUserId.has(inboxViewerId())) {
         setConversations([]);
         setLoading(false);
       }
       return;
     }
 
-    if (messagesInboxMemoryCache === null) setLoading(true);
+    const viewerId = inboxViewerId();
     try {
       const rows = await fetchMessagesInboxConversations({ base });
-      messagesInboxMemoryCache = rows;
+      if (viewerId) inboxCacheByUserId.set(viewerId, rows);
       setConversations(rows);
     } catch {
-      // Keep the last inbox visible if a quiet refresh fails.
+      // Keep the last inbox on a failed refresh; an empty list only when nothing is known yet.
+      if (!inboxCacheByUserId.has(viewerId)) setConversations([]);
     } finally {
       setLoading(false);
     }
@@ -863,6 +929,14 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(8,44,38,0.90)",
   } as ViewStyle,
 
+  avatarRelationWrap: {
+    width: AVATAR_SIZE,
+    height: AVATAR_SIZE,
+    borderRadius: AVATAR_SIZE / 2,
+    overflow: "hidden",
+    backgroundColor: "rgba(8,44,38,0.90)",
+  } as ViewStyle,
+
   avatarImage: {
     width: "100%",
     height: "100%",
@@ -942,6 +1016,10 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 7,
+  } as ViewStyle,
+  previewTicks: {
+    marginTop: 1,
+    marginRight: -3,
   } as ViewStyle,
 
   previewWithStatus: {

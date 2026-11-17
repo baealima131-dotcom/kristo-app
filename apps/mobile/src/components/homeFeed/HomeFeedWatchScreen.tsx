@@ -18,6 +18,18 @@ import {
 import { VideoView, useVideoPlayer } from "expo-video";
 import { allowWatchRotation, restoreAppPortrait } from "@/src/lib/watchOrientation";
 import { getOngoingPrivateCallState } from "@/src/lib/privateCallOngoingStore";
+import { reassertPrivateCallAudioSession } from "@/src/lib/privateCallAudioRenderer";
+
+/**
+ * After Watch media starts, stops or closes during a private call, give the call its audio
+ * session back (the video / web player may have switched it to playback-only). Delayed so the
+ * player finishes its own session change first.
+ */
+function restoreCallAudioAfterWatchMedia(source: string) {
+  const callId = getOngoingPrivateCallState().call?.callId;
+  if (!callId) return;
+  setTimeout(() => void reassertPrivateCallAudioSession(callId, source), 400);
+}
 import { WebView } from "react-native-webview";
 import {
   buildFacebookSdkPlayerHtml,
@@ -627,6 +639,10 @@ function WatchVideoSurface({
     endedRef.current = ended;
   }, [ended]);
 
+  // The video player reconfigures the audio session (iOS: playback only, no microphone).
+  useEventListener(player, "playingChange", () => restoreCallAudioAfterWatchMedia("watch-playing-change"));
+  useEffect(() => () => restoreCallAudioAfterWatchMedia("watch-video-closed"), []);
+
   useEventListener(player, "playToEnd", () => {
     if (Platform.OS === "ios") {
       closeIosFullscreenRef.current();
@@ -1120,13 +1136,19 @@ function useExternalPlayerState(resetKey: string) {
     const timer = setTimeout(() => setStarted(true), EXTERNAL_START_COVER_MAX_MS);
     return () => clearTimeout(timer);
   }, [resetKey]);
+  // Closing the YouTube / Facebook player during a private call: give the call its audio back.
+  useEffect(() => () => restoreCallAudioAfterWatchMedia("watch-external-closed"), []);
   const onMessage = useCallback((event: { nativeEvent: { data: string } }) => {
     const message = parseExternalPlayerMessage(event?.nativeEvent?.data);
     if (!message) return;
-    if (message.type === "ended") setEnded(true);
+    if (message.type === "ended") {
+      setEnded(true);
+      restoreCallAudioAfterWatchMedia("watch-external-ended");
+    }
     if (message.type === "playing") {
       setEnded(false);
       setStarted(true);
+      restoreCallAudioAfterWatchMedia("watch-external-playing");
     }
     if (message.type === "error") setFailed(true);
   }, []);

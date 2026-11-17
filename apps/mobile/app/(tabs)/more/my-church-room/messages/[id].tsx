@@ -59,6 +59,12 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
+import { PersonAvatarRing, resolvePersonRingCategory } from "@/src/components/PersonAvatarRing";
+import {
+  MessageReceiptTicks,
+  resolveMessageReceiptStatus,
+  type MessageReceiptStatus,
+} from "@/src/components/messages/MessageReceiptTicks";
 import { ensureThread, sendMessage, setThreadMessages, clearThreadMessages, clearThreadTextMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, getMessagesStoreScope, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
 import { HomeLiveScheduleCard, ScheduleClaimAvatarRing } from "@/src/components/HomeLiveScheduleCard";
@@ -6949,7 +6955,13 @@ function Bubble({
                   style={s.deliveredRow}
                 >
                   <Ionicons
-                    name={receiptLabel === "Sent" ? "checkmark" : "checkmark-done"}
+                    name={
+                      receiptLabel === "Sending"
+                        ? "time-outline"
+                        : receiptLabel === "Sent"
+                          ? "checkmark"
+                          : "checkmark-done"
+                    }
                     size={16}
                     color={
                       receiptLabel === "Read"
@@ -7427,6 +7439,18 @@ export default function MessageThreadScreen() {
     [backendRoomId]
   );
 
+  // Newest message from the other person in this chat: reading it while the chat is open must
+  // be recorded too, not only when the chat is first opened.
+  const { messages: dmThreadMessages } = useThread(threadId);
+  const latestPeerMessageAt = useMemo(
+    () =>
+      dmThreadMessages.reduce(
+        (max, m) => (m.sender === "me" ? max : Math.max(max, Number(m.createdAt || 0) || 0)),
+        0
+      ),
+    [dmThreadMessages]
+  );
+
   useEffect(() => {
     if (!isPersonToPersonDm || !isFocused) return;
     const roomId = String(threadId || backendRoomId || "").trim();
@@ -7436,7 +7460,7 @@ export default function MessageThreadScreen() {
       roomId,
       churchId: String((params as any)?.churchId || churchId || "").trim() || undefined,
     });
-  }, [isPersonToPersonDm, isFocused, threadId, backendRoomId, churchId, (params as any)?.churchId]);
+  }, [isPersonToPersonDm, isFocused, threadId, backendRoomId, churchId, (params as any)?.churchId, latestPeerMessageAt]);
 
   const mediaRoomCacheFreshRef = useRef(false);
   const mediaRoomHydratedRef = useRef(false);
@@ -8173,6 +8197,23 @@ export default function MessageThreadScreen() {
   const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
   const roomMessagesSigRef = useRef("");
   const roomMessagesInflightRef = useRef(false);
+  // `${threadId}|${backendRoomId}` of the room the messages effect is loading, and of the room
+  // whose first load has finished (until then an empty list is "loading", not "No messages yet").
+  const roomMessagesRunKeyRef = useRef("");
+  const [roomMessagesLoadedKey, setRoomMessagesLoadedKey] = useState("");
+  // DM receipt state returned with every chat poll (newer servers), so ticks update live.
+  const [dmLiveReceipts, setDmLiveReceipts] = useState<{
+    key: string;
+    peerDeliveredAt: number;
+    peerReadAt: number;
+    showReadReceipts: boolean;
+  } | null>(null);
+  useEffect(
+    () => () => {
+      roomMessagesRunKeyRef.current = "";
+    },
+    []
+  );
   const allowEmptyRoomOverwriteRef = useRef(false);
   const memberAvatarByUserIdRef = useRef<Map<string, string>>(new Map());
   const reloadRoomMessagesRef = useRef<((opts?: { force?: boolean }) => Promise<boolean>) | null>(null);
@@ -8465,6 +8506,8 @@ export default function MessageThreadScreen() {
     if (!threadId || !isFocused) return;
 
     let alive = true;
+    const runKey = `${threadId}|${backendRoomId}`;
+    roomMessagesRunKeyRef.current = runKey;
 
     async function loadBackendRoomMessages(opts?: { force?: boolean }): Promise<boolean> {
       const roomId = backendRoomId;
@@ -8566,6 +8609,7 @@ export default function MessageThreadScreen() {
           return updated;
         } finally {
           roomMessagesInflightRef.current = false;
+          if (roomMessagesRunKeyRef.current === runKey) setRoomMessagesLoadedKey(runKey);
           if (__DEV__) console.log("[RoomMessagesPoll] fetch-done", { count, updated });
         }
       }
@@ -8586,7 +8630,29 @@ export default function MessageThreadScreen() {
         );
 
         const rows = Array.isArray(res?.data) ? res.data : [];
-        if (!alive || !Array.isArray(rows)) return false;
+        // A re-run of this effect for the SAME room (e.g. churchId resolved by the DM settings
+        // call) must not throw away the first response: the re-run's own fetch is skipped while
+        // this one is in flight, so dropping it left the chat empty until the next poll tick.
+        if (!(alive || roomMessagesRunKeyRef.current === runKey) || !Array.isArray(rows)) return false;
+
+        const receipts = res?.dmReceipts;
+        if (receipts && typeof receipts === "object") {
+          const next = {
+            key: runKey,
+            peerDeliveredAt: Number(receipts.peerDeliveredAt || 0) || 0,
+            peerReadAt: Number(receipts.peerReadAt || 0) || 0,
+            showReadReceipts: receipts.showReadReceipts === true,
+          };
+          setDmLiveReceipts((prev) =>
+            prev &&
+            prev.key === next.key &&
+            prev.peerDeliveredAt === next.peerDeliveredAt &&
+            prev.peerReadAt === next.peerReadAt &&
+            prev.showReadReceipts === next.showReadReceipts
+              ? prev
+              : next
+          );
+        }
 
         const visibleRows = filterVisibleRoomMessageRows(rows);
         count = visibleRows.length;
@@ -8594,6 +8660,7 @@ export default function MessageThreadScreen() {
         return updated;
       } finally {
         roomMessagesInflightRef.current = false;
+        if (roomMessagesRunKeyRef.current === runKey) setRoomMessagesLoadedKey(runKey);
         if (__DEV__) console.log("[RoomMessagesPoll] fetch-done", { count, updated });
       }
     }
@@ -8806,6 +8873,36 @@ export default function MessageThreadScreen() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [dmConversationSettings, setDmConversationSettings] =
     useState<DirectMessageConversationSettings | null>(null);
+  // Receipts for the viewer's own DM messages: settings (fetched on open) merged with the newer
+  // state from each chat poll. Times only move forward, so the later one wins.
+  const dmReceiptView = useMemo(() => {
+    const live =
+      dmLiveReceipts && dmLiveReceipts.key === `${threadId}|${backendRoomId}` ? dmLiveReceipts : null;
+    const showReadReceipts = live
+      ? live.showReadReceipts
+      : dmConversationSettings?.showReadReceipts === true;
+    return {
+      showReadReceipts,
+      peerReadAt: showReadReceipts
+        ? Math.max(Number(dmConversationSettings?.peerReadAt || 0), live?.peerReadAt || 0)
+        : 0,
+      peerDeliveredAt: Math.max(
+        Number(dmConversationSettings?.peerDeliveredAt || 0),
+        live?.peerDeliveredAt || 0
+      ),
+    };
+  }, [dmLiveReceipts, dmConversationSettings, threadId, backendRoomId]);
+  const dmPeerRingCategory = useMemo(
+    () =>
+      dmConversationSettings
+        ? resolvePersonRingCategory({
+            personChurchId: dmConversationSettings.peerChurchId,
+            personRole: dmConversationSettings.peerChurchRole,
+            sharesActiveChurch: dmConversationSettings.sharesActiveChurch,
+          })
+        : "unknown",
+    [dmConversationSettings]
+  );
   const [dmSettingsBusy, setDmSettingsBusy] = useState(false);
 
   const [
@@ -14588,16 +14685,32 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           ]}
         >
           <View style={s.headerAvatarWrap}>
-            <View pointerEvents="none" style={s.headerAvatarGlow} />
-            <View style={s.headerAvatarRing}>
-              <View style={s.headerAvatar}>
-                {headerAvatarSrc ? (
-                  <Image source={{ uri: headerAvatarSrc }} style={s.headerAvatarImg} />
-                ) : (
-                  <Text style={t.headerAvatarText}>{assignmentInitialsParam || headerAvatarLabel(threadId, headerTitle)}</Text>
-                )}
-              </View>
-            </View>
+            {isPersonToPersonDm ? (
+              // Person-to-person chat: the ring shows who they are to the viewer (verified church
+              // membership and role from the conversation settings; neutral until known).
+              <PersonAvatarRing category={dmPeerRingCategory} size={46} glow="subtle">
+                <View style={[s.headerAvatar, s.headerAvatarPerson]}>
+                  {headerAvatarSrc ? (
+                    <Image source={{ uri: headerAvatarSrc }} style={s.headerAvatarImg} />
+                  ) : (
+                    <Text style={t.headerAvatarText}>{assignmentInitialsParam || headerAvatarLabel(threadId, headerTitle)}</Text>
+                  )}
+                </View>
+              </PersonAvatarRing>
+            ) : (
+              <>
+                <View pointerEvents="none" style={s.headerAvatarGlow} />
+                <View style={s.headerAvatarRing}>
+                  <View style={s.headerAvatar}>
+                    {headerAvatarSrc ? (
+                      <Image source={{ uri: headerAvatarSrc }} style={s.headerAvatarImg} />
+                    ) : (
+                      <Text style={t.headerAvatarText}>{assignmentInitialsParam || headerAvatarLabel(threadId, headerTitle)}</Text>
+                    )}
+                  </View>
+                </View>
+              </>
+            )}
           </View>
 
           <View style={s.headerTextWrap}>
@@ -14886,16 +14999,22 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 profileAvatarUri={liveScheduleProfileAvatarUri}
                 onEnterLiveFromScheduleCard={handleEnterLiveFromChurchScheduleCard}
                 receiptLabel={
+                  // DMs: only what the server has confirmed: Sending (not yet saved), Sent
+                  // (saved), Delivered (the peer's app fetched it), Read (the peer read the chat
+                  // after it, when both users allow read receipts). Church rooms: Delivered.
                   item.sender !== "me"
                     ? undefined
-                    : isPersonToPersonDm
-                      ? dmConversationSettings?.showReadReceipts === true
-                        ? Number(item.createdAt || 0) <=
-                          Number(dmConversationSettings?.peerReadAt || 0)
-                          ? "Read"
-                          : "Delivered"
-                        : "Sent"
-                      : "Delivered"
+                    : !isPersonToPersonDm
+                      ? item.pending
+                        ? "Sending"
+                        : "Delivered"
+                      : resolveMessageReceiptStatus({
+                          pending: item.pending,
+                          createdAt: Number(item.createdAt || 0),
+                          peerDeliveredAt: dmReceiptView.peerDeliveredAt,
+                          peerReadAt: dmReceiptView.peerReadAt,
+                          showReadReceipts: dmReceiptView.showReadReceipts,
+                        })
                 }
               />
             );
@@ -14909,6 +15028,13 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             );
           }}
           ListEmptyComponent={
+            roomMessagesLoadedKey !== `${threadId}|${backendRoomId}` ? (
+              // First load of a chat with nothing cached yet: a quiet inline indicator, never
+              // a misleading "No messages yet" while the messages are still on their way.
+              <View style={s.chatEmptyList}>
+                <ActivityIndicator size="small" color="rgba(196,181,253,0.7)" />
+              </View>
+            ) : (
             <View style={s.chatEmptyList}>
               <Text style={t.emptyTitle}>No messages yet</Text>
               <Text style={t.emptySub}>
@@ -14921,6 +15047,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                       : "Send the first message."}
               </Text>
             </View>
+            )
           }
         />
       </View>
@@ -17106,6 +17233,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
 // MODERN_MESSAGE_DOCK_V1
 // MODERN_MESSAGE_DOCK_V2
+
 const s = StyleSheet.create({
 
   topicTitle: {
@@ -18962,6 +19090,10 @@ videoEditorSplitTimelineBadgeText: {
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 6,
+  } as ViewStyle,
+  headerAvatarPerson: {
+    width: 46,
+    height: 46,
   } as ViewStyle,
   headerAvatar: {
     width: "100%",

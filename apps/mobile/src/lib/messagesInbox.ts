@@ -1,5 +1,6 @@
 import { fetchDirectMessageInbox } from "@/src/lib/directMessagesApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import type { PersonRingCategory } from "@/src/components/PersonAvatarRing";
 
 export type MessagesInboxConversation = {
   id: string;
@@ -18,6 +19,12 @@ export type MessagesInboxConversation = {
   relationshipStatus?: string;
   isRequestReceiver?: boolean;
   isRequestInitiator?: boolean;
+  lastMessageFromViewer?: boolean;
+  lastMessageAt?: number;
+  peerDeliveredAt?: number;
+  peerReadAt?: number;
+  showReadReceipts?: boolean;
+  peerRingCategory?: PersonRingCategory;
 };
 
 /** What the server shows for a conversation that has no message yet. */
@@ -124,6 +131,19 @@ export async function fetchMessagesInboxConversations(_args: {
           relationshipStatus: row.relationshipStatus,
           isRequestReceiver,
           isRequestInitiator: row.isRequestInitiator === true,
+          peerRole: String(row.peerRole || "Member"),
+          lastMessageStatus:
+            row.lastMessageStatus === "read"
+              ? ("read" as const)
+              : row.lastMessageStatus === "sent"
+                ? ("sent" as const)
+                : undefined,
+          lastMessageFromViewer: row.lastMessageFromViewer === true,
+          lastMessageAt: row.lastMessageAt || 0,
+          peerDeliveredAt: row.peerDeliveredAt || 0,
+          peerReadAt: row.peerReadAt || 0,
+          showReadReceipts: row.showReadReceipts === true,
+          peerRingCategory: row.peerRingCategory || "unknown",
         },
         // The server's time is the last message's when there is one.
         lastMessageMs: previewFromApi && !NO_MESSAGE_PREVIEWS.has(previewFromApi) ? timestampMs : 0,

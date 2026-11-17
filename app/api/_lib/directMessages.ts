@@ -4,6 +4,7 @@ import {
   updateDirectMessageThreadStore,
 } from "@/app/api/_lib/store/directMessageThreadDb";
 import { getChurchById } from "@/app/api/_lib/churches";
+import { personRingCategoryFor, type PersonRingCategory } from "@/app/api/_lib/personRelations";
 import {
   getActiveMembership,
   getMembershipsForChurch,
@@ -67,6 +68,11 @@ export type DirectMessageThreadRecord = {
   createdAt: number;
   updatedAt: number;
   readAtByUserId: Record<string, number>;
+  /**
+   * Per user: createdAt (ms) of the newest message from the peer that this user's app has
+   * fetched (chat or inbox). Optional — threads written before it existed simply lack it.
+   */
+  deliveredAtByUserId?: Record<string, number>;
   createdByUserId?: string;
   mutedByUserId?: Record<string, boolean>;
   blockedByUserId?: Record<string, boolean>;
@@ -113,6 +119,11 @@ export type DirectMessageConversationSettings = {
   peerChurchRole: string;
   /** Peer's last-read timestamp (ms) when both users allow receipts. */
   peerReadAt: number;
+  /**
+   * The viewer's messages with createdAt <= this reached the peer's device. Always shown
+   * (not gated by read receipts); a read also implies delivery.
+   */
+  peerDeliveredAt: number;
   /** True when both viewer and peer have showReadReceipts enabled. */
   showReadReceipts: boolean;
 };
@@ -152,6 +163,17 @@ export type DirectMessageInboxItem = {
   requestInitiatorUserId?: string;
   isRequestInitiator?: boolean;
   isRequestReceiver?: boolean;
+  /** The latest visible message was sent by the viewer (its receipt ticks show in the list). */
+  lastMessageFromViewer?: boolean;
+  /** createdAt (ms) of the latest visible message (0 when none). */
+  lastMessageAt?: number;
+  /** The viewer's messages with createdAt <= this reached the peer's device. */
+  peerDeliveredAt?: number;
+  /** The peer read the chat at this time; 0 unless both users allow read receipts. */
+  peerReadAt?: number;
+  showReadReceipts?: boolean;
+  /** Avatar ring: who the peer is to the viewer (verified active membership only). */
+  peerRingCategory?: PersonRingCategory;
 };
 
 export type DirectMessageThreadView = {
@@ -353,7 +375,35 @@ async function readThreadStore(): Promise<Record<string, DirectMessageThreadReco
   return data && typeof data === "object" ? data : {};
 }
 
-/** CAS-safe single-key upsert — never blind-replace the whole document. */
+/** Tests only: the thread-record writer every server path uses (see upsertThreadRecord). */
+export async function upsertDirectMessageThreadRecordForTests(
+  key: string,
+  record: DirectMessageThreadRecord
+) {
+  await upsertThreadRecord(key, record);
+}
+
+/** Per-user latest time of two receipt maps (read / delivered times only ever move forward). */
+function laterReceiptTimes(
+  stored: Record<string, number> | undefined,
+  incoming: Record<string, number> | undefined
+): Record<string, number> {
+  const out: Record<string, number> = { ...(stored || {}) };
+  for (const [userId, time] of Object.entries(incoming || {})) {
+    const t = Number(time) || 0;
+    if (t > (Number(out[userId]) || 0)) out[userId] = t;
+  }
+  return out;
+}
+
+/**
+ * CAS-safe single-key upsert — never blind-replace the whole document.
+ *
+ * Callers pass a record they read earlier (often before awaiting other I/O). Receipt times
+ * written meanwhile by another request (the peer reading the chat, their app fetching it) must
+ * survive, so read / delivered times are merged with the stored record at write time, keeping
+ * the later time per user. Without this a stale copy erased the peer's read receipt.
+ */
 async function upsertThreadRecord(
   key: string,
   record: DirectMessageThreadRecord
@@ -365,7 +415,22 @@ async function upsertThreadRecord(
       current && typeof current === "object" && !Array.isArray(current)
         ? { ...(current as Record<string, DirectMessageThreadRecord>) }
         : {};
-    base[storeKey] = record;
+    const stored = base[storeKey];
+    if (stored && stored.roomId === record.roomId) {
+      const merged: DirectMessageThreadRecord = {
+        ...record,
+        readAtByUserId: laterReceiptTimes(stored.readAtByUserId, record.readAtByUserId),
+      };
+      if (stored.deliveredAtByUserId || record.deliveredAtByUserId) {
+        merged.deliveredAtByUserId = laterReceiptTimes(
+          stored.deliveredAtByUserId,
+          record.deliveredAtByUserId
+        );
+      }
+      base[storeKey] = merged;
+    } else {
+      base[storeKey] = record;
+    }
     return base;
   }, {});
 }
@@ -840,6 +905,69 @@ export async function markDirectMessageThreadRead(args: {
   return true;
 }
 
+export type DirectMessageDeliveryUpdate = {
+  churchId: string;
+  roomId: string;
+  /** The user whose app received the messages. */
+  userId: string;
+  /** createdAt (ms) of the newest message from the peer that was returned to them. */
+  upToCreatedAt: number;
+};
+
+/**
+ * Records message delivery to the recipient's device ("two gray ticks"). Writes only when a
+ * delivery time moves forward, all in one compare-and-swap update, so polling stays cheap.
+ * Never touches messages or any other thread field.
+ */
+export async function markDirectMessagesDelivered(updates: DirectMessageDeliveryUpdate[]) {
+  const pending = updates
+    .map((u) => ({
+      key: threadStoreKey(String(u.churchId || "").trim(), String(u.roomId || "").trim()),
+      roomId: String(u.roomId || "").trim(),
+      userId: normUserId(u.userId),
+      upTo: Math.floor(Number(u.upToCreatedAt || 0)),
+    }))
+    .filter(
+      (u) =>
+        u.key &&
+        u.userId &&
+        u.upTo > 0 &&
+        isDirectRoomId(u.roomId) &&
+        isParticipantInDirectRoom(u.roomId, u.userId)
+    );
+  if (!pending.length) return 0;
+
+  const advances = (record: DirectMessageThreadRecord | undefined, u: (typeof pending)[number]) =>
+    Boolean(record) &&
+    record!.roomId === u.roomId &&
+    Number(record!.deliveredAtByUserId?.[u.userId] || 0) < u.upTo;
+
+  // Cheap read first: most calls (every poll) change nothing and must not write.
+  const store = await readThreadStore();
+  const needed = pending.filter((u) => advances(store[u.key], u));
+  if (!needed.length) return 0;
+
+  let changed = 0;
+  await updateDirectMessageThreadStore((current) => {
+    const base =
+      current && typeof current === "object" && !Array.isArray(current)
+        ? { ...(current as Record<string, DirectMessageThreadRecord>) }
+        : {};
+    changed = 0;
+    for (const u of needed) {
+      const record = base[u.key];
+      if (!advances(record, u)) continue;
+      base[u.key] = {
+        ...record!,
+        deliveredAtByUserId: { ...(record!.deliveredAtByUserId || {}), [u.userId]: u.upTo },
+      };
+      changed += 1;
+    }
+    return base;
+  }, {});
+  return changed;
+}
+
 
 /** Canonical storage church for a DM room — never the viewer's session church. */
 export async function resolveDirectMessageStorageChurchId(args: {
@@ -980,6 +1108,11 @@ export async function getDirectMessageConversationSettings(args: {
   const peerReadAt = showReadReceipts
     ? Math.max(0, Number(record.readAtByUserId?.[peerUserId] || 0) || 0)
     : 0;
+  const peerDeliveredAt = Math.max(
+    0,
+    Number(record.deliveredAtByUserId?.[peerUserId] || 0) || 0,
+    Number(record.readAtByUserId?.[peerUserId] || 0) || 0
+  );
 
   return {
     roomId,
@@ -1016,6 +1149,7 @@ export async function getDirectMessageConversationSettings(args: {
     peerChurchName,
     peerChurchRole,
     peerReadAt,
+    peerDeliveredAt,
     showReadReceipts,
   };
 }
@@ -1923,6 +2057,13 @@ export async function listDirectMessageInbox(args: {
     return [];
   }
 
+  // The inbox shows each conversation's latest message, so a latest message from the peer has
+  // reached this viewer's device: record it as delivered (one write for the whole inbox).
+  const deliveries: DirectMessageDeliveryUpdate[] = [];
+  // The viewer's own active church, once, for the peers' avatar rings.
+  const viewerRingMembership = await getActiveMembership(viewerUserId).catch(() => undefined);
+  const viewerRingChurchId = String(viewerRingMembership?.churchId || "").trim();
+
   const settledItems = await Promise.allSettled(
     threads.map(async (thread) => {
       const participants = Array.isArray(thread.participantUserIds)
@@ -2129,17 +2270,6 @@ export async function listDirectMessageInbox(args: {
           thread.createdAt ||
           0
       );
-      const showReadReceipts = lastMessage?.senderUserId === viewerUserId
-        ? await getPairReadReceiptVisibility({ viewerUserId, peerUserId }).catch(() => false)
-        : false;
-      const peerReadAt = showReadReceipts
-        ? Number(thread.readAtByUserId?.[peerUserId] || 0)
-        : 0;
-      const lastMessageStatus = lastMessage?.senderUserId === viewerUserId
-        ? peerReadAt >= Number(lastMessage.timestampMs || 0) && Number(lastMessage.timestampMs || 0) > 0
-          ? "read" as const
-          : "sent" as const
-        : undefined;
 
       const storageChurch = storageChurchId
         ? await getChurchById(storageChurchId).catch(() => null)
@@ -2153,7 +2283,51 @@ export async function listDirectMessageInbox(args: {
             : "No messages yet")
       );
 
+      if (
+        storageChurchId &&
+        lastMessage?.senderUserId &&
+        lastMessage.senderUserId === peerUserId &&
+        lastMessage.timestampMs > 0
+      ) {
+        deliveries.push({
+          churchId: storageChurchId,
+          roomId: thread.roomId,
+          userId: viewerUserId,
+          upToCreatedAt: lastMessage.timestampMs,
+        });
+      }
+
+      // Receipts for the viewer's latest message (read only when both users allow receipts;
+      // a read also means delivered). Peer's ring from their active membership.
+      const [showReadReceipts, peerRingMembership] = await Promise.all([
+        getPairReadReceiptVisibility({ viewerUserId, peerUserId }).catch(() => false),
+        getActiveMembership(peerUserId).catch(() => undefined),
+      ]);
+      const peerReadAtRaw = Math.max(0, Number(thread.readAtByUserId?.[peerUserId] || 0) || 0);
+      // Inbox tick for the viewer's latest message as main sends it ("read" only when both users
+      // allow read receipts). Newer apps use the receipt fields below, which add "delivered".
+      const lastMessageTs = Number(lastMessage?.timestampMs || 0);
+      const lastMessageStatus = lastMessage?.senderUserId === viewerUserId
+        ? showReadReceipts && lastMessageTs > 0 && peerReadAtRaw >= lastMessageTs
+          ? "read" as const
+          : "sent" as const
+        : undefined;
+      const receiptFields = {
+        lastMessageFromViewer: Boolean(
+          lastMessage?.senderUserId && lastMessage.senderUserId === viewerUserId
+        ),
+        lastMessageAt: Number(lastMessage?.timestampMs || 0) || 0,
+        peerDeliveredAt: Math.max(
+          peerReadAtRaw,
+          Number(thread.deliveredAtByUserId?.[peerUserId] || 0) || 0
+        ),
+        peerReadAt: showReadReceipts ? peerReadAtRaw : 0,
+        showReadReceipts,
+        peerRingCategory: personRingCategoryFor(viewerRingChurchId, peerRingMembership),
+      };
+
       const item = {
+        ...receiptFields,
         roomId: thread.roomId,
         churchId: storageChurchId || headerChurchId,
         peerUserId,
@@ -2223,6 +2397,16 @@ export async function listDirectMessageInbox(args: {
       error: String((result.reason as any)?.message || result.reason),
     });
   });
+
+  try {
+    await markDirectMessagesDelivered(deliveries);
+  } catch (error) {
+    console.error("KRISTO_DM_DELIVERED_MARK_FAILED", {
+      viewerUserId,
+      source: "inbox",
+      error: String((error as any)?.message || error),
+    });
+  }
 
   return items.sort(
     (a, b) => Number(b.timestampMs || 0) - Number(a.timestampMs || 0)
