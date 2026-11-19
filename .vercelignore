@@ -16,3 +16,16 @@
 # import local JSON into an empty production document.
 /data/
 *.tsbuildinfo
+
+# Never upload secrets, cookies, prototype data or debug artifacts with a CLI deployment
+# (when .vercelignore exists, the CLI does not read .gitignore). Production settings come
+# from Vercel Environment Variables. (From 8b3fb925; /data/ above stays excluded.)
+.env
+.env.*
+!.env.example
+*.pem
+cookies.txt
+/.data/
+/.clerk/
+*.log
+*.tmp
