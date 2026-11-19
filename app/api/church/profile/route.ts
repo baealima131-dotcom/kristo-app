@@ -34,7 +34,9 @@ async function saveChurchAvatarData(churchId: string, avatarData: unknown) {
   if (!match) return "";
 
   // Vercel/serverless: no writable public/ — store data URL in Postgres profile JSON.
-  if (isServerlessRuntime()) {
+  // Any production server (`next start`) too: files written into public/ after the build are
+  // not served there (the saved /uploads/... URL answers 404), so the picture would be lost.
+  if (isServerlessRuntime() || process.env.NODE_ENV === "production") {
     if (raw.length > MAX_AVATAR_DATA_URL_LEN) {
       throw new Error("Avatar image is too large. Choose a smaller photo (max ~2MB).");
     }
