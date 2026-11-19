@@ -41,6 +41,26 @@ type Props = {
   };
 };
 
+/**
+ * The YouTube channel page in a saved creatorProfileUrl (https youtube.com /@handle, /channel/ID,
+ * /c/name or /user/name), or null. A video, Shorts or any other YouTube page is not a channel.
+ */
+export function youtubeChannelPageUrl(raw: unknown): string | null {
+  try {
+    const parsed = new URL(String(raw || "").trim());
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port) return null;
+    if (host !== "youtube.com" && host !== "m.youtube.com") return null;
+    const path = parsed.pathname.replace(/\/+$/, "");
+    if (!/^\/(@[A-Za-z0-9._-]{1,100}|channel\/UC[A-Za-z0-9_-]{10,40}|c\/[A-Za-z0-9._-]{1,100}|user\/[A-Za-z0-9._-]{1,100})$/.test(path)) {
+      return null;
+    }
+    return `https://www.youtube.com${path}`;
+  } catch {
+    return null;
+  }
+}
+
 export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   item,
   variant = "premium",
@@ -62,15 +82,26 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   // Video links belong to an external YouTube/TikTok/Facebook account, not a Kristo church.
   const externalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
   const externalProfileUrl = String(item?.creatorProfileUrl || "").trim();
+  const isYouTubeVideoLink =
+    externalVideoAccount && String(item?.videoDisplayType || "").trim().toLowerCase() === "youtube";
+  // YouTube: only the creator's channel page (from the saved metadata), never the video itself.
+  const youtubeChannelUrl = useMemo(
+    () => (isYouTubeVideoLink ? youtubeChannelPageUrl(externalProfileUrl) : null),
+    [isYouTubeVideoLink, externalProfileUrl]
+  );
   const canOpen = externalVideoAccount ? Boolean(externalProfileUrl) : Boolean(churchId);
   const openExternalProfile = useCallback(() => {
+    if (isYouTubeVideoLink) {
+      if (youtubeChannelUrl) void Linking.openURL(youtubeChannelUrl).catch(() => {});
+      return;
+    }
     try {
       const parsed = new URL(externalProfileUrl);
       const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
       if (parsed.protocol !== "https:" || parsed.username || parsed.password || !["youtube.com", "m.youtube.com", "tiktok.com", "vm.tiktok.com", "facebook.com", "m.facebook.com"].includes(host)) return;
       void Linking.openURL(parsed.toString());
     } catch {}
-  }, [externalProfileUrl]);
+  }, [externalProfileUrl, isYouTubeVideoLink, youtubeChannelUrl]);
 
   const openProfile = useCallback(() => {
     if (!canOpen) return;
@@ -79,10 +110,16 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   }, [canOpen, externalVideoAccount, item, openExternalProfile, source]);
 
   const openAvatarTarget = useCallback(() => {
+    // YouTube video link: the avatar opens the creator's YouTube channel (nothing when the
+    // metadata has no channel page). TikTok / Facebook / Kristo posts keep their behaviour.
+    if (isYouTubeVideoLink) {
+      if (youtubeChannelUrl) void Linking.openURL(youtubeChannelUrl).catch(() => {});
+      return;
+    }
     if (!canOpen) return;
     if (avatarOpensOverview) openChurchOverviewFromFeedItem(item, { source: source ? `${source}-avatar` : undefined });
     else openChurchProfileFromFeedItem(item, { source });
-  }, [avatarOpensOverview, canOpen, item, source]);
+  }, [avatarOpensOverview, canOpen, item, source, isYouTubeVideoLink, youtubeChannelUrl]);
 
   const isWatch = variant === "watch";
   const postId = String(item?.id || "").trim();
