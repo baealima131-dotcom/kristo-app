@@ -153,13 +153,18 @@ export function peekHomeFeedAvatar(cacheKey: string, sourceUpdatedAt?: number): 
   const key = String(cacheKey || "").trim();
   if (!key) return null;
 
+  const entry = memoryEntries.get(key);
   const sessionUri = peekHomeFeedAvatarSession(key);
   if (sessionUri) {
-    logAvatarOnce("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", key, { localUri: sessionUri });
-    return sessionUri;
+    // A newer picture (e.g. a new Church Profile photo: the post's avatarUpdatedAt moved past the
+    // cached copy) must not keep showing the old one for the rest of the session.
+    if (!entry || entryIsFresh(entry, sourceUpdatedAt)) {
+      logAvatarOnce("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", key, { localUri: sessionUri });
+      return sessionUri;
+    }
+    avatarDisplaySessionByKey.delete(key);
   }
 
-  const entry = memoryEntries.get(key);
   if (entry && entryIsFresh(entry, sourceUpdatedAt)) {
     const localUri = String(entry.localUri || "").trim();
     if (localUri && isResolvableAvatarUri(localUri)) {

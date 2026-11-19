@@ -173,8 +173,9 @@ export function clearSokoCarouselMemoryForTests(): void {
 }
 
 /**
- * Platform counts of a video link (same fields as EXTERNAL_PLATFORM_REFRESH_FIELDS in
- * components/homeFeed/homeFeedPlatformCounts.ts; kept import-free so Node verify scripts load it).
+ * Refreshable fields of a post (same lists as EXTERNAL_PLATFORM_REFRESH_FIELDS and
+ * CHURCH_IDENTITY_REFRESH_FIELDS in components/homeFeed/homeFeedPlatformCounts.ts; kept import-free
+ * so Node verify scripts load this file).
  */
 const VIDEO_LINK_COUNT_FIELDS = [
   "platformStats",
@@ -183,10 +184,26 @@ const VIDEO_LINK_COUNT_FIELDS = [
   "platformStatsUpdatedAt",
   "facebookManualStats",
 ] as const;
+const CHURCH_PICTURE_FIELDS = [
+  "churchAvatarUri",
+  "churchAvatarUrl",
+  "churchAvatar",
+  "churchImage",
+  "churchProfileImage",
+  "churchLogo",
+  "churchLogoUri",
+  "churchLogoUrl",
+  "ownerChurchAvatarUri",
+  "churchAvatarUpdatedAt",
+  "avatarUpdatedAt",
+] as const;
 
 function externalPlatformFieldsDigest(row: any): string {
-  if (String(row?.source || "").trim().toLowerCase() !== "system-admin-video-link") return "";
-  return VIDEO_LINK_COUNT_FIELDS.map((field) => JSON.stringify(row?.[field] ?? null)).join("|");
+  const isVideoLink = String(row?.source || "").trim().toLowerCase() === "system-admin-video-link";
+  const fields: readonly string[] = isVideoLink
+    ? [...VIDEO_LINK_COUNT_FIELDS, ...CHURCH_PICTURE_FIELDS]
+    : CHURCH_PICTURE_FIELDS;
+  return fields.map((field) => JSON.stringify(row?.[field] ?? null)).join("|");
 }
 
 export function sokoDistributedRowsUnchanged(prev: any[], next: any[]): boolean {
@@ -203,7 +220,7 @@ export function sokoDistributedRowsUnchanged(prev: any[], next: any[]): boolean 
     if (isSokoHomeFeedRow(prevRow) || isSokoHomeFeedRow(nextRow)) {
       if (sokoProductVisualDigest(prevRow) !== sokoProductVisualDigest(nextRow)) return false;
     } else if (externalPlatformFieldsDigest(prevRow) !== externalPlatformFieldsDigest(nextRow)) {
-      // Same video link with new platform counts (views/likes/comments): show the new row.
+      // Same post with new platform counts or a new church picture: show the new row.
       return false;
     }
   }

@@ -134,3 +134,40 @@ test("count field lists stay identical in both files", () => {
   const b = pick(mobile("src/lib/sokoHomeFeedLayout.ts"));
   assert.ok(a && a === b, `${a} !== ${b}`);
 });
+
+test("church posts (any source) get the church's current picture; nothing else changes", () => {
+  const post = { id: "feed_1", source: "media-upload", churchId: "CH7", title: "Ibada", churchAvatarUri: "", churchAvatarUpdatedAt: 100, avatarUpdatedAt: 100, mediaUri: "/uploads/media/a.mp4" };
+  const other = { id: "feed_2", source: "media-upload", churchId: "CH9", churchAvatarUri: "x", churchAvatarUpdatedAt: 5 };
+  const fresh = [{ ...post, title: "Changed", churchAvatarUri: "data:image/jpeg;base64,AAA", churchAvatarUpdatedAt: 200, avatarUpdatedAt: 200, mediaUri: "/uploads/media/b.mp4" }];
+  const result = refreshRowsPlatformFields([post, other], fresh, key);
+  assert.equal(result.updated, 1);
+  assert.equal(result.rows[0].churchAvatarUri, "data:image/jpeg;base64,AAA");
+  assert.equal(result.rows[0].churchAvatarUpdatedAt, 200);
+  assert.equal(result.rows[0].avatarUpdatedAt, 200);
+  assert.equal(result.rows[0].title, "Ibada", "title not refreshed");
+  assert.equal(result.rows[0].mediaUri, "/uploads/media/a.mp4", "video not refreshed");
+  assert.equal(result.rows[1], other);
+  assert.equal(result.rows[0].platformStats, undefined, "no platform fields on non-link posts");
+});
+
+test("Home list notices a new church picture for the same post", async () => {
+  const { sokoDistributedRowsUnchanged } = await import("../apps/mobile/src/lib/sokoHomeFeedLayout");
+  const post = { id: "feed_1", source: "media-upload", churchAvatarUri: "", churchAvatarUpdatedAt: 1 };
+  assert.equal(sokoDistributedRowsUnchanged([post], [{ ...post }]), true);
+  assert.equal(sokoDistributedRowsUnchanged([post], [{ ...post, churchAvatarUri: "data:x", churchAvatarUpdatedAt: 2 }]), false);
+});
+
+test("church picture field lists stay identical in both files", () => {
+  const pick = (src: string) => (src.match(/\[\s*("churchAvatarUri"[\s\S]*?)\]\s*as const/) || [])[1]?.replace(/\s+/g, "");
+  const a = pick(mobile("src/components/homeFeed/homeFeedPlatformCounts.ts"));
+  const b = pick(mobile("src/lib/sokoHomeFeedLayout.ts"));
+  assert.ok(a && a === b, `${a} !== ${b}`);
+});
+
+test("avatar session cache never keeps an older picture than the post's avatarUpdatedAt", () => {
+  const src = mobile("src/lib/homeFeedAvatarCache.ts");
+  const fn = src.slice(src.indexOf("export function peekHomeFeedAvatar("));
+  const body = fn.slice(0, fn.indexOf("\nexport "));
+  assert.match(body, /if \(!entry \|\| entryIsFresh\(entry, sourceUpdatedAt\)\)/);
+  assert.match(body, /avatarDisplaySessionByKey\.delete\(key\)/);
+});
