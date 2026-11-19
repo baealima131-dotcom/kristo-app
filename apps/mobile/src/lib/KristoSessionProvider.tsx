@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { onSessionExpired } from "./sessionExpiry";
+import { renewSessionTokenIfStale } from "./sessionRenewal";
 import { AppState } from "react-native";
 import type { KristoSession } from "./kristoSession";
 import {
@@ -371,6 +373,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           return;
         }
 
+        void renewSessionTokenIfStale();
         const touched = await touchMobileSession();
         if (touched) {
           if (!String(touched.churchId || "").trim()) {
@@ -495,6 +498,14 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     setSessionState(null);
     completeSessionExitCleanup({ userId, churchId }, params.reason);
   }
+
+  // Server says the signed session is no longer valid (expired, revoked or missing): sign out cleanly.
+  useEffect(() => onSessionExpired(() => exitSessionFast({ reason: "logout" })), []);
+
+  // Keep the signed token fresh for active users (renews when older than 7 days).
+  useEffect(() => {
+    if (session?.userId) void renewSessionTokenIfStale();
+  }, [session?.userId]);
 
   async function logout() {
     exitSessionFast({ reason: "logout" });

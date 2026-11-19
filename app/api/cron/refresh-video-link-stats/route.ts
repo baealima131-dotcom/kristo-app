@@ -59,6 +59,7 @@ function youtubeVideoIdForItem(item: any): string {
 }
 
 function safeCount(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
   const count = Number(value);
   return Number.isFinite(count) && count >= 0 ? count : null;
 }

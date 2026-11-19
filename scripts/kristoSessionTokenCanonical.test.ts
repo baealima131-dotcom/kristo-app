@@ -205,15 +205,18 @@ test("login and checkout share the canonical issuer", () => {
   assert.match(verify, /issueSessionToken\(v\.userId\)/);
   assert.doesNotMatch(checkoutFn, /await readSession\(/);
   assert.match(viewerFn, /await readSession\(/);
-  assert.match(session, /header-session-\$\{headerUserId\}/);
+  // Stage-1 header-session is closed (afb52d1d): an unsigned x-kristo-user-id must never
+  // become a session or a profile identity. It is only logged as rejected.
+  assert.doesNotMatch(session, /header-session-\$\{headerUserId\}/);
+  assert.match(session, /via: "header-session-rejected"/);
   assert.match(session, /logDeprecatedHeaderSession/);
   assert.match(session, /token-session-/);
   assert.match(profile, /verifySessionToken\(token\)/);
-  assert.match(profile, /headerUserId\.startsWith\("u_"\)/);
+  assert.doesNotMatch(profile, /headerUserId\.startsWith\("u_"\)/);
   assert.match(profile, /logDeprecatedHeaderSession/);
 });
 
-test("stage-1 checkout rejects unverified tokens while profile/church keep header-session fallback", () => {
+test("checkout and presented mobile session reject tokens signed with another secret", () => {
   const uid = "u_996c19a3aad35819e9614ead1";
   let issued = "";
   withProductionAuth(() => {

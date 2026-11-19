@@ -6,7 +6,9 @@ import { kickoffHomeFeedDisplayOrderCacheHydrate } from "@/src/components/homeFe
 kickoffHomeFeedDisplayOrderCacheHydrate();
 
 import React, { useCallback, useLayoutEffect, useState } from "react";
+import { Platform } from "react-native";
 import { Slot } from "expo-router";
+import { DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import * as SplashScreen from "expo-splash-screen";
 import { useFonts } from "expo-font";
@@ -18,6 +20,17 @@ import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMod
 import { SafetyAccountEnforcementGate } from "@/src/components/SafetyAccountEnforcementGate";
 import { CINZEL_SEMIBOLD_FAMILY } from "@/src/lib/cinzelFont";
 import { SokoStripeProvider } from "@/src/lib/payments/SokoStripeProvider";
+import { HOME_FEED_BG } from "@/src/components/homeFeed/theme";
+
+/**
+ * Android: React Navigation paints the light default theme background (#F2F2F2) behind screens.
+ * It flashed as a white tab-bar-sized card when a screen resized for the tab bar coming back.
+ * Only that background colour becomes the tab bar colour; card / text / border stay as before.
+ */
+const ANDROID_NAV_THEME = {
+  ...DefaultTheme,
+  colors: { ...DefaultTheme.colors, background: HOME_FEED_BG },
+};
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -57,7 +70,13 @@ export default function RootLayout() {
       {!splashFinished ? <JujujuAnimatedSplash onFinished={onSplashFinished} /> : null}
       <KristoSessionProvider>
         <SokoStripeProvider>
-          <Slot />
+          {Platform.OS === "android" ? (
+            <ThemeProvider value={ANDROID_NAV_THEME}>
+              <Slot />
+            </ThemeProvider>
+          ) : (
+            <Slot />
+          )}
           <SafetyAccountEnforcementGate />
         </SokoStripeProvider>
       </KristoSessionProvider>

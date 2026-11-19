@@ -132,11 +132,14 @@ async function requireAuthOnly(req: NextRequest): Promise<AuthOnlyContext | Next
       headerChurchId,
       hasCookie: Boolean(req.headers.get("cookie")),
     });
+    // A caller that presented identity headers believes it is signed in: tell the app to re-authenticate.
+    const presentedIdentity = Boolean(headerUid || String(req.headers.get("x-kristo-session-token") || "").trim());
     return json(
       {
         ok: false,
         error: "Unauthorized",
         details: { hint: "You must be signed in." },
+        ...(presentedIdentity ? { reason: "session_expired", reauth: true } : {}),
       } satisfies ApiErr,
       { status: 401 }
     );

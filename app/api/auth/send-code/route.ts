@@ -3,6 +3,7 @@ import { createChallenge, findUserByIdentifier, seedUserIfMissing } from "@/app/
 import {
   emailFailurePayload,
   exposeEmailDebugDetails,
+  exposeVerificationCode,
   sendVerificationCodeEmail,
 } from "@/app/api/_lib/email";
 
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
         email,
         challengeId: challenge.id,
         emailResult,
-        code: challenge.code,
+        ...(exposeVerificationCode() ? { code: challenge.code } : {}),
       });
     }
 
@@ -57,7 +58,7 @@ export async function POST(req: Request) {
       challengeId: challenge.id,
       ...(exposeEmailDebugDetails()
         ? {
-            devCode: challenge.code,
+            ...(exposeVerificationCode() ? { devCode: challenge.code } : {}),
             providerId: emailResult.providerId,
             from: emailResult.from,
           }

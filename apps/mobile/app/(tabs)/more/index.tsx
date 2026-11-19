@@ -539,6 +539,13 @@ export default function MoreScreen() {
     () => splitColumns(visibleItems),
     [visibleItems]
   );
+  // Remount the columns when the card set changes (e.g. logout switches to onboarding cards).
+  // Reordering the keyed cards in place crashed Fabric on Android: "addViewAt: View already
+  // has a parent".
+  const columnsLayoutKey = React.useMemo(
+    () => visibleItems.map((item) => item.key).join("|"),
+    [visibleItems]
+  );
 
   const [messagesV2Open, setMessagesV2Open] = React.useState(false);
   const [notificationUnread, setNotificationUnread] = React.useState(0);
@@ -1242,7 +1249,7 @@ export default function MoreScreen() {
         </View>
       </View>
 
-      <View style={s.columnsWrap}>
+      <View key={columnsLayoutKey} style={s.columnsWrap}>
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[s.columnContent, { paddingBottom: scrollBottomPad }]}

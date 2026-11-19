@@ -101,7 +101,7 @@ export async function POST(req: Request) {
       mode: "otp",
       challengeId: ch.id,
       sentTo,
-      devCode: ch.code,
+      ...(process.env.NODE_ENV !== "production" ? { devCode: ch.code } : {}),
     });
   }
 
@@ -120,7 +120,7 @@ export async function POST(req: Request) {
       ok: true,
       challengeId: ch.id,
       sentTo,
-      devCode: ch.code,
+      ...(process.env.NODE_ENV !== "production" ? { devCode: ch.code } : {}),
     });
   }
 

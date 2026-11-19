@@ -9,6 +9,7 @@ import { ensureProfileDraft, type Gender } from "@/app/api/auth/_lib/profile";
 import {
   emailProviderFailureStatus,
   exposeEmailDebugDetails,
+  exposeVerificationCode,
   sendVerificationCodeEmail,
   signupEmailFailurePayload,
 } from "@/app/api/_lib/email";
@@ -123,7 +124,7 @@ export async function POST(req: Request) {
         error: emailResult.error,
         providerId: emailResult.providerId,
         skipped: emailResult.skipped,
-        code: challenge.code,
+        ...(exposeVerificationCode() ? { code: challenge.code } : {}),
       });
     }
 

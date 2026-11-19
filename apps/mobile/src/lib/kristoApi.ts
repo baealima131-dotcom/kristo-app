@@ -4,6 +4,7 @@ import {
   requestKey,
   type TrafficOptions,
 } from "@/src/lib/kristoTraffic";
+import { isSessionExpiredResponse, notifySessionExpired } from "./sessionExpiry";
 import { resolveApiBase } from "@/src/lib/kristoEnv";
 import { describeKristoSessionToken, getKristoHeaders, logKristoAuthHeadersDiag } from "@/src/lib/kristoHeaders";
 import {
@@ -72,6 +73,8 @@ function isExpectedRoomOnlyScheduleFeedNotFound(
 }
 
 function httpError(path: string, res: Response, body: any): ApiErrorResult {
+  // Signed session no longer accepted: sign out cleanly instead of failing screen by screen.
+  if (isSessionExpiredResponse(res.status, body)) notifySessionExpired();
   const providerError = String(body?.error || body?.message || "").trim();
   const hint =
     typeof body?.details?.hint === "string"

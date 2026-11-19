@@ -270,12 +270,18 @@ type SignedOtpPayload = {
   issuedAt: number;
 };
 
+/**
+ * Key for signed OTP challenges. Never the Resend API key: a copy of it would let
+ * anyone forge a challenge (and its code) for any user. Without KRISTO_OTP_SECRET
+ * the key is derived from KRISTO_SESSION_SECRET.
+ */
 function getOtpSecret() {
-  return (
-    process.env.KRISTO_OTP_SECRET?.trim() ||
-    process.env.RESEND_API_KEY?.trim() ||
-    "kristo-dev-otp-secret"
-  );
+  const dedicated = process.env.KRISTO_OTP_SECRET?.trim();
+  if (dedicated) return dedicated;
+  const session = process.env.KRISTO_SESSION_SECRET?.trim();
+  if (session) return crypto.createHmac("sha256", session).update("kristo-otp-challenge-v1").digest("hex");
+  if (process.env.NODE_ENV === "production") throw new Error("KRISTO_SESSION_SECRET is required to sign OTP challenges");
+  return "kristo-dev-otp-secret";
 }
 
 function hashOtpCode(code: string) {

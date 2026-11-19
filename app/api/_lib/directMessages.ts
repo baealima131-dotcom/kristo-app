@@ -2344,7 +2344,13 @@ export async function listDirectMessageInbox(args: {
         timestampLabel: formatTimestampLabel(timestampMs),
         timestampMs,
         unreadCount,
-        peerRole: String(peerMembership?.churchRole || profile?.churchRole || profile?.role || "Member").trim(),
+        peerRole: String(
+          peerMembership?.churchRole ||
+            // Older stored profiles may still carry a role; UserProfile no longer declares it.
+            (profile as { churchRole?: unknown; role?: unknown } | null)?.churchRole ||
+            (profile as { churchRole?: unknown; role?: unknown } | null)?.role ||
+            "Member"
+        ).trim(),
         ...(lastMessageStatus ? { lastMessageStatus } : {}),
         relationshipStatus,
         requestInitiatorUserId,

@@ -28,6 +28,11 @@ export function exposeEmailDebugDetails() {
   return process.env.NODE_ENV !== "production" || process.env.KRISTO_DEBUG_EMAIL === "1";
 }
 
+/** Verification codes may be echoed to the client only outside production (never via KRISTO_DEBUG_EMAIL). */
+export function exposeVerificationCode() {
+  return process.env.NODE_ENV !== "production";
+}
+
 function logEmailEvent(event: string, payload: Record<string, unknown>) {
   const safe = { ...payload };
   if (typeof safe.code === "string") {
