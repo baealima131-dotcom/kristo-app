@@ -31,6 +31,7 @@ function restoreCallAudioAfterWatchMedia(source: string) {
   setTimeout(() => void reassertPrivateCallAudioSession(callId, source), 400);
 }
 import { WebView } from "react-native-webview";
+import { homeFeedMediaUrl } from "@/src/lib/homeFeedVideoUri";
 import {
   buildFacebookSdkPlayerHtml,
   buildYouTubePlayerHtml,
@@ -508,7 +509,35 @@ function WatchVideoSurface({
 }) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
-  const playbackUri = resolveWatchScreenPlaybackUri(payload);
+  // Chosen once per opened video: the disk-cached file when it is already there, else the network
+  // URL. The disk cache filling in later (index hydrate / download done) must not swap the source
+  // mid-start — that replaced the player while it was loading and the video never appeared.
+  const pinnedPlaybackRef = useRef<{ key: string; uri: string } | null>(null);
+  const pinKey = `${postId}|${String(payload.videoUri || "").trim()}`;
+  if (pinnedPlaybackRef.current?.key !== pinKey) {
+    pinnedPlaybackRef.current = { key: pinKey, uri: resolveWatchScreenPlaybackUri(payload) };
+  }
+  const playbackUri = pinnedPlaybackRef.current.uri;
+  // Saved cover of the upload (chosen cover, else generated poster, else thumbnail).
+  const startPosterUri = useMemo(() => {
+    for (const raw of [item?.videoPosterUri, item?.posterUri, item?.thumbnailUri, item?.thumbnailUrl, item?.posterUrl]) {
+      const uri = homeFeedMediaUrl(raw);
+      if (uri) return uri;
+    }
+    return "";
+  }, [item]);
+  // The poster stays over the video until its first frame is drawn (iOS shows a black layer until
+  // then). Fallback: hidden 6 s after readyToPlay in case the first-frame event never comes.
+  const [firstFrameKey, setFirstFrameKey] = useState<string | null>(null);
+  const firstFrameShown = firstFrameKey === pinKey;
+  const firstFrameFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (firstFrameFallbackRef.current) clearTimeout(firstFrameFallbackRef.current);
+      firstFrameFallbackRef.current = null;
+    },
+    [pinKey]
+  );
   const durationSec = useMemo(() => {
     const ms =
       payload.videoDurationMs ??
@@ -607,8 +636,15 @@ function WatchVideoSurface({
   useEventListener(player, "videoTrackChange", (event: any) => {
     reportTrackDisplayType(event?.videoTrack);
   });
-  useEventListener(player, "statusChange", () => {
+  useEventListener(player, "statusChange", (event: any) => {
     reportTrackDisplayType((player as any)?.videoTrack);
+    if (event?.status === "readyToPlay" && !firstFrameFallbackRef.current) {
+      const keyAtReady = pinKey;
+      firstFrameFallbackRef.current = setTimeout(() => {
+        firstFrameFallbackRef.current = null;
+        setFirstFrameKey((current) => current ?? keyAtReady);
+      }, 6000);
+    }
   });
 
   useEffect(() => {
@@ -950,7 +986,18 @@ function WatchVideoSurface({
           }
           onFullscreenEnter={handleFullscreenEnter}
           onFullscreenExit={handleFullscreenExit}
+          onFirstFrameRender={() => {
+            if (firstFrameFallbackRef.current) {
+              clearTimeout(firstFrameFallbackRef.current);
+              firstFrameFallbackRef.current = null;
+            }
+            setFirstFrameKey(pinKey);
+          }}
         />
+        {!firstFrameShown && startPosterUri ? (
+          // The post's cover over the (still black) video until its first frame; taps pass through.
+          <WatchStartCover uri={startPosterUri} contain={displayType !== "youtube"} />
+        ) : null}
         </>
       ) : null}
       {Platform.OS === "ios" && !ended && !iosFullscreenOpen ? (
@@ -1285,11 +1332,30 @@ function allowYouTubePlayerNavigation(request: { url: string; isTopFrame?: boole
  * player (its cover sits behind it while loading and replaces it after the end), and when it ends
  * the cover replaces the player (tap to play again; nothing else starts by itself).
  */
+/**
+ * Picture shown over a video surface until the video draws its first frame (YouTube: "playing";
+ * uploads: VideoView first frame). Same expo-image cache as the Home Feed cards, no fade.
+ */
+function WatchStartCover({ uri, contain }: { uri: string; contain?: boolean }) {
+  if (!uri) return null;
+  return (
+    <View style={[StyleSheet.absoluteFillObject, styles.watchStartCover]} pointerEvents="none">
+      <FeedVideoCover
+        uri={uri}
+        dim={false}
+        foregroundResizeMode={contain ? "contain" : "cover"}
+      />
+    </View>
+  );
+}
+
 function WatchYouTubeVideoSurface({ item, videoId }: { item: any; videoId: string }) {
-  const cover = externalVideoCover(item);
+  const savedCover = externalVideoCover(item);
+  // YouTube's public thumbnail when the link has no saved cover, so the opening is never black.
+  const cover = savedCover.uri ? savedCover : { uri: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, contain: false };
   // The cover is the player page's own background (behind YouTube's player), never on top of it.
   const html = buildYouTubePlayerHtml(videoId, cover.uri);
-  const { webViewRef, ended, failed, onMessage, replay } = useExternalPlayerState(`${item?.id || ""}:${videoId}`);
+  const { webViewRef, ended, started, failed, onMessage, replay } = useExternalPlayerState(`${item?.id || ""}:${videoId}`);
   // After the video ends the player is removed and the cover takes its place; replay loads a new player.
   const [playRound, setPlayRound] = useState(0);
   const replayFromCover = useCallback(() => {
@@ -1332,6 +1398,11 @@ function WatchYouTubeVideoSurface({ item, videoId }: { item: any; videoId: strin
           <Text style={styles.externalVideoUnavailableText}>Video hii ya YouTube haiwezi kuchezwa hapa.</Text>
         </View>
       )}
+      {html && !failed && !ended && !started ? (
+        // YouTube's player paints black until it plays: the cover stays on top until "playing"
+        // (or EXTERNAL_START_COVER_MAX_MS). Touches pass through to the player underneath.
+        <WatchStartCover uri={cover.uri} contain={cover.contain} />
+      ) : null}
     </View>
   );
 }
@@ -2015,6 +2086,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#000000",
     overflow: "hidden",
   },
+  watchStartCover: { zIndex: 5, elevation: 5 },
   externalVideoWebView: { flex: 1, backgroundColor: "#000000" },
   externalVideoWebViewContainer: { flex: 1, backgroundColor: "#000000" },
   externalVideoWebViewClear: { flex: 1, backgroundColor: "transparent" },

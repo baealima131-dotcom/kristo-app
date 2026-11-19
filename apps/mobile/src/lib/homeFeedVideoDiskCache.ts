@@ -1,4 +1,3 @@
-import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
 import {
@@ -58,13 +57,30 @@ let watchNextCacheTimer: ReturnType<typeof setTimeout> | null = null;
 let watchCurrentPostId: string | null = null;
 let watchNextPostId: string | null = null;
 
+/**
+ * Cache key: the full URL. Query parameters are kept: they can identify the video (e.g. YouTube's
+ * ?v=), and dropping them made different videos share one cache entry.
+ */
 function normalizeUrl(url: string) {
-  return String(url || "").trim().split("?")[0];
+  return String(url || "").trim();
 }
 
 function isNetworkUrl(url: string) {
   const trimmed = String(url || "").trim();
   return Boolean(trimmed) && /^https?:\/\//i.test(trimmed);
+}
+
+/** Hosts of external video pages (YouTube/TikTok/Facebook links): HTML players, never an .mp4 file. */
+const EXTERNAL_VIDEO_PAGE_HOST = /(^|\.)(youtube\.com|youtube-nocookie\.com|youtu\.be|tiktok\.com|facebook\.com|fb\.watch)$/i;
+
+/** Only direct video files (uploads on Kristo storage) are downloaded to / read from the disk cache. */
+function isCacheableVideoUrl(url: string) {
+  if (!isNetworkUrl(url)) return false;
+  try {
+    return !EXTERNAL_VIDEO_PAGE_HOST.test(new URL(String(url).trim()).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function cacheKey(url: string) {
@@ -88,6 +104,8 @@ function notifyListeners() {
 function rememberEntry(entry: DiskCacheEntry) {
   const key = normalizeUrl(entry.remoteUrl);
   if (!key || !entry.localUri) return;
+  // Entries for external video pages (an HTML page saved as .mp4 by older builds) are dropped.
+  if (!isCacheableVideoUrl(entry.remoteUrl)) return;
   memory.set(key, entry);
   schedulePersistIndex();
 }
@@ -163,18 +181,18 @@ export async function hydrateAndCacheWatchVideo(args: {
     watchNextCacheTimer = null;
   }
 
-  if (!remote || !isNetworkUrl(remote)) {
+  if (!remote || !isCacheableVideoUrl(remote)) {
     console.log("KRISTO_VIDEO_DISK_CACHE_HYDRATED", { postId, added: 0 });
     return null;
   }
 
   const normalized = normalizeUrl(remote);
   const hadEntry = memory.has(normalized);
-  // Android: inspect existing cache only. The foreground player already streams
-  // this URL; starting a second full download competes with its audio/video data.
+  // Inspect existing cache only (iOS and Android). The foreground player already streams this URL;
+  // a second full download competed with its audio/video data and delayed the first frame.
   const localUri = await cacheVideoUrl(remote, {
     allowDuringWatch: true,
-    cacheOnly: Platform.OS === "android",
+    cacheOnly: true,
   });
   const added = localUri && !hadEntry ? 1 : localUri ? 0 : 0;
 
@@ -188,7 +206,7 @@ export async function hydrateAndCacheWatchVideo(args: {
 export function scheduleWatchNextVideoDiskCache(args: { postId: string; remoteUrl: string }) {
   const postId = String(args.postId || "").trim();
   const remote = String(args.remoteUrl || "").trim();
-  if (!postId || !remote || !isNetworkUrl(remote)) return;
+  if (!postId || !remote || !isCacheableVideoUrl(remote)) return;
   if (postId === watchCurrentPostId) return;
 
   watchNextPostId = postId;
@@ -259,6 +277,7 @@ export function getCachedVideoUri(url: string): string | null {
   if (!remote) return null;
   if (remote.startsWith("file://")) return remote;
 
+  if (!isCacheableVideoUrl(remote)) return null;
   const key = normalizeUrl(remote);
   const entry = memory.get(key);
   return entry?.localUri ? String(entry.localUri).trim() : null;
@@ -321,7 +340,7 @@ export async function cacheVideoUrl(
 
   const remote = String(url || "").trim();
   const normalized = normalizeUrl(remote);
-  if (!normalized || !isNetworkUrl(remote)) return null;
+  if (!normalized || !isCacheableVideoUrl(remote)) return null;
 
   const existing = opts?.cacheOnly
     ? await getVerifiedCachedVideoUri(remote)
@@ -490,7 +509,7 @@ function buildDiskCacheQueue(rows: any[], activeIndex: number): {
 
   const addUnique = (url: string, bucket: string[]) => {
     const normalized = normalizeUrl(url);
-    if (!normalized || !isNetworkUrl(url) || seen.has(normalized)) return;
+    if (!normalized || !isCacheableVideoUrl(url) || seen.has(normalized)) return;
     seen.add(normalized);
     bucket.push(url);
   };
@@ -604,7 +623,7 @@ export function prefetchHomeFeedVideoDiskCacheUrl(
   if (!isHomeFeedVideoDiskCacheEnabled()) return;
   const url = String(remoteUrl || "").trim();
   const postId = String(opts?.postId || "").trim();
-  if (!url || !isNetworkUrl(url)) return;
+  if (!url || !isCacheableVideoUrl(url)) return;
   void hydrateAndCacheWatchVideo({ postId, remoteUrl: url });
 }
 
