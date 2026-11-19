@@ -10,7 +10,7 @@ import {
   resolveHomeFeedAvatarCacheContext,
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD, HOME_FEED_MUTED } from "./theme";
-import { openChurchOverviewFromFeedItem, openChurchProfileFromFeedItem } from "@/src/lib/churchProfileNavigation";
+import { openChurchOverviewFromFeedItem } from "@/src/lib/churchProfileNavigation";
 import { FeedChurchAvatar } from "./FeedChurchAvatar";
 
 const AVATAR_SIZE = 58;
@@ -41,8 +41,9 @@ export const FeedIdentity = memo(function FeedIdentity({ item, whenLabel }: Prop
 
   const memberLine = [headline, subline].filter(Boolean).join(" • ");
   const churchId = useMemo(() => homeFeedRowChurchId(item), [item]);
+  // Church name: the same Church Overview as the avatar (church-overview/[churchId]).
   const openChurchProfile = useCallback(() => {
-    openChurchProfileFromFeedItem(item, { source: "home-feed-identity" });
+    openChurchOverviewFromFeedItem(item, { source: "home-feed-identity" });
   }, [item]);
   // Avatar of a Home feed video post: Church Overview style profile.
   const openChurchOverview = useCallback(() => {

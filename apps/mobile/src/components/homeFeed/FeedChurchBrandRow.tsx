@@ -17,7 +17,8 @@ import {
   resolveHomeFeedAvatarCacheContext,
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD } from "./theme";
-import { openChurchOverviewFromFeedItem, openChurchProfileFromFeedItem } from "@/src/lib/churchProfileNavigation";
+import { openChurchOverviewFromFeedItem } from "@/src/lib/churchProfileNavigation";
+import { externalCreatorPageUrl, youtubeChannelPageUrl } from "@/src/lib/externalCreatorPage";
 import { FeedChurchAvatar } from "./FeedChurchAvatar";
 import { HomeFeedCachedAvatarImage } from "./HomeFeedCachedAvatarImage";
 
@@ -32,8 +33,6 @@ type Props = {
   source?: string;
   /** When false, only the avatar opens the profile (e.g. member-authored church room posts). */
   nameOpensProfile?: boolean;
-  /** Avatar opens the Church Overview style profile (Home feed video cards). */
-  avatarOpensOverview?: boolean;
   deferAvatarLoad?: boolean;
   avatarDiagnostics?: {
     rowIndex?: number;
@@ -41,25 +40,8 @@ type Props = {
   };
 };
 
-/**
- * The YouTube channel page in a saved creatorProfileUrl (https youtube.com /@handle, /channel/ID,
- * /c/name or /user/name), or null. A video, Shorts or any other YouTube page is not a channel.
- */
-export function youtubeChannelPageUrl(raw: unknown): string | null {
-  try {
-    const parsed = new URL(String(raw || "").trim());
-    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port) return null;
-    if (host !== "youtube.com" && host !== "m.youtube.com") return null;
-    const path = parsed.pathname.replace(/\/+$/, "");
-    if (!/^\/(@[A-Za-z0-9._-]{1,100}|channel\/UC[A-Za-z0-9_-]{10,40}|c\/[A-Za-z0-9._-]{1,100}|user\/[A-Za-z0-9._-]{1,100})$/.test(path)) {
-      return null;
-    }
-    return `https://www.youtube.com${path}`;
-  } catch {
-    return null;
-  }
-}
+// Kept exported from here for existing imports; the logic lives in lib/externalCreatorPage.
+export { youtubeChannelPageUrl };
 
 export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   item,
@@ -68,7 +50,6 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   style,
   source,
   nameOpensProfile = true,
-  avatarOpensOverview = false,
   deferAvatarLoad = false,
   avatarDiagnostics,
 }: Props) {
@@ -81,45 +62,29 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   );
   // Video links belong to an external YouTube/TikTok/Facebook account, not a Kristo church.
   const externalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
-  const externalProfileUrl = String(item?.creatorProfileUrl || "").trim();
-  const isYouTubeVideoLink =
-    externalVideoAccount && String(item?.videoDisplayType || "").trim().toLowerCase() === "youtube";
-  // YouTube: only the creator's channel page (from the saved metadata), never the video itself.
-  const youtubeChannelUrl = useMemo(
-    () => (isYouTubeVideoLink ? youtubeChannelPageUrl(externalProfileUrl) : null),
-    [isYouTubeVideoLink, externalProfileUrl]
+  // Video links: the creator's own page (YouTube channel, TikTok creator, Facebook Page) from the
+  // avatar and the name alike; null when the link has none, and then nothing opens.
+  const creatorPageUrl = useMemo(
+    () => (externalVideoAccount ? externalCreatorPageUrl(item) : null),
+    [externalVideoAccount, item]
   );
-  const canOpen = externalVideoAccount ? Boolean(externalProfileUrl) : Boolean(churchId);
+  const canOpen = externalVideoAccount ? Boolean(creatorPageUrl) : Boolean(churchId);
   const openExternalProfile = useCallback(() => {
-    if (isYouTubeVideoLink) {
-      if (youtubeChannelUrl) void Linking.openURL(youtubeChannelUrl).catch(() => {});
-      return;
-    }
-    try {
-      const parsed = new URL(externalProfileUrl);
-      const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
-      if (parsed.protocol !== "https:" || parsed.username || parsed.password || !["youtube.com", "m.youtube.com", "tiktok.com", "vm.tiktok.com", "facebook.com", "m.facebook.com"].includes(host)) return;
-      void Linking.openURL(parsed.toString());
-    } catch {}
-  }, [externalProfileUrl, isYouTubeVideoLink, youtubeChannelUrl]);
+    if (creatorPageUrl) void Linking.openURL(creatorPageUrl).catch(() => {});
+  }, [creatorPageUrl]);
 
+  // Kristo/church posts: avatar and church name open the Church Overview (church-overview/[churchId]).
   const openProfile = useCallback(() => {
     if (!canOpen) return;
     if (externalVideoAccount) openExternalProfile();
-    else openChurchProfileFromFeedItem(item, { source });
+    else openChurchOverviewFromFeedItem(item, { source });
   }, [canOpen, externalVideoAccount, item, openExternalProfile, source]);
 
   const openAvatarTarget = useCallback(() => {
-    // YouTube video link: the avatar opens the creator's YouTube channel (nothing when the
-    // metadata has no channel page). TikTok / Facebook / Kristo posts keep their behaviour.
-    if (isYouTubeVideoLink) {
-      if (youtubeChannelUrl) void Linking.openURL(youtubeChannelUrl).catch(() => {});
-      return;
-    }
     if (!canOpen) return;
-    if (avatarOpensOverview) openChurchOverviewFromFeedItem(item, { source: source ? `${source}-avatar` : undefined });
-    else openChurchProfileFromFeedItem(item, { source });
-  }, [avatarOpensOverview, canOpen, item, source, isYouTubeVideoLink, youtubeChannelUrl]);
+    if (externalVideoAccount) openExternalProfile();
+    else openChurchOverviewFromFeedItem(item, { source: source ? `${source}-avatar` : undefined });
+  }, [canOpen, externalVideoAccount, item, openExternalProfile, source]);
 
   const isWatch = variant === "watch";
   const postId = String(item?.id || "").trim();
