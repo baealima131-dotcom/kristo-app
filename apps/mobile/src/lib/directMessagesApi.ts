@@ -1,6 +1,16 @@
 import { apiGet, apiPatch, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { homeFeedMediaUrl } from "@/src/lib/homeFeedVideoUri";
 import { normalizePersonRingCategory, type PersonRingCategory } from "@/src/components/PersonAvatarRing";
+
+/**
+ * Profile picture URL ready for <Image>: the API can return a server path
+ * ("/uploads/profile-avatars/...") which only loads once joined with the API base, as the
+ * thread screen already does (chatMediaUrl). Without this the inbox showed an empty avatar.
+ */
+function directMessageAvatarUrl(row: any): string {
+  return homeFeedMediaUrl(row?.avatarUri || row?.avatarUrl || "");
+}
 
 export type DirectMessagePeerPreview = {
   userId: string;
@@ -76,7 +86,7 @@ export async function fetchDirectMessageInbox(): Promise<DirectMessageInboxRow[]
       subtitle: isRequestReceiver
         ? "Message request"
         : String(row?.subtitle || "Direct message"),
-      avatarUri: String(row?.avatarUri || row?.avatarUrl || ""),
+      avatarUri: directMessageAvatarUrl(row),
       lastMessagePreview: preview,
       lastMessageText: preview,
       lastMessageStatus:
@@ -148,7 +158,7 @@ export async function resolveDirectMessagePeer(args: {
   return {
     userId: String(row?.userId || ""),
     displayName: String(row?.displayName || "Member"),
-    avatarUrl: String(row?.avatarUrl || row?.avatarUri || ""),
+    avatarUrl: directMessageAvatarUrl(row),
     kristoId: String(row?.kristoId || kristoId),
     churchId: String(row?.churchId || churchId),
     churchName: String(row?.churchName || "Church"),
@@ -182,7 +192,7 @@ export async function openDirectMessageThread(args: {
     peerUserId: String(row?.peerUserId || targetUserId),
     title: String(row?.title || "Member"),
     subtitle: String(row?.subtitle || "Direct message"),
-    avatarUri: String(row?.avatarUri || row?.avatarUrl || ""),
+    avatarUri: directMessageAvatarUrl(row),
   };
 }
 
@@ -222,7 +232,7 @@ export async function ensureDirectMessageThreadFromRoomId(args: {
     peerUserId: String(row?.peerUserId || ""),
     title: String(row?.title || "Member"),
     subtitle: String(row?.subtitle || "Direct message"),
-    avatarUri: String(row?.avatarUri || row?.avatarUrl || ""),
+    avatarUri: directMessageAvatarUrl(row),
   };
 }
 
