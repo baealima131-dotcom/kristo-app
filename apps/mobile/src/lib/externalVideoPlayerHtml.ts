@@ -49,10 +49,12 @@ const PAGE_HEAD =
 
 /**
  * YouTube IFrame Player API page: starts playing on load, reports playing/ended/error.
- * YouTube's control bar, fullscreen button, keyboard controls and annotations are turned off
- * (controls=0, fs=0, disablekb=1, iv_load_policy=3); related videos are limited to the same
- * channel (rel=0). The post cover is the page background behind the player while it loads;
- * when the video ends Watch replaces the player with the cover (never covering the player).
+ * YouTube's own controls are on (controls=1, fs=1, as in 664d7040): they show on a tap, hide while
+ * playing, and include YouTube's fullscreen button (the WebView allows fullscreen video, so the
+ * system fullscreen keeps the same playback position). Keyboard controls and annotations stay
+ * off (disablekb=1, iv_load_policy=3); related videos are limited to the same channel (rel=0).
+ * The post cover is the page background behind the player while it loads; when the video ends
+ * Watch replaces the player with the cover (never covering the player).
  */
 export function buildYouTubePlayerHtml(videoId: string, coverUri?: string): string | null {
   if (!YOUTUBE_ID.test(videoId)) return null;
@@ -65,9 +67,9 @@ export function buildYouTubePlayerHtml(videoId: string, coverUri?: string): stri
     playerVars: {
       playsinline: 1,
       autoplay: 1,
-      controls: 0,
+      controls: 1,
       disablekb: 1,
-      fs: 0,
+      fs: 1,
       iv_load_policy: 3,
       rel: 0,
       origin: YOUTUBE_CLIENT_ORIGIN,
@@ -81,11 +83,22 @@ export function buildYouTubePlayerHtml(videoId: string, coverUri?: string): stri
     "<body" + (cover ? ' style="' + cover + '"' : "") + '><div id="player"></div><script>' +
     POST_MESSAGE_JS +
     "var player;" +
+    // Leaving fullscreen: Android's WebView pauses the video while it moves it back into the page.
+    // If it was playing when fullscreen closed (the viewer did not pause it), keep it playing.
+    // The pause may arrive just before or just after the fullscreenchange event.
+    "var ytState=-1,resumeUntil=0,pausedFromPlayingAt=0;" +
+    "function onFsChange(){if(document.fullscreenElement||document.webkitFullscreenElement)return;" +
+    "if(ytState===" + YOUTUBE_PLAYING + ")resumeUntil=Date.now()+1500;" +
+    "else if(ytState===" + YOUTUBE_PAUSED + "&&Date.now()-pausedFromPlayingAt<1500&&player){pausedFromPlayingAt=0;player.playVideo()}}" +
+    "document.addEventListener('fullscreenchange',onFsChange);document.addEventListener('webkitfullscreenchange',onFsChange);" +
     "function show(){var p=document.getElementById('player');if(p)p.style.opacity='1'}" +
     "function onYouTubeIframeAPIReady(){var o=" + JSON.stringify(options) + ";" +
     "o.events={" +
     "onReady:function(e){setTimeout(show,4000);e.target.playVideo()}," +
     "onStateChange:function(e){" +
+    "if(e.data===" + YOUTUBE_PAUSED + "&&Date.now()<resumeUntil){resumeUntil=0;e.target.playVideo();return}" +
+    "if(e.data===" + YOUTUBE_PAUSED + ")pausedFromPlayingAt=ytState===" + YOUTUBE_PLAYING + "?Date.now():0;" +
+    "if(e.data!==3)ytState=e.data;" +
     "if(e.data===" + YOUTUBE_PLAYING + "||e.data===" + YOUTUBE_PAUSED + "||e.data===" + YOUTUBE_ENDED + ")show();" +
     "if(e.data===" + YOUTUBE_PLAYING + ")post({type:'playing'});" +
     "if(e.data===" + YOUTUBE_ENDED + ")post({type:'ended'})}," +

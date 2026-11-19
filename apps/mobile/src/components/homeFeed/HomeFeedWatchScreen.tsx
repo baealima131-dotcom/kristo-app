@@ -1280,7 +1280,7 @@ function allowYouTubePlayerNavigation(request: { url: string; isTopFrame?: boole
 
 /**
  * Public YouTube links play through YouTube's official IFrame Player API: the video starts by
- * itself in Watch without YouTube's control bar or fullscreen button; nothing is drawn over the
+ * itself in Watch; YouTube's own controls (with its fullscreen button) show on a tap; nothing is drawn over the
  * player (its cover sits behind it while loading and replaces it after the end), and when it ends
  * the cover replaces the player (tap to play again; nothing else starts by itself).
  */
