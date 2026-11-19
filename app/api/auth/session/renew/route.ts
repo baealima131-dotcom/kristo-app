@@ -36,7 +36,12 @@ export async function POST(req: Request) {
     return reauth("Session expired. Please sign in again.");
   }
   if (v.verifiedVia === "legacy" && !RENEWABLE_LEGACY_LABELS.has(String(v.legacySecretLabel || ""))) {
-    return reauth("Please sign in again to refresh your session.");
+    // Not renewed, but NOT a sign-out either: legacy tokens stay accepted until they are retired
+    // on purpose (ops/LEGACY_SESSION_TOKEN_RETIREMENT.md). No `reauth`, so the app keeps it.
+    return NextResponse.json(
+      { ok: false, error: "This session cannot be renewed; sign in again when convenient.", reason: "legacy_token_not_renewable" },
+      { status: 409, headers: NO_STORE }
+    );
   }
   const user = await getUserById(v.userId).catch(() => null);
   if (!user) {

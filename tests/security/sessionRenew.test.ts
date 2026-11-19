@@ -66,13 +66,14 @@ test("session renew", { skip: localOnly ? false : "set KRISTO_TEST_DATABASE_URL 
   });
 
   for (const [label, secret] of [["RESEND_API_KEY", RESEND], ["KRISTO_OTP_SECRET", OTP]] as const) {
-    await t.test(`a ${label}-signed legacy token is verified elsewhere but never renewed`, async () => {
+    await t.test(`a ${label}-signed legacy token is verified elsewhere but never renewed (and not signed out)`, async () => {
       const token = signToken(secret, active);
       assert.equal(verifySessionToken(token).verifiedVia, "legacy");
       const res = await renew(token);
-      assert.equal(res.status, 401);
+      assert.equal(res.status, 409);
       const body: any = await res.json();
-      assert.equal(body.reauth, true);
+      assert.equal(body.reason, "legacy_token_not_renewable");
+      assert.notEqual(body.reauth, true); // legacy tokens are retired on purpose, not by renewal
       assert.equal(body.sessionToken, undefined);
     });
   }
