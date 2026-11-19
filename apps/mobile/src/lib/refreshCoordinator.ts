@@ -500,15 +500,26 @@ export async function runCoordinatedAppRefresh(
       if (lane === "ministries" && churchId) {
         if (!shouldRunLane("ministries", scope, force)) continue;
         const { refreshMinistriesBundleIfNeeded } = await import("./churchResourceRefresh");
-        await refreshMinistriesBundleIfNeeded({
-          churchId,
-          userId,
-          headers,
-          isChurchAuthority: true,
-          force,
-          source: "coordinated-refresh-ministries",
-        });
-        markLaneDone("ministries", scope);
+        try {
+          await refreshMinistriesBundleIfNeeded({
+            churchId,
+            userId,
+            headers,
+            isChurchAuthority: true,
+            force,
+            source: "coordinated-refresh-ministries",
+          });
+          markLaneDone("ministries", scope);
+        } catch (error) {
+          // A failed ministries fetch (e.g. 403) must not stop the remaining lanes; the lane is
+          // left not-done so the next refresh retries it.
+          if (__DEV__) {
+            console.log("KRISTO_COORDINATED_REFRESH_LANE_FAILED", {
+              lane: "ministries",
+              error: String((error as any)?.message || error),
+            });
+          }
+        }
         continue;
       }
 

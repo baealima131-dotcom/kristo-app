@@ -474,7 +474,13 @@ test("Kristo mobile Contact Seller and Cash App V1 use product conversations onl
   );
 
   assert.ok(contactStart >= 0 && contactEnd > contactStart);
-  assert.match(contact, /setSokoChatOpen\(true\)/);
+  // Since 4f1d6a88 Contact Seller first shows the SokoContactCheckout sheet; its Continue opens
+  // the product conversation (still no direct message, seller id or Cash App endpoint).
+  assert.match(contact, /setContactCheckoutOpen\(true\)/);
+  assert.match(
+    home,
+    /<SokoContactCheckout[\s\S]{0,600}?onContinue=\{summary=>\{setContactSummary\(summary\);setContactCheckoutOpen\(false\);setTimeout\(\(\)=>setSokoChatOpen\(true\)/
+  );
   assert.doesNotMatch(contact, /openDirectMessageThread/);
   assert.doesNotMatch(contact, /targetUserId|sellerUserId/);
   assert.doesNotMatch(contact, /\/api\/church\/direct-messages/);
@@ -491,6 +497,12 @@ test("Kristo mobile Contact Seller and Cash App V1 use product conversations onl
   assert.doesNotMatch(home, /\/api\/soko\/payments\/cash-app/);
   assert.doesNotMatch(home, /\/api\/church\/direct-messages/);
   assert.doesNotMatch(home, /\/api\/church\/room-messages/);
+
+  const contactSheet = read("apps/mobile/src/components/homeFeed/SokoContactCheckout.tsx");
+  assert.doesNotMatch(contactSheet, /openDirectMessageThread/);
+  assert.doesNotMatch(contactSheet, /sellerUserId|targetUserId/);
+  assert.doesNotMatch(contactSheet, /\/api\/church\/direct-messages|\/api\/church\/room-messages/);
+  assert.doesNotMatch(contactSheet, /\/api\/soko\/payments\/cash-app|payment-proof/);
 
   assert.match(chat, /sokoOpenBuyerSellerConversation/);
   assert.match(chat, /sokoListBuyerSellerMessages/);

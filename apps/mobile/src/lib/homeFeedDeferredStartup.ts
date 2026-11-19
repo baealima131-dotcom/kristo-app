@@ -33,7 +33,18 @@ export function runAfterHomeDeferredStartup(
   const minDelayMs = Math.max(0, Number(opts?.minDelayMs ?? HOME_DEFERRED_STARTUP_MS));
 
   const run = () => {
-    void fn();
+    // Background work: a failed refresh (offline, suspended account, church not active yet)
+    // must not surface as an unhandled rejection; screens load their own data.
+    void Promise.resolve()
+      .then(fn)
+      .catch((error) => {
+        if (__DEV__) {
+          console.log("KRISTO_DEFERRED_STARTUP_FAILED", {
+            reason,
+            error: String((error as any)?.message || error),
+          });
+        }
+      });
   };
 
   const readyAt = firstPaintReadyAt();

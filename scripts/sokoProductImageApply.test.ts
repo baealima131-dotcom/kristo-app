@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import zlib from "node:zlib";
+import crypto from "node:crypto";
 
 import {
   APPLY_UPLOAD_MAX_BYTES,
@@ -104,14 +106,60 @@ test("oversized files are refused before optimization", () => {
   }), /3500000 byte apply payload limit/);
 });
 
+/** Opaque RGB PNG of random pixels: incompressible, so the file is well above the apply limit. */
+function oversizedOpaquePng(filePath: string, width = 1400, height = 1400) {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc32 = (buf: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: RGB, no alpha
+  const rows = Buffer.alloc((width * 3 + 1) * height);
+  crypto.randomFillSync(rows);
+  for (let y = 0; y < height; y += 1) rows[y * (width * 3 + 1)] = 0; // filter: none
+  fs.writeFileSync(
+    filePath,
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk("IHDR", ihdr),
+      chunk("IDAT", zlib.deflateSync(rows)),
+      chunk("IEND", Buffer.alloc(0)),
+    ])
+  );
+  return filePath;
+}
+
 test("optimized payload is below 3.5 MB", () => {
-  const real = path.join(
+  // Uses the real local product image when this machine has the (git-ignored) image store;
+  // otherwise a generated oversized PNG, so the optimizer is always exercised.
+  const localStoreImage = path.join(
     process.cwd(),
     ".soko-product-images",
     "485938dd0268b49bdc8fe3f2ae7bbef80e927d657bc0e122592e707e9c87f08f",
     "c4ac3ddc-70f2-4397-b0e5-ccbe0033303e.png"
   );
+  const real = fs.existsSync(localStoreImage)
+    ? localStoreImage
+    : oversizedOpaquePng(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "soko-big-")), "c4ac3ddc-70f2-4397-b0e5-ccbe0033303e.png"));
   assert.equal(fs.existsSync(real), true);
+  assert.ok(fs.statSync(real).size > APPLY_UPLOAD_MAX_BYTES, "fixture must exceed the apply limit");
   const originalBytes = fs.statSync(real).size;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "soko-opt-"));
   const resolved = resolveUploadFile({

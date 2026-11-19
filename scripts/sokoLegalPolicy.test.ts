@@ -38,7 +38,8 @@ test("public policy bundle is versioned, localization-ready, and not attorney-re
     ],
     comparison: "exact_version_equality",
   });
-  assert.equal(bundle.welcome.title, "Welcome to SOKO");
+  // The marketplace is branded Zpora since 939b63d2; the policy content checks below are unchanged.
+  assert.equal(bundle.welcome.title, "Welcome to Zpora");
   assert.match(bundle.welcome.explanation, /independent sellers/i);
   assert.match(bundle.welcome.explanation, /does not guarantee/i);
   assert.match(bundle.welcome.explanation, /Sent means/i);
