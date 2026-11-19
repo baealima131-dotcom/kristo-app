@@ -3,8 +3,11 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -208,6 +211,12 @@ export function StartNewChatSheet({ visible, onClose, onStarted }: Props) {
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      {/* iOS: the keyboard covers a bottom sheet in a Modal, so lift the sheet above it.
+          Android already resizes the window for the keyboard. */}
+      <KeyboardAvoidingView
+        style={s.keyboardAvoider}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
       <Pressable style={s.backdrop} onPress={onClose}>
         <Pressable
           style={[s.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
@@ -314,7 +323,15 @@ export function StartNewChatSheet({ visible, onClose, onStarted }: Props) {
               )}
             </>
           ) : (
-            <View style={s.kristoPane}>
+            // Scrolls when the keyboard leaves little room, so the active field, Look up member
+            // and Start Chat stay reachable without closing the keyboard.
+            <ScrollView
+              style={s.kristoScroll}
+              contentContainerStyle={s.kristoPane}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="none"
+              showsVerticalScrollIndicator={false}
+            >
               <Text style={s.fieldLabel}>Kristo ID</Text>
               <TextInput
                 value={kristoId}
@@ -404,7 +421,7 @@ export function StartNewChatSheet({ visible, onClose, onStarted }: Props) {
                   )}
                 </Pressable>
               ) : null}
-            </View>
+            </ScrollView>
           )}
 
           {startError ? <Text style={s.errorText}>{startError}</Text> : null}
@@ -414,11 +431,19 @@ export function StartNewChatSheet({ visible, onClose, onStarted }: Props) {
           </Pressable>
         </Pressable>
       </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const s = StyleSheet.create({
+  keyboardAvoider: {
+    flex: 1,
+  } as ViewStyle,
+  kristoScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  } as ViewStyle,
   backdrop: {
     flex: 1,
     justifyContent: "flex-end",
