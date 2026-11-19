@@ -347,6 +347,13 @@ function resolveWatchScreenPlaybackUri(payload: HomeFeedVideoOpenPayload): strin
   return resolveHomeFeedPlaybackUri(remoteUri) || remoteUri;
 }
 
+/** Same fast-start settings the Home Feed player uses, without shrinking the forward buffer. */
+const WATCH_FAST_START_BUFFER_OPTIONS = {
+  waitsToMinimizeStalling: false,
+  minBufferForPlayback: 0.5,
+  prioritizeTimeOverSizeThreshold: true,
+} as const;
+
 function buildWatchVideoPlayerSource(uri: string) {
   const trimmed = String(uri || "").trim();
   if (!trimmed) return null;
@@ -583,21 +590,18 @@ function WatchVideoSurface({
     (p) => {
       p.loop = false;
       p.muted = false;
+      // Start as soon as a little is buffered (iOS would otherwise wait to "minimize stalling";
+      // Android waits for 2 s). The forward buffer size is left at the platform default.
+      try {
+        p.bufferOptions = { ...WATCH_FAST_START_BUFFER_OPTIONS };
+      } catch {}
     }
   );
 
-  const backdropPlayer = useVideoPlayer(
-    playbackUri ? buildWatchVideoPlayerSource(playbackUri) : null,
-    (p) => {
-      p.loop = true;
-      p.muted = true;
-    }
-  );
-
+  // The backdrop is the poster picture (below); a second, never-shown player for the same video
+  // only competed with this one for network and decoder while the video was starting.
   const playerRef = useRef(player);
-  const backdropPlayerRef = useRef(backdropPlayer);
   playerRef.current = player;
-  backdropPlayerRef.current = backdropPlayer;
 
   useEventListener(player, "videoTrackChange", (event: any) => {
     reportTrackDisplayType(event?.videoTrack);
@@ -615,10 +619,6 @@ function WatchVideoSurface({
     const pauseForBackground = () => {
       backgroundPausedRef.current = true;
       const uri = playbackUri;
-      safePauseVideoPlayer(backdropPlayerRef.current, {
-        source: "home-feed-watch-backdrop",
-        uri,
-      });
       safePauseVideoPlayer(playerRef.current, { source: "home-feed-watch", uri });
       notifyWatchPlaybackPaused(postId);
     };
@@ -676,7 +676,6 @@ function WatchVideoSurface({
     void (async () => {
       try {
         const activePlayer = playerRef.current;
-        const activeBackdrop = backdropPlayerRef.current;
         if (!activePlayer) return;
 
         const currentUri = String((activePlayer as any)?.source?.uri || "").trim();
@@ -709,10 +708,6 @@ function WatchVideoSurface({
         }
 
         if (cancelled || isWatchAutoPlayBlocked()) {
-          safePauseVideoPlayer(activeBackdrop, {
-            source: "home-feed-watch-backdrop",
-            uri: playbackUri,
-          });
           safePauseVideoPlayer(activePlayer, { source: "home-feed-watch", uri: playbackUri });
           return;
         }
@@ -727,10 +722,6 @@ function WatchVideoSurface({
 
     return () => {
       cancelled = true;
-      safePauseVideoPlayer(backdropPlayerRef.current, {
-        source: "home-feed-watch-backdrop",
-        uri: playbackUri,
-      });
       safePauseVideoPlayer(playerRef.current, { source: "home-feed-watch", uri: playbackUri });
     };
   }, [playbackUri, postId, displayType, tryWatchAutoPlay, isWatchAutoPlayBlocked]);
@@ -1550,21 +1541,35 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const [panelHeight, setPanelHeight] = useState(0);
   const upNextScrollY = useRef(new Animated.Value(0)).current;
   const panelFoldMax = Math.max(0, panelHeight - WATCH_PANEL_FOLDED_LINE);
-  // Build 16: the fold follows the finger 1:1 (scrolling down folds, scrolling up unfolds at once,
-  // wherever Up Next is), on the native driver; a new video sets the scroll back to 0, which also
-  // unfolds it. Overscroll at the top (iOS bounce) is ignored.
+  // Moving on through Up Next folds the panel 1:1, as before. Going back does NOT unfold it in the
+  // middle of the list: it stays folded until the list is back at its start (nothing left to go
+  // back to) or Up Next has reached its end (nothing left to continue to). Native driver; a new
+  // video sets the scroll back to 0, which also unfolds it. Overscroll at the top is ignored.
+  const upNextEndOpen = useRef(new Animated.Value(0)).current;
+  const upNextAtEndRef = useRef(false);
   const panelFold = useMemo(
     () =>
-      Animated.diffClamp(
+      Animated.multiply(
         upNextScrollY.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0, 1],
-          extrapolateLeft: "clamp",
+          inputRange: [0, Math.max(1, panelFoldMax)],
+          outputRange: [0, Math.max(1, panelFoldMax)],
+          extrapolate: "clamp",
         }),
-        0,
-        Math.max(1, panelFoldMax)
+        upNextEndOpen.interpolate({ inputRange: [0, 1], outputRange: [1, 0], extrapolate: "clamp" })
       ),
-    [upNextScrollY, panelFoldMax]
+    [upNextScrollY, upNextEndOpen, panelFoldMax]
+  );
+  const setUpNextAtEnd = useCallback(
+    (atEnd: boolean) => {
+      if (upNextAtEndRef.current === atEnd) return;
+      upNextAtEndRef.current = atEnd;
+      Animated.timing(upNextEndOpen, {
+        toValue: atEnd ? 1 : 0,
+        duration: atEnd ? 260 : 160,
+        useNativeDriver: true,
+      }).start();
+    },
+    [upNextEndOpen]
   );
   const panelTranslateY = useMemo(() => Animated.multiply(panelFold, -1), [panelFold]);
   // The panel's contents fade as it folds, leaving the thin purple line with its gold edge.
@@ -1584,8 +1589,10 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   useEffect(() => {
     if (!visible || !activePostId) return;
     upNextScrollY.setValue(0);
+    upNextAtEndRef.current = false;
+    upNextEndOpen.setValue(0);
     scrollRef.current?.scrollTo({ y: 0, animated: false });
-  }, [visible, activePostId, upNextScrollY]);
+  }, [visible, activePostId, upNextScrollY, upNextEndOpen]);
   const handleUpNextScroll = useCallback((event: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = event?.nativeEvent || {};
     if (!contentSize || !layoutMeasurement) return;
@@ -1593,11 +1600,16 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     upNextContentHeightRef.current = Number(contentSize.height || 0);
     upNextViewportHeightRef.current = Number(layoutMeasurement.height || 0);
     const remaining = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    // End of Up Next (no further video to move on to): the panel comes back. Leaving the end
+    // (or more videos arriving below) folds it again. Hysteresis keeps it from flickering.
+    const scrollable = contentSize.height > layoutMeasurement.height + 1;
+    if (scrollable && remaining <= 24) setUpNextAtEnd(true);
+    else if (remaining > 160) setUpNextAtEnd(false);
     const length = upNextLengthRef.current;
     if (remaining > 1400 || !length || upNextRequestedForLengthRef.current === length) return;
     upNextRequestedForLengthRef.current = length;
     upNextEndReachedRef.current?.();
-  }, []);
+  }, [setUpNextAtEnd]);
   const upNextScrollEvent = useMemo(
     () =>
       Animated.event([{ nativeEvent: { contentOffset: { y: upNextScrollY } } }], {
