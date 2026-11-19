@@ -500,8 +500,12 @@ export function normalizeHomeFeedApiRow(row: any) {
   ).trim();
   if (authorAvatar) {
     if (!String(next?.authorAvatarUri || "").trim()) next.authorAvatarUri = authorAvatar;
-    if (!String(next?.actorAvatarUri || "").trim()) next.actorAvatarUri = authorAvatar;
-    if (!String(next?.profileAvatarUri || "").trim()) next.profileAvatarUri = authorAvatar;
+    // Video links: actorAvatarUri is the external creator's picture; never fill it (or the
+    // profile picture) with the Kristo account that posted the link.
+    if (String(next?.source || "").trim().toLowerCase() !== "system-admin-video-link") {
+      if (!String(next?.actorAvatarUri || "").trim()) next.actorAvatarUri = authorAvatar;
+      if (!String(next?.profileAvatarUri || "").trim()) next.profileAvatarUri = authorAvatar;
+    }
   }
 
   const posterRaw = String(
@@ -1878,6 +1882,18 @@ function isFacebookLinkRow(item: any) {
 }
 
 /** Church/media posts: church logo first; Church Room posts always use church avatar. */
+/**
+ * Video link: actorAvatarUri is saved as a copy of the creator's picture; older app builds copied
+ * the posting account's picture into it (still in cached rows), so a value equal to
+ * authorAvatarUri is not the creator's and is ignored.
+ */
+function externalCreatorAvatarCopy(item: any): string {
+  const copy = String(item?.actorAvatarUri || "").trim();
+  if (!copy) return "";
+  const author = String(item?.authorAvatarUri || "").trim();
+  return author && copy === author ? "" : copy;
+}
+
 export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const initial = String(resolveChurchName(item) || "K").trim().charAt(0).toUpperCase() || "K";
@@ -1886,10 +1902,11 @@ export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
   const isExternalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
   const sources = isExternalVideoAccount
     ? [
+        // The creator's own picture only (actorAvatarUri is saved as a copy of it). Never the
+        // Kristo account that posted the link (authorAvatarUri / avatarUri: the System Admin):
+        // with no creator picture the creator's initial shows instead.
         item?.creatorAvatarUrl,
-        item?.actorAvatarUri,
-        item?.avatarUri,
-        item?.authorAvatarUri,
+        externalCreatorAvatarCopy(item),
         // Facebook links: the Page's own public picture when the link names the Page; otherwise
         // the video's cover (admin upload, else saved thumbnail) stands in. Never an invented
         // picture; with none of these the initial of the real name shows.
