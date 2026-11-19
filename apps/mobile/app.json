@@ -22,6 +22,7 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Kristo App needs camera access for live streaming and video rooms.",
         "NSMicrophoneUsageDescription": "Kristo App needs microphone access for live streaming and audio in live rooms.",
+        "NSPhotoLibraryUsageDescription": "Kristo App uses your photo library so you can select and upload images or videos to your profile, church posts, announcements, and reports. For example, you can choose a photo from your library to add to a church announcement.",
         "ITSAppUsesNonExemptEncryption": false
       },
       "buildNumber": "18"
