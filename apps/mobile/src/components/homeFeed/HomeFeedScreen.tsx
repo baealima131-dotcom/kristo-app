@@ -73,6 +73,7 @@ import {
   peekHomeFeedYoutubeStreamSessionRows,
   removeHomeFeedYoutubeStreamPost,
   replaceHomeFeedYoutubeStreamRows,
+  subscribeHomeFeedYoutubeStreamRowsRefreshed,
   saveHomeFeedYoutubeStreamSession,
   shouldBlockHomeFeedYoutubeBackgroundUiMutation,
   shouldReplaceHomeFeedYoutubeStreamUi,
@@ -167,6 +168,7 @@ import {
   initialHomeFeedVisibleWindowSize,
   isHomeFeedNearEnd,
   nextHomeFeedVisibleWindowSize,
+  refreshHomeFeedRowsPlatformFields,
   shouldSkipHomeFeedRowsStateUpdate,
   stableMergeHomeFeedRows,
   dedupeHomeFeedRowsByKey,
@@ -462,6 +464,18 @@ export default function HomeFeedScreen() {
     // Progressive Android reveal commits to ref before session accepts a full page.
     return youtubeStreamRowsRef.current;
   }, [youtubeRowsTick]);
+  // Background refresh brought new platform counts for posts already shown (same ids and order):
+  // update those rows and re-render; scroll position, active video and paging stay as they are.
+  useEffect(
+    () =>
+      subscribeHomeFeedYoutubeStreamRowsRefreshed((fresh, sessionUpdated) => {
+        const refRows = refreshHomeFeedRowsPlatformFields(youtubeStreamRowsRef.current, fresh);
+        if (refRows.updated) youtubeStreamRowsRef.current = refRows.rows;
+        setBackendRows((prev) => refreshHomeFeedRowsPlatformFields(prev, fresh).rows);
+        if (refRows.updated || sessionUpdated) bumpYoutubeRows();
+      }),
+    []
+  );
   const [youtubeShowSkeleton, setYoutubeShowSkeleton] = useState(() =>
     isHomeFeedYouTubeStyleVideo() ? youtubeSessionOnMount.rows.length === 0 : false
   );

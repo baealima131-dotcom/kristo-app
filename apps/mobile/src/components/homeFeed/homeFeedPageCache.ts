@@ -1,7 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { feedRenderKey } from "@/src/components/homeFeed/homeFeedRowKeys";
-import { dedupeHomeFeedRowsByKey } from "@/src/components/homeFeed/homeFeedPagination";
+import {
+  dedupeHomeFeedRowsByKey,
+  refreshHomeFeedRowsPlatformFields,
+} from "@/src/components/homeFeed/homeFeedPagination";
 import { clearHomeFeedYoutubeStreamSession } from "@/src/lib/homeFeedYoutubeStreamSession";
 import {
   expandHomeFeedPageCacheRows,
@@ -938,6 +941,41 @@ export async function saveHomeFeedStreamPage(
     nextCursor: meta.nextCursor,
     hasMore: meta.hasMore,
   });
+}
+
+/**
+ * Write new platform counts of cached video links (same ids) into the loaded pages and their
+ * disk copy, so a cold start shows the latest counts. Rows, order, paging and savedAt unchanged;
+ * pages are rewritten in place (no prune or truncate).
+ */
+export async function refreshHomeFeedStreamPagesPlatformFields(
+  fresh: any[],
+  userId?: string
+): Promise<number> {
+  if (!fresh.length || !loadedPagesMem.size) return 0;
+  const uid = String(userId || activeUserId()).trim() || "guest";
+  const prev = metaMem?.userId === uid ? metaMem : await readMetaFromDisk(uid);
+  if (!prev) return 0;
+
+  let updated = 0;
+  for (const [pageIndex, rows] of Array.from(loadedPagesMem.entries())) {
+    const result = refreshHomeFeedRowsPlatformFields(rows, fresh);
+    if (!result.updated) continue;
+    loadedPagesMem.set(pageIndex, result.rows);
+    const writeResult = await writePageToDisk(uid, pageIndex, result.rows, prev);
+    if (writeResult.rowCount && writeResult.rowCount !== pageRowCountForMeta(prev, pageIndex)) {
+      // Keep the per-row keys and meta in step if the slim row count ever differs.
+      const pageRowCounts = [...(prev.pageRowCounts || [])];
+      while (pageRowCounts.length <= pageIndex) pageRowCounts.push(0);
+      pageRowCounts[pageIndex] = writeResult.rowCount;
+      await writeMetaToDisk({ ...prev, pageRowCounts });
+    }
+    updated += result.updated;
+  }
+  if (updated) {
+    console.log("KRISTO_HOME_FEED_PAGE_CACHE_PLATFORM_COUNTS_REFRESHED", { updated });
+  }
+  return updated;
 }
 
 export async function saveHomeFeedPageCachePaging(

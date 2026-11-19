@@ -172,6 +172,23 @@ export function clearSokoCarouselMemoryForTests(): void {
   galleryOffsetByProduct.clear();
 }
 
+/**
+ * Platform counts of a video link (same fields as EXTERNAL_PLATFORM_REFRESH_FIELDS in
+ * components/homeFeed/homeFeedPlatformCounts.ts; kept import-free so Node verify scripts load it).
+ */
+const VIDEO_LINK_COUNT_FIELDS = [
+  "platformStats",
+  "platformUnavailableFields",
+  "platformHiddenFields",
+  "platformStatsUpdatedAt",
+  "facebookManualStats",
+] as const;
+
+function externalPlatformFieldsDigest(row: any): string {
+  if (String(row?.source || "").trim().toLowerCase() !== "system-admin-video-link") return "";
+  return VIDEO_LINK_COUNT_FIELDS.map((field) => JSON.stringify(row?.[field] ?? null)).join("|");
+}
+
 export function sokoDistributedRowsUnchanged(prev: any[], next: any[]): boolean {
   if (prev === next) return true;
   if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) {
@@ -185,6 +202,9 @@ export function sokoDistributedRowsUnchanged(prev: any[], next: any[]): boolean 
     if (prevId !== nextId) return false;
     if (isSokoHomeFeedRow(prevRow) || isSokoHomeFeedRow(nextRow)) {
       if (sokoProductVisualDigest(prevRow) !== sokoProductVisualDigest(nextRow)) return false;
+    } else if (externalPlatformFieldsDigest(prevRow) !== externalPlatformFieldsDigest(nextRow)) {
+      // Same video link with new platform counts (views/likes/comments): show the new row.
+      return false;
     }
   }
   return true;

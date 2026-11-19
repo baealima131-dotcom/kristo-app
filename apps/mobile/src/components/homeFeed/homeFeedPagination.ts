@@ -1,6 +1,7 @@
 import { feedRenderKey } from "./homeFeedUtils";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
+import { refreshRowsPlatformFields } from "./homeFeedPlatformCounts";
 
 export function homeFeedBackendRowsDigest(rows: any[]): string {
   return rows.map((row) => homeFeedRowCardFingerprint(row)).join("\n");
@@ -143,6 +144,22 @@ function externalCountsFingerprint(value: unknown): string {
   if (!value || typeof value !== "object") return "";
   const counts = value as Record<string, unknown>;
   return ["views", "likes", "comments"].map((key) => String(counts[key] ?? "")).join(",");
+}
+
+/** The post itself (not its display/recycle key): every copy of a post shares its platform counts. */
+function homeFeedPostIdentity(row: any): string {
+  return baseFeedId(String(row?.id || row?.feedOriginId || "").trim());
+}
+
+/**
+ * Refresh the platform counts (views/likes/comments, unavailable/hidden flags) of video links
+ * already loaded, from fresh rows of the same post. Never adds, removes or reorders rows.
+ */
+export function refreshHomeFeedRowsPlatformFields(
+  existing: any[],
+  fresh: any[]
+): { rows: any[]; updated: number } {
+  return refreshRowsPlatformFields(existing, fresh, homeFeedPostIdentity);
 }
 
 function mergeHomeFeedRowPreservingReference(existing: any, fresh: any) {

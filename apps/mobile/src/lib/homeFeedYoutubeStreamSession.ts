@@ -3,6 +3,7 @@ import {
   stableMergeHomeFeedRows,
   dedupeHomeFeedRowsByKey,
   shouldSkipHomeFeedRowsStateUpdate,
+  refreshHomeFeedRowsPlatformFields,
 } from "@/src/components/homeFeed/homeFeedPagination";
 import { HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE } from "@/src/components/homeFeed/homeFeedPageCache";
 import { isManualHomeFeedRefresh } from "@/src/lib/homeFeedRefreshReason";
@@ -219,6 +220,51 @@ export function appendHomeFeedYoutubeStreamRows(incoming: any[]): number {
     loadedPageCount: session.loadedPageCount,
   });
   return result.appended;
+}
+
+const rowsRefreshedListeners = new Set<(fresh: any[], sessionUpdated: number) => void>();
+
+/**
+ * Called with fresh server rows after a background refresh, so screens can give rows they
+ * already show the new platform counts (same ids, same order). sessionUpdated: rows changed here.
+ */
+export function subscribeHomeFeedYoutubeStreamRowsRefreshed(
+  listener: (fresh: any[], sessionUpdated: number) => void
+): () => void {
+  rowsRefreshedListeners.add(listener);
+  return () => {
+    rowsRefreshedListeners.delete(listener);
+  };
+}
+
+/**
+ * Update the platform counts of video links already in the session from fresh server rows.
+ * Same ids, same order, nothing appended; only rows whose counts changed get a new object.
+ */
+export function refreshHomeFeedYoutubeStreamPlatformFields(fresh: any[]): number {
+  if (!fresh.length) return 0;
+  const current = refreshHomeFeedRowsPlatformFields(session.rows, fresh);
+  const pending = session.pendingPage0Rows?.length
+    ? refreshHomeFeedRowsPlatformFields(session.pendingPage0Rows, fresh)
+    : null;
+  if (current.updated || pending?.updated) {
+    session = {
+      ...session,
+      rows: current.rows,
+      pendingPage0Rows: pending ? pending.rows : session.pendingPage0Rows,
+    };
+    console.log("KRISTO_HOME_FEED_PLATFORM_COUNTS_REFRESHED", {
+      updated: current.updated,
+      pendingUpdated: pending?.updated ?? 0,
+      rowCount: session.rows.length,
+    });
+  }
+  for (const listener of [...rowsRefreshedListeners]) {
+    try {
+      listener(fresh, current.updated);
+    } catch {}
+  }
+  return current.updated;
 }
 
 export function removeHomeFeedYoutubeStreamPost(postId: string): boolean {

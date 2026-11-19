@@ -60,6 +60,7 @@ import {
   peekHomeFeedPagingFromPageCache,
   saveHomeFeedStreamPage,
   saveHomeFeedPageCachePaging,
+  refreshHomeFeedStreamPagesPlatformFields,
 } from "./homeFeedPageCache";
 import {
   getHomeFeedFetchGeneration,
@@ -73,6 +74,7 @@ import {
 import {
   hasHomeFeedYoutubeStreamSession,
   markHomeFeedYoutubeRefreshAvailable,
+  refreshHomeFeedYoutubeStreamPlatformFields,
   shouldReplaceHomeFeedYoutubeStreamUi,
   peekHomeFeedYoutubeStreamSession,
   peekHomeFeedYoutubeStreamSessionRows,
@@ -1138,6 +1140,10 @@ export async function fetchHomeFeedFromApi(
       cachedRows: cachedRows.length,
       note: "background-with-cache-paginated",
     });
+    // Rows stay as cached; only platform counts of posts already shown are refreshed.
+    if (isHomeFeedYouTubeStyleVideo() && (reason === "poll" || reason === "focus")) {
+      void refreshHomeFeedYoutubeBackgroundCache(reason);
+    }
     return cachedRows;
   }
 
@@ -1989,7 +1995,13 @@ export { shouldRevalidateStaleHomeFeedExhaustion };
 export async function refreshHomeFeedYoutubeBackgroundCache(
   reason = "focus"
 ): Promise<{ refreshAvailable: boolean }> {
-  if (!isHomeFeedYouTubeStyleVideo() || !hasHomeFeedYoutubeStreamSession()) {
+  if (!isHomeFeedYouTubeStyleVideo()) {
+    return { refreshAvailable: false };
+  }
+  // A full session may also offer "new videos"; a smaller one (or rows only in the page cache)
+  // only gets the platform counts of posts already shown refreshed.
+  const fullSession = hasHomeFeedYoutubeStreamSession();
+  if (!fullSession && !getHomeFeedStreamRowsInMemory().length) {
     return { refreshAvailable: false };
   }
 
@@ -2024,6 +2036,16 @@ export async function refreshHomeFeedYoutubeBackgroundCache(
 
     const freshRows = collected.rows;
     if (!freshRows.length) {
+      return { refreshAvailable: false };
+    }
+
+    // Posts already shown keep their place; only their platform counts (views/likes/comments,
+    // unavailable/hidden flags) take the server's latest values, on screen and in the page cache.
+    refreshHomeFeedYoutubeStreamPlatformFields(freshRows);
+    try {
+      await refreshHomeFeedStreamPagesPlatformFields(freshRows, viewerUserId);
+    } catch {}
+    if (!fullSession) {
       return { refreshAvailable: false };
     }
 
