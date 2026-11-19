@@ -309,6 +309,9 @@ export async function upsertDirectMessageRelationship(args: {
   }
 
   const sql = getSql();
+  // participant_a/participant_b are ordered by the database (LEAST/GREATEST), which uses the same
+  // collation as the participant_a < participant_b check. JavaScript's order can differ from a
+  // non-"C" collation (e.g. "u-demo-1" vs "u_2c93..." under en_US.UTF-8) and break the check.
   const rows = await sql`
     INSERT INTO kristo_direct_message_relationships (
       room_id,
@@ -327,8 +330,8 @@ export async function upsertDirectMessageRelationship(args: {
     VALUES (
       ${roomId},
       ${storageChurchId},
-      ${ordered[0]},
-      ${ordered[1]},
+      LEAST(${ordered[0]}::text, ${ordered[1]}::text),
+      GREATEST(${ordered[0]}::text, ${ordered[1]}::text),
       ${requestStatus},
       ${requestInitiatorUserId},
       ${sameChurchAtCreation},
