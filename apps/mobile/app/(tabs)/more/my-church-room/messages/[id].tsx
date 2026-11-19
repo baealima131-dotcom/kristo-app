@@ -40,7 +40,7 @@ import {
 import { BlurView } from "expo-blur";
 import Slider from "@react-native-community/slider";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useIsFocused } from "@react-navigation/native";
+import { StackActions, useIsFocused, useNavigation } from "@react-navigation/native";
 import {
   getCachedParticipant,
   invalidateCachedParticipant,
@@ -7239,7 +7239,30 @@ export default function MessageThreadScreen() {
       ""
   ).trim();
 
+  const threadNavigation = useNavigation();
   function handleThreadBack() {
+    // Back to the inbox already below this chat in the same stack (same screen, its state and
+    // cache kept). Replacing the chat with the inbox route stacked a new inbox copy on top of
+    // the old one on every round trip. Only a chat opened with no inbox below (e.g. from a
+    // notification) is replaced by the inbox, as before.
+    const state: any = (threadNavigation as any)?.getState?.();
+    const routes: any[] = Array.isArray(state?.routes) ? state.routes : [];
+    const current = typeof state?.index === "number" ? state.index : routes.length - 1;
+    let inboxIndex = -1;
+    for (let i = current - 1; i >= 0; i -= 1) {
+      if (routes[i]?.name === "index") {
+        inboxIndex = i;
+        break;
+      }
+    }
+    if (inboxIndex === current - 1) {
+      threadNavigation.goBack();
+      return;
+    }
+    if (inboxIndex >= 0) {
+      threadNavigation.dispatch(StackActions.popTo("index"));
+      return;
+    }
     router.replace("/(tabs)/profile/messages" as any);
   }
 
@@ -8892,6 +8915,7 @@ export default function MessageThreadScreen() {
       ),
     };
   }, [dmLiveReceipts, dmConversationSettings, threadId, backendRoomId]);
+
   const dmPeerRingCategory = useMemo(
     () =>
       dmConversationSettings

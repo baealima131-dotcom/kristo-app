@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Image,
   Pressable,
@@ -27,6 +28,7 @@ import type { DirectMessageThread } from "@/src/lib/directMessagesApi";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { clearLegacyMessageLockPrefs } from "@/src/lib/clearLegacyMessageLockPrefs";
+import { onDirectMessagePush } from "@/src/lib/directMessageEvents";
 import SokoSystemMessages from "@/src/components/messages/SokoSystemMessages";
 import { PersonAvatarRing } from "@/src/components/PersonAvatarRing";
 import {
@@ -327,6 +329,8 @@ function ConversationRow({
 // Last inbox shown to each signed-in user, kept for this app session. Coming back to Messages
 // (e.g. from a conversation, which replaces the route) shows it at once and refreshes quietly.
 const inboxCacheByUserId = new Map<string, MessagesInboxConversation[]>();
+/** Open inbox refresh cadence (the open chat itself polls every 1.5 s). */
+const INBOX_LIVE_REFRESH_MS = 5000;
 
 function inboxViewerId(): string {
   return String((getKristoHeaders() as any)?.["x-kristo-user-id"] || "").trim();
@@ -393,10 +397,37 @@ export default function MessagesScreen() {
     }
   }, []);
 
+  // Direct messages have no socket: like an open chat (which polls every 1.5 s), the open inbox
+  // keeps its receipts and new messages current while it is on screen, refreshes the moment the
+  // app comes back, and right away when a DM push arrives. No spinner: the cached list stays and
+  // is replaced quietly; overlapping refreshes are skipped.
+  const inboxRefreshInflightRef = useRef(false);
+  const refreshInboxQuietly = useCallback(async () => {
+    if (inboxRefreshInflightRef.current) return;
+    inboxRefreshInflightRef.current = true;
+    try {
+      await refreshInbox();
+    } finally {
+      inboxRefreshInflightRef.current = false;
+    }
+  }, [refreshInbox]);
+
   useFocusEffect(
     useCallback(() => {
-      void refreshInbox();
-    }, [refreshInbox])
+      void refreshInboxQuietly();
+      const timer = setInterval(() => {
+        if (AppState.currentState === "active") void refreshInboxQuietly();
+      }, INBOX_LIVE_REFRESH_MS);
+      const appStateSub = AppState.addEventListener("change", (state) => {
+        if (state === "active") void refreshInboxQuietly();
+      });
+      const stopPush = onDirectMessagePush(() => void refreshInboxQuietly());
+      return () => {
+        clearInterval(timer);
+        appStateSub.remove();
+        stopPush();
+      };
+    }, [refreshInboxQuietly])
   );
 
   const data = useMemo(() => {

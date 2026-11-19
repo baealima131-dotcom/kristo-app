@@ -4,7 +4,8 @@ import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useNavigation, useRouter } from "expo-router";
+import { openMessagesInbox } from "@/src/lib/openMessagesInbox";
 import type { HomeFeedPostKindFilter } from "./homeFeedUtils";
 import { HEADER_INBOX_ICONS_WIDTH, HEADER_INBOX_ROUTES, HeaderInboxIcons } from "./HeaderInboxIcons";
 import { KristoBrandLogo } from "./KristoBrandLogo";
@@ -28,6 +29,7 @@ const LOGO_SIDE_INSET = TITLE_ROW_PADDING + HEADER_INBOX_ICONS_WIDTH + 8;
 export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Props) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
 
   return (
     <View
@@ -43,7 +45,10 @@ export const HomeFeedTopBar = memo(function HomeFeedTopBar({ onSearchPress }: Pr
 
         <HeaderInboxIcons
           useFocus
-          onOpen={(target) => router.push(HEADER_INBOX_ROUTES[target] as any)}
+          onOpen={(target) =>
+            // Messages: return to the inbox already in the stack instead of adding another copy.
+            target === "messages" ? openMessagesInbox(navigation as any) : router.push(HEADER_INBOX_ROUTES[target] as any)
+          }
         />
       </View>
     </View>

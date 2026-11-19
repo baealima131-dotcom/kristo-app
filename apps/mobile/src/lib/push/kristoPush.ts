@@ -6,6 +6,8 @@ import { apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { loadSession } from "@/src/lib/kristoSession";
 import { getSessionSync } from "@/src/lib/kristoSessionSync";
+import { emitDirectMessagePush } from "@/src/lib/directMessageEvents";
+import { refreshHeaderInboxCounts } from "@/src/lib/headerInboxCounts";
 import { declinePrivateCall, endPrivateCall } from "@/src/lib/privateCallService";
 import {
   CALL_ACTION_ANSWER,
@@ -96,6 +98,14 @@ export async function handleKristoPushData(data: Record<string, string> | null, 
 
   if (data.type === "private_call_closed" && data.callId) {
     await cancelIncomingCallNotification(data.callId);
+  }
+
+  // A direct message reached this phone while the app is open: fetching the inbox now records
+  // the delivery on the server (sender sees two ticks) and updates the unread badge, instead of
+  // waiting for the header's 30 s refresh. Open inbox screens refresh from the same signal.
+  if (data.type === "direct_message") {
+    void refreshHeaderInboxCounts();
+    emitDirectMessagePush(String(data.roomId || ""));
   }
 }
 

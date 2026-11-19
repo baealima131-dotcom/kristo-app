@@ -58,7 +58,8 @@ import {
   safeSeekVideoPlayer,
 } from "@/src/lib/expoVideoPlayerSafe";
 import { useEventListener } from "expo";
-import { useRouter } from "expo-router";
+import { useNavigation, useRouter } from "expo-router";
+import { openMessagesInbox } from "@/src/lib/openMessagesInbox";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
@@ -1466,6 +1467,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
 }: Props) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
   const { width, height: windowHeight } = useWindowDimensions();
   const activePostId = String(payload?.postId || "").trim();
   const displayTypeHint = resolveHomeFeedVideoDisplayTypeHint(payload?.item || payload);
@@ -1503,9 +1505,12 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const handleInboxOpen = useCallback(
     (target: HeaderInboxTarget) => {
       onClose();
-      requestAnimationFrame(() => router.push(HEADER_INBOX_ROUTES[target] as any));
+      // Messages: return to the inbox already in the stack instead of adding another copy.
+      requestAnimationFrame(() =>
+        target === "messages" ? openMessagesInbox(navigation as any) : router.push(HEADER_INBOX_ROUTES[target] as any)
+      );
     },
-    [onClose, router]
+    [onClose, router, navigation]
   );
   const facebookReel = isFacebookVerticalItem(payload?.item);
   const playerHeight = useMemo(
