@@ -37,6 +37,8 @@ module.exports = {
       ],
       "./plugins/withDevClientMetroPort",
       "./plugins/withAndroidPortraitMainActivity",
+      // Play Store: camera / microphone / bluetooth / portrait are optional (Android only).
+      "./plugins/withAndroidOptionalHardwareFeatures",
       // Calls: background audio + CallKit/VoIP push (iOS); strips unused push capabilities.
       "./plugins/withoutIosPushCapabilities",
       "./plugins/withIosCalls",
