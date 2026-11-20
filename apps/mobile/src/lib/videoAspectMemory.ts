@@ -67,4 +67,32 @@ export function rememberVideoAspect(videoUrl: unknown, aspect: number) {
   schedulePersist();
 }
 
+/**
+ * Shape of each video's cover picture as loaded on this device (memory only, never stored). A first
+ * guess for uploads saved without dimensions: Home has usually loaded the cover already, so Watch
+ * opens in the video's own frame instead of a default one that changes when the track reports.
+ */
+const posterAspects = new Map<string, number>();
+
+export function notePosterAspect(videoUrl: unknown, width: unknown, height: unknown) {
+  const key = keyFor(videoUrl);
+  const w = Number(width);
+  const h = Number(height);
+  if (!key || !(w > 0) || !(h > 0)) return;
+  const value = validAspect(w / h);
+  if (!value) return;
+  posterAspects.delete(key);
+  posterAspects.set(key, value);
+  if (posterAspects.size > MAX_ENTRIES) {
+    const oldest = posterAspects.keys().next().value;
+    if (oldest) posterAspects.delete(oldest);
+  }
+}
+
+/** Width / height of this video's cover picture, when it has been loaded on this device. */
+export function peekPosterAspect(videoUrl: unknown): number | undefined {
+  const key = keyFor(videoUrl);
+  return key ? posterAspects.get(key) : undefined;
+}
+
 void hydrateVideoAspectMemory();

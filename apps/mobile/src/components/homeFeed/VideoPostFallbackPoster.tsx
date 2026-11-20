@@ -14,6 +14,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Image as ExpoImage } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { notePosterAspect } from "@/src/lib/videoAspectMemory";
 import { isFacebookVideoHost } from "@/src/lib/facebookVideoLink";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
@@ -848,8 +849,13 @@ function YouTubeFeedVideoPoster({
     notifyCoverReady(false);
   }, [allowImageLoad, notifyCoverReady, posterFadedIn, settledPlaceholder]);
 
-  const handleImageLoad = React.useCallback(() => {
+  const handleImageLoad = React.useCallback((event?: any) => {
     if (!displayUri) return;
+    // The cover's shape: Watch's first frame guess for uploads saved without dimensions.
+    const loadedSize = event?.nativeEvent?.source;
+    if (loadedSize && !isBrandedPosterUri(displayUri)) {
+      notePosterAspect(resolvedVideoUrl, loadedSize.width, loadedSize.height);
+    }
     loadedUriRef.current = displayUri;
     loadedSourceRef.current = loadSource;
     coverReadyRef.current = true;
@@ -942,7 +948,7 @@ function YouTubeFeedVideoPoster({
                 source: `${loadSource}:native`,
               });
             }}
-            onLoad={() => handleImageLoad()}
+            onLoad={(event: any) => handleImageLoad(event)}
             onError={handleImageError}
           />
         </Animated.View>
@@ -1345,7 +1351,11 @@ function LegacyFeedVideoPosterImage({
     <View style={style}>
       <FeedVideoCover
         uri={activeDisplayUri}
-        onLoad={() => {
+        onLoad={(event: any) => {
+          const loadedSize = event?.nativeEvent?.source;
+          if (loadedSize && !isBrandedPosterUri(activeDisplayUri)) {
+            notePosterAspect(resolvedVideoUrl, loadedSize.width, loadedSize.height);
+          }
           if (activeDisplayUri === clientThumbUri) {
             setClientThumbState("loaded");
           } else {

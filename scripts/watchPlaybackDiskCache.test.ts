@@ -54,10 +54,40 @@ test("YouTube: the cover stays above the player until it reports playing (no bla
 
 test("Uploads: the saved cover stays above VideoView until its first frame", () => {
   assert.match(watch, /onFirstFrameRender=\{\(\) => \{[\s\S]{0,300}setFirstFrameKey\(pinKey\);/);
-  assert.match(watch, /\{!firstFrameShown && startPosterUri \? \(\s*(\/\/[^\n]*\n\s*)*<WatchStartCover uri=\{startPosterUri\} contain=\{displayType !== "youtube"\} \/>/);
+  assert.match(watch, /\{!firstFrameShown && startPosterUri \? \(\s*(\/\/[^\n]*\n\s*)*<WatchStartCover\s+uri=\{startPosterUri\}\s+contain=\{displayType !== "youtube"\}/);
   assert.match(watch, /for \(const raw of \[item\?\.videoPosterUri, item\?\.posterUri, item\?\.thumbnailUri, item\?\.thumbnailUrl, item\?\.posterUrl\]\)/);
   // Never covers the video forever: hidden 6 s after readyToPlay if the first-frame event is missing.
   assert.match(watch, /event\?\.status === "readyToPlay" && !firstFrameFallbackRef\.current/);
+});
+
+test("Uploads: cover and VideoView share one frame (the video's own box), no layout jump", () => {
+  // The start cover of an upload is drawn in containedVideoSize, the same box as the VideoView.
+  assert.match(watch, /<WatchStartCover[\s\S]{0,200}frame=\{displayType === "youtube" \? null : containedVideoSize\}/);
+  assert.match(watch, /style=\{\[\s*displayType === "youtube" \? styles\.video : \[styles\.videoPortrait, containedVideoSize\],/);
+  const fn = watch.slice(watch.indexOf("function WatchStartCover("));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  assert.match(body, /frame \? \[styles\.watchStartCoverFramed, frame\] : StyleSheet\.absoluteFillObject/);
+  assert.match(body, /foregroundResizeMode=\{frame \? "cover" : contain \? "contain" : "cover"\}/);
+  assert.match(watch, /watchStartCoverFramed: \{ position: "absolute", overflow: "hidden", alignSelf: "center" \}/);
+});
+
+test("Uploads without saved dimensions: the cover's shape decides the first frame", () => {
+  const memory = mobile("src/lib/videoAspectMemory.ts");
+  const poster = mobile("src/components/homeFeed/VideoPostFallbackPoster.tsx");
+  assert.match(memory, /export function notePosterAspect\(videoUrl: unknown, width: unknown, height: unknown\)/);
+  assert.match(memory, /export function peekPosterAspect\(videoUrl: unknown\): number \| undefined/);
+  // Memory only: poster guesses are never persisted with the played shapes.
+  assert.doesNotMatch(memory.slice(memory.indexOf("const posterAspects")), /schedulePersist\(\)/);
+  // Home (and the Watch backdrop) note the loaded cover's size, except branded placeholders.
+  assert.equal((poster.match(/notePosterAspect\(resolvedVideoUrl, loadedSize\.width, loadedSize\.height\)/g) || []).length, 2);
+  assert.equal((poster.match(/!isBrandedPosterUri\((displayUri|activeDisplayUri)\)/g) || []).length >= 2, true);
+  // Order: saved dimensions, played track, remembered shape, cover shape, family default.
+  assert.match(watch, /metadataAspect \?\?\s*detectedForPost\?\.aspect \?\?\s*rememberedAspect \?\?\s*posterAspect \?\?\s*defaultHomeFeedVideoAspectRatio/);
+  assert.match(watch, /\(posterAspect \? resolveHomeFeedVideoDisplayTypeFromDimensions\(posterAspect, 1\) : null\)/);
+  // Shape unknown: the video box waits (hidden) up to 700 ms instead of drawing a default frame.
+  assert.match(watch, /const holdVideoBox = !videoAspectKnown && aspectWaitOverKey !== pinKey && !firstFrameShown;/);
+  assert.match(watch, /setTimeout\(\(\) => setAspectWaitOverKey\(pinKey\), 700\)/);
+  assert.match(watch, /onPosterAspect=\{handlePosterAspect\}/);
 });
 
 test("Start cover never blocks touches and sits above the player", () => {

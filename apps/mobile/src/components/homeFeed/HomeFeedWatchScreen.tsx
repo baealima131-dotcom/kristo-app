@@ -74,7 +74,7 @@ import {
 import { hydrateMediaPosterCacheForPlayback, resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
 import { resolveSavedFeedVideoPosterUri } from "@/src/lib/homeFeedPosterSavedUri";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
-import { peekVideoAspect, rememberVideoAspect } from "@/src/lib/videoAspectMemory";
+import { notePosterAspect, peekPosterAspect, peekVideoAspect, rememberVideoAspect } from "@/src/lib/videoAspectMemory";
 import {
   notifyWatchPlaybackActive,
   notifyWatchPlaybackPaused,
@@ -493,19 +493,25 @@ function WatchVideoSurface({
   payload,
   displayType,
   videoAspect,
+  videoAspectKnown = true,
   frameWidth,
   frameHeight,
   onPlaybackStarted,
   onDisplayTypeDetected,
+  onPosterAspect,
 }: {
   payload: HomeFeedVideoOpenPayload;
   displayType?: HomeFeedVideoDisplayType | null;
   /** Width / height of the video itself (metadata, then the playing track, then the family default). */
   videoAspect: number;
+  /** False while videoAspect is only the family default (no saved, played or cover shape yet). */
+  videoAspectKnown?: boolean;
   frameWidth: number;
   frameHeight: number;
   onPlaybackStarted?: () => void;
   onDisplayTypeDetected?: (displayType: HomeFeedVideoDisplayType, aspect: number) => void;
+  /** The start cover loaded: its width / height (first guess for videos without saved dimensions). */
+  onPosterAspect?: (aspect: number) => void;
 }) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
@@ -530,6 +536,16 @@ function WatchVideoSurface({
   // then). Fallback: hidden 6 s after readyToPlay in case the first-frame event never comes.
   const [firstFrameKey, setFirstFrameKey] = useState<string | null>(null);
   const firstFrameShown = firstFrameKey === pinKey;
+  // Shape still unknown (no saved dimensions, not played here, cover not loaded yet): keep the
+  // video box hidden over the blurred backdrop for a moment instead of drawing it in a default
+  // frame that moves. Shown as soon as the shape is known, the first frame draws, or after 700 ms.
+  const [aspectWaitOverKey, setAspectWaitOverKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (videoAspectKnown) return;
+    const timer = setTimeout(() => setAspectWaitOverKey(pinKey), 700);
+    return () => clearTimeout(timer);
+  }, [pinKey, videoAspectKnown]);
+  const holdVideoBox = !videoAspectKnown && aspectWaitOverKey !== pinKey && !firstFrameShown;
   const firstFrameFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -974,7 +990,10 @@ function WatchVideoSurface({
           // window and does not follow the floating stack's scroll transform, so the picture
           // lagged/jumped while scrolling or stayed hidden behind the poster. iOS ignores it.
           surfaceType="textureView"
-          style={displayType === "youtube" ? styles.video : [styles.videoPortrait, containedVideoSize]}
+          style={[
+            displayType === "youtube" ? styles.video : [styles.videoPortrait, containedVideoSize],
+            holdVideoBox ? styles.watchHeldHidden : null,
+          ]}
           contentFit="contain"
           nativeControls
           fullscreenOptions={
@@ -996,7 +1015,15 @@ function WatchVideoSurface({
         />
         {!firstFrameShown && startPosterUri ? (
           // The post's cover over the (still black) video until its first frame; taps pass through.
-          <WatchStartCover uri={startPosterUri} contain={displayType !== "youtube"} />
+          // Vertical/portrait uploads: drawn in the VideoView's own box (same frame as the video),
+          // so the picture does not move when the first frame replaces it.
+          <WatchStartCover
+            uri={startPosterUri}
+            contain={displayType !== "youtube"}
+            frame={displayType === "youtube" ? null : containedVideoSize}
+            hidden={holdVideoBox}
+            onAspect={onPosterAspect}
+          />
         ) : null}
         </>
       ) : null}
@@ -1336,14 +1363,41 @@ function allowYouTubePlayerNavigation(request: { url: string; isTopFrame?: boole
  * Picture shown over a video surface until the video draws its first frame (YouTube: "playing";
  * uploads: VideoView first frame). Same expo-image cache as the Home Feed cards, no fade.
  */
-function WatchStartCover({ uri, contain }: { uri: string; contain?: boolean }) {
+function WatchStartCover({
+  uri,
+  contain,
+  frame,
+  hidden,
+  onAspect,
+}: {
+  uri: string;
+  contain?: boolean;
+  /** The video's own box (width / height) inside the player; the cover fills exactly that box. */
+  frame?: { width: number; height: number } | null;
+  hidden?: boolean;
+  onAspect?: (aspect: number) => void;
+}) {
   if (!uri) return null;
   return (
-    <View style={[StyleSheet.absoluteFillObject, styles.watchStartCover]} pointerEvents="none">
+    <View
+      style={[
+        frame ? [styles.watchStartCoverFramed, frame] : StyleSheet.absoluteFillObject,
+        styles.watchStartCover,
+        hidden ? styles.watchHeldHidden : null,
+      ]}
+      pointerEvents="none"
+    >
       <FeedVideoCover
         uri={uri}
         dim={false}
-        foregroundResizeMode={contain ? "contain" : "cover"}
+        // In the video's own box the picture has the video's shape: "cover" fills it exactly.
+        foregroundResizeMode={frame ? "cover" : contain ? "contain" : "cover"}
+        onLoad={(event: any) => {
+          const size = event?.nativeEvent?.source;
+          const w = Number(size?.width || 0);
+          const h = Number(size?.height || 0);
+          if (onAspect && w > 0 && h > 0) onAspect(w / h);
+        }}
       />
     </View>
   );
@@ -1559,11 +1613,21 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
       ? ""
       : (payload?.item ? resolveHomeFeedVideoUri(payload.item) : "") || String(payload?.videoUri || "").trim();
   const rememberedAspect = metadataAspect == null ? peekVideoAspect(memoryVideoUrl) : undefined;
+  // No saved or remembered shape: the cover picture's shape (Home has usually loaded it already;
+  // otherwise Watch's own cover reports it as soon as it loads). Without it a vertical upload
+  // opened in a default 4:5 / 16:9 frame and jumped when the track reported 9:16.
+  const [posterAspectState, setPosterAspectState] = useState<{ postId: string; aspect: number } | null>(null);
+  const posterAspect =
+    metadataAspect == null && !rememberedAspect && memoryVideoUrl
+      ? (posterAspectState?.postId === activePostId ? posterAspectState.aspect : undefined) ??
+        peekPosterAspect(memoryVideoUrl)
+      : undefined;
   const detectedForPost =
     metadataAspect == null && detectedDisplayType?.postId === activePostId ? detectedDisplayType : null;
   const detectedType =
     detectedForPost?.type ??
-    (rememberedAspect ? resolveHomeFeedVideoDisplayTypeFromDimensions(rememberedAspect, 1) : null);
+    (rememberedAspect ? resolveHomeFeedVideoDisplayTypeFromDimensions(rememberedAspect, 1) : null) ??
+    (posterAspect ? resolveHomeFeedVideoDisplayTypeFromDimensions(posterAspect, 1) : null);
   const displayType = detectedType || displayTypeHint;
   const isPortraitLayout = displayType !== "youtube";
   const isTikTokLayout = displayType === "tiktok";
@@ -1571,7 +1635,23 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     metadataAspect ??
     detectedForPost?.aspect ??
     rememberedAspect ??
+    posterAspect ??
     defaultHomeFeedVideoAspectRatio(displayType ?? "portrait45");
+  // True once the frame comes from a real shape (saved, played, remembered or the cover's).
+  const videoAspectKnown =
+    metadataAspect != null || detectedForPost != null || Boolean(rememberedAspect) || Boolean(posterAspect);
+  const handlePosterAspect = useCallback(
+    (aspect: number) => {
+      if (metadataAspect != null || !(aspect > 0)) return;
+      if (memoryVideoUrl) notePosterAspect(memoryVideoUrl, aspect, 1);
+      setPosterAspectState((current) =>
+        current?.postId === activePostId && Math.abs(current.aspect - aspect) < 0.01
+          ? current
+          : { postId: activePostId, aspect }
+      );
+    },
+    [metadataAspect, memoryVideoUrl, activePostId]
+  );
   // Messages and missed calls (build 16 header): Watch closes first, then the inbox opens.
   const handleInboxOpen = useCallback(
     (target: HeaderInboxTarget) => {
@@ -1948,10 +2028,12 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
               payload={payload}
               displayType={displayType}
               videoAspect={videoAspect}
+              videoAspectKnown={videoAspectKnown}
               frameWidth={width}
               frameHeight={playerHeight}
               onPlaybackStarted={handlePlaybackStarted}
               onDisplayTypeDetected={handleDisplayTypeDetected}
+              onPosterAspect={handlePosterAspect}
             />
           )}
         </View>
@@ -2087,6 +2169,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   watchStartCover: { zIndex: 5, elevation: 5 },
+  // Same place as the VideoView: centered in the player surface by its alignItems/justifyContent.
+  watchStartCoverFramed: { position: "absolute", overflow: "hidden", alignSelf: "center" },
+  watchHeldHidden: { opacity: 0 },
   externalVideoWebView: { flex: 1, backgroundColor: "#000000" },
   externalVideoWebViewContainer: { flex: 1, backgroundColor: "#000000" },
   externalVideoWebViewClear: { flex: 1, backgroundColor: "transparent" },
