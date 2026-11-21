@@ -70,14 +70,14 @@ test("expo-face-detector is gone (unused; its native lib was the only one withou
   }
 });
 
-test("next Android build is 1.0.8 (118); iOS version numbers unchanged", () => {
+test("Android versionCode is 118 (published 1.0.8 (118)); iOS version numbers unchanged", () => {
   const app = JSON.parse(read("app.json")).expo;
   const gradle = read("android/app/build.gradle");
   const eas = JSON.parse(read("eas.json"));
   assert.equal(app.version, "1.0.8");
-  assert.equal(app.android.versionCode, 117);
-  assert.match(gradle, /versionCode 117\n\s+versionName "1\.0\.8"/);
-  // 117 is already published; EAS autoIncrement (local version source) bumps it to 118.
+  assert.equal(app.android.versionCode, 118);
+  assert.match(gradle, /versionCode 118\n\s+versionName "1\.0\.8"/);
+  // 118 is published; EAS autoIncrement (local version source) makes the next build 119.
   assert.equal(eas.cli.appVersionSource, "local");
   assert.equal(eas.build.production.autoIncrement, true);
   assert.equal(app.ios.buildNumber, "18");
