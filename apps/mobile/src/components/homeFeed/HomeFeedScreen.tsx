@@ -54,6 +54,8 @@ import {
   peekPendingHomeFeedOpenRequest,
   resolveSharedPostOpenAction,
 } from "@/src/lib/homeFeedOpenSharedPost";
+import { consumeHomeFeedWatchRequest } from "@/src/lib/homeFeedWatchRequest";
+import { buildHomeFeedVideoOpenPayload } from "./homeFeedUtils";
 import {
   normalizeCommentPostId,
   userHasActiveChurchMembership,
@@ -3834,6 +3836,17 @@ export default function HomeFeedScreen() {
     if (!screenFocused) return;
     tryOpenSharedPost();
   }, [screenFocused, openPostId, visibleData, tryOpenSharedPost]);
+
+  // Video Account Overview asked to play one of its videos: open it in this same Watch.
+  useEffect(() => {
+    if (!screenFocused) return;
+    const request = consumeHomeFeedWatchRequest();
+    if (!request) return;
+    const payload = buildHomeFeedVideoOpenPayload(request.item);
+    if (!payload) return;
+    console.log("KRISTO_WATCH_REQUEST_OPEN", { postId: payload.postId, source: request.source });
+    handleVideoPress(payload);
+  }, [screenFocused, handleVideoPress]);
 
   useEffect(() => {
     if (activeIndex >= visibleData.length && visibleData.length > 0) {

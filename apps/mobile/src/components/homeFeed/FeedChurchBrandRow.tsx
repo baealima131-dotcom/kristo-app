@@ -2,7 +2,6 @@ import React, { memo, useCallback, useMemo } from "react";
 import {
   Pressable,
   Platform,
-  Linking,
   StyleSheet,
   Text,
   View,
@@ -18,7 +17,11 @@ import {
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD } from "./theme";
 import { openChurchOverviewFromFeedItem } from "@/src/lib/churchProfileNavigation";
-import { externalCreatorPageUrl, youtubeChannelPageUrl } from "@/src/lib/externalCreatorPage";
+import { youtubeChannelPageUrl } from "@/src/lib/externalCreatorPage";
+import {
+  canOpenVideoAccountOverview,
+  openVideoAccountOverviewFromFeedItem,
+} from "@/src/lib/videoAccountNavigation";
 import { FeedChurchAvatar } from "./FeedChurchAvatar";
 import { HomeFeedCachedAvatarImage } from "./HomeFeedCachedAvatarImage";
 
@@ -62,29 +65,32 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   );
   // Video links belong to an external YouTube/TikTok/Facebook account, not a Kristo church.
   const externalVideoAccount = String(item?.source || "").trim().toLowerCase() === "system-admin-video-link";
-  // Video links: the creator's own page (YouTube channel, TikTok creator, Facebook Page) from the
-  // avatar and the name alike; null when the link has none, and then nothing opens.
-  const creatorPageUrl = useMemo(
-    () => (externalVideoAccount ? externalCreatorPageUrl(item) : null),
+  // Video links: avatar and name open the in-app Video Account Overview (app/video-account.tsx),
+  // never the external page. A link without account id / profile URL / name is not clickable.
+  const videoAccountOpenable = useMemo(
+    () => (externalVideoAccount ? canOpenVideoAccountOverview(item) : false),
     [externalVideoAccount, item]
   );
-  const canOpen = externalVideoAccount ? Boolean(creatorPageUrl) : Boolean(churchId);
-  const openExternalProfile = useCallback(() => {
-    if (creatorPageUrl) void Linking.openURL(creatorPageUrl).catch(() => {});
-  }, [creatorPageUrl]);
+  const canOpen = externalVideoAccount ? videoAccountOpenable : Boolean(churchId);
+  const openVideoAccount = useCallback(
+    (from?: string) => {
+      openVideoAccountOverviewFromFeedItem(item, { source: from });
+    },
+    [item]
+  );
 
   // Kristo/church posts: avatar and church name open the Church Overview (church-overview/[churchId]).
   const openProfile = useCallback(() => {
     if (!canOpen) return;
-    if (externalVideoAccount) openExternalProfile();
+    if (externalVideoAccount) openVideoAccount(source);
     else openChurchOverviewFromFeedItem(item, { source });
-  }, [canOpen, externalVideoAccount, item, openExternalProfile, source]);
+  }, [canOpen, externalVideoAccount, item, openVideoAccount, source]);
 
   const openAvatarTarget = useCallback(() => {
     if (!canOpen) return;
-    if (externalVideoAccount) openExternalProfile();
+    if (externalVideoAccount) openVideoAccount(source ? `${source}-avatar` : undefined);
     else openChurchOverviewFromFeedItem(item, { source: source ? `${source}-avatar` : undefined });
-  }, [canOpen, externalVideoAccount, item, openExternalProfile, source]);
+  }, [canOpen, externalVideoAccount, item, openVideoAccount, source]);
 
   const isWatch = variant === "watch";
   const postId = String(item?.id || "").trim();
