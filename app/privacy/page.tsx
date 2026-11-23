@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   description: "Privacy Policy for Kristo App — how we collect, use, and protect your information.",
 };
 
-const LAST_UPDATED = "September 12, 2026";
+const LAST_UPDATED = "November 22, 2026";
 const CONTACT_EMAIL = "support@kristoapp.com";
 
 export default function PrivacyPolicyPage() {
@@ -100,12 +100,35 @@ export default function PrivacyPolicyPage() {
                 features you use.
               </li>
               <li>
-                With service providers that help us operate the app (for example, hosting,
-                analytics, payment processing for SOKO commerce, and customer support tools).
+                With service providers that help us operate the app, such as hosting, payment
+                processing for separate SOKO commerce, and customer support tools.
               </li>
               <li>When required by law, legal process, or to protect rights, safety, and security.</li>
             </ul>
             <p>We do not sell your personal information.</p>
+          </section>
+
+          <section className="privacy-section">
+            <h2>TikTok public embeds — Phase 1</h2>
+            <p>
+              Kristo App may display public TikTok videos and public profile information using
+              TikTok&apos;s embed player or oEmbed. When an embed is loaded or played, your device
+              connects to TikTok to retrieve and display that content. TikTok may receive
+              connection and playback information directly from your device and process it under
+              TikTok&apos;s own privacy policy and terms.
+            </p>
+            <p>
+              This phase does not use TikTok Login or OAuth, does not request access to private
+              TikTok account data, and does not post content to TikTok. Kristo App does not ask for
+              TikTok credentials or use TikTok to authenticate your Kristo App account. Public
+              video and profile details shown in the embed are provided by TikTok; Kristo App does
+              not claim to collect or store additional TikTok profile or viewing data unless a
+              later feature explicitly does so and this policy is updated.
+            </p>
+            <p>
+              TikTok content and embeds are governed by TikTok&apos;s policies and may include links
+              that open TikTok or its website.
+            </p>
           </section>
 
           <section className="privacy-section">
@@ -152,9 +175,11 @@ export default function PrivacyPolicyPage() {
         </div>
 
         <footer className="privacy-footer">
-          <Link className="vip-link" href="/sign-in">
-            ← <span>Back to sign in</span>
-          </Link>
+          <nav className="privacy-footer-nav" aria-label="Legal and support">
+            <Link className="vip-link" href="/">Home</Link>
+            <Link className="vip-link" href="/terms">Terms of Use</Link>
+            <Link className="vip-link" href="/support">Support</Link>
+          </nav>
         </footer>
       </article>
 
@@ -251,6 +276,12 @@ export default function PrivacyPolicyPage() {
 
         .privacy-footer {
           margin-top: 28px;
+        }
+
+        .privacy-footer-nav {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 18px;
         }
 
         @media (min-width: 768px) {
